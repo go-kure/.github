@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "description": "Standard labels for Wharf repositories. Used by scripts/gitlab-settings.sh to audit and create labels.",
+  "labels": [
+    {
+      "name": "status::deferred",
+      "color": "#FEF2C0",
+      "description": "Blocked or postponed for later"
+    },
+    {
+      "name": "status::blocked",
+      "color": "#D93F0B",
+      "description": "Blocked by external dependency"
+    },
+    {
+      "name": "status::needs-review",
+      "color": "#0E8A16",
+      "description": "Awaiting review"
+    },
+    {
+      "name": "status::in-progress",
+      "color": "#1D76DB",
+      "description": "Currently being worked on"
+    },
+    {
+      "name": "priority::critical",
+      "color": "#B60205",
+      "description": "Must be fixed immediately"
+    },
+    {
+      "name": "priority::high",
+      "color": "#D93F0B",
+      "description": "Important, fix soon"
+    },
+    {
+      "name": "priority::medium",
+      "color": "#FBCA04",
+      "description": "Normal priority"
+    },
+    {
+      "name": "priority::low",
+      "color": "#0E8A16",
+      "description": "Nice to have, not urgent"
+    },
+    {
+      "name": "type/breaking-change",
+      "color": "#B60205",
+      "description": "Introduces breaking changes"
+    },
+    {
+      "name": "type/security",
+      "color": "#D93F0B",
+      "description": "Security-related issue or fix"
+    },
+    {
+      "name": "type/chore",
+      "color": "#C5DEF5",
+      "description": "Maintenance and housekeeping"
+    },
+    {
+      "name": "type/refactor",
+      "color": "#C5DEF5",
+      "description": "Code refactoring"
+    },
+    {
+      "name": "type/testing",
+      "color": "#BFD4F2",
+      "description": "Testing improvements"
+    },
+    {
+      "name": "type/ci",
+      "color": "#000000",
+      "description": "CI/CD related"
+    },
+    {
+      "name": "type/documentation",
+      "color": "#BFD4F2",
+      "description": "Documentation changes"
+    },
+    {
+      "name": "type/bug",
+      "color": "#d73a4a",
+      "description": "Something isn't working"
+    },
+    {
+      "name": "type/feature",
+      "color": "#a2eeef",
+      "description": "New feature or request"
+    },
+    {
+      "name": "area/core",
+      "color": "#5319E7",
+      "description": "Core library functionality"
+    },
+    {
+      "name": "effort::low",
+      "color": "#0E8A16",
+      "description": "Small task, single pattern change"
+    },
+    {
+      "name": "effort::medium",
+      "color": "#FBCA04",
+      "description": "Moderate task, some design needed"
+    },
+    {
+      "name": "effort::high",
+      "color": "#D93F0B",
+      "description": "Large task, cross-repo or new patterns"
+    },
+    {
+      "name": "upstream/kure",
+      "color": "#D93F0B",
+      "description": "Blocked on kure changes"
+    },
+    {
+      "name": "dependencies",
+      "color": "#0366D6",
+      "description": "Dependency updates"
+    }
+  ]
+}

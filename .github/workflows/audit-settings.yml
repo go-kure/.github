@@ -1,0 +1,51 @@
+name: Audit Org Settings
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'governance/**'
+      - 'standards/**'
+  schedule:
+    - cron: '0 6 * * 1'  # Monday 6am UTC
+  workflow_dispatch:
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install yq
+        env:
+          YQ_VERSION: '4.44.6'
+        run: |
+          sudo curl -fsSL -o /usr/local/bin/yq \
+            https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Audit all repos
+        env:
+          GH_TOKEN: ${{ secrets.SETTINGS_PAT }}
+        run: bash scripts/github-settings.sh --all --ci --json || true
+
+      - name: Post summary
+        if: always()
+        run: |
+          if [ -f github-settings-report.json ]; then
+            echo "## Org Settings Audit" >> $GITHUB_STEP_SUMMARY
+            python3 - <<'EOF'
+          import sys, json
+          with open("github-settings-report.json") as f:
+              d = json.load(f)
+          lines = []
+          for r in d.get("repos", []):
+              issues = r["labels_missing"] + r["labels_renamed"] + r["settings_missing"] + r["rulesets_missing"]
+              icon = "OK" if issues == 0 else "WARN"
+              lines.append(f"{icon} {r['repo']}: {issues} issue(s)")
+          print("\n".join(lines))
+          EOF
+          fi >> $GITHUB_STEP_SUMMARY
