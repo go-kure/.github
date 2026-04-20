@@ -1,5 +1,5 @@
 #!/bin/bash
-# Shared API call helper for Wharf scripts
+# Shared API call helper
 # Source this file: source "$SCRIPT_DIR/lib/api.sh"
 #
 # Provides api_call() with HTTP status checking and clear error messages.
@@ -11,8 +11,8 @@
 # success. On failure, prints the HTTP status and response body to stderr.
 #
 # Example:
-#   response=$(api_call GET "$GITLAB_API/projects/$id" \
-#       --header "PRIVATE-TOKEN: $GITLAB_TOKEN")
+#   response=$(api_call GET "https://api.example.com/resource" \
+#       --header "Authorization: Bearer $TOKEN")
 api_call() {
     local method="$1"
     local url="$2"
