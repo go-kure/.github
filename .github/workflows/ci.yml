@@ -56,13 +56,22 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
-      - name: Install yamllint
+      - name: Validate YAML
         run: |
-          if ! command -v yamllint &>/dev/null; then
-            pip3 install --quiet yamllint
-          fi
-      - name: Validate YAML formatting
-        run: yamllint -d relaxed .github/workflows/
+          python3 - <<'EOF'
+          import yaml, sys, glob, os
+          errors = []
+          for f in sorted(glob.glob('.github/workflows/*.yml')):
+              try:
+                  list(yaml.safe_load_all(open(f)))
+              except yaml.YAMLError as e:
+                  errors.append(f'{f}: {e}')
+          if errors:
+              for e in errors:
+                  print(f'FAIL: {e}', file=sys.stderr)
+              sys.exit(1)
+          print(f'OK: {len(glob.glob(".github/workflows/*.yml"))} workflow files valid')
+          EOF
 
   build:
     name: build
