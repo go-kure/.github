@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  rebase-check:
+    name: rebase-check
+    runs-on: autops-kube
+    timeout-minutes: 2
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - name: Check branch is rebased on main
+        run: |
+          git fetch origin main
+          if ! git merge-base --is-ancestor origin/main HEAD; then
+            echo "::error::Branch is not rebased on latest main. Please run: git rebase origin/main"
+            exit 1
+          fi
+          echo "Branch is up to date with main."
+
+  lint:
+    name: lint
+    runs-on: autops-kube
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+      - name: Install actionlint
+        env:
+          ACTIONLINT_VERSION: '1.7.7'
+        run: |
+          curl -fsSL -o /tmp/actionlint.tar.gz \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          tar -xzf /tmp/actionlint.tar.gz -C /tmp actionlint
+          sudo mv /tmp/actionlint /usr/local/bin/actionlint
+      - name: Lint workflows
+        run: actionlint
+
+  test:
+    name: test
+    runs-on: autops-kube
+    timeout-minutes: 5
+    needs: lint
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+      - name: Install yamllint
+        run: |
+          if ! command -v yamllint &>/dev/null; then
+            pip3 install --quiet yamllint
+          fi
+      - name: Validate YAML formatting
+        run: yamllint -d relaxed .github/workflows/
+
+  build:
+    name: build
+    runs-on: autops-kube
+    timeout-minutes: 1
+    needs: [lint, test]
+    if: always()
+    steps:
+      - name: Check results
+        run: |
+          if [ "${{ needs.lint.result }}" != "success" ] || [ "${{ needs.test.result }}" != "success" ]; then
+            echo "::error::lint or test failed"
+            exit 1
+          fi
+          echo "All checks passed."
