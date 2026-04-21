@@ -1,0 +1,16 @@
+name: PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  pr-review:
+    uses: go-kure/.github/.github/workflows/pr-review.yml@main
+    with:
+      pr_review_context: "Shared GitHub Actions reusable workflows for the go-kure organization."
+    secrets: inherit
