@@ -24,42 +24,44 @@ concurrency:
 
 jobs:
   test:
-    name: Pre-release test
+    name: Pre-release CI check
     runs-on: autops-kube
-    timeout-minutes: 15
+    timeout-minutes: 5
     permissions:
       contents: read
+      actions: read
     steps:
       - name: Check out code
         uses: actions/checkout@v6
 
-      - name: Install build tools
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends build-essential
-
-      - name: Read Go version from mise.toml
-        id: go-version
-        run: |
-          GO_VER=$(grep '^go = ' mise.toml | sed 's/go = "\(.*\)"/\1/')
-          echo "version=$GO_VER" >> $GITHUB_OUTPUT
-
-      - name: Set up Go
-        uses: actions/setup-go@v6
-        with:
-          go-version: ${{ steps.go-version.outputs.version }}
-          cache: true
-
-      - name: Run tests
+      - name: Verify CI passed on HEAD
         env:
-          CGO_ENABLED: "1"
-        run: go test -v -race ./...
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          SHA=$(git rev-parse HEAD)
+          echo "Checking CI status for $SHA..."
+          STATUS=$(gh run list \
+            --repo "$GITHUB_REPOSITORY" \
+            --workflow ci.yml \
+            --commit "$SHA" \
+            --json conclusion \
+            --limit 1 \
+            --jq '.[0].conclusion // empty')
+          if [ "$STATUS" != "success" ]; then
+            echo "::error::CI did not pass on $SHA (status: ${STATUS:-not found}). Cannot tag."
+            exit 1
+          fi
+          echo "CI passed on $SHA."
 
   release:
     name: Create Release
     needs: test
     runs-on: autops-kube
-    timeout-minutes: 10
+    timeout-minutes: 30
     permissions:
       contents: write
+      actions: read
     steps:
       - name: Generate GitHub App token
         id: app-token
@@ -88,3 +90,35 @@ jobs:
           DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
           CI: 'true'
         run: ./scripts/release.sh
+
+      - name: Wait for release workflow to complete
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG=$(git describe --tags --abbrev=0)
+          echo "Waiting for release workflow for tag $TAG..."
+
+          RUN_ID=""
+          for i in $(seq 1 24); do
+            RUN_ID=$(gh run list \
+              --repo "$GITHUB_REPOSITORY" \
+              --workflow release.yml \
+              --branch "$TAG" \
+              --json databaseId \
+              --limit 1 \
+              --jq '.[0].databaseId // empty' 2>/dev/null || true)
+            [ -n "$RUN_ID" ] && break
+            echo "Attempt $i/24: not started yet, retrying in 5s..."
+            sleep 5
+          done
+
+          if [ -z "$RUN_ID" ]; then
+            echo "::error::release.yml did not start within 2 minutes for tag $TAG"
+            exit 1
+          fi
+
+          echo "Watching run $RUN_ID..."
+          gh run watch "$RUN_ID" --exit-status
+          echo "Release workflow completed successfully."
