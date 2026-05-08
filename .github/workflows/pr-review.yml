@@ -32,7 +32,7 @@ on:
 jobs:
   pr-review:
     name: AI Code Review
-    runs-on: autops-kube
+    runs-on: autops-kube-kure
     if: >-
       github.event.pull_request.draft == false &&
       github.event.pull_request.head.repo.full_name == github.repository

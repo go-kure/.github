@@ -15,7 +15,7 @@ concurrency:
 jobs:
   test:
     name: Test
-    runs-on: autops-kube
+    runs-on: autops-kube-kure
     timeout-minutes: 15
     permissions:
       contents: read
@@ -45,7 +45,7 @@ jobs:
 
   validate:
     name: Validate tag and changelog
-    runs-on: autops-kube
+    runs-on: autops-kube-kure
     timeout-minutes: 5
     permissions:
       contents: read
@@ -82,7 +82,7 @@ jobs:
 
   goreleaser:
     needs: [test, validate]
-    runs-on: autops-kube
+    runs-on: autops-kube-kure
     timeout-minutes: 15
     permissions:
       contents: write
@@ -128,7 +128,7 @@ jobs:
   deploy-docs:
     name: Deploy versioned docs
     needs: goreleaser
-    runs-on: autops-kube
+    runs-on: autops-kube-kure
     timeout-minutes: 5
     if: "!contains(github.ref_name, '-')"
     permissions:
@@ -152,7 +152,7 @@ jobs:
 
   post-release:
     needs: goreleaser
-    runs-on: autops-kube
+    runs-on: autops-kube-kure
     timeout-minutes: 5
     permissions:
       contents: read

@@ -12,7 +12,7 @@ concurrency:
 jobs:
   rebase-check:
     name: rebase-check
-    runs-on: autops-kube
+    runs-on: autops-kube-kure
     timeout-minutes: 2
     if: github.event_name == 'pull_request'
     steps:
@@ -32,7 +32,7 @@ jobs:
 
   lint:
     name: lint
-    runs-on: autops-kube
+    runs-on: autops-kube-kure
     timeout-minutes: 5
     steps:
       - name: Checkout code
@@ -50,7 +50,7 @@ jobs:
 
   test:
     name: test
-    runs-on: autops-kube
+    runs-on: autops-kube-kure
     timeout-minutes: 5
     needs: lint
     steps:
@@ -61,7 +61,7 @@ jobs:
 
   build:
     name: build
-    runs-on: autops-kube
+    runs-on: autops-kube-kure
     timeout-minutes: 1
     needs: [lint, test]
     if: always()
