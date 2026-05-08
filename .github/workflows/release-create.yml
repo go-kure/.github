@@ -25,7 +25,7 @@ concurrency:
 jobs:
   test:
     name: Pre-release CI check
-    runs-on: autops-kube
+    runs-on: autops-kube-kure
     timeout-minutes: 5
     permissions:
       contents: read
@@ -57,7 +57,7 @@ jobs:
   release:
     name: Create Release
     needs: test
-    runs-on: autops-kube
+    runs-on: autops-kube-kure
     timeout-minutes: 30
     permissions:
       contents: write
