@@ -101,6 +101,11 @@ jobs:
             -H "Accept: application/vnd.github.diff" \
             "https://api.github.com/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")
           if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+            if [ "$HTTP_CODE" -eq 406 ]; then
+              echo "PR diff too large for GitHub API (HTTP 406), skipping review."
+              echo "skipped=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
             echo "ERROR: GitHub API returned HTTP ${HTTP_CODE} fetching PR diff"
             cat /tmp/pr_diff_raw.txt
             exit 1
