@@ -55,6 +55,8 @@ setup_colors() {
 LABELS_MISSING=0
 LABELS_OK=0
 LABELS_RENAMED=0
+LABELS_EXTRA=0
+LABELS_BLOCKED=0
 SETTINGS_MISSING=0
 SETTINGS_OK=0
 RULESET_MISSING=0
@@ -364,6 +366,37 @@ audit_labels() {
             fi
         fi
     done <<<"$labels"
+
+    # Detect extra labels (in repo but not in standard, and not a rename candidate)
+    while IFS= read -r existing_name; do
+        [ -z "$existing_name" ] && continue
+        # Skip rename candidates (handled by rename logic above)
+        if [[ -v LABEL_RENAME_MAP["$existing_name"] ]]; then
+            continue
+        fi
+        if ! jq -e --arg n "$existing_name" '.labels[] | select(.name == $n)' "$LABELS_FILE" > /dev/null 2>&1; then
+            LABELS_EXTRA=$((LABELS_EXTRA + 1))
+            if [ "$apply" = "true" ]; then
+                local issue_count
+                issue_count=$(gh api "repos/$GITHUB_ORG/$repo/issues" \
+                    -f "labels=$existing_name" \
+                    -f "state=all" \
+                    -f "per_page=1" \
+                    --jq 'length' 2>/dev/null || echo "unknown")
+                if [ "$issue_count" != "0" ]; then
+                    LABELS_BLOCKED=$((LABELS_BLOCKED + 1))
+                    echo -e "  ${YELLOW}SKIP${NC}: $existing_name (in use — $issue_count issue(s), manual removal required)"
+                else
+                    echo -e "  ${YELLOW}DELETING${NC}: $existing_name"
+                    local encoded_name
+                    encoded_name=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$existing_name")
+                    gh api "repos/$GITHUB_ORG/$repo/labels/$encoded_name" --method DELETE --silent
+                fi
+            else
+                echo -e "  ${RED}EXTRA${NC}: $existing_name"
+            fi
+        fi
+    done <<<"$existing_labels"
 }
 
 # Audit repo settings
@@ -506,6 +539,24 @@ audit_rulesets() {
             fi
         done
 
+        # Check pull_request rule parameters
+        local pr_params
+        pr_params=$(echo "$full_ruleset" | jq '.rules[] | select(.type == "pull_request") | .parameters')
+        if [ -n "$pr_params" ] && [ "$pr_params" != "null" ]; then
+            for param in required_approving_review_count dismiss_stale_reviews_on_push require_code_owner_review require_last_push_approval required_review_thread_resolution; do
+                local expected_param actual_param
+                expected_param=$(yq -r ".github_defaults.rulesets.\"$ruleset_name\".rules.pull_request.$param" "$POLICY_FILE")
+                actual_param=$(echo "$pr_params" | jq -r ".$param")
+                if [ "$actual_param" = "$expected_param" ]; then
+                    echo -e "  ${GREEN}OK${NC}: pull_request.$param = $expected_param"
+                    RULESET_OK=$((RULESET_OK + 1))
+                else
+                    RULESET_MISSING=$((RULESET_MISSING + 1))
+                    echo -e "  ${RED}WRONG${NC}: pull_request.$param = $actual_param (should be $expected_param)"
+                fi
+            done
+        fi
+
         # Check bypass actors (per-repo)
         local expected_bypass
         expected_bypass=$(yq -oj ".github_repos.\"$repo\".rulesets.\"$ruleset_name\".bypass_actors // []" "$POLICY_FILE" 2>/dev/null)
@@ -555,6 +606,8 @@ audit_repo() {
     local labels_missing_before=$LABELS_MISSING
     local labels_ok_before=$LABELS_OK
     local labels_renamed_before=$LABELS_RENAMED
+    local labels_extra_before=$LABELS_EXTRA
+    local labels_blocked_before=$LABELS_BLOCKED
     local settings_missing_before=$SETTINGS_MISSING
     local settings_ok_before=$SETTINGS_OK
     local ruleset_missing_before=$RULESET_MISSING
@@ -570,12 +623,14 @@ audit_repo() {
         local repo_labels_missing=$((LABELS_MISSING - labels_missing_before))
         local repo_labels_ok=$((LABELS_OK - labels_ok_before))
         local repo_labels_renamed=$((LABELS_RENAMED - labels_renamed_before))
+        local repo_labels_extra=$((LABELS_EXTRA - labels_extra_before))
+        local repo_labels_blocked=$((LABELS_BLOCKED - labels_blocked_before))
         local repo_settings_missing=$((SETTINGS_MISSING - settings_missing_before))
         local repo_settings_ok=$((SETTINGS_OK - settings_ok_before))
         local repo_ruleset_missing=$((RULESET_MISSING - ruleset_missing_before))
         local repo_ruleset_ok=$((RULESET_OK - ruleset_ok_before))
         local repo_status="OK"
-        if [ $((repo_labels_missing + repo_labels_renamed + repo_settings_missing + repo_ruleset_missing)) -gt 0 ]; then
+        if [ $((repo_labels_missing + repo_labels_renamed + repo_labels_extra + repo_settings_missing + repo_ruleset_missing)) -gt 0 ]; then
             repo_status="WARN"
         fi
         json_results=$(echo "$json_results" | jq \
@@ -583,12 +638,14 @@ audit_repo() {
             --argjson lm "$repo_labels_missing" \
             --argjson lo "$repo_labels_ok" \
             --argjson lr "$repo_labels_renamed" \
+            --argjson le "$repo_labels_extra" \
+            --argjson lb "$repo_labels_blocked" \
             --argjson sm "$repo_settings_missing" \
             --argjson so "$repo_settings_ok" \
             --argjson rm "$repo_ruleset_missing" \
             --argjson ro "$repo_ruleset_ok" \
             --arg st "$repo_status" \
-            '. + [{"repo": $r, "labels_missing": $lm, "labels_ok": $lo, "labels_renamed": $lr, "settings_missing": $sm, "settings_ok": $so, "rulesets_missing": $rm, "rulesets_ok": $ro, "status": $st}]')
+            '. + [{"repo": $r, "labels_missing": $lm, "labels_ok": $lo, "labels_renamed": $lr, "labels_extra": $le, "labels_blocked": $lb, "settings_missing": $sm, "settings_ok": $so, "rulesets_missing": $rm, "rulesets_ok": $ro, "status": $st}]')
     fi
 
     return 0
@@ -602,14 +659,14 @@ print_summary() {
     echo -e "${BLUE}Summary${NC}"
     echo -e "${BLUE}========================================${NC}"
 
-    local total_issues=$((LABELS_MISSING + LABELS_RENAMED + SETTINGS_MISSING + RULESET_MISSING))
+    local total_issues=$((LABELS_MISSING + LABELS_RENAMED + LABELS_EXTRA + SETTINGS_MISSING + RULESET_MISSING))
 
     if [ "$apply" = "true" ]; then
-        echo -e "Labels: ${GREEN}$LABELS_OK OK${NC}, ${YELLOW}$LABELS_MISSING created${NC}, ${YELLOW}$LABELS_RENAMED renamed${NC}"
+        echo -e "Labels: ${GREEN}$LABELS_OK OK${NC}, ${YELLOW}$LABELS_MISSING created${NC}, ${YELLOW}$LABELS_RENAMED renamed${NC}, ${YELLOW}$LABELS_EXTRA extra (${LABELS_BLOCKED} skipped, in use)${NC}"
         echo -e "Settings: ${GREEN}$SETTINGS_OK OK${NC}, ${YELLOW}$SETTINGS_MISSING applied${NC}"
         echo -e "Rulesets: ${GREEN}$RULESET_OK OK${NC}, ${YELLOW}$RULESET_MISSING issues${NC}"
     else
-        echo -e "Labels: ${GREEN}$LABELS_OK OK${NC}, ${RED}$LABELS_MISSING missing${NC}, ${YELLOW}$LABELS_RENAMED to rename${NC}"
+        echo -e "Labels: ${GREEN}$LABELS_OK OK${NC}, ${RED}$LABELS_MISSING missing${NC}, ${YELLOW}$LABELS_RENAMED to rename${NC}, ${RED}$LABELS_EXTRA extra${NC}"
         echo -e "Settings: ${GREEN}$SETTINGS_OK OK${NC}, ${RED}$SETTINGS_MISSING wrong${NC}"
         echo -e "Rulesets: ${GREEN}$RULESET_OK OK${NC}, ${RED}$RULESET_MISSING wrong${NC}"
     fi
@@ -620,12 +677,14 @@ print_summary() {
             --argjson lo "$LABELS_OK" \
             --argjson lm "$LABELS_MISSING" \
             --argjson lr "$LABELS_RENAMED" \
+            --argjson le "$LABELS_EXTRA" \
+            --argjson lb "$LABELS_BLOCKED" \
             --argjson so "$SETTINGS_OK" \
             --argjson sm "$SETTINGS_MISSING" \
             --argjson ro "$RULESET_OK" \
             --argjson rm "$RULESET_MISSING" \
             --argjson repos "$json_results" \
-            '{"generated": $ts, "labels_ok": $lo, "labels_missing": $lm, "labels_renamed": $lr, "settings_ok": $so, "settings_missing": $sm, "rulesets_ok": $ro, "rulesets_missing": $rm, "repos": $repos}' \
+            '{"generated": $ts, "labels_ok": $lo, "labels_missing": $lm, "labels_renamed": $lr, "labels_extra": $le, "labels_blocked": $lb, "settings_ok": $so, "settings_missing": $sm, "rulesets_ok": $ro, "rulesets_missing": $rm, "repos": $repos}' \
             > github-settings-report.json
         echo ""
         echo "JSON report: github-settings-report.json"
