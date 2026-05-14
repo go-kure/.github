@@ -128,11 +128,29 @@ Changes here propagate to all repos automatically. Review carefully.
 ## Working with Reusable Workflows
 
 Reusable workflows have `on: workflow_call` in their trigger. Caller workflows (ending in
-`-caller.yml`) are the ones that run org-wide on repo events.
+`-caller.yml`) are the thin wrappers that live in each consumer repo and delegate to these.
 
-When updating a reusable workflow:
-- Changes are immediately live for all repos that call the workflow after merge
-- Test by triggering the caller workflow manually before merging
+### Available reusable workflows
+
+| Workflow | Consumer trigger | Purpose | Key inputs | Secrets needed |
+|----------|-----------------|---------|------------|----------------|
+| `auto-rebase.yml` | push to `main` | Rebases all open PRs when main is updated | — | `AUTO_REBASE_PAT` |
+| `claude.yml` | PR/issue/comment events | @claude AI assistant on PRs and issues | — | `CLAUDE_CODE_OAUTH_TOKEN` |
+| `pr-review.yml` | PR open/sync/ready | 2-pass AI code review; posts advisory comment | `pr_review_context` (string, optional) | none (uses cluster sidecar) |
+| `release-create.yml` | `workflow_dispatch` | Pre-flight CI gate + git-cliff tag creation | `type` (required), `scope`, `dry_run` | `RELEASE_APP_ID`, `RELEASE_APP_PRIVATE_KEY` |
+| `release.yml` | version tags (`v*`) | GoReleaser, SBOM, docs deploy, Go proxy refresh | `go_module` (required, e.g. `github.com/go-kure/kure`) | `RELEASE_APP_ID`, `RELEASE_APP_PRIVATE_KEY` |
+
+Consumer repos call these as:
+```yaml
+uses: go-kure/.github/.github/workflows/<name>.yml@main
+secrets: inherit
+```
+
+### When updating a reusable workflow
+
+- Changes take effect for **all consumer repos immediately** after merge to `main`
+- Test by triggering the corresponding `-caller.yml` workflow manually before merging
+- For `release.yml` or `release-create.yml`, test with `dry_run: true` first
 
 ## Git Workflow
 

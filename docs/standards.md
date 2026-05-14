@@ -81,12 +81,12 @@ centrally by this repo's `apply-settings.yml` workflow. The source of truth is
 
 ## Release Process
 
-| Aspect       | kure             | launcher               | .github |
-|--------------|------------------|------------------------|---------|
-| Releases     | GitHub releases  | GitHub releases        | N/A     |
-| Tool         | release-please   | GoReleaser + cliff     | N/A     |
-| Changelog    | Release notes    | `CHANGELOG.md` + cliff | N/A     |
-| Version tags | `vX.Y.Z`         | `vX.Y.Z`               | N/A     |
+| Aspect       | kure                    | launcher                | .github |
+|--------------|-------------------------|-------------------------|---------|
+| Releases     | GitHub releases         | GitHub releases         | N/A     |
+| Tool         | GoReleaser + git-cliff  | GoReleaser + git-cliff  | N/A     |
+| Changelog    | `CHANGELOG.md` + cliff  | `CHANGELOG.md` + cliff  | N/A     |
+| Version tags | `vX.Y.Z`                | `vX.Y.Z`                | N/A     |
 
 ## What Stays the Same
 
