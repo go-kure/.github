@@ -1,4 +1,4 @@
-name: Audit Org Settings
+name: Org Settings
 
 on:
   push:
@@ -9,15 +9,28 @@ on:
   schedule:
     - cron: '0 6 * * *'  # Daily 6am UTC
   workflow_dispatch:
+    inputs:
+      mode:
+        description: "Mode: audit (dry-run, fails on issues) or apply (make changes)"
+        default: audit
+        required: true
+        type: choice
+        options:
+          - audit
+          - apply
+      repo:
+        description: "Repository name or 'all'"
+        default: all
+        required: false
 
 jobs:
-  audit:
+  settings:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install yq
         env:
@@ -27,17 +40,28 @@ jobs:
             https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64
           sudo chmod +x /usr/local/bin/yq
 
-      - name: Audit all repos
+      - name: Run settings
         env:
           GH_TOKEN: ${{ secrets.SETTINGS_PAT }}
-        run: bash scripts/github-settings.sh --all --ci --json 2>&1 | tee audit-output.txt || true
+        run: |
+          set -o pipefail
+          MODE="${{ inputs.mode || 'audit' }}"
+          REPO="${{ inputs.repo || 'all' }}"
+          FLAGS="--ci --json"
+          [ "$MODE" = "apply" ] && FLAGS="$FLAGS --apply"
+          if [ "$REPO" = "all" ]; then
+            bash scripts/github-settings.sh --all $FLAGS 2>&1 | tee settings-output.txt
+          else
+            bash scripts/github-settings.sh "$REPO" $FLAGS 2>&1 | tee settings-output.txt
+          fi
 
       - name: Post summary
         if: always()
         run: |
           [ -f github-settings-report.json ] || exit 0
+          MODE="${{ inputs.mode || 'audit' }}"
           {
-            echo "## Org Settings Audit"
+            echo "## Org Settings — ${MODE}"
             echo ""
             python3 - <<'EOF'
           import json
@@ -46,22 +70,23 @@ jobs:
           print("| Repo | Labels | Settings | Rulesets | Status |")
           print("|------|--------|----------|----------|--------|")
           for r in d.get("repos", []):
-              issues = r["labels_missing"] + r["labels_renamed"] + r["settings_missing"] + r["rulesets_missing"]
+              issues = r["labels_missing"] + r["labels_renamed"] + r.get("labels_extra", 0) + r["settings_missing"] + r["rulesets_missing"]
               status = "OK" if issues == 0 else f"**{issues} issues**"
               lbl = f"{r['labels_ok']} ok"
               if r["labels_missing"]: lbl += f", **{r['labels_missing']} missing**"
               if r["labels_renamed"]: lbl += f", **{r['labels_renamed']} to rename**"
+              if r.get("labels_extra", 0): lbl += f", **{r['labels_extra']} extra**"
               sett = f"{r['settings_ok']} ok"
               if r["settings_missing"]: sett += f", **{r['settings_missing']} wrong**"
               rs = f"{r['rulesets_ok']} ok"
               if r["rulesets_missing"]: rs += f", **{r['rulesets_missing']} wrong**"
               print(f"| `{r['repo']}` | {lbl} | {sett} | {rs} | {status} |")
           EOF
-            if grep -qE 'MISSING|WRONG|LEGACY|RENAME' audit-output.txt 2>/dev/null; then
+            if grep -qE 'MISSING|WRONG|LEGACY|RENAME|EXTRA|SKIP|CREATING|RENAMING|SETTING|UPDATING|DELETING' settings-output.txt 2>/dev/null; then
               echo ""
-              echo "## Issues"
+              echo "## Changes"
               echo '```'
-              grep -E 'Repository:|MISSING|WRONG|LEGACY|RENAME' audit-output.txt
+              grep -E 'Repository:|MISSING|WRONG|LEGACY|RENAME|EXTRA|SKIP|CREATING|RENAMING|SETTING|UPDATING|DELETING|BLOCKED' settings-output.txt
               echo '```'
             fi
             echo ""
