@@ -7,7 +7,7 @@ on:
       - 'governance/**'
       - 'standards/**'
   schedule:
-    - cron: '0 6 * * 1'  # Monday 6am UTC
+    - cron: '0 6 * * *'  # Daily 6am UTC
   workflow_dispatch:
 
 jobs:
@@ -30,22 +30,40 @@ jobs:
       - name: Audit all repos
         env:
           GH_TOKEN: ${{ secrets.SETTINGS_PAT }}
-        run: bash scripts/github-settings.sh --all --ci --json || true
+        run: bash scripts/github-settings.sh --all --ci --json 2>&1 | tee audit-output.txt || true
 
       - name: Post summary
         if: always()
         run: |
-          if [ -f github-settings-report.json ]; then
-            echo "## Org Settings Audit" >> $GITHUB_STEP_SUMMARY
+          [ -f github-settings-report.json ] || exit 0
+          {
+            echo "## Org Settings Audit"
+            echo ""
             python3 - <<'EOF'
-          import sys, json
+          import json
           with open("github-settings-report.json") as f:
               d = json.load(f)
-          lines = []
+          print("| Repo | Labels | Settings | Rulesets | Status |")
+          print("|------|--------|----------|----------|--------|")
           for r in d.get("repos", []):
               issues = r["labels_missing"] + r["labels_renamed"] + r["settings_missing"] + r["rulesets_missing"]
-              icon = "OK" if issues == 0 else "WARN"
-              lines.append(f"{icon} {r['repo']}: {issues} issue(s)")
-          print("\n".join(lines))
+              status = "OK" if issues == 0 else f"**{issues} issues**"
+              lbl = f"{r['labels_ok']} ok"
+              if r["labels_missing"]: lbl += f", **{r['labels_missing']} missing**"
+              if r["labels_renamed"]: lbl += f", **{r['labels_renamed']} to rename**"
+              sett = f"{r['settings_ok']} ok"
+              if r["settings_missing"]: sett += f", **{r['settings_missing']} wrong**"
+              rs = f"{r['rulesets_ok']} ok"
+              if r["rulesets_missing"]: rs += f", **{r['rulesets_missing']} wrong**"
+              print(f"| `{r['repo']}` | {lbl} | {sett} | {rs} | {status} |")
           EOF
-          fi >> $GITHUB_STEP_SUMMARY
+            if grep -qE 'MISSING|WRONG|LEGACY|RENAME' audit-output.txt 2>/dev/null; then
+              echo ""
+              echo "## Issues"
+              echo '```'
+              grep -E 'Repository:|MISSING|WRONG|LEGACY|RENAME' audit-output.txt
+              echo '```'
+            fi
+            echo ""
+            echo "_Generated: $(date -u '+%Y-%m-%d %H:%M UTC')_"
+          } >> $GITHUB_STEP_SUMMARY
