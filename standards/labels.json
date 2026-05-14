@@ -43,6 +43,21 @@
       "description": "Nice to have, not urgent"
     },
     {
+      "name": "type/design",
+      "color": "#C5DEF5",
+      "description": "Design document or RFC"
+    },
+    {
+      "name": "type/epic",
+      "color": "#0052CC",
+      "description": "Epic or umbrella issue"
+    },
+    {
+      "name": "type/upgrade",
+      "color": "#C5DEF5",
+      "description": "Dependency upgrade or version bump"
+    },
+    {
       "name": "type/breaking-change",
       "color": "#B60205",
       "description": "Introduces breaking changes"
@@ -88,9 +103,34 @@
       "description": "New feature or request"
     },
     {
+      "name": "area/cli",
+      "color": "#5319E7",
+      "description": "CLI tool and commands"
+    },
+    {
       "name": "area/core",
       "color": "#5319E7",
       "description": "Core library functionality"
+    },
+    {
+      "name": "area/docs",
+      "color": "#5319E7",
+      "description": "Documentation content"
+    },
+    {
+      "name": "area/flux",
+      "color": "#5319E7",
+      "description": "FluxCD integration"
+    },
+    {
+      "name": "area/k8s",
+      "color": "#5319E7",
+      "description": "Kubernetes API and resources"
+    },
+    {
+      "name": "area/layout",
+      "color": "#5319E7",
+      "description": "OCI layout and bundle structure"
     },
     {
       "name": "effort::low",
@@ -116,6 +156,16 @@
       "name": "dependencies",
       "color": "#0366D6",
       "description": "Dependency updates"
+    },
+    {
+      "name": "github_actions",
+      "color": "#2088FF",
+      "description": "GitHub Actions workflow or CI configuration"
+    },
+    {
+      "name": "go",
+      "color": "#00ADD8",
+      "description": "Go language, toolchain, or module update"
     }
   ]
 }
