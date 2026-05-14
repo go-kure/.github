@@ -43,25 +43,26 @@ jobs:
       - name: Run settings
         env:
           GH_TOKEN: ${{ secrets.SETTINGS_PAT }}
+          INPUT_MODE: ${{ inputs.mode || 'audit' }}
+          INPUT_REPO: ${{ inputs.repo || 'all' }}
         run: |
           set -o pipefail
-          MODE="${{ inputs.mode || 'audit' }}"
-          REPO="${{ inputs.repo || 'all' }}"
           FLAGS="--ci --json"
-          [ "$MODE" = "apply" ] && FLAGS="$FLAGS --apply"
-          if [ "$REPO" = "all" ]; then
+          [ "$INPUT_MODE" = "apply" ] && FLAGS="$FLAGS --apply"
+          if [ "$INPUT_REPO" = "all" ]; then
             bash scripts/github-settings.sh --all $FLAGS 2>&1 | tee settings-output.txt
           else
-            bash scripts/github-settings.sh "$REPO" $FLAGS 2>&1 | tee settings-output.txt
+            bash scripts/github-settings.sh "$INPUT_REPO" $FLAGS 2>&1 | tee settings-output.txt
           fi
 
       - name: Post summary
         if: always()
+        env:
+          INPUT_MODE: ${{ inputs.mode || 'audit' }}
         run: |
           [ -f github-settings-report.json ] || exit 0
-          MODE="${{ inputs.mode || 'audit' }}"
           {
-            echo "## Org Settings — ${MODE}"
+            echo "## Org Settings — ${INPUT_MODE}"
             echo ""
             python3 - <<'EOF'
           import json
