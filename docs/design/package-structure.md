@@ -1,11 +1,12 @@
 # Package Structure
 
-> **Version** 1.0 · **Updated** 2026-05-14
+> **Version** 1.1 · **Updated** 2026-05-14
 
 ## Changelog
 
 | Version | Date | Summary |
 |---------|------|---------|
+| 1.1 | 2026-05-14 | Correct launcher tree (remove phantom packages); clarify platform profile vs ClusterProfile |
 | 1.0 | 2026-05-14 | Initial document |
 
 ---
@@ -75,15 +76,15 @@ launcher/
 ├── pkg/
 │   ├── cmd/
 │   │   └── kurel/        # kurel command implementations (cobra commands)
-│   ├── errors/           # Error wrapping (mirrors kure pattern)
 │   ├── launcher/         # Package launcher core: load → resolve → patch → validate → build
-│   ├── logger/           # Structured logging (mirrors kure pattern)
-│   ├── oam/              # OAM types (package spec, platform profile, application values)
 │   └── patch/            # JSONPath-based patching: TOML/YAML parsing, strategic merge
 ├── docs/
-│   └── design.md         # Full design document and vision
+│   └── design.md         # Full design document and vision (canonical)
 └── site/                 # Documentation site
 ```
+
+launcher does not have its own `pkg/errors` or `pkg/logger` — it imports those from
+`github.com/go-kure/kure/pkg/errors` and `github.com/go-kure/kure/pkg/logger`.
 
 ---
 
@@ -132,6 +133,7 @@ model), not a launcher concern. It remains in kure.
 - It is a patch or composition mechanism for kurel packages
 
 **Does not belong in either**:
-- Wharf platform types (EnvironmentPolicy, ClusterProfile, etc.) — those live in the Wharf
-  platform repos (`go-kure/launcher` hosts the OAM Runtime sub-project, but the Wharf-specific
-  resource types stay in the Wharf workspace)
+- Wharf CRD types (EnvironmentPolicy, ClusterProfile, etc.) — those live in the Wharf platform
+  repos. Note: the kurel *platform profile* (the parameter set expressing trait implementation
+  choices, e.g. which ingress controller is installed) is a different concept that *does* live in
+  launcher, despite similar naming. See [oam-runtime](oam-runtime.md) §Two-Config-Set Model.
