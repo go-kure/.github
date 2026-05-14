@@ -1,0 +1,155 @@
+# go-kure .github Agent Instructions
+
+This document provides guidance for agents working on this repository.
+
+## Project Overview
+
+This is the `go-kure/.github` repository — the org-level governance hub for the go-kure GitHub
+organization. It provides:
+
+- **Org settings management**: Repository rules, labels, and merge policies for all go-kure repos
+- **Reusable workflows**: Shared CI/CD workflows consumed by kure and launcher
+- **Community files**: CONTRIBUTING, CODE_OF_CONDUCT, SECURITY, PR template (org-wide defaults)
+- **Design documents**: Architecture and design decisions for the go-kure org
+- **Standards reference**: How go-kure repos are configured and why
+
+## Repository Structure
+
+```
+.github/
+├── governance/
+│   └── repository-settings-policy.yaml  # Machine-readable settings policy
+├── standards/
+│   └── labels.json                      # Standard issue labels
+├── scripts/
+│   ├── github-settings.sh               # Settings audit/apply script
+│   └── lib/api.sh                       # Shared HTTP API utilities
+├── .github/
+│   └── workflows/                       # GitHub Actions (CI + reusable)
+│       ├── ci.yml                       # Self-CI: lint, test, build
+│       ├── release.yml                  # Reusable: GoReleaser release
+│       ├── release-create.yml           # Reusable: create release tag
+│       ├── auto-rebase.yml              # Reusable: rebase open PRs
+│       ├── auto-rebase-caller.yml       # Calls auto-rebase on main push
+│       ├── pr-review.yml                # Reusable: AI code review
+│       ├── pr-review-caller.yml         # Calls pr-review on PR events
+│       ├── claude.yml                   # Reusable: @claude assistant
+│       ├── claude-caller.yml            # Calls claude on PR/issue mentions
+│       ├── audit-settings.yml           # Scheduled: audit org settings
+│       └── apply-settings.yml           # Manual: apply org settings
+├── ISSUE_TEMPLATE/
+│   ├── bug.yml
+│   └── feature.yml
+├── profile/
+│   └── README.md                        # Org overview page
+├── docs/
+│   ├── standards.md                     # go-kure org standards (canonical)
+│   └── design/                          # Design documents
+│       ├── README.md                    # Index
+│       ├── oci-layout.md
+│       ├── api-stability.md
+│       ├── package-structure.md
+│       └── oam-runtime.md
+├── CODE_OF_CONDUCT.md                   # Org-wide default
+├── CONTRIBUTING.md                      # Org-wide default
+├── SECURITY.md                          # Org-wide default
+└── PULL_REQUEST_TEMPLATE.md             # Org-wide default
+```
+
+## Working with Org Settings
+
+Settings are defined in `governance/repository-settings-policy.yaml` and applied via
+`scripts/github-settings.sh`.
+
+### Auditing settings
+
+```bash
+# Audit all repos (CI mode, JSON output)
+./scripts/github-settings.sh --all --ci --json
+
+# Audit a specific repo
+./scripts/github-settings.sh kure --ci
+```
+
+The `audit-settings.yml` workflow runs this automatically on push to main (when `governance/` or
+`standards/` files change) and weekly on Mondays.
+
+### Applying settings changes
+
+1. Edit `governance/repository-settings-policy.yaml`
+2. Run `./scripts/github-settings.sh --all` locally to preview changes
+3. Commit and open a PR
+4. After merge, trigger `apply-settings.yml` manually with `dry_run: false`
+
+### Adding or changing labels
+
+Edit `standards/labels.json`. The settings script syncs labels to all repos automatically.
+
+## Working with Design Docs
+
+Design docs live in `docs/design/`. Each doc tracks its own version and changelog inline.
+
+### Adding a new design doc
+
+1. Create `docs/design/<topic>.md` using this format:
+
+```markdown
+# [Title]
+
+> **Version** 1.0 · **Updated** YYYY-MM-DD
+
+## Changelog
+
+| Version | Date | Summary |
+|---------|------|---------|
+| 1.0 | YYYY-MM-DD | Initial document |
+
+---
+
+[content]
+```
+
+2. Add a row to `docs/design/README.md`
+
+### Updating an existing doc
+
+1. Make the change
+2. Bump the version number (patch for corrections, minor for new content)
+3. Add a row to the changelog table
+4. Update the version in `docs/design/README.md`
+
+## Working with Community Files
+
+`CODE_OF_CONDUCT.md`, `CONTRIBUTING.md`, `SECURITY.md`, and `PULL_REQUEST_TEMPLATE.md` are
+**org-wide defaults** — GitHub applies them to any go-kure repo that does not have its own copy.
+
+Changes here propagate to all repos automatically. Review carefully.
+
+## Working with Reusable Workflows
+
+Reusable workflows have `on: workflow_call` in their trigger. Caller workflows (ending in
+`-caller.yml`) are the ones that run org-wide on repo events.
+
+When updating a reusable workflow:
+- Changes are immediately live for all repos that call the workflow after merge
+- Test by triggering the caller workflow manually before merging
+
+## Git Workflow
+
+- **`main` is protected** — never commit directly to `main`
+- Always create a feature branch from `main`:
+  ```bash
+  git checkout -b <type>/<description> main
+  ```
+- **Branch prefixes**: `feat/`, `fix/`, `docs/`, `chore/`, `ci:`
+- **Conventional commits**: `feat:`, `fix:`, `docs:`, `chore:`, `ci:`, `build:`
+- **Linear history** enforced — rebase only, no merge commits
+- **Required CI**: `lint`, `test`, `build`, `rebase-check`
+- Use `gh pr create` to open pull requests
+
+## Questions?
+
+Refer to:
+1. `docs/standards.md` — go-kure org standards reference
+2. `governance/repository-settings-policy.yaml` — machine-readable settings policy
+3. `CONTRIBUTING.md` — contribution guidelines
