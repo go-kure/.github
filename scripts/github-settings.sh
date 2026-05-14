@@ -378,11 +378,9 @@ audit_labels() {
             LABELS_EXTRA=$((LABELS_EXTRA + 1))
             if [ "$apply" = "true" ]; then
                 local issue_count
-                issue_count=$(gh api "repos/$GITHUB_ORG/$repo/issues" \
-                    -f "labels=$existing_name" \
-                    -f "state=all" \
-                    -f "per_page=1" \
-                    --jq 'length' 2>/dev/null || echo "unknown")
+                issue_count=$(gh issue list --repo "$GITHUB_ORG/$repo" \
+                    --label "$existing_name" --state all --limit 1 \
+                    --json number --jq 'length' 2>/dev/null || echo "unknown")
                 if [ "$issue_count" != "0" ]; then
                     LABELS_BLOCKED=$((LABELS_BLOCKED + 1))
                     echo -e "  ${YELLOW}SKIP${NC}: $existing_name (in use — $issue_count issue(s), manual removal required)"
