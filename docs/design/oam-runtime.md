@@ -1,17 +1,21 @@
 # OAM Runtime
 
-> **Version** 1.0 · **Updated** 2026-05-14
+> **Version** 1.1 · **Updated** 2026-05-14
 
 ## Changelog
 
 | Version | Date | Summary |
 |---------|------|---------|
-| 1.0 | 2026-05-14 | Initial document, based on launcher/docs/design.md |
+| 1.1 | 2026-05-14 | Add canonical source reference |
+| 1.0 | 2026-05-14 | Initial document |
 
 ---
 
-This document describes the design of the OAM-native package manager implemented in
+This document is an org-level summary of the OAM-native package manager implemented in
 `go-kure/launcher` and shipped as the `kurel` CLI.
+
+> **Canonical source**: [launcher/docs/design.md](https://github.com/go-kure/launcher/blob/main/docs/design.md) —
+> the product repo is authoritative for detailed design decisions and the current roadmap.
 
 ---
 
