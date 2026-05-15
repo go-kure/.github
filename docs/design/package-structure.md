@@ -1,11 +1,12 @@
 # Package Structure
 
-> **Version** 1.1 · **Updated** 2026-05-14
+> **Version** 1.2 · **Updated** 2026-05-15
 
 ## Changelog
 
 | Version | Date | Summary |
 |---------|------|---------|
+| 1.2 | 2026-05-15 | Remove generators from kure tree; update launcher to OAM-era structure; add cross-reference to kure-launcher-architecture.md |
 | 1.1 | 2026-05-14 | Correct launcher tree (remove phantom packages); clarify platform profile vs ClusterProfile |
 | 1.0 | 2026-05-14 | Initial document |
 
@@ -32,7 +33,6 @@ kure/
 │   └── stack/            # Core domain model (Cluster → Node → Bundle → Application)
 │       ├── argocd/       # ArgoCD workflow
 │       ├── fluxcd/       # FluxCD workflow
-│       ├── generators/   # Application generators (including kurelpackage generator)
 │       └── layout/       # Manifest layout tree (ManifestLayout, WriteToTar)
 ├── internal/             # Implementation detail — not accessible to external callers
 │   ├── certmanager/      # cert-manager resource builders
@@ -52,7 +52,7 @@ kure/
 ### pkg/ vs internal/ decision rule for kure
 
 A symbol belongs in `pkg/` when it is part of the library's public contract — something a library
-caller (Crane, launcher, or an external user) needs to import directly.
+caller (crane, launcher, or an external user) needs to import directly.
 
 A symbol belongs in `internal/` when it implements a resource builder or utility that callers
 access only through `pkg/`. The majority of resource builders live here.
@@ -60,8 +60,7 @@ access only through `pkg/`. The majority of resource builders live here.
 ### cmd/kure — demo only
 
 The `cmd/kure/` CLI is a demo and testing tool for the library. It is not a production tool and
-carries no stability guarantee. It will be removed or simplified once `pkg/stack/generators/` and
-launcher cover its use cases.
+carries no stability guarantee.
 
 ---
 
@@ -76,7 +75,10 @@ launcher/
 ├── pkg/
 │   ├── cmd/
 │   │   └── kurel/        # kurel command implementations (cobra commands)
-│   ├── launcher/         # Package launcher core: load → resolve → patch → validate → build
+│   ├── oam/              # OAM types, parser, handler registry, build pipeline
+│   │   └── builtin/
+│   │       ├── components/  # Built-in component handlers (webservice, worker, helmrelease, ...)
+│   │       └── traits/      # Built-in trait handlers (expose, certificate, ingress, ...)
 │   └── patch/            # JSONPath-based patching: TOML/YAML parsing, strategic merge
 ├── docs/
 │   └── design.md         # Full design document and vision (canonical)
@@ -105,17 +107,12 @@ separate repos, and separate versioning.
 | Kubernetes resource construction | kure (`pkg/kubernetes`) |
 | GitOps engine (FluxCD, ArgoCD) | kure (`pkg/stack/fluxcd`, `pkg/stack/argocd`) |
 | Manifest layout tree, OCI packaging | kure (`pkg/stack/layout`) |
-| kurel package generator (kure → kurel output) | kure (`pkg/stack/generators/kurelpackage`) |
-| OAM package format and runtime | launcher |
-| Two-config-set model (platform profile + app values) | launcher |
+| OAM package format and runtime | launcher (`pkg/oam`) |
+| Component handlers (webservice, worker, ...) | launcher (`pkg/oam/builtin/components`) |
+| Trait handlers (expose, certificate, ...) | launcher (`pkg/oam/builtin/traits`) |
+| Policy interface + NoopPolicy | launcher (`pkg/oam`) |
 | Parameter resolution and patch application | launcher (`pkg/patch`) |
 | kurel CLI | launcher |
-
-### The kurelpackage generator stays in kure
-
-`pkg/stack/generators/kurelpackage/` is a kure generator — it produces kurel package structure as
-output from a kure Application. This is a kure concern (generating artifacts from the kure domain
-model), not a launcher concern. It remains in kure.
 
 ---
 
@@ -128,12 +125,21 @@ model), not a launcher concern. It remains in kure.
 
 **Goes in launcher when**:
 - It is part of the OAM package format or runtime
+- It is a component or trait handler
 - It is part of the kurel CLI or its commands
 - It handles the platform profile / application values split
 - It is a patch or composition mechanism for kurel packages
 
 **Does not belong in either**:
-- Wharf CRD types (EnvironmentPolicy, ClusterProfile, etc.) — those live in the Wharf platform
+- Wharf CRD types (EnvironmentPolicy, ApplicationGroup, etc.) — those live in the Wharf platform
   repos. Note: the kurel *platform profile* (the parameter set expressing trait implementation
   choices, e.g. which ingress controller is installed) is a different concept that *does* live in
   launcher, despite similar naming. See [oam-runtime](oam-runtime.md) §Two-Config-Set Model.
+
+---
+
+## Cross-References
+
+- [kure-launcher-architecture](kure-launcher-architecture.md) — the layering model between kure,
+  launcher, and downstream consumers (crane, external tools)
+- [oam-runtime](oam-runtime.md) — OAM-native package manager design (kurel)

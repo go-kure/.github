@@ -1,11 +1,12 @@
 # OAM Runtime
 
-> **Version** 1.1 · **Updated** 2026-05-14
+> **Version** 2.0 · **Updated** 2026-05-15
 
 ## Changelog
 
 | Version | Date | Summary |
 |---------|------|---------|
+| 2.0 | 2026-05-15 | Full rewrite — reflects OAM-native architecture; removes obsolete patch-pipeline content and open questions now tracked in launcher/docs/design.md |
 | 1.1 | 2026-05-14 | Add canonical source reference |
 | 1.0 | 2026-05-14 | Initial document |
 
@@ -16,6 +17,9 @@ This document is an org-level summary of the OAM-native package manager implemen
 
 > **Canonical source**: [launcher/docs/design.md](https://github.com/go-kure/launcher/blob/main/docs/design.md) —
 > the product repo is authoritative for detailed design decisions and the current roadmap.
+>
+> **Architecture context**: [kure-launcher-architecture](kure-launcher-architecture.md) —
+> the layering model between kure, launcher, and downstream consumers.
 
 ---
 
@@ -25,15 +29,18 @@ This document is an org-level summary of the OAM-native package manager implemen
 to Helm.
 
 Where Helm templates Kubernetes manifests from Go template files and a flat `values.yaml`, launcher
-models deployments using the [Open Application Model (OAM)](https://oam.dev/) as its package
-format. The result is a tool where:
+models deployments using OAM concepts (Applications, Components, Traits) as its package format,
+under launcher's own API group. The result is a tool where:
 
 - Application structure is explicit and typed
 - Platform implementation choices are separated from application choices
 - Output is always static, GitOps-ready Kubernetes manifests
 
-Launcher uses the [kure](https://github.com/go-kure/kure) library for Kubernetes resource
-generation.
+Launcher defines its own native application model under `launcher.gokure.dev/v1alpha1`. OAM is the
+conceptual inspiration, not the API contract — launcher does not claim native API compatibility with
+`core.oam.dev/v1beta1`.
+
+Launcher uses the [kure](https://github.com/go-kure/kure) library for Kubernetes resource generation.
 
 ---
 
@@ -42,17 +49,17 @@ generation.
 A **kurel package** is a bundle of OAM specs that can be instantiated with parameters. It
 represents a reusable, shareable application pattern.
 
-### Package contents
+### Package Contents
 
 ```
 my-webservice/
-├── kurel.yaml          # Package metadata and parameter schema
-├── app.yaml            # OAM Application template (parameterized)
-└── patches/            # Optional composition patches
+├── kurel.yaml          # Package metadata and parameter schema (kind: Package)
+└── app.yaml            # Application template (kind: Application)
 ```
 
-`app.yaml` is a standard OAM Application document with parameter placeholders. The package author
-defines what can be varied; consumers fill in the values.
+`kurel.yaml` declares parameters (name, type, default, required) and the package version. `app.yaml`
+is a launcher Application document. The package author defines what can be varied; consumers fill
+in the values.
 
 ---
 
@@ -83,7 +90,7 @@ Examples:
 - External secret names
 - Domain names
 
-### Separation of concerns
+### Separation of Concerns
 
 The split maps directly onto OAM's design intent:
 
@@ -100,35 +107,52 @@ controllers) update one profile; no individual application spec changes.
 
 ## Architecture
 
+Launcher is an OAM-native build pipeline. It parses launcher-native documents, dispatches to
+handler registries, and produces static Kubernetes manifests.
+
 ```
-┌─────────────────────────────────────────────┐
-│                kurel CLI                    │
-│           (launcher/cmd/kurel)              │
-└──────────────────────┬──────────────────────┘
-                       │
-         ┌─────────────▼──────────────┐
-         │     launcher runtime       │
-         │  (launcher/pkg/launcher)   │
-         │                            │
-         │  load → resolve → patch    │
-         │       → validate → build   │
-         └─────────────┬──────────────┘
-                       │
-         ┌─────────────▼──────────────┐
-         │       patch engine         │
-         │   (launcher/pkg/patch)     │
-         │  TOML/YAML/JSONPath/SMP    │
-         └─────────────┬──────────────┘
-                       │
-         ┌─────────────▼──────────────┐
-         │       kure library         │
-         │  (github.com/go-kure/kure) │
-         │  K8s builders + GitOps     │
-         └────────────────────────────┘
+              kurel CLI
+                 │
+    ┌────────────▼────────────────┐
+    │         OAM Parser           │
+    │  app.yaml  kurel.yaml        │
+    │      cluster.yaml            │
+    │  (launcher.gokure.dev/       │
+    │        v1alpha1)             │
+    └────────────┬─────────────────┘
+                 │
+    ┌────────────▼────────────────┐
+    │   Handler Registry +         │
+    │    Build Pipeline            │
+    │                              │
+    │  Component handlers          │
+    │  (webservice, worker,        │
+    │   helmrelease, ...)          │
+    │                              │
+    │  Trait handlers              │
+    │  (expose, certificate,       │
+    │   ingress, ...)              │
+    │                              │
+    │  Policy interface            │
+    │  (downstream enforcement)    │
+    └────────────┬─────────────────┘
+                 │
+    ┌────────────▼────────────────┐
+    │       kure library           │
+    │  K8s builders + FluxCD       │
+    └────────────┬─────────────────┘
+                 │
+         Static manifests
+         (GitOps delivery)
 ```
 
 Launcher generates **static Kubernetes manifests**. It does not deploy them. Consumers feed the
 output into a GitOps pipeline (FluxCD, ArgoCD) or apply it directly with `kubectl`.
+
+The **Policy interface** is the extension point for downstream consumers. Launcher ships a
+`NoopPolicy` default; consumers provide their own implementation to enforce organizational
+constraints (registry whitelists, resource bounds, security posture). See
+[kure-launcher-architecture](kure-launcher-architecture.md) for the full extension model.
 
 ---
 
@@ -142,7 +166,7 @@ output into a GitOps pipeline (FluxCD, ArgoCD) or apply it directly with `kubect
 | Platform customization | Via values + conditional templates | Via platform profile (trait implementation resolution) |
 | Output | Manifests applied to cluster | Static manifests → GitOps delivery |
 | Cluster runtime component | Tiller (v2) / none (v3) | None — compile-time only |
-| Composability | Helm subcharts | OAM composition + patches |
+| Composability | Helm subcharts | OAM composition + parameters |
 
 ---
 
@@ -159,39 +183,3 @@ output into a GitOps pipeline (FluxCD, ArgoCD) or apply it directly with `kubect
 
 Launcher targets teams committed to a GitOps-first workflow who want OAM semantics without a
 cluster-side controller.
-
----
-
-## Roadmap
-
-**Phase 0 (complete): Extraction and housekeeping**
-- Moved prototype code from kure into launcher
-- Established module structure and CI
-
-**Phase 1: OAM-native package format**
-- Define kurel package spec (`kurel.yaml` schema)
-- Define OAM Application template parameterization
-- Define platform profile contract
-- Implement parameter resolution for both sets
-
-**Phase 2: Conditional composition**
-- OAM policy-based conditional inclusion
-- Patch composition on top of OAM Application base
-
-**Phase 3: Package distribution**
-- OCI-based package publishing and pulling
-- Package versioning
-
----
-
-## Open Questions
-
-1. **Conditional inclusion syntax** — OAM does not natively support conditional sections.
-   Proposed: use OAM `PolicyDefinition` with kurel-specific policy types. Needs design.
-
-2. **Platform profile format** — How do platform operators express trait implementations? Options:
-   YAML file, OAM WorkloadDefinition overrides, capability map. Needs design.
-
-3. **Trait resolution contract** — How does the launcher runtime map "this component requests
-   IngressTrait" to the concrete K8s objects to generate, given a platform profile? This is the
-   core runtime design question.
