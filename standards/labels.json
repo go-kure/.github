@@ -53,6 +53,11 @@
       "description": "Epic or umbrella issue"
     },
     {
+      "name": "type/roadmap",
+      "color": "#D4AF37",
+      "description": "Master tracking, strategic roadmap, or program-level umbrella issue"
+    },
+    {
       "name": "type/upgrade",
       "color": "#C5DEF5",
       "description": "Dependency upgrade or version bump"
