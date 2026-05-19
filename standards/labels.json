@@ -53,6 +53,11 @@
       "description": "Epic or umbrella issue"
     },
     {
+      "name": "type/roadmap",
+      "color": "#0052CC",
+      "description": "Roadmap item or multi-phase initiative"
+    },
+    {
       "name": "type/upgrade",
       "color": "#C5DEF5",
       "description": "Dependency upgrade or version bump"
@@ -128,9 +133,19 @@
       "description": "Kubernetes API and resources"
     },
     {
+      "name": "area/helm",
+      "color": "#5319E7",
+      "description": "Helm chart integration and rendering"
+    },
+    {
       "name": "area/layout",
       "color": "#5319E7",
       "description": "OCI layout and bundle structure"
+    },
+    {
+      "name": "area/oam",
+      "color": "#5319E7",
+      "description": "OAM runtime, types, and handlers"
     },
     {
       "name": "effort::low",
