@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft-07/schema#",
-  "description": "Standard labels for Wharf repositories. Used by scripts/gitlab-settings.sh to audit and create labels.",
+  "description": "Standard issue labels for go-kure repos. See labels.md for naming conventions.",
   "labels": [
     {
       "name": "status::deferred",
@@ -126,6 +126,11 @@
       "name": "area/flux",
       "color": "#5319E7",
       "description": "FluxCD integration"
+    },
+    {
+      "name": "area/helm",
+      "color": "#5319E7",
+      "description": "Helm chart integration and rendering"
     },
     {
       "name": "area/k8s",

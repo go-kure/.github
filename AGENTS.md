@@ -20,7 +20,8 @@ organization. It provides:
 ├── governance/
 │   └── repository-settings-policy.yaml  # Machine-readable settings policy
 ├── standards/
-│   └── labels.json                      # Standard issue labels
+│   ├── labels.json                      # Standard issue labels
+│   └── labels.md                        # Label naming conventions
 ├── scripts/
 │   ├── github-settings.sh               # Settings audit/apply script
 │   └── lib/api.sh                       # Shared HTTP API utilities
@@ -83,7 +84,7 @@ The `audit-settings.yml` workflow runs this automatically on push to main (when 
 
 ### Adding or changing labels
 
-Edit `standards/labels.json`. The settings script syncs labels to all repos automatically.
+Edit `standards/labels.json`. See `standards/labels.md` for naming conventions and the category reference before adding new labels. The settings script syncs labels to all repos automatically.
 
 ## Working with Design Docs
 
