@@ -26,7 +26,7 @@ jobs:
   test:
     name: Pre-release CI check
     runs-on: autops-kube-kure
-    timeout-minutes: 5
+    timeout-minutes: 15
     permissions:
       contents: read
       actions: read
@@ -40,19 +40,31 @@ jobs:
         run: |
           set -euo pipefail
           SHA=$(git rev-parse HEAD)
-          echo "Checking CI status for $SHA..."
-          STATUS=$(gh run list \
-            --repo "$GITHUB_REPOSITORY" \
-            --workflow ci.yml \
-            --commit "$SHA" \
-            --json conclusion \
-            --limit 1 \
-            --jq '.[0].conclusion // empty')
-          if [ "$STATUS" != "success" ]; then
-            echo "::error::CI did not pass on $SHA (status: ${STATUS:-not found}). Cannot tag."
-            exit 1
-          fi
-          echo "CI passed on $SHA."
+          echo "Waiting for CI to pass on $SHA..."
+
+          for i in $(seq 1 60); do
+            STATUS=$(gh run list \
+              --repo "$GITHUB_REPOSITORY" \
+              --workflow ci.yml \
+              --commit "$SHA" \
+              --json conclusion,status \
+              --limit 1 \
+              --jq '.[0] | if .status == "completed" then .conclusion else "in_progress" end // empty')
+
+            if [ "$STATUS" = "success" ]; then
+              echo "CI passed on $SHA."
+              exit 0
+            elif [ "$STATUS" = "failure" ] || [ "$STATUS" = "cancelled" ]; then
+              echo "::error::CI failed on $SHA (conclusion: $STATUS). Cannot tag."
+              exit 1
+            fi
+
+            echo "Attempt $i/60: CI status=${STATUS:-not found}, retrying in 10s..."
+            sleep 10
+          done
+
+          echo "::error::CI did not complete within 10 minutes for $SHA."
+          exit 1
 
   release:
     name: Create Release
