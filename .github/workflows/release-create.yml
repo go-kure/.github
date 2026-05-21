@@ -54,8 +54,8 @@ jobs:
             if [ "$STATUS" = "success" ]; then
               echo "CI passed on $SHA."
               exit 0
-            elif [ "$STATUS" = "failure" ] || [ "$STATUS" = "cancelled" ]; then
-              echo "::error::CI failed on $SHA (conclusion: $STATUS). Cannot tag."
+            elif [ -n "$STATUS" ] && [ "$STATUS" != "in_progress" ]; then
+              echo "::error::CI did not pass on $SHA (conclusion: $STATUS). Cannot tag."
               exit 1
             fi
 
