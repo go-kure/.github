@@ -70,7 +70,7 @@ jobs:
     name: Create Release
     needs: test
     runs-on: autops-kube-kure
-    timeout-minutes: 30
+    timeout-minutes: 50
     permissions:
       contents: write
       actions: read
@@ -132,11 +132,17 @@ jobs:
           fi
 
           echo "Watching run $RUN_ID..."
-          for i in $(seq 1 180); do
+          for i in $(seq 1 270); do
             CONCLUSION=$(gh run view "$RUN_ID" \
               --repo "$GITHUB_REPOSITORY" \
               --json status,conclusion \
-              --jq 'if .status == "completed" then .conclusion else "in_progress" end')
+              --jq 'if .status == "completed" then .conclusion else "in_progress" end' \
+              2>/dev/null || true)
+            if [ -z "$CONCLUSION" ]; then
+              [ $((i % 6)) -eq 0 ] && echo "Still waiting for release... ${i}0s elapsed (attempt $i/270; status unavailable)"
+              sleep 10
+              continue
+            fi
             if [ "$CONCLUSION" = "success" ]; then
               echo "Release workflow completed successfully."
               exit 0
@@ -144,8 +150,8 @@ jobs:
               echo "::error::Release workflow failed (conclusion: $CONCLUSION)."
               exit 1
             fi
-            [ $((i % 6)) -eq 0 ] && echo "Still waiting for release... ${i}0s elapsed (attempt $i/180)"
+            [ $((i % 6)) -eq 0 ] && echo "Still waiting for release... ${i}0s elapsed (attempt $i/270)"
             sleep 10
           done
-          echo "::error::Release workflow did not complete within 30 minutes for tag $TAG."
+          echo "::error::Release workflow did not complete within 45 minutes for tag $TAG."
           exit 1
