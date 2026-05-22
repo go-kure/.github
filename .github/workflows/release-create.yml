@@ -70,7 +70,7 @@ jobs:
     name: Create Release
     needs: test
     runs-on: autops-kube-kure
-    timeout-minutes: 50
+    timeout-minutes: 60
     permissions:
       contents: write
       actions: read
