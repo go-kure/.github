@@ -26,7 +26,7 @@ jobs:
   test:
     name: Pre-release CI check
     runs-on: autops-kube-kure
-    timeout-minutes: 15
+    timeout-minutes: 35
     permissions:
       contents: read
       actions: read
@@ -42,7 +42,7 @@ jobs:
           SHA=$(git rev-parse HEAD)
           echo "Waiting for CI to pass on $SHA..."
 
-          for i in $(seq 1 60); do
+          for i in $(seq 1 180); do
             STATUS=$(gh run list \
               --repo "$GITHUB_REPOSITORY" \
               --workflow ci.yml \
@@ -59,11 +59,11 @@ jobs:
               exit 1
             fi
 
-            echo "Attempt $i/60: CI status=${STATUS:-not found}, retrying in 10s..."
+            [ $((i % 6)) -eq 0 ] && echo "Still waiting for CI... ${i}0s elapsed (attempt $i/180)"
             sleep 10
           done
 
-          echo "::error::CI did not complete within 10 minutes for $SHA."
+          echo "::error::CI did not complete within 30 minutes for $SHA."
           exit 1
 
   release:
@@ -132,5 +132,20 @@ jobs:
           fi
 
           echo "Watching run $RUN_ID..."
-          gh run watch "$RUN_ID" --exit-status
-          echo "Release workflow completed successfully."
+          for i in $(seq 1 180); do
+            CONCLUSION=$(gh run view "$RUN_ID" \
+              --repo "$GITHUB_REPOSITORY" \
+              --json status,conclusion \
+              --jq 'if .status == "completed" then .conclusion else "in_progress" end')
+            if [ "$CONCLUSION" = "success" ]; then
+              echo "Release workflow completed successfully."
+              exit 0
+            elif [ "$CONCLUSION" != "in_progress" ]; then
+              echo "::error::Release workflow failed (conclusion: $CONCLUSION)."
+              exit 1
+            fi
+            [ $((i % 6)) -eq 0 ] && echo "Still waiting for release... ${i}0s elapsed (attempt $i/180)"
+            sleep 10
+          done
+          echo "::error::Release workflow did not complete within 30 minutes for tag $TAG."
+          exit 1
