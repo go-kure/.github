@@ -15,7 +15,7 @@ Two separator styles are used, depending on label semantics:
 
 **`/` labels are multi-select** — an issue can have `type/epic` AND `area/helm` AND `upstream/kure` simultaneously.
 
-**`::` labels are single-select** — an issue has exactly one priority, one status, one effort level. Applying a second `priority::` label is a mistake.
+**`::` labels are single-select** — at most one label per category. Applying a second `priority::` label is a mistake. Note: `status::` and `priority::` are deprecated for new issues in repos that use project fields — see the deprecation note above.
 
 ## Category Reference
 
@@ -53,4 +53,4 @@ Before adding a label to `labels.json`:
 3. **Follow color conventions** — match existing labels in the same category for visual grouping
 4. **If in doubt, relabel issues** — it is better to relabel issues to use existing labels than to expand the standard for a one-off
 
-Changes to `labels.json` take effect across all repos only after the `apply-settings.yml` workflow is triggered manually.
+Changes to `labels.json` take effect across all repos only after the `settings.yml` workflow is triggered manually with `mode=apply`.

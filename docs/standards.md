@@ -29,7 +29,7 @@ The go-kure repos are:
 | Container builds    | No       | No       | N/A      | kure is a library; launcher ships binaries via GoReleaser, no container |
 | CI/CD               | Modified | Modified | Modified | GitHub Actions; kure + launcher call shared workflows hosted here |
 | Dependency updates  | Modified | Modified | Modified | Dependabot (GitHub native), not Renovate |
-| Repository settings | Modified | Modified | Modified | Applied by this repo's `apply-settings.yml` workflow |
+| Repository settings | Modified | Modified | Modified | Applied by this repo's `settings.yml` workflow |
 
 ## CI Platform
 
@@ -69,7 +69,7 @@ Target: enable all standard linters by Q2 2026.
 ## Repository Settings
 
 Settings (labels, rulesets, branch protection, merge policy) for all go-kure repos are managed
-centrally by this repo's `apply-settings.yml` workflow. The source of truth is
+centrally by this repo's `settings.yml` workflow. The source of truth is
 `governance/repository-settings-policy.yaml`.
 
 | Setting           | All go-kure repos |
