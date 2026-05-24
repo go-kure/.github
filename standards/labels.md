@@ -2,6 +2,8 @@
 
 This document defines the label taxonomy and naming conventions for all go-kure repositories. The canonical label list is in [`labels.json`](labels.json).
 
+> **Deprecated labels**: `area/*` and `status::*` are kept for historical compatibility on existing closed issues. **Do not apply them to new or open issues.** Use the Stream and Status project fields instead (see [project-board-standard.md](../docs/project-board-standard.md)).
+
 ## Naming Convention
 
 Two separator styles are used, depending on label semantics:
@@ -21,8 +23,8 @@ Two separator styles are used, depending on label semantics:
 
 | Category | Values | Meaning |
 |----------|--------|---------|
-| `status::` | `deferred`, `blocked`, `needs-review`, `in-progress` | Current workflow state |
-| `priority::` | `critical`, `high`, `medium`, `low` | Relative urgency |
+| `status::` **(deprecated)** | `deferred`, `blocked`, `needs-review`, `in-progress` | Replaced by project Status field (`status::blocked` → Status=Blocked; `status::deferred` → Milestone=Later). Kept for historical compatibility on closed issues only. |
+| `priority::` | `critical`, `high`, `medium`, `low` | Relative urgency — valid for repos that use labels instead of a Priority project field (see [project board standard](../docs/project-board-standard.md)) |
 | `effort::` | `low`, `medium`, `high` | Implementation complexity |
 
 ### Categorical (`/`) — apply as many as apply
@@ -30,7 +32,7 @@ Two separator styles are used, depending on label semantics:
 | Category | Values | Meaning |
 |----------|--------|---------|
 | `type/` | `bug`, `chore`, `ci`, `design`, `documentation`, `epic`, `feature`, `refactor`, `roadmap`, `security`, `testing`, `upgrade`, `breaking-change` | What kind of issue it is |
-| `area/` | `cli`, `core`, `docs`, `flux`, `helm`, `k8s`, `layout` | Which part of the codebase it touches |
+| `area/` **(deprecated)** | `cli`, `core`, `docs`, `flux`, `helm`, `k8s`, `layout` | Replaced by the Stream project field. Kept for historical compatibility on closed issues only. |
 | `upstream/` | `kure` | Blocked on an upstream repo |
 
 **Special labels** (no category prefix): `dependencies`, `github_actions`, `go` — used by Dependabot and GitHub automation.

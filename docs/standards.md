@@ -100,6 +100,12 @@ The following standards apply identically to kure and launcher (not applicable t
 
 `.github` follows only the agentic-file requirement.
 
+## Project Management
+
+GitHub Projects roadmaps across all go-kure repos follow a shared field model and view set.
+
+- [Project board standard](project-board-standard.md) — field model, views, and label policy for GitHub Projects roadmaps
+
 ## Proposing Changes
 
 To change go-kure-specific standards:

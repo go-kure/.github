@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# HISTORICAL — already run once on go-kure/kure. Do not re-run.
+# status::* and area/* labels targeted here are themselves deprecated
+# in favour of project Status and Stream fields (see docs/project-board-standard.md).
+#
 # One-shot migration: standardize go-kure/kure issue labels
 #
 # Run AFTER settings apply has created the :: labels on kure.
