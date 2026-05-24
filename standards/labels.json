@@ -5,22 +5,22 @@
     {
       "name": "status::deferred",
       "color": "#FEF2C0",
-      "description": "Blocked or postponed for later"
+      "description": "[deprecated] Use Milestone=Later instead"
     },
     {
       "name": "status::blocked",
       "color": "#D93F0B",
-      "description": "Blocked by external dependency"
+      "description": "[deprecated] Use project Status=Blocked instead"
     },
     {
       "name": "status::needs-review",
       "color": "#0E8A16",
-      "description": "Awaiting review"
+      "description": "[deprecated] Use project Status=In Review instead"
     },
     {
       "name": "status::in-progress",
       "color": "#1D76DB",
-      "description": "Currently being worked on"
+      "description": "[deprecated] Use project Status=In Progress instead"
     },
     {
       "name": "priority::critical",
@@ -110,37 +110,37 @@
     {
       "name": "area/cli",
       "color": "#5319E7",
-      "description": "CLI tool and commands"
+      "description": "[deprecated] Use Stream project field instead"
     },
     {
       "name": "area/core",
       "color": "#5319E7",
-      "description": "Core library functionality"
+      "description": "[deprecated] Use Stream project field instead"
     },
     {
       "name": "area/docs",
       "color": "#5319E7",
-      "description": "Documentation content"
+      "description": "[deprecated] Use Stream project field instead"
     },
     {
       "name": "area/flux",
       "color": "#5319E7",
-      "description": "FluxCD integration"
+      "description": "[deprecated] Use Stream project field instead"
     },
     {
       "name": "area/helm",
       "color": "#5319E7",
-      "description": "Helm chart integration and rendering"
+      "description": "[deprecated] Use Stream project field instead"
     },
     {
       "name": "area/k8s",
       "color": "#5319E7",
-      "description": "Kubernetes API and resources"
+      "description": "[deprecated] Use Stream project field instead"
     },
     {
       "name": "area/layout",
       "color": "#5319E7",
-      "description": "OCI layout and bundle structure"
+      "description": "[deprecated] Use Stream project field instead"
     },
     {
       "name": "effort::low",
