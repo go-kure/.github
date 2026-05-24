@@ -83,6 +83,6 @@ This ensures new issues appear on the board automatically without manual triage.
 
 - Do **not** apply `area/*` or `status::*` to new or open issues.
 - Do **not** delete the labels — they are kept for historical compatibility on closed issues.
-- When triaging a new issue, set Stream and Status on the project item instead.
+- When triaging a new issue: set the GitHub milestone (Now / Next / Later), then set Stream and Status on the project item.
 
 `effort::*` and `type/*` labels remain active and valid for new issues.
