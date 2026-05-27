@@ -8,6 +8,16 @@ on:
         required: false
         type: boolean
         default: false
+      type:
+        description: 'Deprecated — ignored, type is auto-inferred from VERSION'
+        required: false
+        type: string
+        default: ''
+      scope:
+        description: 'Deprecated — ignored, use release-bump.yml for version bumps'
+        required: false
+        type: string
+        default: ''
 
 concurrency:
   group: release-create
