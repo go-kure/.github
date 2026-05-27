@@ -1,8 +1,12 @@
-name: Release / Create
+name: Release / Promote
 
 on:
   workflow_call:
     inputs:
+      to:
+        description: 'Target release type (beta, rc, or stable)'
+        required: true
+        type: string
       dry_run:
         description: 'Dry run (preview only, no changes)'
         required: false
@@ -58,7 +62,7 @@ jobs:
           exit 1
 
   release:
-    name: Create Release
+    name: Promote Release
     needs: test
     runs-on: autops-kube-kure
     timeout-minutes: 60
@@ -88,6 +92,7 @@ jobs:
 
       - name: Run release script
         env:
+          RELEASE_TYPE: ${{ inputs.to }}
           DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
           CI: 'true'
         run: ./scripts/release.sh
