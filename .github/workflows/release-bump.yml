@@ -1,0 +1,92 @@
+name: Release / Bump
+
+on:
+  workflow_call:
+    inputs:
+      scope:
+        description: 'Version scope to bump (minor or major)'
+        required: true
+        type: string
+      dry_run:
+        description: 'Dry run (preview only, no changes)'
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-create
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: Pre-bump CI check
+    runs-on: autops-kube-kure
+    timeout-minutes: 35
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v6
+
+      - name: Verify CI passed on HEAD
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          SHA=$(git rev-parse HEAD)
+          echo "Waiting for CI to pass on $SHA..."
+
+          for i in $(seq 1 180); do
+            STATUS=$(gh run list \
+              --repo "$GITHUB_REPOSITORY" \
+              --workflow ci.yml \
+              --commit "$SHA" \
+              --json conclusion,status \
+              --limit 1 \
+              --jq '.[0] | if .status == "completed" then .conclusion else "in_progress" end // empty')
+
+            if [ "$STATUS" = "success" ]; then
+              echo "CI passed on $SHA."
+              exit 0
+            elif [ -n "$STATUS" ] && [ "$STATUS" != "in_progress" ]; then
+              echo "::error::CI did not pass on $SHA (conclusion: $STATUS). Cannot bump."
+              exit 1
+            fi
+
+            [ $((i % 6)) -eq 0 ] && echo "Still waiting for CI... ${i}0s elapsed (attempt $i/180)"
+            sleep 10
+          done
+
+          echo "::error::CI did not complete within 30 minutes for $SHA."
+          exit 1
+
+  bump:
+    name: Bump Version
+    needs: test
+    runs-on: autops-kube-kure
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
+      - name: Check out code
+        uses: actions/checkout@v6
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          fetch-depth: 0
+
+      - name: Run bump script
+        env:
+          RELEASE_TYPE: bump
+          RELEASE_SCOPE: ${{ inputs.scope }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
+          CI: 'true'
+        run: ./scripts/release.sh
