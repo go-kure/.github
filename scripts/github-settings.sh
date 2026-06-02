@@ -162,27 +162,57 @@ gh_policy_array() {
     fi
 }
 
-# Build the expected ruleset payload from policy YAML
+# Read a ruleset rule scalar with per-repo override falling back to github_defaults.
+# path is relative to the ruleset (e.g. "rules.required_status_checks.strict").
+ruleset_value() {
+    local repo="$1"
+    local ruleset="$2"
+    local path="$3"
+    local override_val
+    override_val=$(yq -r ".github_repos.\"$repo\".rulesets.\"$ruleset\".$path" "$POLICY_FILE" 2>/dev/null)
+    if [ "$override_val" != "null" ] && [ -n "$override_val" ]; then
+        echo "$override_val"
+    else
+        yq -r ".github_defaults.rulesets.\"$ruleset\".$path" "$POLICY_FILE"
+    fi
+}
+
+# Read a ruleset rule value as JSON with per-repo override falling back to defaults.
+# Returns "null" when the key is absent in both (callers treat that as "omit").
+ruleset_json() {
+    local repo="$1"
+    local ruleset="$2"
+    local path="$3"
+    local override_val
+    override_val=$(yq -oj ".github_repos.\"$repo\".rulesets.\"$ruleset\".$path" "$POLICY_FILE" 2>/dev/null)
+    if [ "$override_val" != "null" ] && [ -n "$override_val" ]; then
+        echo "$override_val"
+    else
+        yq -oj ".github_defaults.rulesets.\"$ruleset\".$path" "$POLICY_FILE" 2>/dev/null
+    fi
+}
+
+# Build the expected ruleset payload from policy YAML.
+# All rule values honor per-repo overrides (ruleset_value/ruleset_json) so a repo
+# like .github can keep rebase-check + strict while kure/launcher use a merge queue.
 build_ruleset_payload() {
     local repo="$1"
     local ruleset_name="$2"
 
-    # Read status check contexts
-    local contexts
-    contexts=$(yq -oj ".github_defaults.rulesets.\"$ruleset_name\".rules.required_status_checks.contexts" "$POLICY_FILE")
+    # Read status check contexts + strict (per-repo override -> default)
+    local contexts strict
+    contexts=$(ruleset_json "$repo" "$ruleset_name" "rules.required_status_checks.contexts")
+    strict=$(ruleset_value "$repo" "$ruleset_name" "rules.required_status_checks.strict")
 
-    local strict
-    strict=$(yq -r ".github_defaults.rulesets.\"$ruleset_name\".rules.required_status_checks.strict" "$POLICY_FILE")
-
-    # Read pull_request settings
+    # Read pull_request settings (per-repo override -> default)
     local pr_review_count pr_dismiss_stale pr_code_owner pr_last_push pr_thread_resolution
-    pr_review_count=$(yq -r ".github_defaults.rulesets.\"$ruleset_name\".rules.pull_request.required_approving_review_count" "$POLICY_FILE")
-    pr_dismiss_stale=$(yq -r ".github_defaults.rulesets.\"$ruleset_name\".rules.pull_request.dismiss_stale_reviews_on_push" "$POLICY_FILE")
-    pr_code_owner=$(yq -r ".github_defaults.rulesets.\"$ruleset_name\".rules.pull_request.require_code_owner_review" "$POLICY_FILE")
-    pr_last_push=$(yq -r ".github_defaults.rulesets.\"$ruleset_name\".rules.pull_request.require_last_push_approval" "$POLICY_FILE")
-    pr_thread_resolution=$(yq -r ".github_defaults.rulesets.\"$ruleset_name\".rules.pull_request.required_review_thread_resolution" "$POLICY_FILE")
+    pr_review_count=$(ruleset_value "$repo" "$ruleset_name" "rules.pull_request.required_approving_review_count")
+    pr_dismiss_stale=$(ruleset_value "$repo" "$ruleset_name" "rules.pull_request.dismiss_stale_reviews_on_push")
+    pr_code_owner=$(ruleset_value "$repo" "$ruleset_name" "rules.pull_request.require_code_owner_review")
+    pr_last_push=$(ruleset_value "$repo" "$ruleset_name" "rules.pull_request.require_last_push_approval")
+    pr_thread_resolution=$(ruleset_value "$repo" "$ruleset_name" "rules.pull_request.required_review_thread_resolution")
 
-    # Read conditions
+    # Read conditions (not overridden per repo)
     local conditions
     conditions=$(yq -oj ".github_defaults.rulesets.\"$ruleset_name\".conditions" "$POLICY_FILE")
 
@@ -194,15 +224,18 @@ build_ruleset_payload() {
         bypass_actors="$repo_bypass"
     fi
 
+    # Optional merge_queue rule (per-repo override -> default). "null"/absent => omitted.
+    # The YAML parameter keys map 1:1 to the rulesets API merge_queue parameters.
+    local merge_queue
+    merge_queue=$(ruleset_json "$repo" "$ruleset_name" "rules.merge_queue")
+
     # Build status checks array for the API
     local status_checks_api
     status_checks_api=$(echo "$contexts" | jq '[.[] | {"context": .}]')
 
-    # Build the full payload
-    jq -n \
-        --arg name "$ruleset_name" \
-        --argjson conditions "$conditions" \
-        --argjson bypass_actors "$bypass_actors" \
+    # Build the rules array (merge_queue appended below if present)
+    local rules
+    rules=$(jq -n \
         --argjson status_checks "$status_checks_api" \
         --argjson strict "$strict" \
         --argjson pr_review_count "$pr_review_count" \
@@ -210,34 +243,47 @@ build_ruleset_payload() {
         --argjson pr_code_owner "$pr_code_owner" \
         --argjson pr_last_push "$pr_last_push" \
         --argjson pr_thread_resolution "$pr_thread_resolution" \
+        '[
+            {"type": "deletion"},
+            {"type": "non_fast_forward"},
+            {"type": "required_linear_history"},
+            {
+                "type": "pull_request",
+                "parameters": {
+                    "required_approving_review_count": $pr_review_count,
+                    "dismiss_stale_reviews_on_push": $pr_dismiss_stale,
+                    "require_code_owner_review": $pr_code_owner,
+                    "require_last_push_approval": $pr_last_push,
+                    "required_review_thread_resolution": $pr_thread_resolution
+                }
+            },
+            {
+                "type": "required_status_checks",
+                "parameters": {
+                    "strict_required_status_checks_policy": $strict,
+                    "required_status_checks": $status_checks
+                }
+            }
+        ]')
+
+    if [ "$merge_queue" != "null" ] && [ -n "$merge_queue" ]; then
+        rules=$(echo "$rules" | jq --argjson mq "$merge_queue" \
+            '. + [{"type": "merge_queue", "parameters": $mq}]')
+    fi
+
+    # Build the full payload
+    jq -n \
+        --arg name "$ruleset_name" \
+        --argjson conditions "$conditions" \
+        --argjson bypass_actors "$bypass_actors" \
+        --argjson rules "$rules" \
         '{
             "name": $name,
             "target": "branch",
             "enforcement": "active",
             "conditions": {"ref_name": $conditions.ref_name},
             "bypass_actors": $bypass_actors,
-            "rules": [
-                {"type": "deletion"},
-                {"type": "non_fast_forward"},
-                {"type": "required_linear_history"},
-                {
-                    "type": "pull_request",
-                    "parameters": {
-                        "required_approving_review_count": $pr_review_count,
-                        "dismiss_stale_reviews_on_push": $pr_dismiss_stale,
-                        "require_code_owner_review": $pr_code_owner,
-                        "require_last_push_approval": $pr_last_push,
-                        "required_review_thread_resolution": $pr_thread_resolution
-                    }
-                },
-                {
-                    "type": "required_status_checks",
-                    "parameters": {
-                        "strict_required_status_checks_policy": $strict,
-                        "required_status_checks": $status_checks
-                    }
-                }
-            ]
+            "rules": $rules
         }'
 }
 
@@ -507,9 +553,9 @@ audit_rulesets() {
             echo -e "  ${RED}WRONG${NC}: Enforcement = $actual_enforcement (should be active)"
         fi
 
-        # Check required status checks
+        # Check required status checks (per-repo override -> default)
         local expected_contexts
-        expected_contexts=$(yq -oj ".github_defaults.rulesets.\"$ruleset_name\".rules.required_status_checks.contexts" "$POLICY_FILE")
+        expected_contexts=$(ruleset_json "$repo" "$ruleset_name" "rules.required_status_checks.contexts")
 
         local actual_contexts
         actual_contexts=$(echo "$full_ruleset" | jq '[.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context] // []')
@@ -524,10 +570,30 @@ audit_rulesets() {
             echo -e "    Actual:   $(echo "$actual_contexts" | jq -c 'sort')"
         fi
 
+        # Check strict policy (per-repo override -> default)
+        local expected_strict actual_strict
+        expected_strict=$(ruleset_value "$repo" "$ruleset_name" "rules.required_status_checks.strict")
+        actual_strict=$(echo "$full_ruleset" | jq -r '.rules[] | select(.type == "required_status_checks") | .parameters.strict_required_status_checks_policy')
+        if [ "$actual_strict" = "$expected_strict" ]; then
+            echo -e "  ${GREEN}OK${NC}: strict_required_status_checks_policy = $expected_strict"
+            RULESET_OK=$((RULESET_OK + 1))
+        else
+            RULESET_MISSING=$((RULESET_MISSING + 1))
+            echo -e "  ${RED}WRONG${NC}: strict = $actual_strict (should be $expected_strict)"
+        fi
+
+        # Expected rule types — merge_queue only when the repo's policy defines it
+        local expected_merge_queue
+        expected_merge_queue=$(ruleset_json "$repo" "$ruleset_name" "rules.merge_queue")
+        local -a expected_rule_types=(deletion non_fast_forward required_linear_history pull_request required_status_checks)
+        if [ "$expected_merge_queue" != "null" ] && [ -n "$expected_merge_queue" ]; then
+            expected_rule_types+=(merge_queue)
+        fi
+
         # Check rule types present
         local actual_rule_types
         actual_rule_types=$(echo "$full_ruleset" | jq '[.rules[].type] | sort')
-        for rule_type in deletion non_fast_forward required_linear_history pull_request required_status_checks; do
+        for rule_type in "${expected_rule_types[@]}"; do
             if echo "$actual_rule_types" | jq -e "index(\"$rule_type\")" >/dev/null 2>&1; then
                 echo -e "  ${GREEN}OK${NC}: Rule '$rule_type' present"
                 RULESET_OK=$((RULESET_OK + 1))
@@ -537,13 +603,24 @@ audit_rulesets() {
             fi
         done
 
+        # Flag any unexpected rule types (e.g. a merge_queue rule that slipped onto a
+        # repo whose policy omits it) — present-only checks would miss this drift.
+        local unexpected_rule_types
+        unexpected_rule_types=$(echo "$actual_rule_types" | jq -c \
+            --argjson expected "$(printf '%s\n' "${expected_rule_types[@]}" | jq -R . | jq -s 'sort')" \
+            '. - $expected')
+        if [ "$unexpected_rule_types" != "[]" ]; then
+            RULESET_MISSING=$((RULESET_MISSING + 1))
+            echo -e "  ${RED}WRONG${NC}: Unexpected rule(s) present (not in policy): $unexpected_rule_types"
+        fi
+
         # Check pull_request rule parameters
         local pr_params
         pr_params=$(echo "$full_ruleset" | jq '.rules[] | select(.type == "pull_request") | .parameters')
         if [ -n "$pr_params" ] && [ "$pr_params" != "null" ]; then
             for param in required_approving_review_count dismiss_stale_reviews_on_push require_code_owner_review require_last_push_approval required_review_thread_resolution; do
                 local expected_param actual_param
-                expected_param=$(yq -r ".github_defaults.rulesets.\"$ruleset_name\".rules.pull_request.$param" "$POLICY_FILE")
+                expected_param=$(ruleset_value "$repo" "$ruleset_name" "rules.pull_request.$param")
                 actual_param=$(echo "$pr_params" | jq -r ".$param")
                 if [ "$actual_param" = "$expected_param" ]; then
                     echo -e "  ${GREEN}OK${NC}: pull_request.$param = $expected_param"
@@ -553,6 +630,26 @@ audit_rulesets() {
                     echo -e "  ${RED}WRONG${NC}: pull_request.$param = $actual_param (should be $expected_param)"
                 fi
             done
+        fi
+
+        # Check merge_queue parameters (only when the repo's policy defines a queue)
+        if [ "$expected_merge_queue" != "null" ] && [ -n "$expected_merge_queue" ]; then
+            local mq_params
+            mq_params=$(echo "$full_ruleset" | jq '.rules[] | select(.type == "merge_queue") | .parameters')
+            if [ -n "$mq_params" ] && [ "$mq_params" != "null" ]; then
+                for param in merge_method grouping_strategy min_entries_to_merge max_entries_to_merge max_entries_to_build min_entries_to_merge_wait_minutes check_response_timeout_minutes; do
+                    local expected_mq actual_mq
+                    expected_mq=$(echo "$expected_merge_queue" | jq -r ".$param")
+                    actual_mq=$(echo "$mq_params" | jq -r ".$param")
+                    if [ "$actual_mq" = "$expected_mq" ]; then
+                        echo -e "  ${GREEN}OK${NC}: merge_queue.$param = $expected_mq"
+                        RULESET_OK=$((RULESET_OK + 1))
+                    else
+                        RULESET_MISSING=$((RULESET_MISSING + 1))
+                        echo -e "  ${RED}WRONG${NC}: merge_queue.$param = $actual_mq (should be $expected_mq)"
+                    fi
+                done
+            fi
         fi
 
         # Check bypass actors (per-repo)
