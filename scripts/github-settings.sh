@@ -281,7 +281,12 @@ build_ruleset_payload() {
             "name": $name,
             "target": "branch",
             "enforcement": "active",
-            "conditions": {"ref_name": $conditions.ref_name},
+            "conditions": {
+                "ref_name": {
+                    "include": $conditions.ref_name.include,
+                    "exclude": ($conditions.ref_name.exclude // [])
+                }
+            },
             "bypass_actors": $bypass_actors,
             "rules": $rules
         }'
@@ -299,25 +304,26 @@ apply_ruleset() {
     local existing_id
     existing_id=$(gh api "repos/$GITHUB_ORG/$repo/rulesets" --jq ".[] | select(.name == \"$ruleset_name\") | .id" 2>/dev/null)
 
+    local api_err
     if [ -n "$existing_id" ]; then
         echo -e "  ${YELLOW}UPDATING${NC}: Ruleset '$ruleset_name' (id: $existing_id)"
-        if gh api "repos/$GITHUB_ORG/$repo/rulesets/$existing_id" \
+        if api_err=$(gh api "repos/$GITHUB_ORG/$repo/rulesets/$existing_id" \
             --method PUT \
-            --input - <<<"$payload" \
-            --silent 2>/dev/null; then
+            --input - <<<"$payload" 2>&1 >/dev/null); then
             echo -e "  ${GREEN}APPLIED${NC}: Ruleset '$ruleset_name' updated"
         else
-            echo -e "  ${RED}FAILED${NC}: Could not update ruleset (requires admin access)"
+            # Surface the real API error (permissions, 422 validation, etc.) instead
+            # of guessing — a swallowed error here once masked a payload bug.
+            echo -e "  ${RED}FAILED${NC}: Could not update ruleset: ${api_err}"
         fi
     else
         echo -e "  ${YELLOW}CREATING${NC}: Ruleset '$ruleset_name'"
-        if gh api "repos/$GITHUB_ORG/$repo/rulesets" \
+        if api_err=$(gh api "repos/$GITHUB_ORG/$repo/rulesets" \
             --method POST \
-            --input - <<<"$payload" \
-            --silent 2>/dev/null; then
+            --input - <<<"$payload" 2>&1 >/dev/null); then
             echo -e "  ${GREEN}APPLIED${NC}: Ruleset '$ruleset_name' created"
         else
-            echo -e "  ${RED}FAILED${NC}: Could not create ruleset (requires admin access)"
+            echo -e "  ${RED}FAILED${NC}: Could not create ruleset: ${api_err}"
         fi
     fi
 }
