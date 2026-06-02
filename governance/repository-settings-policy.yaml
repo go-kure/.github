@@ -37,8 +37,10 @@ github_defaults:
       # Default: no bypass actors
 
 github_repos:
-  # .github: no overrides (uses defaults; no bypass actors needed)
+  # .github: no overrides (uses defaults: rebase-check + strict + no merge queue)
   kure:
+    # Merge queue handles "mark and forget" merging; allow PRs to be queued.
+    allow_auto_merge: true
     rulesets:
       main-protection:
         bypass_actors:
@@ -46,6 +48,23 @@ github_repos:
           - actor_id: 2882845
             actor_type: Integration
             bypass_mode: always
+        # Per-repo rule overrides: the merge queue tests the real merged result,
+        # so rebase-check and strict up-to-date enforcement are no longer needed.
+        rules:
+          required_status_checks:
+            strict: false
+            contexts:
+              - lint
+              - test
+              - build
+          merge_queue:
+            merge_method: REBASE                 # preserves linear history
+            grouping_strategy: ALLGREEN          # drop any failing entry from the group
+            min_entries_to_merge: 1              # conservative pilot sizing
+            max_entries_to_merge: 1
+            max_entries_to_build: 1              # tune up after observing runner load
+            min_entries_to_merge_wait_minutes: 0
+            check_response_timeout_minutes: 60
   launcher:
     rulesets:
       main-protection:
