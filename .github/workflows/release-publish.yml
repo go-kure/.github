@@ -83,7 +83,11 @@ jobs:
   goreleaser:
     needs: [test, validate]
     runs-on: autops-kube-kure
-    timeout-minutes: 15
+    # 30 min generic margin: a cold cross-compile of a multi-target binary repo
+    # (e.g. several GOOS/GOARCH) can exceed 15 min on the self-hosted runner and
+    # get cancelled mid-build. Conservative cap that suits any consumer; repos
+    # that build few/no targets finish well under it.
+    timeout-minutes: 30
     permissions:
       contents: write
       id-token: write
