@@ -52,12 +52,15 @@ mapfile -t map_paths < <(yq '.packages[]?.path' "$MAP")
 for path in "${map_paths[@]}"; do
   [[ -z "$path" || "$path" == "null" ]] && continue
   [[ -d "$ROOT/$path" ]] || fail "docs-map package path does not exist: $path"
+  # Every package entry MUST name an existing README (mounted or not).
+  readme="$(yq ".packages[] | select(.path == \"$path\") | .readme" "$MAP")"
+  if [[ -z "$readme" || "$readme" == "null" ]]; then
+    fail "package missing readme: $path"
+  elif [[ ! -f "$ROOT/$readme" ]]; then
+    fail "package README not found: $readme (package $path)"
+  fi
   mounted="$(yq ".packages[] | select(.path == \"$path\") | (.mount != null)" "$MAP")"
-  if [[ "$mounted" == "true" ]]; then
-    readme="$(yq ".packages[] | select(.path == \"$path\") | .readme" "$MAP")"
-    [[ -n "$readme" && "$readme" != "null" ]] || { fail "mounted package missing readme: $path"; continue; }
-    [[ -f "$ROOT/$readme" ]] || fail "mounted README not found: $readme (package $path)"
-  else
+  if [[ "$mounted" != "true" ]]; then
     reason="$(yq ".packages[] | select(.path == \"$path\") | .reason" "$MAP")"
     [[ -n "$reason" && "$reason" != "null" ]] || fail "unmounted package needs a reason: $path"
   fi
@@ -84,9 +87,10 @@ if [[ "$docs_only" != "true" ]]; then
   done
 fi
 
-# 4. Unique mount targets.
-dup_targets="$(yq '.packages[]? | select(.mount) | .mount.target' "$MAP" | sort | uniq -d)"
-[[ -z "$dup_targets" ]] || fail "duplicate mount targets: $dup_targets"
+# 4. Unique mount targets across packages AND extra_mounts (collisions silently
+#    overwrite generated content).
+dup_targets="$( { yq '.packages[]? | select(.mount) | .mount.target' "$MAP"; yq '.extra_mounts[]?.target' "$MAP"; } | grep -vx 'null' | sort | uniq -d)"
+[[ -z "$dup_targets" ]] || fail "duplicate mount targets (packages + extra_mounts): $dup_targets"
 
 # 5. extra_mounts sources exist.
 while IFS= read -r src; do
