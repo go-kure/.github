@@ -100,6 +100,64 @@ The following standards apply identically to kure and launcher (not applicable t
 
 `.github` follows only the agentic-file requirement.
 
+## Documentation Sync (MUST)
+
+Documentation MUST stay in sync with the code it describes, enforced in CI. This is
+the go-kure canon of the shared documentation-sync standard.
+
+1. **Same PR.** Any code change updates, in the same PR, every doc that describes
+   it: the package `README.md`, affected guides, the docs site (`site/content` and
+   generated mounts), and root docs (`docs/`).
+2. **Removals repoint everything.** Removing or renaming a package or symbol
+   removes or repoints every reference — reverse-mapping tables, mount scripts, site
+   nav, cross-doc links. A 404 in the published site is a CI failure.
+3. **Single normative source.** Each repo with a docs site declares its code↔docs
+   mapping in one `docs-map.yaml`. The AGENTS.md reverse-mapping table, the site
+   mount configuration, and the navigation are generated from or validated against
+   it — never hand-maintained as the authority. The reference implementation and
+   schema live in [`go-kure/kure`](https://github.com/go-kure/kure) at
+   `site/docs-map.yaml` + `site/scripts/`.
+4. **Links resolve.** All internal/intra-repo links MUST resolve in rendered output.
+5. **API change touches its docs.** A change to a mapped package's source MUST touch
+   its mapped `README.md`/guide(s) in the same PR, unless a maintainer applies the
+   escape hatch.
+
+### `docs-map.yaml` schema
+
+```yaml
+repo_type: go-library          # go-library | go-service | docs-only
+docs_only: false               # true for docs/governance repos (no package coverage)
+code_roots: [pkg]              # dirs scanned for public packages (omit when docs_only)
+packages:                      # every public package appears exactly once
+  - path: pkg/example
+    readme: pkg/example/README.md
+    guides: [guides/library-usage]
+    mount: {target: api-reference/example.md, title: Example, weight: 70, group: Resource Operations, desc: One-liner}
+  - path: pkg/internalish
+    readme: pkg/internalish/README.md
+    mounted: false
+    reason: Why this is intentionally unpublished.
+extra_mounts:
+  - {source: docs/quickstart.md, target: getting-started/quickstart.md, title: Quickstart, weight: 10}
+review_mappings:
+  - {change: "`.github/workflows/`", reference: "—", guides: "`contributing/github-workflows`"}
+```
+
+### Enforcement
+
+| Layer | What | Blocking |
+|-------|------|----------|
+| 1 — Links | Link-check the **rendered** site (build first, then check published output) | Yes (internal) |
+| 2 — Structure | [`check-doc-sync.sh`](../scripts/check-doc-sync.sh) validates map ↔ filesystem ↔ generated tables | Yes |
+| 3 — Change-gate | Mapped-package source change requires its mapped doc to change | Yes |
+| 4 — Prose | Agent/human review that prose reflects code | No (advisory) |
+
+Layers 1–3 guarantee links resolve, structure is consistent, and docs are touched;
+they cannot verify prose accuracy (Layer 4). **Escape hatch (Layer 3):** a
+maintainer-restricted `docs-skip` PR label, not a self-applied commit trailer.
+`.github` (docs-only) runs only map validity, link checks, the agentic-file rule,
+and the PR docs checkbox.
+
 ## Project Management
 
 GitHub Projects roadmaps across all go-kure repos follow a shared field model and view set.
