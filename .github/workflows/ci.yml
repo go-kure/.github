@@ -59,17 +59,35 @@ jobs:
       - name: No-op
         run: echo "No tests for a workflow library — actionlint in lint covers syntax validation."
 
+  link-check:
+    name: link-check
+    runs-on: autops-kube-kure
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+      - name: Install lychee
+        env:
+          LYCHEE_VERSION: '0.24.2'
+        run: |
+          curl -fsSL -o /tmp/lychee.tar.gz \
+            "https://github.com/lycheeverse/lychee/releases/download/lychee-v${LYCHEE_VERSION}/lychee-x86_64-unknown-linux-gnu.tar.gz"
+          tar -xzf /tmp/lychee.tar.gz -C /tmp
+          sudo install -m755 "$(find /tmp -type f -name lychee | head -1)" /usr/local/bin/lychee
+      - name: Check internal links
+        run: lychee --offline --no-progress './**/*.md'
+
   build:
     name: build
     runs-on: autops-kube-kure
     timeout-minutes: 1
-    needs: [lint, test]
+    needs: [lint, test, link-check]
     if: always()
     steps:
       - name: Check results
         run: |
-          if [ "${{ needs.lint.result }}" != "success" ] || [ "${{ needs.test.result }}" != "success" ]; then
-            echo "::error::lint or test failed"
+          if [ "${{ needs.lint.result }}" != "success" ] || [ "${{ needs.test.result }}" != "success" ] || [ "${{ needs.link-check.result }}" != "success" ]; then
+            echo "::error::lint, test, or link-check failed"
             exit 1
           fi
           echo "All checks passed."
