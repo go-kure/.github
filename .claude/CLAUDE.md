@@ -13,7 +13,11 @@ repository, including:
 When working on this repo, load these files for context:
 - `AGENTS.md` - Agent instructions and development guide
 - `governance/repository-settings-policy.yaml` - Settings policy
-- `docs/standards.md` - go-kure org standards
+- `docs/standards.md` - go-kure org standards (incl. the mandatory documentation-sync standard)
+
+## Documentation Sync
+
+- Code and documentation changes must be in the same PR (mandatory, CI-enforced; org canon is `docs/standards.md` → "Documentation Sync", which this repo hosts along with the canonical `scripts/check-doc-sync.sh`)
 
 ## Quick Commands
 

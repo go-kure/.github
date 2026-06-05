@@ -13,6 +13,12 @@ organization. It provides:
 - **Design documents**: Architecture and design decisions for the go-kure org
 - **Standards reference**: How go-kure repos are configured and why
 
+**Documentation sync is mandatory** across all go-kure repos — code and
+documentation change in the same PR. This repo hosts the canon
+([`docs/standards.md`](docs/standards.md) → "Documentation Sync") and the canonical
+`scripts/check-doc-sync.sh`. As a docs-only repo, keep `docs/standards.md`, the
+labels reference, and design docs in sync when you change them.
+
 ## Repository Structure
 
 ```
