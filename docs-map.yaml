@@ -1,0 +1,6 @@
+# docs-map.yaml — documentation-only repo (org community files + workflow library;
+# no Go packages, no Hugo docs site). Per the documentation-sync standard,
+# enforcement here is link integrity (the link-check CI job); there is no code↔docs
+# mapping to maintain.
+repo_type: docs-only
+docs_only: true
