@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       scope:
-        description: 'Version scope to bump (minor or major)'
+        description: 'Version scope to bump (minor or major start a new cycle; prerelease increments the prerelease number)'
         required: true
         type: string
       dry_run:
