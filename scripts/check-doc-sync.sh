@@ -89,7 +89,9 @@ fi
 
 # 4. Unique mount targets across packages AND extra_mounts (collisions silently
 #    overwrite generated content).
-dup_targets="$( { yq '.packages[]? | select(.mount) | .mount.target' "$MAP"; yq '.extra_mounts[]?.target' "$MAP"; } | grep -vx 'null' | sort | uniq -d)"
+# grep -vx exits 1 when every line is "null" (or empty); under set -e + pipefail
+# that would abort the script, so tolerate a no-match result.
+dup_targets="$( { yq '.packages[]? | select(.mount) | .mount.target' "$MAP"; yq '.extra_mounts[]?.target' "$MAP"; } | { grep -vx 'null' || true; } | sort | uniq -d)"
 [[ -z "$dup_targets" ]] || fail "duplicate mount targets (packages + extra_mounts): $dup_targets"
 
 # 5. extra_mounts sources exist.
