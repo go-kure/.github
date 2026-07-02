@@ -176,6 +176,12 @@
       "name": "go",
       "color": "#00ADD8",
       "description": "Go language, toolchain, or module update"
+    },
+    {
+      "name": "docs-skip",
+      "color": "#5319E7",
+      "description": "Maintainer-only: bypass the documentation-sync CI gate",
+      "repos": ["launcher"]
     }
   ]
 }

@@ -37,6 +37,13 @@ Two separator styles are used, depending on label semantics:
 
 **Special labels** (no category prefix): `dependencies`, `github_actions`, `go` — used by Dependabot and GitHub automation.
 
+**Process labels** (no category prefix): `docs-skip` — maintainer-only PR label that bypasses the documentation-sync CI gate (see the Documentation Sync standard in [`../docs/standards.md`](../docs/standards.md)). Not for self-application.
+
+**Repo-scoped labels.** A label in `labels.json` may carry an optional `repos` array
+(e.g. `docs-skip` → `["launcher"]`). The settings audit then requires that label only on
+the listed repos, and flags it as extra if it appears on any other repo. Labels without a
+`repos` field apply to every repo.
+
 ### `type/roadmap` vs `type/epic`
 
 - `type/roadmap` — program-level master tracking issue spanning multiple phases or repos (gold `#D4AF37`)

@@ -376,10 +376,17 @@ audit_labels() {
     labels=$(jq -c '.labels[]' "$LABELS_FILE")
 
     while IFS= read -r label; do
-        local name color description
+        local name color description applies
         name=$(echo "$label" | jq -r '.name')
         color=$(echo "$label" | jq -r '.color' | sed 's/^#//')
         description=$(echo "$label" | jq -r '.description')
+
+        # Repo-scoped labels (optional "repos" array) only apply to listed repos.
+        # A label with no "repos" field applies to every repo.
+        applies=$(echo "$label" | jq -r --arg r "$repo" 'if (.repos // null) == null then true else (.repos | index($r) != null) end')
+        if [ "$applies" != "true" ]; then
+            continue
+        fi
 
         if echo "$existing_labels" | grep -qx "$name"; then
             echo -e "  ${GREEN}OK${NC}: $name"
@@ -426,7 +433,9 @@ audit_labels() {
         if [[ -v LABEL_RENAME_MAP["$existing_name"] ]]; then
             continue
         fi
-        if ! jq -e --arg n "$existing_name" '.labels[] | select(.name == $n)' "$LABELS_FILE" > /dev/null 2>&1; then
+        # A label is "expected" on this repo when it is in the standard AND either
+        # has no "repos" scope or lists this repo. Anything else is extra.
+        if ! jq -e --arg n "$existing_name" --arg r "$repo" '.labels[] | select(.name == $n) | select((.repos // null) == null or (.repos | index($r) != null))' "$LABELS_FILE" > /dev/null 2>&1; then
             LABELS_EXTRA=$((LABELS_EXTRA + 1))
             if [ "$apply" = "true" ]; then
                 local issue_count
