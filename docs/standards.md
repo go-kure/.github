@@ -88,6 +88,9 @@ centrally by this repo's `settings.yml` workflow. The source of truth is
 | Changelog    | `CHANGELOG.md` + cliff  | `CHANGELOG.md` + cliff  | N/A     |
 | Version tags | `vX.Y.Z`                | `vX.Y.Z`                | N/A     |
 
+See [`standards/release-process.md`](../standards/release-process.md) for the canonical
+tag-driven release procedure that the repo-local `scripts/release.sh` cite.
+
 ## What Stays the Same
 
 The following standards apply identically to kure and launcher (not applicable to `.github`):
@@ -157,6 +160,48 @@ they cannot verify prose accuracy (Layer 4). **Escape hatch (Layer 3):** a
 maintainer-restricted `docs-skip` PR label, not a self-applied commit trailer.
 `.github` (docs-only) runs only map validity, link checks, the agentic-file rule,
 and the PR docs checkbox.
+
+## No Downstream References (MUST)
+
+go-kure repos are **upstream, open-source** projects. They MUST NOT name the **downstream,
+closed-source** platform or its components in tracked source, docs, comments, tests, or
+identifiers. Downstream consumers depend on go-kure; the reverse coupling must not leak.
+
+**Forbidden terms** (case-insensitive, whole word):
+
+- `crane`, `harbor`, `barge`, `rudder` — downstream platform components <!-- allow-term:crane allow-term:harbor allow-term:barge allow-term:rudder -->
+- `wharf` / `wharf.zone` — the downstream platform and its label / DNS zone <!-- allow-term:wharf -->
+
+**What to do with an existing reference:**
+
+- **Incidental mention** (e.g. "so crane can validate") → reword to a generic role such as <!-- allow-term:crane -->
+  "a downstream consumer" or "the downstream platform runtime".
+- **Whole downstream-specific section** (a mapping, migration guide, or ownership table that
+  documents the *downstream's* behaviour) → move it to the downstream repo; keep only the
+  upstream contract, described abstractly.
+- **Functional identifier** (an annotation key, label, registry host, or constant carrying a
+  downstream name) → rename to the repo's own namespace (e.g. `launcher.gokure.dev/…`) and
+  coordinate a lockstep change with any downstream repo that shares the literal.
+
+**Escape hatch:** a term that is legitimate for an unrelated reason (e.g. the
+`go-containerregistry` tool literally named `crane`, or this standard defining the term list) <!-- allow-term:crane -->
+carries an `allow-term:<word>` pragma on the same line or an immediately adjacent line.
+
+### Enforcement
+
+The check is [`scripts/check-forbidden-terms.sh`](../scripts/check-forbidden-terms.sh),
+consumed by each repo (vendored or via a reusable workflow):
+
+| Mode | When | Blocking |
+|------|------|----------|
+| `--diff <base>` | `pull_request` — fails on newly-added forbidden terms | Yes |
+| `--full-tree` | `push` / `schedule` / `merge_group` — fails on any un-pragma'd hit | Yes |
+
+Scope: `docs/`, `site/content/`, `pkg/**`, `cmd/**`, `scripts/**`, `**/*.md`,
+`.github/workflows/**` (the guard script excludes itself).
+
+The step-by-step remediation runbook — usable for a first sweep of any upstream repo — is in
+[`docs/no-downstream-references.md`](no-downstream-references.md).
 
 ## Project Management
 
