@@ -14,7 +14,7 @@ This document describes the directory structure inside an OCI artifact produced 
 `ManifestLayout` and `WriteToTar` primitives, how FluxCD Kustomization objects reference that
 structure, and how the layout changes when the artifact is split across multiple OCIs.
 
-Consumers of kure (such as Crane) that produce GitOps-ready OCI artifacts are expected to follow
+Consumers of kure (such as a downstream operator) that produce GitOps-ready OCI artifacts are expected to follow
 this layout. kure enforces the conventions described here via the layout tree.
 
 ---

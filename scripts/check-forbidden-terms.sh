@@ -9,10 +9,11 @@
 # See docs/standards.md, "No Downstream References (MUST)".
 #
 # Modes:
-#   --full-tree        Scan every tracked in-scope file. Completeness proof; used
-#                      by cleanup work and by push/schedule/merge_group CI.
-#   --diff BASE        Scan only lines added versus BASE (e.g. origin/main).
-#                      Regression guard for pull_request CI.
+#   --full-tree        Scan every tracked in-scope file. The blessed CI gate: run on
+#                      EVERY event (pull_request/push/schedule/merge_group) so PR and
+#                      merge-queue results are identical.
+#   --diff BASE        Scan only lines added versus BASE (e.g. origin/main). Local/dev
+#                      convenience only — MUST NOT gate CI (it diverges PR vs. queue).
 #
 # Scope (both modes): docs/  site/content/  pkg/**  cmd/**  scripts/**  **/*.md
 #   and .github/workflows/**. The guard script itself is excluded from its own scan.

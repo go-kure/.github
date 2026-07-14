@@ -11,7 +11,7 @@
 # What this does:
 #   1. Migrates wrong-separator labels (effort/, priority/, status/) to :: equivalents
 #   2. Renames type/docs and documentation -> type/documentation
-#   3. Removes deprecated labels (consumer/wharf/crane, phase/*) from issues
+#   3. Removes deprecated labels (consumer/wharf/crane, phase/*) from issues  # allow-term:wharf allow-term:crane
 #
 # After running, trigger settings.yml apply to delete the now-empty old labels.
 
@@ -78,7 +78,7 @@ migrate_label "documentation" "type/documentation"
 
 echo ""
 echo "=== Removing deprecated labels ==="
-remove_label "consumer/wharf/crane"
+remove_label "consumer/wharf/crane"  # allow-term:wharf allow-term:crane — deprecated downstream label being deleted
 remove_label "phase/3"
 remove_label "phase/4"
 remove_label "phase/5"

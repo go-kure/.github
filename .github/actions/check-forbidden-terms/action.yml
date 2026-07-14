@@ -1,0 +1,15 @@
+name: Check for downstream references
+description: >-
+  Fail if any tracked, in-scope file references the downstream / closed-source platform
+  (No Downstream References guard). Always scans the whole tree (--full-tree) so a pull
+  request and the merge queue produce identical results — run it on every CI event.
+
+runs:
+  using: composite
+  steps:
+    - name: Check for downstream references (--full-tree)
+      shell: bash
+      # Canonical guard lives at the repo root of go-kure/.github; $GITHUB_ACTION_PATH
+      # points at this action's dir (.github/actions/check-forbidden-terms), so three
+      # levels up is that repo root. The script scans the CALLER's checked-out tree.
+      run: bash "$GITHUB_ACTION_PATH/../../../scripts/check-forbidden-terms.sh" --full-tree
