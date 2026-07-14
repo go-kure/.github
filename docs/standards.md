@@ -1,7 +1,7 @@
 # go-kure Org Standards
 
 This is the canonical standards reference for all `go-kure/*` repositories. It describes how
-go-kure repos are configured and where they diverge from the wharf workspace defaults.
+go-kure repos are configured and where they diverge from the workspace defaults.
 
 ## Why go-kure is Different
 
@@ -9,7 +9,7 @@ The go-kure repos are:
 
 1. **Public open-source projects** — must accommodate external contributors
 2. **Hosted on GitHub** — use GitHub Actions and Dependabot (not GitLab CI and Renovate)
-3. **Released independently** — separate cadence from the Wharf platform
+3. **Released independently** — separate cadence from the downstream platform
 
 ## Organization Members
 
@@ -33,7 +33,7 @@ The go-kure repos are:
 
 ## CI Platform
 
-| Aspect           | Wharf Default        | kure                        | launcher                    | .github                     |
+| Aspect           | Workspace Default    | kure                        | launcher                    | .github                     |
 |------------------|----------------------|-----------------------------|-----------------------------|-----------------------------|
 | Platform         | GitLab CI            | GitHub Actions              | GitHub Actions              | GitHub Actions              |
 | Config file      | `.gitlab-ci.yml`     | `.github/workflows/*.yml`   | `.github/workflows/*.yml`   | `.github/workflows/*.yml`   |
@@ -44,7 +44,7 @@ workflows here.
 
 ## Dependency Management
 
-| Aspect | Wharf Default  | kure                     | launcher                 | .github            |
+| Aspect | Workspace Default  | kure                     | launcher                 | .github            |
 |--------|----------------|--------------------------|--------------------------|--------------------|
 | Tool   | Renovate       | Dependabot               | Dependabot               | Dependabot         |
 | Config | `renovate.json`| `.github/dependabot.yml` | `.github/dependabot.yml` | N/A (no Go deps)   |
@@ -56,7 +56,7 @@ not container images. `.github` is not an application.
 
 ## golangci-lint Configuration
 
-| Aspect     | Wharf Default   | kure                | launcher        | .github |
+| Aspect     | Workspace Default   | kure                | launcher        | .github |
 |------------|-----------------|---------------------|-----------------|---------|
 | Strictness | Full linter set | Relaxed (migration) | Full linter set | N/A     |
 
@@ -189,13 +189,18 @@ carries an `allow-term:<word>` pragma on the same line or an immediately adjacen
 
 ### Enforcement
 
-The check is [`scripts/check-forbidden-terms.sh`](../scripts/check-forbidden-terms.sh),
-consumed by each repo (vendored or via a reusable workflow):
+The check is [`scripts/check-forbidden-terms.sh`](../scripts/check-forbidden-terms.sh), run in CI via
+the shared [`check-forbidden-terms`](../.github/actions/check-forbidden-terms) composite action (a
+vendored copy of the script may also exist for non-CI tooling such as release scripts):
 
 | Mode | When | Blocking |
 |------|------|----------|
-| `--diff <base>` | `pull_request` — fails on newly-added forbidden terms | Yes |
-| `--full-tree` | `push` / `schedule` / `merge_group` — fails on any un-pragma'd hit | Yes |
+| `--full-tree` | `pull_request` / `push` / `schedule` / `merge_group` — fails on any un-pragma'd hit | Yes |
+
+**Scan parity (MUST):** CI MUST run the guard with `--full-tree` on **every** event, so a pull request
+and the merge queue see identical results. A diff-scoped (`--diff`) check MUST NOT gate CI — it passes
+a PR on pre-existing hits that the merge queue's `--full-tree` scan then rejects, diverging the two.
+`--diff` remains a local/dev convenience only.
 
 Scope: `docs/`, `site/content/`, `pkg/**`, `cmd/**`, `scripts/**`, `**/*.md`,
 `.github/workflows/**` (the guard script excludes itself).

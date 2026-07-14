@@ -52,7 +52,7 @@ kure/
 ### pkg/ vs internal/ decision rule for kure
 
 A symbol belongs in `pkg/` when it is part of the library's public contract — something a library
-caller (crane, launcher, or an external user) needs to import directly.
+caller (a downstream consumer, launcher, or an external user) needs to import directly.
 
 A symbol belongs in `internal/` when it implements a resource builder or utility that callers
 access only through `pkg/`. The majority of resource builders live here.
@@ -131,7 +131,7 @@ separate repos, and separate versioning.
 - It is a patch or composition mechanism for kurel packages
 
 **Does not belong in either**:
-- Wharf CRD types (EnvironmentPolicy, ApplicationGroup, etc.) — those live in the Wharf platform
+- Downstream CRD types (EnvironmentPolicy, ApplicationGroup, etc.) — those live in the downstream platform
   repos. Note: the kurel *platform profile* (the parameter set expressing trait implementation
   choices, e.g. which ingress controller is installed) is a different concept that *does* live in
   launcher, despite similar naming. See [oam-runtime](oam-runtime.md) §Two-Config-Set Model.
@@ -141,5 +141,5 @@ separate repos, and separate versioning.
 ## Cross-References
 
 - [kure-launcher-architecture](kure-launcher-architecture.md) — the layering model between kure,
-  launcher, and downstream consumers (crane, external tools)
+  launcher, and downstream consumers (external tools)
 - [oam-runtime](oam-runtime.md) — OAM-native package manager design (kurel)

@@ -51,11 +51,12 @@ the string. To rename it safely:
 
 ## 4. Guard
 
-Wire `check-forbidden-terms.sh` into CI:
+Wire the guard into CI via the shared [`check-forbidden-terms`](../.github/actions/check-forbidden-terms)
+composite action:
 
-- `pull_request` → `--diff origin/<base>` (needs `fetch-depth: 0` or an explicit base fetch).
-- `push` / `schedule` / `merge_group` → `--full-tree` (avoids merge-queue base-ref edge cases;
-  safe once the sweep is clean).
+- Run it on **every** event (`pull_request` / `push` / `schedule` / `merge_group`) — the action always
+  scans `--full-tree`, so a PR and the merge queue see identical results (scan parity; see
+  [standards.md](standards.md) § "No Downstream References"). A diff-scoped check MUST NOT gate CI.
 - Add `.github/workflows/**` to any path filter gating the job, so workflow-only regressions
   are still caught.
 
@@ -67,7 +68,7 @@ standard rather than inlining the term list, or the guard trips on itself.
 - `check-forbidden-terms.sh --full-tree` passes (only pragma'd hits remain).
 - Build/test green; if a functional identifier changed, the downstream repo's tests are green
   too.
-- Smoke-test the guard: add a forbidden term to a doc → `--diff` fails; add an adjacent
+- Smoke-test the guard: add a forbidden term to a doc → `--full-tree` fails; add an adjacent
   `allow-term` pragma → passes.
 
 ## 6. Repeat

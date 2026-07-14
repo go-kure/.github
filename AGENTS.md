@@ -159,6 +159,18 @@ secrets: inherit
 - Test by triggering the corresponding `-caller.yml` workflow manually before merging
 - For `release.yml` or `release-create.yml`, test with `dry_run: true` first
 
+## Composite Actions
+
+Step-level shared logic lives in `.github/actions/<name>/action.yml` (distinct from reusable
+workflows, which are job-level). Consumer repos reference one as a step:
+```yaml
+- uses: go-kure/.github/.github/actions/<name>@main
+```
+
+| Action | Purpose |
+|--------|---------|
+| `check-forbidden-terms` | No Downstream References guard. Runs the canonical `scripts/check-forbidden-terms.sh --full-tree` against the caller's checked-out tree. Drop it into a CI job on **every** event so a pull request and the merge queue produce identical results (scan parity — see `docs/standards.md`). |
+
 ## Git Workflow
 
 - **`main` is protected** — never commit directly to `main`

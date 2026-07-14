@@ -77,17 +77,27 @@ jobs:
       - name: Check internal links
         run: lychee --offline --no-progress './**/*.md'
 
+  forbidden-terms:
+    name: forbidden-terms
+    runs-on: autops-kube-kure
+    timeout-minutes: 2
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+      - name: Check for downstream references
+        uses: ./.github/actions/check-forbidden-terms
+
   build:
     name: build
     runs-on: autops-kube-kure
     timeout-minutes: 1
-    needs: [lint, test, link-check]
+    needs: [lint, test, link-check, forbidden-terms]
     if: always()
     steps:
       - name: Check results
         run: |
-          if [ "${{ needs.lint.result }}" != "success" ] || [ "${{ needs.test.result }}" != "success" ] || [ "${{ needs.link-check.result }}" != "success" ]; then
-            echo "::error::lint, test, or link-check failed"
+          if [ "${{ needs.lint.result }}" != "success" ] || [ "${{ needs.test.result }}" != "success" ] || [ "${{ needs.link-check.result }}" != "success" ] || [ "${{ needs.forbidden-terms.result }}" != "success" ]; then
+            echo "::error::lint, test, link-check, or forbidden-terms failed"
             exit 1
           fi
           echo "All checks passed."
