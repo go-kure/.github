@@ -2,7 +2,9 @@ name: Check docs-with-code gate
 description: >-
   Layer 3 of the documentation-sync standard: when a docs-map-mapped package's source
   changes, its mapped docs must change in the same PR. See scripts/check-doc-gate.sh for
-  the full rule (package gate + review_mappings gate).
+  the full rule (package gate + review_mappings gate). Requires yq (mikefarah v4) on
+  PATH and a checkout with enough history to diff base-ref (fetch-depth: 0) — install
+  and fetch in prior steps; this action does neither itself.
 
 inputs:
   base-ref:

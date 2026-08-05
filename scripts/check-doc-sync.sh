@@ -147,6 +147,17 @@ while IFS= read -r doc; do
   [[ -f "$ROOT/$doc" ]] || fail "review_mappings doc not found: $doc"
 done < <(yq '.review_mappings[]?.docs[]?' "$MAP")
 
+# 5c. Package guide targets exist. `guides:` entries are content-relative slugs
+# under site/content/ (e.g. "guides/library-usage" -> site/content/guides/library-usage.md)
+# — the same convention check-doc-gate.sh already assumes when matching a guide
+# against the changed-files set. Without this, a typo here passes Layer 2 silently
+# and only surfaces later as a Layer 3 gate that can never be satisfied.
+while IFS= read -r g; do
+  [[ -z "$g" || "$g" == "null" ]] && continue
+  gp="$ROOT/site/content/${g}.md"
+  [[ -f "$gp" ]] || fail "package guide not found: site/content/${g}.md"
+done < <(yq '.packages[]?.guides[]?' "$MAP")
+
 # 6. Generated tables are current (if a generator is present).
 GEN="$MAP_DIR/scripts/gen-docs-tables.sh"
 if [[ -x "$GEN" || -f "$GEN" ]]; then

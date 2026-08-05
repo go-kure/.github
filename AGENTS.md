@@ -170,6 +170,9 @@ workflows, which are job-level). Consumer repos reference one as a step:
 | Action | Purpose |
 |--------|---------|
 | `check-forbidden-terms` | No Downstream References guard. Runs the canonical `scripts/check-forbidden-terms.sh --full-tree` against the caller's checked-out tree. Drop it into a CI job on **every** event so a pull request and the merge queue produce identical results (scan parity — see `docs/standards.md`). |
+| `check-doc-sync` | Documentation-sync Layer 2 (structure). Runs `scripts/check-doc-sync.sh` against the caller's `docs-map.yaml`. Requires `yq` on `PATH` — install it in the consumer's job before this step. |
+| `check-doc-gate` | Documentation-sync Layer 3 (change-gate). Runs `scripts/check-doc-gate.sh` with `base-ref`/`root`/`skip` inputs. Requires `yq` on `PATH`. |
+| `check-links` | Documentation-sync Layer 1 (link check). Runs `scripts/check-links.sh` against a `built-dir` the caller has already rendered (e.g. a Hugo build). Requires `lychee` on `PATH`. |
 
 ## Git Workflow
 

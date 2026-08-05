@@ -3,7 +3,9 @@ description: >-
   Validate a repo's docs-map.yaml against the filesystem (Layer 2 of the
   documentation-sync standard) — every public package mapped, every mapped path exists,
   mount targets unique, generated tables current. See scripts/check-doc-sync.sh for the
-  full rule list.
+  full rule list. Requires yq (mikefarah v4) on PATH — install it in a prior step; this
+  action does not install it, since consumers already need yq for other steps in the
+  same job (e.g. front-matter injection) and installing it twice wastes CI time.
 
 inputs:
   root:
