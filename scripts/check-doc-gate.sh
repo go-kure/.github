@@ -6,6 +6,8 @@
 #
 #   1. Package gate — for every packages[] entry, if a non-test .go file directly in
 #      that package dir changed, the entry's README (and/or its guides) must change.
+#      Also covers packages REMOVED from the map between base and head: if a
+#      package's old source path still shows real changes, its old docs must too.
 #   2. review_mappings gate — for every review_mappings[] entry that carries BOTH an
 #      explicit `change:` glob AND a `docs:` list, if any changed file matches the
 #      glob, at least one of the mapped docs must change. Entries lacking that
@@ -120,6 +122,49 @@ while IFS= read -r path; do
     warn_trivial "$path source" "${matched[*]}"
   fi
 done < <(yq '.packages[]?.path' "$MAP")
+
+# 1b. Package gate for packages REMOVED from the map. The loop above only sees
+# HEAD's docs-map.yaml, so a package deleted or renamed out of the map between
+# BASE and HEAD is invisible to it — its old source files can be deleted (or
+# moved away) without ever checking that its old README/guides also changed,
+# letting stale docs survive a removal. Diff the map itself: for any package
+# path present at BASE but absent at HEAD, if its old source path still shows
+# real changes (near-certainly deletions), its old docs must show a change too.
+map_rel="${MAP#"$ROOT"/}"
+base_map="$(git -C "$ROOT" show "${BASE}:${map_rel}" 2>/dev/null || true)"
+if [[ -n "$base_map" ]]; then
+  while IFS= read -r bpath; do
+    [[ -n "$bpath" && "$bpath" != "null" ]] || continue
+    still_mapped="$(yq ".packages[] | select(.path==\"$bpath\") | .path" "$MAP")"
+    [[ -z "$still_mapped" || "$still_mapped" == "null" ]] || continue
+
+    if [[ "$bpath" == "." ]]; then
+      src_pattern='^[^/]+\.go$'
+    else
+      src_pattern="^${bpath}/[^/]+\.go\$"
+    fi
+    src="$(grep -E "$src_pattern" <<<"$changed_set" | grep -v '_test\.go$' || true)"
+    [[ -n "$src" ]] || continue
+
+    old_readme="$(echo "$base_map" | yq ".packages[] | select(.path==\"$bpath\") | .readme")"
+    ok=0
+    if [[ -n "$old_readme" && "$old_readme" != "null" ]] && doc_changed "$old_readme"; then
+      ok=1
+    fi
+    if [[ $ok -ne 1 ]]; then
+      while IFS= read -r g; do
+        [[ -n "$g" && "$g" != "null" ]] || continue
+        gp="site/content/${g}.md"
+        doc_changed "$gp" && { ok=1; break; }
+      done < <(echo "$base_map" | yq ".packages[] | select(.path==\"$bpath\") | .guides[]?")
+    fi
+
+    if [[ $ok -ne 1 ]]; then
+      echo "FAIL: $bpath was removed from docs-map.yaml and its old source changed, but its old docs (${old_readme:-<none>}) did not — repoint or update them in this PR"
+      violations=$((violations + 1))
+    fi
+  done < <(echo "$base_map" | yq '.packages[]?.path')
+fi
 
 # 2. review_mappings gate (machine-field opt-in: needs `change` glob AND `docs` list).
 n_rm="$(yq '.review_mappings | length' "$MAP" 2>/dev/null || echo 0)"

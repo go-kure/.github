@@ -3,7 +3,8 @@ description: >-
   Layer 1 of the documentation-sync standard: verify every internal link resolves in a
   rendered site. Directory-in — the caller builds the site into a directory of HTML
   first (Hugo build, or a static-HTML copy) and passes that directory here. External
-  links are not checked (--offline). See scripts/check-links.sh.
+  links are not checked (--offline). See scripts/check-links.sh. Requires lychee on
+  PATH — install it in a prior step; this action does not install it.
 
 inputs:
   built-dir:
