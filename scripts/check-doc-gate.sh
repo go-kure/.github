@@ -88,8 +88,16 @@ warn_trivial() {
 while IFS= read -r path; do
   [[ -n "$path" && "$path" != "null" ]] || continue
   # Source files directly in this package dir (not nested subpackages, which are
-  # their own map entries), excluding tests.
-  src="$(grep -E "^${path}/[^/]+\.go$" <<<"$changed_set" | grep -v '_test\.go$' || true)"
+  # their own map entries), excluding tests. `path: .` (a root package) needs its
+  # own pattern: git diff --name-only reports a root file as "foo.go", never
+  # "./foo.go", so "^${path}/[^/]+\.go$" can never match it — every root-package
+  # change would silently skip the gate otherwise.
+  if [[ "$path" == "." ]]; then
+    src_pattern='^[^/]+\.go$'
+  else
+    src_pattern="^${path}/[^/]+\.go\$"
+  fi
+  src="$(grep -E "$src_pattern" <<<"$changed_set" | grep -v '_test\.go$' || true)"
   [[ -n "$src" ]] || continue
 
   readme="$(yq ".packages[] | select(.path==\"$path\") | .readme" "$MAP")"
