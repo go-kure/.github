@@ -143,6 +143,16 @@ packages:                      # every public package appears exactly once
 extra_mounts:
   - {source: docs/quickstart.md, target: getting-started/quickstart.md, title: Quickstart, weight: 10}
 review_mappings:
+  # Enforced by Layer 3 (check-doc-gate.sh): requires BOTH `change` (a repo-root-
+  # relative glob) and `docs` (a list of repo-root-relative paths, not display text).
+  # If any changed file matches `change`, at least one path in `docs` must also
+  # change in the same PR.
+  - change: "scripts/gen-versions-toml.sh"
+    docs: [guides/dependency-updates.md]
+  # Display-only row: `reference`/scalar `guides` (with no `docs` list) render in the
+  # generated reverse-mapping table but are NOT enforced — Layer 3 skips any entry
+  # missing the `change`+`docs` pair above. Use this for links a human should follow
+  # up on but that don't map to one specific doc file.
   - {change: "`.github/workflows/`", reference: "—", guides: "`contributing/github-workflows`"}
 ```
 
