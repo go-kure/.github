@@ -20,6 +20,9 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=scripts/exact-array-member.sh
+source "$SCRIPT_DIR/exact-array-member.sh"
 ROOT="."
 MAP=""
 while [[ $# -gt 0 ]]; do
@@ -45,24 +48,58 @@ fail() { echo "FAIL: $*" >&2; errors=$((errors + 1)); }
 
 docs_only="$(yq '.docs_only // false' "$MAP")"
 
-# Map package paths.
-mapfile -t map_paths < <(yq '.packages[]?.path' "$MAP")
+# Extract one index-aligned record per package. URI encoding keeps path fields
+# delimiter-safe, and reason text never crosses the shell boundary because yq
+# evaluates its presence.
+mapfile -t package_records < <(
+  yq -r '.packages[]? |
+    [
+      ((.path // "") | @uri),
+      ((.readme // "") | @uri),
+      (.mount != null),
+      (.reason != null and .reason != "")
+    ] |
+    map(to_string) |
+    join("|")' "$MAP"
+)
+map_paths=()
+map_readmes=()
+map_mounted=()
+map_reason_present=()
+
+uri_decode() {
+  local encoded="$1"
+  local destination="$2"
+  encoded="${encoded//+/ }"
+  printf -v "$destination" '%b' "${encoded//%/\\x}"
+}
+
+for record in "${package_records[@]}"; do
+  IFS='|' read -r path_encoded readme_encoded mounted reason_present <<< "$record"
+  uri_decode "$path_encoded" path
+  uri_decode "$readme_encoded" readme
+  map_paths+=("$path")
+  map_readmes+=("$readme")
+  map_mounted+=("$mounted")
+  map_reason_present+=("$reason_present")
+done
 
 # 2. + 3. Validate each map entry.
-for path in "${map_paths[@]}"; do
+for index in "${!map_paths[@]}"; do
+  path="${map_paths[$index]}"
   [[ -z "$path" || "$path" == "null" ]] && continue
   [[ -d "$ROOT/$path" ]] || fail "docs-map package path does not exist: $path"
   # Every package entry MUST name an existing README (mounted or not).
-  readme="$(yq ".packages[] | select(.path == \"$path\") | .readme" "$MAP")"
+  readme="${map_readmes[$index]}"
   if [[ -z "$readme" || "$readme" == "null" ]]; then
     fail "package missing readme: $path"
   elif [[ ! -f "$ROOT/$readme" ]]; then
     fail "package README not found: $readme (package $path)"
   fi
-  mounted="$(yq ".packages[] | select(.path == \"$path\") | (.mount != null)" "$MAP")"
+  mounted="${map_mounted[$index]}"
   if [[ "$mounted" != "true" ]]; then
-    reason="$(yq ".packages[] | select(.path == \"$path\") | .reason" "$MAP")"
-    [[ -n "$reason" && "$reason" != "null" ]] || fail "unmounted package needs a reason: $path"
+    reason_present="${map_reason_present[$index]}"
+    [[ "$reason_present" == "true" ]] || fail "unmounted package needs a reason: $path"
   fi
 done
 
@@ -80,18 +117,20 @@ if [[ "$docs_only" != "true" ]]; then
     [[ -d "$ROOT/$croot" ]] || { fail "code_root does not exist: $croot"; continue; }
     while IFS= read -r dir; do
       rel="${dir#"$ROOT"/}"
-      if ! printf '%s\n' "${map_paths[@]}" | grep -qxF "$rel"; then
+      rel="${rel#./}"   # normalize when code_root is "." (find emits ./pkg)
+      if ! exact_array_member "$rel" "${map_paths[@]}"; then
         fail "public package not in docs-map.yaml: $rel (add a mount: or mounted:false entry)"
       fi
-    done < <(find "$ROOT/$croot" -type f -name '*.go' ! -name '*_test.go' -printf '%h\n' | sort -u)
+    done < <(
+      find "$ROOT/$croot" -type f -name '*.go' ! -name '*_test.go' \
+        -exec dirname {} \; | sort -u
+    )
   done
 fi
 
 # 4. Unique mount targets across packages AND extra_mounts (collisions silently
 #    overwrite generated content).
-# grep -vx exits 1 when every line is "null" (or empty); under set -e + pipefail
-# that would abort the script, so tolerate a no-match result.
-dup_targets="$( { yq '.packages[]? | select(.mount) | .mount.target' "$MAP"; yq '.extra_mounts[]?.target' "$MAP"; } | { grep -vx 'null' || true; } | sort | uniq -d)"
+dup_targets="$( { yq '.packages[]? | select(.mount) | .mount.target' "$MAP"; yq '.extra_mounts[]?.target' "$MAP"; } | grep -vx 'null' | sort | uniq -d || true)"
 [[ -z "$dup_targets" ]] || fail "duplicate mount targets (packages + extra_mounts): $dup_targets"
 
 # 5. extra_mounts sources exist.
@@ -99,6 +138,14 @@ while IFS= read -r src; do
   [[ -z "$src" || "$src" == "null" ]] && continue
   [[ -f "$ROOT/$src" ]] || fail "extra_mounts source not found: $src"
 done < <(yq '.extra_mounts[]?.source' "$MAP")
+
+# 5b. review_mappings docs exist (only entries with a machine-readable docs: list;
+#     legacy display-only rows with reference/scalar guides are ignored). Paths are
+#     repo-root-relative even when the map lives under site/.
+while IFS= read -r doc; do
+  [[ -z "$doc" || "$doc" == "null" ]] && continue
+  [[ -f "$ROOT/$doc" ]] || fail "review_mappings doc not found: $doc"
+done < <(yq '.review_mappings[]?.docs[]?' "$MAP")
 
 # 6. Generated tables are current (if a generator is present).
 GEN="$MAP_DIR/scripts/gen-docs-tables.sh"
