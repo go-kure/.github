@@ -1,0 +1,21 @@
+name: Check internal links
+description: >-
+  Layer 1 of the documentation-sync standard: verify every internal link resolves in a
+  rendered site. Directory-in — the caller builds the site into a directory of HTML
+  first (Hugo build, or a static-HTML copy) and passes that directory here. External
+  links are not checked (--offline). See scripts/check-links.sh.
+
+inputs:
+  built-dir:
+    description: Directory of rendered HTML to check.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Check internal links (rendered site)
+      shell: bash
+      # Canonical script lives at the repo root of go-kure/.github; $GITHUB_ACTION_PATH
+      # points at this action's dir (.github/actions/check-links), so three levels up is
+      # that repo root. The script checks the CALLER's built-dir.
+      run: bash "$GITHUB_ACTION_PATH/../../../scripts/check-links.sh" "${{ inputs.built-dir }}"
