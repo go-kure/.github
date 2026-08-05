@@ -123,6 +123,14 @@ jobs:
         run: bash scripts/check-doc-sync.sh .
       - name: check-doc-gate.sh against the previous commit
         run: bash scripts/check-doc-gate.sh "$(git rev-parse HEAD~1)" .
+      - name: Install lychee
+        env:
+          LYCHEE_VERSION: '0.24.2'
+        run: |
+          curl -fsSL -o /tmp/lychee.tar.gz \
+            "https://github.com/lycheeverse/lychee/releases/download/lychee-v${LYCHEE_VERSION}/lychee-x86_64-unknown-linux-gnu.tar.gz"
+          tar -xzf /tmp/lychee.tar.gz -C /tmp
+          sudo install -m755 "$(find /tmp -type f -name lychee | head -1)" /usr/local/bin/lychee
       - name: check-links.sh against a minimal HTML fixture
         run: |
           mkdir -p /tmp/link-fixture
