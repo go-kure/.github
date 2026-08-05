@@ -1,0 +1,31 @@
+name: Check docs-with-code gate
+description: >-
+  Layer 3 of the documentation-sync standard: when a docs-map-mapped package's source
+  changes, its mapped docs must change in the same PR. See scripts/check-doc-gate.sh for
+  the full rule (package gate + review_mappings gate).
+
+inputs:
+  base-ref:
+    description: Ref to diff against (e.g. origin/main).
+    required: true
+  root:
+    description: Repo root. Defaults to the caller's checkout root (git toplevel).
+    required: false
+    default: "."
+  skip:
+    description: When "true", bypass the gate (wire this from a maintainer docs-skip label).
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Enforce docs-with-code (Layer 3)
+      shell: bash
+      # Canonical script lives at the repo root of go-kure/.github; $GITHUB_ACTION_PATH
+      # points at this action's dir (.github/actions/check-doc-gate), so three levels up
+      # is that repo root. The script diffs the CALLER's checked-out tree.
+      run: |
+        bash "$GITHUB_ACTION_PATH/../../../scripts/check-doc-gate.sh" \
+          "${{ inputs.base-ref }}" "${{ inputs.root }}" \
+          "--skip=${{ inputs.skip }}"

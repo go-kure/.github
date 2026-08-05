@@ -3,8 +3,8 @@
 # internal link resolves in a *rendered* site.
 #
 # Directory-in: the caller is responsible for building/assembling the site into a
-# directory of HTML first (a Hugo build, or — for static-HTML sites like crane — just
-# copying docs/ into public/). This script runs lychee over that tree with
+# directory of HTML first (a Hugo build, or — for pre-rendered static-HTML sites —
+# just copying docs/ into public/). This script runs lychee over that tree with
 # --root-dir, so root-relative links resolve offline against the output. External
 # links are not checked here (--offline); flaky external checks belong in a separate
 # non-blocking job.

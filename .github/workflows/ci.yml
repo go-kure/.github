@@ -87,17 +87,47 @@ jobs:
       - name: Check for downstream references
         uses: ./.github/actions/check-forbidden-terms
 
+  # Nothing else in this repo shellchecks or executes the doc-sync scripts
+  # (autops/wharf/meta#27) — `test` above is a deliberate no-op. Consumers
+  # (kure, launcher) now reach these scripts only through the composite actions
+  # in .github/actions/, so a break here would otherwise surface first as a
+  # consumer-repo CI failure. Real invocations, not dry-runs: neither
+  # check-doc-sync.sh nor check-doc-gate.sh has a dry-run mode, and
+  # check-doc-gate.sh's --skip=true exits 0 without checking anything, so it
+  # doesn't count as one.
+  scripts-smoke-test:
+    name: scripts-smoke-test
+    runs-on: autops-kube-kure
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 2 # check-doc-gate.sh below diffs against HEAD~1
+      - name: shellcheck
+        run: shellcheck scripts/check-doc-sync.sh scripts/check-doc-gate.sh scripts/check-links.sh scripts/exact-array-member.sh
+      - name: check-doc-sync.sh against this repo's own docs-map.yaml
+        run: bash scripts/check-doc-sync.sh .
+      - name: check-doc-gate.sh against the previous commit
+        run: bash scripts/check-doc-gate.sh "$(git rev-parse HEAD~1)" .
+      - name: check-links.sh against a minimal HTML fixture
+        run: |
+          mkdir -p /tmp/link-fixture
+          printf '<html><body><a href="/about.html">about</a></body></html>' > /tmp/link-fixture/index.html
+          printf '<html><body>hello</body></html>' > /tmp/link-fixture/about.html
+          bash scripts/check-links.sh /tmp/link-fixture
+
   build:
     name: build
     runs-on: autops-kube-kure
     timeout-minutes: 1
-    needs: [lint, test, link-check, forbidden-terms]
+    needs: [lint, test, link-check, forbidden-terms, scripts-smoke-test]
     if: always()
     steps:
       - name: Check results
         run: |
-          if [ "${{ needs.lint.result }}" != "success" ] || [ "${{ needs.test.result }}" != "success" ] || [ "${{ needs.link-check.result }}" != "success" ] || [ "${{ needs.forbidden-terms.result }}" != "success" ]; then
-            echo "::error::lint, test, link-check, or forbidden-terms failed"
+          if [ "${{ needs.lint.result }}" != "success" ] || [ "${{ needs.test.result }}" != "success" ] || [ "${{ needs.link-check.result }}" != "success" ] || [ "${{ needs.forbidden-terms.result }}" != "success" ] || [ "${{ needs.scripts-smoke-test.result }}" != "success" ]; then
+            echo "::error::lint, test, link-check, forbidden-terms, or scripts-smoke-test failed"
             exit 1
           fi
           echo "All checks passed."

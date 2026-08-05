@@ -1,0 +1,31 @@
+name: Check docs-map sync
+description: >-
+  Validate a repo's docs-map.yaml against the filesystem (Layer 2 of the
+  documentation-sync standard) — every public package mapped, every mapped path exists,
+  mount targets unique, generated tables current. See scripts/check-doc-sync.sh for the
+  full rule list.
+
+inputs:
+  root:
+    description: Repo root to validate. Defaults to the caller's checkout root.
+    required: false
+    default: "."
+  map:
+    description: Path to docs-map.yaml. Defaults to <root>/docs-map.yaml or <root>/site/docs-map.yaml.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Validate docs map (code<->docs sync)
+      shell: bash
+      # Canonical script lives at the repo root of go-kure/.github; $GITHUB_ACTION_PATH
+      # points at this action's dir (.github/actions/check-doc-sync), so three levels up
+      # is that repo root. The script validates the CALLER's checked-out tree.
+      run: |
+        MAP_ARGS=()
+        if [ -n "${{ inputs.map }}" ]; then
+          MAP_ARGS=(--map "${{ inputs.map }}")
+        fi
+        bash "$GITHUB_ACTION_PATH/../../../scripts/check-doc-sync.sh" "${{ inputs.root }}" "${MAP_ARGS[@]}"
