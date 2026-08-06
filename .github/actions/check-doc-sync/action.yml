@@ -25,9 +25,17 @@ runs:
       # Canonical script lives at the repo root of go-kure/.github; $GITHUB_ACTION_PATH
       # points at this action's dir (.github/actions/check-doc-sync), so three levels up
       # is that repo root. The script validates the CALLER's checked-out tree.
+      #
+      # Inputs are bound to env vars, not interpolated into the run: script directly —
+      # GitHub substitutes ${{ }} expressions into the YAML source before bash ever
+      # sees it, so a value containing quotes/backticks/$(...) would be parsed as shell
+      # syntax, not data. env: passes it as an opaque process environment value instead.
+      env:
+        DOCSYNC_ROOT: ${{ inputs.root }}
+        DOCSYNC_MAP: ${{ inputs.map }}
       run: |
         MAP_ARGS=()
-        if [ -n "${{ inputs.map }}" ]; then
-          MAP_ARGS=(--map "${{ inputs.map }}")
+        if [ -n "$DOCSYNC_MAP" ]; then
+          MAP_ARGS=(--map "$DOCSYNC_MAP")
         fi
-        bash "$GITHUB_ACTION_PATH/../../../scripts/check-doc-sync.sh" "${{ inputs.root }}" "${MAP_ARGS[@]}"
+        bash "$GITHUB_ACTION_PATH/../../../scripts/check-doc-sync.sh" "$DOCSYNC_ROOT" "${MAP_ARGS[@]}"

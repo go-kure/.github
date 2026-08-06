@@ -57,24 +57,42 @@ elif [[ -f "$ROOT/site/docs-map.yaml" ]]; then MAP="$ROOT/site/docs-map.yaml"
 else echo "ERROR: docs-map.yaml not found under $ROOT (or $ROOT/site)" >&2; exit 1
 fi
 
+# -c core.quotePath=false: without it, git's factory default (true) renders any
+# non-ASCII filename as a quoted, octal-escaped literal (e.g. "café.md" becomes
+# the literal string "caf\303\251.md", quotes included) — every doc_changed /
+# glob_changed comparison against the real path would then silently never match.
+# This machine's own git config happens to override the default, which is
+# exactly why pinning it explicitly here matters instead of trusting whatever
+# the running environment has configured.
+#
 # --no-renames: without it, a pure rename (content-identical git-mv) reports only
 # the new path, and the old path never appears in changed_set at all — the 1b.
 # removed-package loop below would then silently skip checking the old docs for a
 # renamed-away package, and it depends on whichever machine happens to run this
 # (git's diff.renames default is off, but a dev machine or CI image can override
 # it). Pin the behavior instead of inheriting the environment's config.
-changed_set="$(git -C "$ROOT" diff --no-renames --name-only "${BASE}...HEAD")"
+changed_set="$(git -c core.quotePath=false -C "$ROOT" diff --no-renames --name-only "${BASE}...HEAD")"
 doc_changed() { grep -qxF "$1" <<<"$changed_set"; }
 # Repo-root-relative glob match against the changed set (e.g. "internal/foo/**").
-# "**" crosses path separators (recursive); a bare "*" does not (e.g.
-# "scripts/*.sh" matches "scripts/x.sh" but not "scripts/lib/x.sh") — bash's own
-# `[[ == pattern ]]` doesn't distinguish these (a lone "*" matches "/" too), so
-# translate to a regex instead of relying on shell glob matching.
+# "**" crosses path separators (recursive) and — like gitignore/rsync doublestar
+# semantics — can match zero directory levels: "**/*.go" matches a root-level
+# "root.go", and "foo/**/bar" matches "foo/bar" with nothing in between. A bare
+# "*" does not cross "/" (e.g. "scripts/*.sh" matches "scripts/x.sh" but not
+# "scripts/lib/x.sh"). Bash's own `[[ == pattern ]]` gets none of this (a lone
+# "*" always matches "/" too, and there's no zero-level concept), so translate
+# to a regex instead of relying on shell glob matching.
 glob_to_regex() {
   local pat="$1"
   pat="$(printf '%s' "$pat" | sed -e 's/[.[\^$+?(){}|]/\\&/g')"
+  # Order matters: the two-sided "**/" / "/**" forms (which absorb an adjacent
+  # slash and can match zero directory levels) must be handled before the
+  # generic lone "**" and single "*" translations below.
+  pat="${pat//\*\*\//$'\x02'}"
+  pat="${pat//\/\*\*/$'\x03'}"
   pat="${pat//\*\*/$'\x01'}"
   pat="${pat//\*/[^/]*}"
+  pat="${pat//$'\x02'/(.*/)?}"
+  pat="${pat//$'\x03'/(/.*)?}"
   pat="${pat//$'\x01'/.*}"
   printf '^%s$' "$pat"
 }
@@ -148,8 +166,14 @@ done < <(yq '.packages[]?.path' "$MAP")
 # letting stale docs survive a removal. Diff the map itself: for any package
 # path present at BASE but absent at HEAD, if its old source path still shows
 # real changes (near-certainly deletions), its old docs must show a change too.
-map_rel="${MAP#"$ROOT"/}"
-base_map="$(git -C "$ROOT" show "${BASE}:${map_rel}" 2>/dev/null || true)"
+#
+# The map file's own location at BASE isn't necessarily HEAD's location — a PR
+# that both moves docs-map.yaml (root <-> site/) AND removes a package in the
+# same change would have the git-show below silently find nothing at the wrong
+# path, skipping this whole check. Try both locations, same as the original
+# HEAD-side resolution above.
+base_map="$(git -C "$ROOT" show "${BASE}:docs-map.yaml" 2>/dev/null || true)"
+[[ -n "$base_map" ]] || base_map="$(git -C "$ROOT" show "${BASE}:site/docs-map.yaml" 2>/dev/null || true)"
 if [[ -n "$base_map" ]]; then
   while IFS= read -r bpath; do
     [[ -n "$bpath" && "$bpath" != "null" ]] || continue
@@ -164,21 +188,24 @@ if [[ -n "$base_map" ]]; then
     src="$(grep -E "$src_pattern" <<<"$changed_set" | grep -v '_test\.go$' || true)"
     [[ -n "$src" ]] || continue
 
+    # Require the README specifically, not "readme OR any one guide" — a
+    # removed package's README is package-exclusive (check-doc-sync.sh already
+    # requires every package to name one, mounted or not) so its fate on
+    # removal is unambiguous. guides[] are deliberately NOT required here: they
+    # are commonly shared across multiple packages (kure's own docs-map.yaml
+    # has guides/flux-workflow mapped from 3 separate packages) — removing one
+    # of several packages that reference a still-valid shared guide should not
+    # force that guide to change too. check-doc-sync.sh's own guide-target
+    # existence check (Layer 2) already catches an orphaned guide reference
+    # independently, if one becomes unreferenced entirely.
     old_readme="$(echo "$base_map" | yq ".packages[] | select(.path==\"$bpath\") | .readme")"
     ok=0
     if [[ -n "$old_readme" && "$old_readme" != "null" ]] && doc_changed "$old_readme"; then
       ok=1
     fi
-    if [[ $ok -ne 1 ]]; then
-      while IFS= read -r g; do
-        [[ -n "$g" && "$g" != "null" ]] || continue
-        gp="site/content/${g}.md"
-        doc_changed "$gp" && { ok=1; break; }
-      done < <(echo "$base_map" | yq ".packages[] | select(.path==\"$bpath\") | .guides[]?")
-    fi
 
     if [[ $ok -ne 1 ]]; then
-      echo "FAIL: $bpath was removed from docs-map.yaml and its old source changed, but its old docs (${old_readme:-<none>}) did not — repoint or update them in this PR"
+      echo "FAIL: $bpath was removed from docs-map.yaml and its old source changed, but its old README (${old_readme:-<none>}) did not — repoint or update it in this PR"
       violations=$((violations + 1))
     fi
   done < <(echo "$base_map" | yq '.packages[]?.path')
