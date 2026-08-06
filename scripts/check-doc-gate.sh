@@ -57,6 +57,14 @@ elif [[ -f "$ROOT/site/docs-map.yaml" ]]; then MAP="$ROOT/site/docs-map.yaml"
 else echo "ERROR: docs-map.yaml not found under $ROOT (or $ROOT/site)" >&2; exit 1
 fi
 
+# Fail loudly on malformed YAML instead of letting it surface as silent
+# under-enforcement. Every query below runs inside a process substitution or a
+# `2>/dev/null || <fallback>` guard for its OWN reason (an absent field, an
+# empty array); none of those are equipped to distinguish "field absent" from
+# "file unparseable", so a broken map degrades to "nothing to check" rather
+# than a hard failure — reaching "doc-gate: OK" without enforcing anything.
+yq . "$MAP" >/dev/null 2>&1 || { echo "ERROR: $MAP is not valid YAML" >&2; exit 1; }
+
 # -c core.quotePath=false: without it, git's factory default (true) renders any
 # non-ASCII filename as a quoted, octal-escaped literal (e.g. "café.md" becomes
 # the literal string "caf\303\251.md", quotes included) — every doc_changed /
@@ -105,6 +113,14 @@ glob_changed() {
   done <<<"$changed_set"
   return 1
 }
+# Escape a literal path for interpolation into an ERE. A mapped package path is
+# arbitrary directory-name text, not a glob — without this, an ERE
+# metacharacter in the path (e.g. "pkg/foo+bar", where "+" means "one or more
+# of the preceding char") changes what the pattern matches, and the package
+# silently stops being checked.
+regex_escape() {
+  printf '%s' "$1" | sed -e 's/[.[\^$+*?(){}|]/\\&/g'
+}
 # Is a changed doc's diff byte-trivial (only whitespace / blank-line churn)? Returns 0
 # when trivial. A newly added or deleted file is NOT trivial (its lines are real
 # additions/removals). --quiet exits 0 when, after ignoring whitespace and blank lines,
@@ -133,7 +149,7 @@ while IFS= read -r path; do
   if [[ "$path" == "." ]]; then
     src_pattern='^[^/]+\.go$'
   else
-    src_pattern="^${path}/[^/]+\.go\$"
+    src_pattern="^$(regex_escape "$path")/[^/]+\.go\$"
   fi
   src="$(grep -E "$src_pattern" <<<"$changed_set" | grep -v '_test\.go$' || true)"
   [[ -n "$src" ]] || continue
@@ -175,6 +191,10 @@ done < <(yq '.packages[]?.path' "$MAP")
 base_map="$(git -C "$ROOT" show "${BASE}:docs-map.yaml" 2>/dev/null || true)"
 [[ -n "$base_map" ]] || base_map="$(git -C "$ROOT" show "${BASE}:site/docs-map.yaml" 2>/dev/null || true)"
 if [[ -n "$base_map" ]]; then
+  # Same fail-loud requirement as the HEAD-side $MAP above: a malformed BASE map
+  # would otherwise degrade every query below to "no packages", silently
+  # skipping this whole check rather than failing it.
+  echo "$base_map" | yq . >/dev/null 2>&1 || { echo "ERROR: docs-map.yaml at ${BASE} is not valid YAML" >&2; exit 1; }
   while IFS= read -r bpath; do
     [[ -n "$bpath" && "$bpath" != "null" ]] || continue
     still_mapped="$(yq ".packages[] | select(.path==\"$bpath\") | .path" "$MAP")"
@@ -183,7 +203,7 @@ if [[ -n "$base_map" ]]; then
     if [[ "$bpath" == "." ]]; then
       src_pattern='^[^/]+\.go$'
     else
-      src_pattern="^${bpath}/[^/]+\.go\$"
+      src_pattern="^$(regex_escape "$bpath")/[^/]+\.go\$"
     fi
     src="$(grep -E "$src_pattern" <<<"$changed_set" | grep -v '_test\.go$' || true)"
     [[ -n "$src" ]] || continue
