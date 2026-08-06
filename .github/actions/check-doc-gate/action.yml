@@ -27,7 +27,16 @@ runs:
       # Canonical script lives at the repo root of go-kure/.github; $GITHUB_ACTION_PATH
       # points at this action's dir (.github/actions/check-doc-gate), so three levels up
       # is that repo root. The script diffs the CALLER's checked-out tree.
+      #
+      # Inputs are bound to env vars, not interpolated into the run: script directly —
+      # GitHub substitutes ${{ }} expressions into the YAML source before bash ever
+      # sees it, so a value containing quotes/backticks/$(...) would be parsed as shell
+      # syntax, not data. env: passes it as an opaque process environment value instead.
+      env:
+        DOCGATE_BASE_REF: ${{ inputs.base-ref }}
+        DOCGATE_ROOT: ${{ inputs.root }}
+        DOCGATE_SKIP: ${{ inputs.skip }}
       run: |
         bash "$GITHUB_ACTION_PATH/../../../scripts/check-doc-gate.sh" \
-          "${{ inputs.base-ref }}" "${{ inputs.root }}" \
-          "--skip=${{ inputs.skip }}"
+          "$DOCGATE_BASE_REF" "$DOCGATE_ROOT" \
+          "--skip=$DOCGATE_SKIP"

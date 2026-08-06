@@ -19,4 +19,11 @@ runs:
       # Canonical script lives at the repo root of go-kure/.github; $GITHUB_ACTION_PATH
       # points at this action's dir (.github/actions/check-links), so three levels up is
       # that repo root. The script checks the CALLER's built-dir.
-      run: bash "$GITHUB_ACTION_PATH/../../../scripts/check-links.sh" "${{ inputs.built-dir }}"
+      #
+      # Input is bound to an env var, not interpolated into the run: script directly —
+      # GitHub substitutes ${{ }} expressions into the YAML source before bash ever
+      # sees it, so a value containing quotes/backticks/$(...) would be parsed as shell
+      # syntax, not data. env: passes it as an opaque process environment value instead.
+      env:
+        CHECKLINKS_BUILT_DIR: ${{ inputs.built-dir }}
+      run: bash "$GITHUB_ACTION_PATH/../../../scripts/check-links.sh" "$CHECKLINKS_BUILT_DIR"
