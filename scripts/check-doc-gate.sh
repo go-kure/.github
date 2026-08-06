@@ -57,15 +57,33 @@ elif [[ -f "$ROOT/site/docs-map.yaml" ]]; then MAP="$ROOT/site/docs-map.yaml"
 else echo "ERROR: docs-map.yaml not found under $ROOT (or $ROOT/site)" >&2; exit 1
 fi
 
-changed_set="$(git -C "$ROOT" diff --name-only "${BASE}...HEAD")"
+# --no-renames: without it, a pure rename (content-identical git-mv) reports only
+# the new path, and the old path never appears in changed_set at all — the 1b.
+# removed-package loop below would then silently skip checking the old docs for a
+# renamed-away package, and it depends on whichever machine happens to run this
+# (git's diff.renames default is off, but a dev machine or CI image can override
+# it). Pin the behavior instead of inheriting the environment's config.
+changed_set="$(git -C "$ROOT" diff --no-renames --name-only "${BASE}...HEAD")"
 doc_changed() { grep -qxF "$1" <<<"$changed_set"; }
 # Repo-root-relative glob match against the changed set (e.g. "internal/foo/**").
+# "**" crosses path separators (recursive); a bare "*" does not (e.g.
+# "scripts/*.sh" matches "scripts/x.sh" but not "scripts/lib/x.sh") — bash's own
+# `[[ == pattern ]]` doesn't distinguish these (a lone "*" matches "/" too), so
+# translate to a regex instead of relying on shell glob matching.
+glob_to_regex() {
+  local pat="$1"
+  pat="$(printf '%s' "$pat" | sed -e 's/[.[\^$+?(){}|]/\\&/g')"
+  pat="${pat//\*\*/$'\x01'}"
+  pat="${pat//\*/[^/]*}"
+  pat="${pat//$'\x01'/.*}"
+  printf '^%s$' "$pat"
+}
 glob_changed() {
-  local pat="$1" f
+  local regex f
+  regex="$(glob_to_regex "$1")"
   while IFS= read -r f; do
     [[ -n "$f" ]] || continue
-    # shellcheck disable=SC2053
-    [[ "$f" == $pat ]] && return 0
+    [[ "$f" =~ $regex ]] && return 0
   done <<<"$changed_set"
   return 1
 }
