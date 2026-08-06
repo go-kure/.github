@@ -257,6 +257,41 @@ for ((i = 0; i < n_rm; i++)); do
   fi
 done
 
+# 2b. review_mappings gate for entries REMOVED from the map — mirrors 1b for
+# packages, same rationale: a PR that both deletes (or retargets) the
+# enforcement row AND changes code that row used to cover would otherwise
+# never be checked at all, since section 2 above only reads HEAD's map. That
+# makes "delete the review_mappings row" a way to dodge the same-PR
+# documentation requirement it exists to enforce.
+if [[ -n "$base_map" ]]; then
+  n_rm_base="$(echo "$base_map" | yq '.review_mappings | length' 2>/dev/null || echo 0)"
+  [[ "$n_rm_base" == "null" ]] && n_rm_base=0
+  for ((i = 0; i < n_rm_base; i++)); do
+    base_change="$(echo "$base_map" | yq ".review_mappings[$i].change")"
+    base_has_docs="$(echo "$base_map" | yq ".review_mappings[$i] | has(\"docs\")")"
+    [[ -n "$base_change" && "$base_change" != "null" && "$base_has_docs" == "true" ]] || continue
+
+    # Still present at HEAD (same `change` value)? Section 2 above already
+    # covers it — only act on rows that genuinely disappeared or retargeted.
+    still_present="$(yq ".review_mappings[]? | select(.change==\"$base_change\") | .change" "$MAP")"
+    [[ -z "$still_present" || "$still_present" == "null" ]] || continue
+
+    glob_changed "$base_change" || continue
+
+    ok=0
+    while IFS= read -r d; do
+      [[ -n "$d" && "$d" != "null" ]] || continue
+      doc_changed "$d" && { ok=1; break; }
+    done < <(echo "$base_map" | yq ".review_mappings[$i].docs[]?")
+
+    if [[ $ok -ne 1 ]]; then
+      docs_list="$(echo "$base_map" | yq -o=csv ".review_mappings[$i].docs" 2>/dev/null || true)"
+      echo "FAIL: the review mapping for '$base_change' was removed from docs-map.yaml and matching code changed, but none of its old docs (${docs_list:-<none>}) did — repoint or update them in this PR"
+      violations=$((violations + 1))
+    fi
+  done
+fi
+
 if [[ $warnings -gt 0 ]]; then
   echo "doc-gate: $warnings trivial-touch warning(s) above — advisory only, does not fail the gate." >&2
 fi
