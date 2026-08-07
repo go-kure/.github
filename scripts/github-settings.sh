@@ -510,11 +510,14 @@ audit_repo_settings() {
     fi
 }
 
-# Audit security_and_analysis settings. These live under a nested
-# security_and_analysis.<key>.status object in both the GET response and the PATCH
-# body ("enabled"/"disabled" strings, not top-level booleans), so they can't share
-# audit_repo_settings' setting_keys loop — that loop reads/writes top-level boolean
-# fields.
+# Audit security_and_analysis settings. secret_scanning and
+# secret_scanning_push_protection live under a nested security_and_analysis.<key>.status
+# object in both the GET response and the PATCH body ("enabled"/"disabled" strings, not
+# top-level booleans), so they can't share audit_repo_settings' setting_keys loop — that
+# loop reads/writes top-level boolean fields. dependabot_security_updates is readable
+# under the same GET nested object, but the PATCH /repos/{owner}/{repo} request schema
+# does not list it as a writable security_and_analysis sub-field — it's toggled via the
+# dedicated PUT/DELETE .../automated-security-fixes endpoint instead.
 audit_security_settings() {
     local repo="$1"
     local apply="$2"
@@ -522,15 +525,14 @@ audit_security_settings() {
     local settings
     settings=$(gh api "repos/$GITHUB_ORG/$repo")
 
-    local -a security_keys=(
+    local -a patch_keys=(
         "secret_scanning"
         "secret_scanning_push_protection"
-        "dependabot_security_updates"
     )
 
     local fixes="{}"
 
-    for key in "${security_keys[@]}"; do
+    for key in "${patch_keys[@]}"; do
         local expected actual
         expected=$(gh_policy_value "$repo" "security.$key")
         [ "$expected" = "null" ] && continue # not declared in policy — skip, don't report as drift
@@ -556,6 +558,28 @@ audit_security_settings() {
             --input - <<<"$(jq -n --argjson f "$fixes" '{security_and_analysis: $f}')" \
             --silent
     fi
+
+    local expected_dsu actual_dsu
+    expected_dsu=$(gh_policy_value "$repo" "security.dependabot_security_updates")
+    if [ "$expected_dsu" != "null" ]; then
+        actual_dsu=$(echo "$settings" | jq -r '.security_and_analysis.dependabot_security_updates.status // "disabled"')
+        if [ "$actual_dsu" = "$expected_dsu" ]; then
+            echo -e "  ${GREEN}OK${NC}: security.dependabot_security_updates = $expected_dsu"
+            SETTINGS_OK=$((SETTINGS_OK + 1))
+        else
+            SETTINGS_MISSING=$((SETTINGS_MISSING + 1))
+            if [ "$apply" = "true" ]; then
+                echo -e "  ${YELLOW}SETTING${NC}: security.dependabot_security_updates to $expected_dsu (was: $actual_dsu)"
+                if [ "$expected_dsu" = "enabled" ]; then
+                    gh api "repos/$GITHUB_ORG/$repo/automated-security-fixes" --method PUT --silent
+                else
+                    gh api "repos/$GITHUB_ORG/$repo/automated-security-fixes" --method DELETE --silent
+                fi
+            else
+                echo -e "  ${RED}WRONG${NC}: security.dependabot_security_updates = $actual_dsu (should be $expected_dsu)"
+            fi
+        fi
+    fi
 }
 
 # Audit rulesets
@@ -578,9 +602,11 @@ audit_rulesets() {
     local ruleset_names
     ruleset_names=$(yq -r '.github_defaults.rulesets | keys | .[]' "$POLICY_FILE")
 
-    # Get existing rulesets
+    # Get existing rulesets. includes_parents=false excludes org-level rulesets that
+    # apply here by inheritance — those are managed at the org level, not this repo's,
+    # and would otherwise show up as unmanaged drift below.
     local existing_rulesets
-    existing_rulesets=$(gh api "repos/$GITHUB_ORG/$repo/rulesets" 2>/dev/null || echo "[]")
+    existing_rulesets=$(gh api "repos/$GITHUB_ORG/$repo/rulesets?includes_parents=false" 2>/dev/null || echo "[]")
 
     for ruleset_name in $ruleset_names; do
         local existing
@@ -751,7 +777,7 @@ audit_rulesets() {
     unmanaged_rulesets=$(echo "$existing_rulesets" | jq -c --argjson known "$policy_ruleset_names_json" \
         '[.[] | select(.name as $n | $known | index($n) | not) | .name]')
     if [ "$unmanaged_rulesets" != "[]" ]; then
-        RULESET_MISSING=$((RULESET_MISSING + 1))
+        RULESET_MISSING=$((RULESET_MISSING + $(echo "$unmanaged_rulesets" | jq 'length')))
         echo -e "  ${RED}UNMANAGED${NC}: Ruleset(s) not in policy (created out-of-band): $unmanaged_rulesets"
     fi
 }

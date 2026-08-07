@@ -72,12 +72,15 @@ Settings (labels, rulesets, branch protection, merge policy) for all go-kure rep
 centrally by this repo's `settings.yml` workflow. The source of truth is
 `governance/repository-settings-policy.yaml`.
 
-| Setting           | All go-kure repos |
-|-------------------|-------------------|
-| Merge method      | Rebase only       |
-| Branch protection | GitHub rulesets   |
-| Auto-merge        | Enabled (org-wide); kure/launcher still land via the merge queue |
-| Wiki              | Disabled          |
+| Setting                          | All go-kure repos |
+|----------------------------------|-------------------|
+| Merge method                     | Rebase only       |
+| Branch protection                | GitHub rulesets   |
+| Auto-merge                       | Enabled (org-wide); kure/launcher still land via the merge queue |
+| Wiki                             | Disabled          |
+| Secret scanning                  | Enabled           |
+| Secret scanning push protection  | Enabled           |
+| Dependabot security updates      | Enabled           |
 
 ## Release Process
 
