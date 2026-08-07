@@ -114,6 +114,76 @@ build.
 | `main-protection`                                    | `active`    | all repos         |
 | `Code Quality Copilot review for default branch`      | `disabled`  | kure, launcher only |
 
+## Organization Settings
+
+Organization-level settings (`orgs/go-kure`) are managed separately from the per-repo settings
+above, and only when `scripts/github-settings.sh` is run with `--org` — every other invocation
+(`--all`, a single repo, the daily `settings.yml` run) never touches these and never needs a token
+with the `admin:org` scope. Source of truth is the `github_org:` block in
+`governance/repository-settings-policy.yaml`, which has no per-repo override tier (an organization
+has no per-repo variants). Each key below is checked bidirectionally against policy by
+`scripts/check-settings-doc.sh` in CI, same as the repository tables above.
+
+Four settings are audit-only: readable via `GET /orgs/{org}` but not writable via
+`PATCH /orgs/{org}`, so `--org --apply` reports drift on them but never attempts to fix it — marked
+below.
+
+**Organization-level rulesets are not modeled.** `GET /orgs/go-kure/rulesets` returns HTTP 403
+"Upgrade to GitHub Team to enable this feature" — a billing-tier limit, not a token scope. Nothing
+in this script reads or writes them.
+
+### Organization settings
+
+| Setting                                                          | Default  |
+|-------------------------------------------------------------------|----------|
+| `default_repository_permission`                                   | `read`   |
+| `members_can_create_repositories`                                  | `true`   |
+| `members_can_create_public_repositories`                           | `true`   |
+| `members_can_create_private_repositories`                          | `true`   |
+| `members_can_create_internal_repositories`                         | `false`  |
+| `members_can_fork_private_repositories`                            | `false`  |
+| `members_can_delete_repositories`                                  | `true`   |
+| `members_can_change_repo_visibility`                               | `true`   |
+| `members_can_delete_issues`                                        | `false`  |
+| `members_can_invite_outside_collaborators`                         | `true`   |
+| `members_can_create_pages`                                         | `true`   |
+| `members_can_create_public_pages`                                  | `true`   |
+| `members_can_create_private_pages`                                 | `true`   |
+| `members_can_create_teams`                                         | `true`   |
+| `has_organization_projects`                                        | `true`   |
+| `has_repository_projects`                                          | `true`   |
+| `readers_can_create_discussions`                                   | `true`   |
+| `members_can_view_dependency_insights`                             | `true`   |
+| `display_commenter_full_name_setting_enabled`                      | `false`  |
+| `deploy_keys_enabled_for_repositories`                             | `false`  |
+| `web_commit_signoff_required`                                      | `false`  |
+| `dependabot_alerts_enabled_for_new_repositories`                   | `false`  |
+| `dependabot_security_updates_enabled_for_new_repositories`         | `false`  |
+| `dependency_graph_enabled_for_new_repositories`                    | `false`  |
+| `secret_scanning_enabled_for_new_repositories`                     | `false`  |
+| `secret_scanning_push_protection_enabled_for_new_repositories`     | `false`  |
+| `secret_scanning_push_protection_custom_link_enabled`              | `false`  |
+| `secret_scanning_validity_checks_enabled`                          | `false`  |
+| `two_factor_requirement_enabled` (audit-only)                      | `true`   |
+| `advanced_security_enabled_for_new_repositories` (audit-only)      | `false`  |
+| `default_repository_branch` (audit-only)                           | `main`   |
+| `members_allowed_repository_creation_type` (audit-only, deprecated by GitHub) | `all` |
+
+The eight `*_enabled_for_new_repositories` defaults are recorded as `false` above because that is
+live reality today — a repo added to `GITHUB_REPOS` inherits repo-level policy regardless, but any
+other new repo in the org starts with these off. Tightening them is a deliberate follow-up change,
+not something the initial `github_org:` block did.
+
+### Organization Actions permissions
+
+| Setting                                | Default |
+|-----------------------------------------|---------|
+| `actions.enabled_repositories`           | `all`   |
+| `actions.allowed_actions`                | `all`   |
+| `actions.sha_pinning_required`           | `false` |
+| `actions.default_workflow_permissions`   | `read`  |
+| `actions.can_approve_pull_request_reviews` | `false` |
+
 ## Release Process
 
 | Aspect       | kure                    | launcher                | .github |

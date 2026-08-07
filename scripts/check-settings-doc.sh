@@ -57,6 +57,8 @@ documented_security="$(extract_section 'Security')"
 # sed here uses BRE (no -E): bare ( ) are literal, \( \) would mean a
 # capture group — so the heading's literal parens must NOT be escaped.
 documented_rulesets="$(extract_section 'Rulesets (branch protection)')"
+documented_org="$(extract_section 'Organization settings')"
+documented_org_actions="$(extract_section 'Organization Actions permissions')"
 
 policy_settings="$(jq -r '
   .github_defaults
@@ -68,6 +70,15 @@ policy_settings="$(jq -r '
 policy_security="$(jq -r '.github_defaults.security // {} | keys[] | "security." + .' <<<"$POLICY_JSON" | sort -u)"
 
 policy_rulesets="$(jq -r '.github_defaults.rulesets // {} | keys[]' <<<"$POLICY_JSON" | sort -u)"
+
+policy_org="$(jq -r '
+  .github_org // {}
+  | to_entries
+  | map(select((.value | type) != "object" and (.value | type) != "array"))
+  | .[].key
+' <<<"$POLICY_JSON" | sort -u)"
+
+policy_org_actions="$(jq -r '.github_org.actions // {} | keys[] | "actions." + .' <<<"$POLICY_JSON" | sort -u)"
 
 compare() {
   local label="$1" documented="$2" policy="$3"
@@ -89,11 +100,13 @@ compare() {
 compare "top-level settings" "$documented_settings" "$policy_settings"
 compare "security settings" "$documented_security" "$policy_security"
 compare "rulesets" "$documented_rulesets" "$policy_rulesets"
+compare "organization settings" "$documented_org" "$policy_org"
+compare "organization Actions permissions" "$documented_org_actions" "$policy_org_actions"
 
 if [[ $errors -gt 0 ]]; then
   echo "check-settings-doc: $errors violation(s)." >&2
   exit 1
 fi
 
-total=$(($(wc -l <<<"$policy_settings") + $(wc -l <<<"$policy_security") + $(wc -l <<<"$policy_rulesets")))
+total=$(($(wc -l <<<"$policy_settings") + $(wc -l <<<"$policy_security") + $(wc -l <<<"$policy_rulesets") + $(wc -l <<<"$policy_org") + $(wc -l <<<"$policy_org_actions")))
 echo "check-settings-doc: OK ($total governed setting(s)/ruleset(s) match docs)."

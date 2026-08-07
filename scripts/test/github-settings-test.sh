@@ -218,6 +218,57 @@ imported_unmodeled=$(jq "$import_filter" <<<"$main_live_with_unmodeled")
 assert_eq "import flags an injected unmodeled rule type" '["code_scanning"]' \
     "$(jq -c '.unmapped_rule_types' <<<"$imported_unmodeled")"
 
+# ---- org_policy_json: no override tier, straight read of .github_org ----
+
+assert_eq "org_policy_json resolves a top-level scalar" "read" \
+    "$(org_policy_json default_repository_permission | jq -r '.')"
+assert_eq "org_policy_json resolves a nested actions key" '"all"' \
+    "$(org_policy_json actions.allowed_actions)"
+assert_eq "org_policy_json resolves a false-valued key to false, not null" "false" \
+    "$(org_policy_json members_can_create_internal_repositories)"
+assert_eq "org_policy_json returns null for an absent key" "null" \
+    "$(org_policy_json this_key_does_not_exist)"
+
+# ---- validate_policy on github_org: same bidirectional-parity and enum
+# checks as the repo tier, exercised the same way (temporarily override
+# POLICY_JSON for one subshell call — bash gives a shell function its own
+# copy of a var-prefixed assignment for the call's duration, same pattern
+# the bogus_policy_json test above already relies on). ----
+
+org_extra_key_json=$(jq '.github_org.bogus_org_key = true' <<<"$POLICY_JSON")
+org_extra_out=$( (POLICY_JSON="$org_extra_key_json" validate_policy) 2>&1 )
+org_extra_rc=$?
+if [ "$org_extra_rc" -ne 0 ]; then
+    echo "PASS: validate_policy rejects a github_org key not in ORG_SETTING_KEYS/ORG_READONLY_KEYS"
+    pass_count=$((pass_count + 1))
+else
+    echo "FAIL: validate_policy should reject an unmodeled github_org key"
+    failures=$((failures + 1))
+fi
+assert_contains "validate_policy's github_org error names the offending key" "$org_extra_out" "bogus_org_key"
+
+org_missing_key_json=$(jq 'del(.github_org.web_commit_signoff_required)' <<<"$POLICY_JSON")
+org_missing_rc=$( (POLICY_JSON="$org_missing_key_json" validate_policy) >/dev/null 2>&1; echo $? )
+if [ "$org_missing_rc" -ne 0 ]; then
+    echo "PASS: validate_policy rejects an ORG_SETTING_KEYS entry missing from github_org"
+    pass_count=$((pass_count + 1))
+else
+    echo "FAIL: validate_policy should reject a governed org key absent from github_org"
+    failures=$((failures + 1))
+fi
+
+org_bad_enum_json=$(jq '.github_org.actions.allowed_actions = "nonsense"' <<<"$POLICY_JSON")
+org_bad_enum_out=$( (POLICY_JSON="$org_bad_enum_json" validate_policy) 2>&1 )
+org_bad_enum_rc=$?
+if [ "$org_bad_enum_rc" -ne 0 ]; then
+    echo "PASS: validate_policy rejects an invalid github_org.actions enum value"
+    pass_count=$((pass_count + 1))
+else
+    echo "FAIL: validate_policy should reject actions.allowed_actions=nonsense"
+    failures=$((failures + 1))
+fi
+assert_contains "validate_policy's actions-enum error names the offending key" "$org_bad_enum_out" "allowed_actions"
+
 echo ""
 echo "github-settings-test: $pass_count passed, $failures failed"
 if [ "$failures" -gt 0 ]; then

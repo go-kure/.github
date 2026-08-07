@@ -64,7 +64,7 @@ labels reference, and design docs in sync when you change them.
 └── PULL_REQUEST_TEMPLATE.md             # Org-wide default
 ```
 
-## Working with Org Settings
+## Working with Repository Settings
 
 Settings are defined in `governance/repository-settings-policy.yaml` and applied via
 `scripts/github-settings.sh`. The script governs: top-level repo settings (merge methods,
@@ -123,6 +123,45 @@ against a fork or a subset of repos.
 ### Adding or changing labels
 
 Edit `standards/labels.json`. See `standards/labels.md` for naming conventions and the category reference before adding new labels. The settings script syncs labels to all repos automatically.
+
+## Working with Organization Settings
+
+Distinct from repository settings above: this governs `orgs/go-kure` itself (member
+privileges, new-repo security defaults, org-wide Actions permissions) via a `github_org:`
+block in the same `governance/repository-settings-policy.yaml`, with no per-repo override
+tier. Reached only through `--org` — every other invocation of
+`scripts/github-settings.sh` (`--all`, a single repo, the daily `settings` job in
+`settings.yml`) never touches this and never needs the scope below.
+
+**Prerequisite**: `--org` requires a token with the `admin:org` scope
+(`gh auth refresh -h github.com -s admin:org` locally; `secrets.SETTINGS_PAT` for the
+`settings-org` job in `settings.yml`, unverified as of when this was added — check
+https://github.com/settings/tokens and rotate if it doesn't have it). Without the scope,
+`--org` fails fast with a named error instead of a bare 403.
+
+```bash
+# Audit organization-level settings
+./scripts/github-settings.sh --org --ci
+
+# Apply organization-level settings
+./scripts/github-settings.sh --org --apply
+
+# Print live org settings that drift from policy, as paste-ready github_org: YAML
+./scripts/github-settings.sh --org --import
+```
+
+Some fields are readable but not writable via `PATCH /orgs/{org}` (`ORG_READONLY_KEYS` in
+the script — e.g. `two_factor_requirement_enabled`, set via the org/enterprise UI).
+`--org --apply` audits them normally but reports `BLOCKED` instead of attempting a PATCH
+that would error.
+
+**Organization-level rulesets are not modeled.** `GET /orgs/go-kure/rulesets` returns HTTP
+403 "Upgrade to GitHub Team to enable this feature" — a billing-tier limit, not a token
+scope. If the org ever upgrades, the existing rule registry
+(`RULE_TYPE_ORDER`/`RULE_KIND`) and `ruleset_diff` engine that already drive repo-level
+rulesets are the natural starting point — org rulesets use the identical `rules` array
+vocabulary, they'd just need a new endpoint and `repository_name`/`repository_property`
+condition support.
 
 ## Working with Design Docs
 
