@@ -414,6 +414,10 @@ validate_policy() {
     # 4. Every repos: scope entry must be a repo this script actually knows
     #    about — catches a typo that would silently disable a ruleset everywhere.
     local bad_scope_repos repo_list_json
+    # shellcheck disable=SC2086 # intentional word-splitting: GITHUB_REPOS is
+    # a space-separated list and unquoted expansion is what turns it into one
+    # printf argument (one line) per repo name — quoting would pass it as a
+    # single argument and produce one JSON array element for the whole string.
     repo_list_json=$(printf '%s\n' ${GITHUB_REPOS:-} | jq -R . | jq -s .)
     bad_scope_repos=$(jq -r --argjson known "$repo_list_json" '
         [.github_defaults.rulesets // {} | to_entries[] | select(.value.repos != null) | .value.repos[] | select(. as $r | $known | index($r) | not)] | unique | .[]
