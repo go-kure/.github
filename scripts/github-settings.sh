@@ -590,6 +590,21 @@ ruleset_names_missing() {
     jq -c --argjson e "$existing_json" '. - $e' <<<"$applicable_json"
 }
 
+# Bash array elements -> JSON array of strings, zero-element-safe.
+# `printf '%s\n' "${arr[@]}"` on an empty array still emits one blank line
+# (bash reuses the format string once even with zero args), which
+# `jq -R . | jq -s .` would then turn into `[""]` instead of `[]` — a real
+# bug caught by review on the first version of this helper's call sites,
+# where a repo with zero applicable/zero live rulesets fed a spurious ""
+# into ruleset_names_missing.
+bash_array_to_json() {
+    if [ "$#" -eq 0 ]; then
+        echo "[]"
+    else
+        printf '%s\n' "$@" | jq -R . | jq -sc .
+    fi
+}
+
 # Does ruleset `name` apply to `repo`? When `name` is declared in
 # github_defaults: a ruleset with no "repos" field applies everywhere; one
 # with "repos: [...]" only applies to listed repos (mirrors the existing
@@ -1489,8 +1504,8 @@ import_repo() {
     # on GitHub) leaves no live JSON to dump — flag it instead of letting it
     # silently drop out of rulesets_json and read as "matches policy".
     local applicable_names_json existing_names_json missing_rulesets_json
-    applicable_names_json=$(printf '%s\n' "${applicable_names[@]}" | jq -R . | jq -s .)
-    existing_names_json=$(printf '%s\n' "${existing_ruleset_names[@]}" | jq -R . | jq -s .)
+    applicable_names_json=$(bash_array_to_json "${applicable_names[@]}")
+    existing_names_json=$(bash_array_to_json "${existing_ruleset_names[@]}")
     missing_rulesets_json=$(ruleset_names_missing "$applicable_names_json" "$existing_names_json")
     if [ "$missing_rulesets_json" != "[]" ]; then
         echo "# WARNING: policy ruleset(s) expected on $repo but not found live (deleted?): $(jq -r 'join(", ")' <<<"$missing_rulesets_json")"
