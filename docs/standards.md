@@ -69,18 +69,50 @@ Target: enable all standard linters by Q2 2026.
 ## Repository Settings
 
 Settings (labels, rulesets, branch protection, merge policy) for all go-kure repos are managed
-centrally by this repo's `settings.yml` workflow. The source of truth is
-`governance/repository-settings-policy.yaml`.
+centrally by this repo's `settings.yml` workflow, driven by `scripts/github-settings.sh`. The
+source of truth is `governance/repository-settings-policy.yaml`; per-repo overrides (e.g. kure's
+`has_discussions`, kure/launcher's merge-queue ruleset override) live under that file's
+`github_repos` section. Each key below is checked bidirectionally against policy by
+`scripts/check-settings-doc.sh` in CI — a key here with no policy match, or vice versa, fails the
+build.
 
-| Setting                          | All go-kure repos |
-|----------------------------------|-------------------|
-| Merge method                     | Rebase only       |
-| Branch protection                | GitHub rulesets   |
-| Auto-merge                       | Enabled (org-wide); kure/launcher still land via the merge queue |
-| Wiki                             | Disabled          |
-| Secret scanning                  | Enabled           |
-| Secret scanning push protection  | Enabled           |
-| Dependabot security updates      | Enabled           |
+### Top-level settings
+
+| Setting                            | Default               |
+|-------------------------------------|-----------------------|
+| `allow_rebase_merge`                | `true`                |
+| `allow_squash_merge`                | `false`               |
+| `allow_merge_commit`                | `false`               |
+| `delete_branch_on_merge`            | `true`                |
+| `allow_update_branch`               | `true`                |
+| `has_wiki`                          | `false`               |
+| `allow_auto_merge`                  | `true` (org-wide; kure/launcher still land via the merge queue) |
+| `has_projects`                      | `true`                |
+| `has_issues`                        | `true`                |
+| `has_discussions`                   | `false` (kure: `true`) |
+| `has_downloads`                     | `false`               |
+| `is_template`                       | `false`               |
+| `allow_forking`                     | `true`                |
+| `web_commit_signoff_required`       | `false`               |
+| `merge_commit_title`                | `MERGE_MESSAGE` (inert while `allow_merge_commit` is `false`) |
+| `merge_commit_message`              | `PR_TITLE` (inert while `allow_merge_commit` is `false`) |
+| `squash_merge_commit_title`         | `COMMIT_OR_PR_TITLE`  |
+| `squash_merge_commit_message`       | `COMMIT_MESSAGES`     |
+
+### Security
+
+| Setting                                      | Default    |
+|-----------------------------------------------|-----------|
+| `security.secret_scanning`                    | `enabled` |
+| `security.secret_scanning_push_protection`     | `enabled` |
+| `security.dependabot_security_updates`         | `enabled` |
+
+### Rulesets (branch protection)
+
+| Ruleset                                            | Enforcement | Scope             |
+|-----------------------------------------------------|-------------|-------------------|
+| `main-protection`                                    | `active`    | all repos         |
+| `Code Quality Copilot review for default branch`      | `disabled`  | kure, launcher only |
 
 ## Release Process
 

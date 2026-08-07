@@ -10,6 +10,21 @@ github_defaults:
   has_wiki: false
   allow_auto_merge: true
   has_projects: true
+  has_issues: true
+  has_discussions: false
+  has_downloads: false
+  is_template: false
+  allow_forking: true
+  # May read back true regardless of this value if the org forces commit
+  # signoff — GitHub's org-level setting overrides the repo-level one.
+  web_commit_signoff_required: false
+  # merge_commit_title/message are inert while allow_merge_commit is false —
+  # recorded here so the audit reflects live reality and doesn't drift once
+  # merge commits are ever re-enabled.
+  merge_commit_title: MERGE_MESSAGE
+  merge_commit_message: PR_TITLE
+  squash_merge_commit_title: COMMIT_OR_PR_TITLE
+  squash_merge_commit_message: COMMIT_MESSAGES
   # security_and_analysis settings — status strings ("enabled"/"disabled"), not
   # booleans, matching the GitHub API's own vocabulary for this nested object.
   # Read/applied by audit_security_settings() in scripts/github-settings.sh, not
@@ -43,6 +58,23 @@ github_defaults:
             - build
             - rebase-check
       # Default: no bypass actors
+    # GitHub Copilot's automated code review, exposed as a ruleset rule type.
+    # enforcement: disabled records live reality (created via the UI, never
+    # turned on) rather than changing behavior — flip to "active" to actually
+    # enable it. Scoped to kure/launcher only, mirroring how
+    # standards/labels.json scopes labels per repo; .github never sees it.
+    "Code Quality Copilot review for default branch":
+      repos: [kure, launcher]
+      target: branch
+      enforcement: disabled
+      conditions:
+        ref_name:
+          include: ["~DEFAULT_BRANCH"]
+      rules:
+        copilot_code_review:
+          review_on_push: true
+          review_draft_pull_requests: true
+      # No bypass actors
 
 github_repos:
   # .github: no overrides (uses defaults: rebase-check + strict + no merge queue)
@@ -53,9 +85,15 @@ github_repos:
   # once its required checks pass; the queue then does the rebase + merged-result
   # test + linear land. On .github (no queue) auto-merge merges directly once
   # rebase-check + strict status checks pass.
+  # kure and launcher's main-protection override is byte-identical (verified
+  # by diffing the live rulesets) — folded via a YAML anchor rather than
+  # promoted into github_defaults, since that would force .github to express
+  # "explicitly no merge_queue" (a concept this schema has no way to state)
+  # and would default the release-bot bypass actor onto .github too.
   kure:
+    has_discussions: true
     rulesets:
-      main-protection:
+      main-protection: &queue_protection
         bypass_actors:
           # kure-release-bot GitHub App (app_id: 2882845)
           - actor_id: 2882845
@@ -80,25 +118,4 @@ github_repos:
             check_response_timeout_minutes: 60
   launcher:
     rulesets:
-      main-protection:
-        bypass_actors:
-          # kure-release-bot GitHub App (app_id: 2882845)
-          - actor_id: 2882845
-            actor_type: Integration
-            bypass_mode: always
-        # Same merge-queue override as kure.
-        rules:
-          required_status_checks:
-            strict: false
-            contexts:
-              - lint
-              - test
-              - build
-          merge_queue:
-            merge_method: REBASE
-            grouping_strategy: ALLGREEN
-            min_entries_to_merge: 1
-            max_entries_to_merge: 1
-            max_entries_to_build: 1
-            min_entries_to_merge_wait_minutes: 0
-            check_response_timeout_minutes: 60
+      main-protection: *queue_protection

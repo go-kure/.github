@@ -67,7 +67,15 @@ labels reference, and design docs in sync when you change them.
 ## Working with Org Settings
 
 Settings are defined in `governance/repository-settings-policy.yaml` and applied via
-`scripts/github-settings.sh`.
+`scripts/github-settings.sh`. The script governs: top-level repo settings (merge methods,
+wiki/issues/discussions/projects toggles, commit-title/message formats — see `SETTING_KEYS`
+in the script), the `secret_scanning` / `secret_scanning_push_protection` /
+`dependabot_security_updates` security trio, labels (`standards/labels.json`), and branch
+rulesets (rule types are a registry in the script — `RULE_TYPE_ORDER`/`RULE_KIND` — not a
+hardcoded list; adding a new rule type means adding a registry entry). See `docs/standards.md`
+§ "Repository Settings" for the full governed key list, and that same script's plan file
+history for what's deliberately still out of scope (environments, webhooks, Actions
+permissions, collaborators, ...).
 
 ### Auditing settings
 
@@ -89,6 +97,28 @@ The `settings.yml` workflow runs this automatically in audit mode on push to mai
 3. Commit and open a PR
 4. After merge, trigger `settings.yml` manually via `workflow_dispatch` with `mode: apply`
    (`repo` defaults to `all`)
+
+### Finding drift from live settings (`--import`)
+
+```bash
+# Print only what a repo's live settings/rulesets diverge from policy, as
+# policy-shaped YAML ready to paste under github_defaults or github_repos.<repo>
+./scripts/github-settings.sh kure --import
+
+# Same, for every repo — read-only, never writes governance/*.yaml itself
+./scripts/github-settings.sh --all --import
+```
+
+A repo with nothing to fold in prints `# <repo>: matches policy — nothing to import`. A live
+ruleset rule type the script doesn't model yet (not in the `RULE_KIND` registry) is omitted
+from the printed YAML and flagged with an `unmapped_rule_types` warning on stderr instead of
+being silently dropped.
+
+### Environment variables
+
+`GITHUB_ORG` (default `go-kure`) and `GITHUB_REPOS` (default `.github kure launcher`,
+space-separated) override which org/repos every mode above targets — useful for testing
+against a fork or a subset of repos.
 
 ### Adding or changing labels
 
