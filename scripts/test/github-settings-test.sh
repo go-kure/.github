@@ -277,6 +277,19 @@ assert_eq "ruleset_names_missing detects a live-deleted ruleset" '["b"]' \
 assert_eq "ruleset_names_missing returns empty when nothing is missing" '[]' \
     "$(ruleset_names_missing '["a","b"]' '["a","b","c"]')"
 
+# ---- bash_array_to_json: printf on a zero-element bash array still emits
+# one blank line, which jq turns into [""] instead of [] unless guarded.
+# Regression test for a review-caught bug in the first version of this
+# helper's call sites (empty applicable_names + non-empty existing names
+# produced a spurious "" entry in ruleset_names_missing's output). ----
+
+assert_eq "bash_array_to_json returns [] for zero elements (printf blank-line guard)" "[]" \
+    "$(bash_array_to_json)"
+assert_eq "bash_array_to_json converts a populated array" '["a","b"]' \
+    "$(bash_array_to_json a b)"
+assert_eq "ruleset_names_missing via the real empty-array construction path returns [] (not [\"\"])" '[]' \
+    "$(ruleset_names_missing "$(bash_array_to_json)" "$(bash_array_to_json "Some Live Ruleset")")"
+
 # ---- ruleset_diff: bypass_actors must compare the full actor object (id,
 # actor_type, bypass_mode), not just actor_id — a live actor with the same
 # id but a widened bypass_mode is real drift, and the id-only comparison
