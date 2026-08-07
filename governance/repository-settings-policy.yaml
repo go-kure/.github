@@ -1,4 +1,4 @@
-# GitHub repository settings for go-kure organization
+# GitHub repository settings for go-kure organizatio
 # Applied by scripts/github-settings.sh
 
 github_defaults:
@@ -8,7 +8,7 @@ github_defaults:
   delete_branch_on_merge: true
   allow_update_branch: true
   has_wiki: false
-  allow_auto_merge: false
+  allow_auto_merge: true
   has_projects: true
   rulesets:
     main-protection:
@@ -30,11 +30,11 @@ github_defaults:
         required_status_checks:
           strict: true
           contexts:
-            - lint
-            - test
-            - build
-            - rebase-check
-      # Default: no bypass actors
+          - lint
+          - test
+          - build
+          - rebase-check
+          # Default: no bypass actors
 
 github_repos:
   # .github: no overrides (uses defaults: rebase-check + strict + no merge queue)
@@ -48,43 +48,43 @@ github_repos:
     rulesets:
       main-protection:
         bypass_actors:
-          # kure-release-bot GitHub App (app_id: 2882845)
-          - actor_id: 2882845
-            actor_type: Integration
-            bypass_mode: always
+        # kure-release-bot GitHub App (app_id: 2882845)
+        - actor_id: 2882845
+          actor_type: Integration
+          bypass_mode: always
         # Per-repo rule overrides: the merge queue tests the real merged result,
         # so rebase-check and strict up-to-date enforcement are no longer needed.
         rules:
           required_status_checks:
             strict: false
             contexts:
-              - lint
-              - test
-              - build
+            - lint
+            - test
+            - build
           merge_queue:
-            merge_method: REBASE                 # preserves linear history
-            grouping_strategy: ALLGREEN          # drop any failing entry from the group
-            min_entries_to_merge: 1              # conservative sizing
+            merge_method: REBASE # preserves linear history
+            grouping_strategy: ALLGREEN # drop any failing entry from the group
+            min_entries_to_merge: 1 # conservative sizing
             max_entries_to_merge: 1
-            max_entries_to_build: 1              # tune up after observing runner load
+            max_entries_to_build: 1 # tune up after observing runner load
             min_entries_to_merge_wait_minutes: 0
             check_response_timeout_minutes: 60
   launcher:
     rulesets:
       main-protection:
         bypass_actors:
-          # kure-release-bot GitHub App (app_id: 2882845)
-          - actor_id: 2882845
-            actor_type: Integration
-            bypass_mode: always
+        # kure-release-bot GitHub App (app_id: 2882845)
+        - actor_id: 2882845
+          actor_type: Integration
+          bypass_mode: always
         # Same merge-queue override as kure (no auto-merge).
         rules:
           required_status_checks:
             strict: false
             contexts:
-              - lint
-              - test
-              - build
+            - lint
+            - test
+            - build
           merge_queue:
             merge_method: REBASE
             grouping_strategy: ALLGREEN
