@@ -23,9 +23,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WHARF_DIR="$(dirname "$SCRIPT_DIR")"
 
-# Default organization and repos (override via environment variables)
+# Default organization and repos (override via environment variables).
+# GITHUB_REPOS_DEFAULT stays fixed even when GITHUB_REPOS is narrowed to a
+# subset for a single run (e.g. GITHUB_REPOS=.github) — validate_policy uses
+# it so a partial run doesn't misreport policy-known repos as unknown.
 GITHUB_ORG="${GITHUB_ORG:-go-kure}"
-GITHUB_REPOS="${GITHUB_REPOS:-.github kure launcher}"
+GITHUB_REPOS_DEFAULT=".github kure launcher"
+GITHUB_REPOS="${GITHUB_REPOS:-$GITHUB_REPOS_DEFAULT}"
 
 LABELS_FILE="$WHARF_DIR/standards/labels.json"
 POLICY_FILE="$WHARF_DIR/governance/repository-settings-policy.yaml"
@@ -231,6 +235,7 @@ LABELS_EXTRA=0
 LABELS_BLOCKED=0
 SETTINGS_MISSING=0
 SETTINGS_OK=0
+SETTINGS_BLOCKED=0
 RULESET_MISSING=0
 RULESET_OK=0
 
@@ -413,12 +418,17 @@ validate_policy() {
 
     # 4. Every repos: scope entry must be a repo this script actually knows
     #    about — catches a typo that would silently disable a ruleset everywhere.
+    #    Validated against GITHUB_REPOS_DEFAULT unioned with the runtime
+    #    GITHUB_REPOS, not GITHUB_REPOS alone: GITHUB_REPOS is documented as
+    #    selecting a subset (e.g. only .github) or a fork's repo set for a
+    #    single run, and a subset run must not read policy repos it simply
+    #    isn't targeting this time as unknown.
     local bad_scope_repos repo_list_json
-    # shellcheck disable=SC2086 # intentional word-splitting: GITHUB_REPOS is
-    # a space-separated list and unquoted expansion is what turns it into one
-    # printf argument (one line) per repo name — quoting would pass it as a
-    # single argument and produce one JSON array element for the whole string.
-    repo_list_json=$(printf '%s\n' ${GITHUB_REPOS:-} | jq -R . | jq -s .)
+    # shellcheck disable=SC2086 # intentional word-splitting: these are
+    # space-separated lists and unquoted expansion is what turns them into
+    # one printf argument (one line) per repo name — quoting would pass each
+    # as a single argument and produce one JSON array element for the whole string.
+    repo_list_json=$(printf '%s\n' ${GITHUB_REPOS_DEFAULT:-} ${GITHUB_REPOS:-} | jq -R . | jq -s 'unique')
     bad_scope_repos=$(jq -r --argjson known "$repo_list_json" '
         [.github_defaults.rulesets // {} | to_entries[] | select(.value.repos != null) | .value.repos[] | select(. as $r | $known | index($r) | not)] | unique | .[]
     ' <<<"$POLICY_JSON")
@@ -555,23 +565,49 @@ ruleset_json() {
     ' <<<"$POLICY_JSON"
 }
 
-# All ruleset names declared in policy (github_defaults.rulesets keys), one
-# per line — safe to mapfile even when a name contains spaces.
+# All ruleset names declared in policy, one per line — safe to mapfile even
+# when a name contains spaces. Union of github_defaults.rulesets keys and
+# every github_repos.<repo>.rulesets key: a ruleset can also exist as a
+# repo-only override with no github_defaults counterpart (e.g. an --import
+# dump of an unmanaged live ruleset pasted straight under
+# github_repos.<repo>.rulesets), and ruleset_applies() below treats that case
+# as scoped to just the repo(s) that declare it.
 ruleset_names() {
-    jq -r '.github_defaults.rulesets | keys[]' <<<"$POLICY_JSON"
+    jq -r '
+        [(.github_defaults.rulesets // {} | keys[]),
+         ((.github_repos // {}) | to_entries[] | .value.rulesets // {} | keys[])]
+        | flatten | unique[]
+    ' <<<"$POLICY_JSON"
 }
 
-# Does ruleset `name` apply to `repo`? A ruleset with no "repos" field
-# applies everywhere; one with "repos: [...]" only applies to listed repos
-# (mirrors the existing label-scoping pattern in standards/labels.json). An
-# explicit empty list means "applies nowhere" — deliberately distinguished
-# from "field absent" via the `// "ALL"` sentinel (`//` treats [] as truthy).
+# Names present in `applicable` (JSON array) but absent from `existing`
+# (JSON array) — pulled out of import_repo as a pure set-difference so the
+# "policy ruleset deleted live" detection is unit-testable without a `gh
+# api` call.
+ruleset_names_missing() {
+    local applicable_json="$1"
+    local existing_json="$2"
+    jq -c --argjson e "$existing_json" '. - $e' <<<"$applicable_json"
+}
+
+# Does ruleset `name` apply to `repo`? When `name` is declared in
+# github_defaults: a ruleset with no "repos" field applies everywhere; one
+# with "repos: [...]" only applies to listed repos (mirrors the existing
+# label-scoping pattern in standards/labels.json). An explicit empty list
+# means "applies nowhere" — deliberately distinguished from "field absent"
+# via the `// "ALL"` sentinel (`//` treats [] as truthy). When `name` has no
+# github_defaults entry at all, it's a repo-only ruleset — it applies only to
+# the repo(s) whose github_repos.<repo>.rulesets block defines it directly.
 ruleset_applies() {
     local repo="$1"
     local name="$2"
     jq -e --arg repo "$repo" --arg name "$name" '
-        (.github_defaults.rulesets[$name].repos // "ALL") as $scope
-        | if $scope == "ALL" then true else ($scope | index($repo) != null) end
+        if (.github_defaults.rulesets[$name]) != null then
+            (.github_defaults.rulesets[$name].repos // "ALL") as $scope
+            | if $scope == "ALL" then true else ($scope | index($repo) != null) end
+        else
+            (.github_repos[$repo].rulesets[$name]) != null
+        end
     ' <<<"$POLICY_JSON" >/dev/null
 }
 
@@ -1022,7 +1058,11 @@ audit_org_settings() {
             echo -e "  ${GREEN}OK${NC}: $key = $(jq -r '.' <<<"$expected_json") (audit-only)"
             SETTINGS_OK=$((SETTINGS_OK + 1))
         else
-            SETTINGS_MISSING=$((SETTINGS_MISSING + 1))
+            # Tracked separately from SETTINGS_MISSING: this drift is
+            # audit-only and can never be resolved by --apply, so counting it
+            # under SETTINGS_MISSING would let print_summary's --apply branch
+            # report it as "applied" even though nothing changed.
+            SETTINGS_BLOCKED=$((SETTINGS_BLOCKED + 1))
             if [ "$apply" = "true" ]; then
                 echo -e "  ${YELLOW}BLOCKED${NC}: $key is audit-only (not writable via PATCH /orgs) — live: $(jq -r '.' <<<"$actual_json"), policy: $(jq -r '.' <<<"$expected_json")"
             else
@@ -1174,14 +1214,17 @@ ruleset_diff() {
         done
     done
 
-    local expected_bypass
+    # Compare the full actor object (id, actor_type, bypass_mode), not just
+    # actor_id — drift in type or mode (e.g. an actor granted "always" bypass
+    # instead of the expected "pull_request") can bypass governed branch
+    # protections just as much as an unexpected actor_id. Runs unconditionally,
+    # including when policy expects zero actors, so live-only actors aren't
+    # ignored.
+    local expected_bypass expected_actors actual_actors
     expected_bypass=$(ruleset_bypass_json "$repo" "$ruleset_name")
-    if [ "$expected_bypass" != "[]" ]; then
-        local expected_ids actual_ids
-        expected_ids=$(jq -Sc '[.[].actor_id] | sort' <<<"$expected_bypass")
-        actual_ids=$(jq -Sc '[.bypass_actors[].actor_id] | sort' <<<"$full_ruleset")
-        _rd_scalar "bypass_actors" "$expected_ids" "$actual_ids"
-    fi
+    expected_actors=$(jq -c '[.[] | {actor_id, actor_type, bypass_mode}] | sort_by(.actor_id)' <<<"$expected_bypass" | jq -Sc "$CANON_JQ")
+    actual_actors=$(jq -c '[.bypass_actors[] | {actor_id, actor_type, bypass_mode}] | sort_by(.actor_id)' <<<"$full_ruleset" | jq -Sc "$CANON_JQ")
+    _rd_scalar "bypass_actors" "$expected_actors" "$actual_actors"
 }
 
 _rd_scalar() {
@@ -1415,11 +1458,13 @@ import_repo() {
     existing_rulesets=$(gh api "repos/$GITHUB_ORG/$repo/rulesets?includes_parents=false" 2>/dev/null || echo "[]")
 
     local rulesets_json="{}"
+    local -a existing_ruleset_names=()
     local ruleset_id
     for ruleset_id in $(echo "$existing_rulesets" | jq -r '.[].id'); do
         local full_ruleset ruleset_name
         full_ruleset=$(gh api "repos/$GITHUB_ORG/$repo/rulesets/$ruleset_id" 2>/dev/null)
         ruleset_name=$(echo "$full_ruleset" | jq -r '.name')
+        existing_ruleset_names+=("$ruleset_name")
 
         local is_applicable=false
         for n in "${applicable_names[@]}"; do
@@ -1440,7 +1485,18 @@ import_repo() {
         rulesets_json=$(echo "$rulesets_json" | jq --arg n "$ruleset_name" --argjson v "$clean" '. + {($n): $v}')
     done
 
-    if [ "$settings_json" = "{}" ] && [ "$security_json" = "{}" ] && [ "$rulesets_json" = "{}" ]; then
+    # A ruleset policy expects here but that no longer exists live (deleted
+    # on GitHub) leaves no live JSON to dump — flag it instead of letting it
+    # silently drop out of rulesets_json and read as "matches policy".
+    local applicable_names_json existing_names_json missing_rulesets_json
+    applicable_names_json=$(printf '%s\n' "${applicable_names[@]}" | jq -R . | jq -s .)
+    existing_names_json=$(printf '%s\n' "${existing_ruleset_names[@]}" | jq -R . | jq -s .)
+    missing_rulesets_json=$(ruleset_names_missing "$applicable_names_json" "$existing_names_json")
+    if [ "$missing_rulesets_json" != "[]" ]; then
+        echo "# WARNING: policy ruleset(s) expected on $repo but not found live (deleted?): $(jq -r 'join(", ")' <<<"$missing_rulesets_json")"
+    fi
+
+    if [ "$settings_json" = "{}" ] && [ "$security_json" = "{}" ] && [ "$rulesets_json" = "{}" ] && [ "$missing_rulesets_json" = "[]" ]; then
         echo "# $repo: matches policy — nothing to import"
         echo ""
         return 0
@@ -1589,6 +1645,7 @@ audit_org() {
 
     local settings_ok_before=$SETTINGS_OK
     local settings_missing_before=$SETTINGS_MISSING
+    local settings_blocked_before=$SETTINGS_BLOCKED
 
     audit_org_settings "$apply"
     audit_org_actions "$apply"
@@ -1596,13 +1653,15 @@ audit_org() {
     if [ "$JSON_OUTPUT" = "true" ]; then
         local org_settings_ok=$((SETTINGS_OK - settings_ok_before))
         local org_settings_missing=$((SETTINGS_MISSING - settings_missing_before))
+        local org_settings_blocked=$((SETTINGS_BLOCKED - settings_blocked_before))
         local org_status="OK"
-        [ "$org_settings_missing" -gt 0 ] && org_status="WARN"
+        [ $((org_settings_missing + org_settings_blocked)) -gt 0 ] && org_status="WARN"
         json_org_result=$(jq -n \
             --argjson so "$org_settings_ok" \
             --argjson sm "$org_settings_missing" \
+            --argjson sb "$org_settings_blocked" \
             --arg st "$org_status" \
-            '{"settings_ok": $so, "settings_missing": $sm, "status": $st}')
+            '{"settings_ok": $so, "settings_missing": $sm, "settings_blocked": $sb, "status": $st}')
     fi
 }
 
@@ -1614,15 +1673,15 @@ print_summary() {
     echo -e "${BLUE}Summary${NC}"
     echo -e "${BLUE}========================================${NC}"
 
-    local total_issues=$((LABELS_MISSING + LABELS_RENAMED + LABELS_EXTRA + SETTINGS_MISSING + RULESET_MISSING))
+    local total_issues=$((LABELS_MISSING + LABELS_RENAMED + LABELS_EXTRA + SETTINGS_MISSING + SETTINGS_BLOCKED + RULESET_MISSING))
 
     if [ "$apply" = "true" ]; then
         echo -e "Labels: ${GREEN}$LABELS_OK OK${NC}, ${YELLOW}$LABELS_MISSING created${NC}, ${YELLOW}$LABELS_RENAMED renamed${NC}, ${YELLOW}$LABELS_EXTRA extra (${LABELS_BLOCKED} skipped, in use)${NC}"
-        echo -e "Settings: ${GREEN}$SETTINGS_OK OK${NC}, ${YELLOW}$SETTINGS_MISSING applied${NC}"
+        echo -e "Settings: ${GREEN}$SETTINGS_OK OK${NC}, ${YELLOW}$SETTINGS_MISSING applied${NC}, ${RED}$SETTINGS_BLOCKED blocked (audit-only, unresolved)${NC}"
         echo -e "Rulesets: ${GREEN}$RULESET_OK OK${NC}, ${YELLOW}$RULESET_MISSING issues${NC}"
     else
         echo -e "Labels: ${GREEN}$LABELS_OK OK${NC}, ${RED}$LABELS_MISSING missing${NC}, ${YELLOW}$LABELS_RENAMED to rename${NC}, ${RED}$LABELS_EXTRA extra${NC}"
-        echo -e "Settings: ${GREEN}$SETTINGS_OK OK${NC}, ${RED}$SETTINGS_MISSING wrong${NC}"
+        echo -e "Settings: ${GREEN}$SETTINGS_OK OK${NC}, ${RED}$SETTINGS_MISSING wrong${NC}, ${RED}$SETTINGS_BLOCKED audit-only wrong${NC}"
         echo -e "Rulesets: ${GREEN}$RULESET_OK OK${NC}, ${RED}$RULESET_MISSING wrong${NC}"
     fi
 
@@ -1636,11 +1695,12 @@ print_summary() {
             --argjson lb "$LABELS_BLOCKED" \
             --argjson so "$SETTINGS_OK" \
             --argjson sm "$SETTINGS_MISSING" \
+            --argjson sb "$SETTINGS_BLOCKED" \
             --argjson ro "$RULESET_OK" \
             --argjson rm "$RULESET_MISSING" \
             --argjson repos "$json_results" \
             --argjson org "$json_org_result" \
-            '{"generated": $ts, "labels_ok": $lo, "labels_missing": $lm, "labels_renamed": $lr, "labels_extra": $le, "labels_blocked": $lb, "settings_ok": $so, "settings_missing": $sm, "rulesets_ok": $ro, "rulesets_missing": $rm, "repos": $repos, "org": $org}' \
+            '{"generated": $ts, "labels_ok": $lo, "labels_missing": $lm, "labels_renamed": $lr, "labels_extra": $le, "labels_blocked": $lb, "settings_ok": $so, "settings_missing": $sm, "settings_blocked": $sb, "rulesets_ok": $ro, "rulesets_missing": $rm, "repos": $repos, "org": $org}' \
             > github-settings-report.json
         echo ""
         echo "JSON report: github-settings-report.json"
