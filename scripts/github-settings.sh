@@ -76,6 +76,70 @@ SETTING_KEYS=(
     "squash_merge_commit_message"
 )
 
+# Organization-level settings tracked by policy (audit_org_settings + import_org).
+# Only touched behind --org — every other invocation (--all, single-repo,
+# settings.yml's daily run) never calls these paths and never needs
+# admin:org. Deliberately excludes identity/billing fields (name,
+# description, company, blog, location, email, twitter_username,
+# billing_email) — those are content, not governance, and would make every
+# audit noisy. Key names are verbatim from `gh api orgs/{org}`.
+ORG_SETTING_KEYS=(
+    "default_repository_permission"
+    "members_can_create_repositories"
+    "members_can_create_public_repositories"
+    "members_can_create_private_repositories"
+    "members_can_create_internal_repositories"
+    "members_can_fork_private_repositories"
+    "members_can_delete_repositories"
+    "members_can_change_repo_visibility"
+    "members_can_delete_issues"
+    "members_can_invite_outside_collaborators"
+    "members_can_create_pages"
+    "members_can_create_public_pages"
+    "members_can_create_private_pages"
+    "members_can_create_teams"
+    "has_organization_projects"
+    "has_repository_projects"
+    "readers_can_create_discussions"
+    "members_can_view_dependency_insights"
+    "display_commenter_full_name_setting_enabled"
+    "deploy_keys_enabled_for_repositories"
+    "web_commit_signoff_required"
+    "dependabot_alerts_enabled_for_new_repositories"
+    "dependabot_security_updates_enabled_for_new_repositories"
+    "dependency_graph_enabled_for_new_repositories"
+    "secret_scanning_enabled_for_new_repositories"
+    "secret_scanning_push_protection_enabled_for_new_repositories"
+    "secret_scanning_push_protection_custom_link_enabled"
+    "secret_scanning_validity_checks_enabled"
+)
+
+# Readable via GET /orgs/{org} but not writable via PATCH /orgs/{org} — audited
+# normally, but --apply skips them with a BLOCKED line instead of sending a
+# PATCH that would error. two_factor_requirement_enabled is set via the
+# org/enterprise UI; advanced_security_enabled_for_new_repositories is
+# unavailable on the current (free) plan; default_repository_branch isn't in
+# the PATCH schema; members_allowed_repository_creation_type is deprecated by
+# GitHub in favor of the four granular members_can_create_* booleans above.
+ORG_READONLY_KEYS=(
+    "two_factor_requirement_enabled"
+    "advanced_security_enabled_for_new_repositories"
+    "default_repository_branch"
+    "members_allowed_repository_creation_type"
+)
+
+# Organization Actions permissions, split across two endpoints (both PUT
+# full-replace, so apply always sends every key, not just drifted ones).
+ORG_ACTIONS_PERMISSIONS_KEYS=(
+    "enabled_repositories"
+    "allowed_actions"
+    "sha_pinning_required"
+)
+ORG_ACTIONS_WORKFLOW_KEYS=(
+    "default_workflow_permissions"
+    "can_approve_pull_request_reviews"
+)
+
 # Rule-type registry. This is the single source of truth for which ruleset
 # rule types this script understands — build_ruleset_payload (apply),
 # ruleset_diff (audit + drift detection) and build_ruleset_import_jq
@@ -172,15 +236,21 @@ RULESET_OK=0
 
 # JSON results
 json_results="[]"
+json_org_result="null"
 
 usage() {
     echo "Usage: $0 <repo> [--apply] [--ci] [--json]"
     echo "       $0 --all [--apply] [--ci] [--json]"
     echo "       $0 <repo>|--all --import"
+    echo "       $0 --org [--apply] [--ci] [--json]"
+    echo "       $0 --org --import"
     echo ""
     echo "Options:"
     echo "  <repo>     Repository name (e.g., kure)"
     echo "  --all      Audit/apply/import all GitHub repos (\$GITHUB_REPOS)"
+    echo "  --org      Audit/apply/import organization-level settings instead of a"
+    echo "             repo. Requires a token with the admin:org scope. Mutually"
+    echo "             exclusive with <repo> and --all — they are different scopes."
     echo "  --apply    Apply settings (default is dry-run/audit only)"
     echo "  --import   Print live settings as policy-shaped YAML instead of auditing"
     echo "             (never writes; diff the output against"
@@ -202,6 +272,9 @@ usage() {
     echo "  $0 --all --json            # Output JSON summary"
     echo "  $0 kure --import           # Dump kure's live settings as policy-shaped YAML"
     echo "  $0 --all --import > /tmp/live.yaml   # Dump all repos, then diff by hand"
+    echo "  $0 --org                   # Audit organization-level settings"
+    echo "  $0 --org --apply           # Apply organization-level settings"
+    echo "  $0 --org --import          # Dump org drift as policy-shaped YAML"
     exit 1
 }
 
@@ -253,6 +326,19 @@ check_requirements() {
     POLICY_JSON=$(yq -oj '.' "$POLICY_FILE")
 
     validate_policy
+}
+
+# --org preflight. GET /orgs/{org}/actions/permissions requires admin:org —
+# GET /orgs/{org} alone only needs read:org and would succeed even without
+# it, so probing that endpoint here gives a named cause up front instead of
+# a bare 403 three layers down inside audit_org_actions. Only called when
+# --org is passed; no other code path needs admin:org or calls this.
+require_org_scope() {
+    if ! gh api "orgs/$GITHUB_ORG/actions/permissions" --silent 2>/dev/null; then
+        echo -e "${RED}ERROR: --org requires a token with the admin:org scope${NC}"
+        echo "  Run: gh auth refresh -h github.com -s admin:org"
+        exit 1
+    fi
 }
 
 # Sanity-check the policy file against what this script actually knows how
@@ -337,6 +423,49 @@ validate_policy() {
         errors=$((errors + 1))
     fi
 
+    # 5-6 only apply once a policy declares github_org: — skipped entirely
+    # when absent, so the policy file stays valid mid-migration (before the
+    # first --org --import) and for anyone who never uses --org.
+    if jq -e '.github_org != null' <<<"$POLICY_JSON" >/dev/null; then
+        # 5. ORG_SETTING_KEYS + ORG_READONLY_KEYS and github_org's scalar keys
+        #    must agree in both directions — same reasoning as check 2, applied
+        #    to the org tier (which has no override, so there's only one set to
+        #    compare against).
+        local org_scalar_keys org_setting_keys_sorted
+        org_scalar_keys=$(jq -r '
+            .github_org
+            | to_entries
+            | map(select((.value | type) != "object" and (.value | type) != "array"))
+            | .[].key
+        ' <<<"$POLICY_JSON" | sort)
+        org_setting_keys_sorted=$(printf '%s\n' "${ORG_SETTING_KEYS[@]}" "${ORG_READONLY_KEYS[@]}" | sort)
+        if [ "$org_scalar_keys" != "$org_setting_keys_sorted" ]; then
+            echo -e "${RED}ERROR: ORG_SETTING_KEYS+ORG_READONLY_KEYS and github_org scalar keys disagree${NC}"
+            echo "  ORG_SETTING_KEYS/ORG_READONLY_KEYS only:"
+            comm -23 <(echo "$org_setting_keys_sorted") <(echo "$org_scalar_keys") | sed 's/^/    /'
+            echo "  github_org only:"
+            comm -13 <(echo "$org_setting_keys_sorted") <(echo "$org_scalar_keys") | sed 's/^/    /'
+            errors=$((errors + 1))
+        fi
+
+        # 6. Enum sanity on github_org.actions. `.[]` unwraps the array to one
+        #    line per bad key (or zero lines) — a bare `-r` on an array would
+        #    print the literal text "[]" even when empty, which is a
+        #    non-empty bash string and would always trip the check below.
+        local bad_actions_enum
+        bad_actions_enum=$(jq -r '
+            [
+                (.github_org.actions.enabled_repositories // "all" | select(IN("all","none","selected") | not) | "enabled_repositories"),
+                (.github_org.actions.allowed_actions // "all" | select(IN("all","local_only","selected") | not) | "allowed_actions"),
+                (.github_org.actions.default_workflow_permissions // "read" | select(IN("read","write") | not) | "default_workflow_permissions")
+            ] | .[]
+        ' <<<"$POLICY_JSON")
+        if [ -n "$bad_actions_enum" ]; then
+            echo -e "${RED}ERROR: github_org.actions has invalid enum value(s) for: $bad_actions_enum${NC}"
+            errors=$((errors + 1))
+        fi
+    fi
+
     if [ "$errors" -gt 0 ]; then
         exit 1
     fi
@@ -374,6 +503,23 @@ gh_policy_json() {
 # identical resolution to gh_policy_json.
 gh_policy_array() {
     gh_policy_json "$1" "$2"
+}
+
+# Read a value from github_org, JSON-encoded. No override tier — an
+# organization has no per-repo variants — so this reads .github_org directly
+# rather than resolving repo-override-then-default like gh_policy_json does.
+# key may be dotted (e.g. "actions.default_workflow_permissions"). getpath
+# already returns null on a missing path, so no `// null` fallback is
+# needed here — and none is used deliberately: `//` treats jq `false` as
+# falsy too, so a fallback would silently turn every false-valued key into
+# null (the exact bug ruleset_applies' `// "ALL"` sentinel comment already
+# warns about elsewhere in this file).
+org_policy_json() {
+    local key="$1"
+    jq -c --arg key "$key" '
+        ($key | split(".")) as $path
+        | (.github_org // {}) | getpath($path)
+    ' <<<"$POLICY_JSON"
 }
 
 # Read a ruleset rule scalar with per-repo override falling back to
@@ -828,6 +974,138 @@ audit_security_settings() {
     fi
 }
 
+# Audit organization-level scalar settings (ORG_SETTING_KEYS + ORG_READONLY_KEYS
+# against GET/PATCH /orgs/{org}). Structurally a copy of audit_repo_settings,
+# but reading policy straight from org_policy_json — there's no per-repo
+# override tier to resolve at this scope. Only called from --org; every other
+# code path never reaches here and never needs admin:org.
+audit_org_settings() {
+    local apply="$1"
+
+    echo -e "\n${BLUE}=== Organization Settings: $GITHUB_ORG ===${NC}"
+
+    local settings
+    settings=$(gh api "orgs/$GITHUB_ORG")
+
+    local fixes="{}"
+
+    local key
+    for key in "${ORG_SETTING_KEYS[@]}"; do
+        local expected_json actual_json
+        expected_json=$(org_policy_json "$key")
+        actual_json=$(jq -c ".$key" <<<"$settings")
+
+        if [ "$actual_json" = "$expected_json" ]; then
+            echo -e "  ${GREEN}OK${NC}: $key = $(jq -r '.' <<<"$expected_json")"
+            SETTINGS_OK=$((SETTINGS_OK + 1))
+        else
+            SETTINGS_MISSING=$((SETTINGS_MISSING + 1))
+            if [ "$apply" = "true" ]; then
+                echo -e "  ${YELLOW}SETTING${NC}: $key to $(jq -r '.' <<<"$expected_json") (was: $(jq -r '.' <<<"$actual_json"))"
+                fixes=$(jq --arg k "$key" --argjson v "$expected_json" '. + {($k): $v}' <<<"$fixes")
+            else
+                echo -e "  ${RED}WRONG${NC}: $key = $(jq -r '.' <<<"$actual_json") (should be $(jq -r '.' <<<"$expected_json"))"
+            fi
+        fi
+    done
+
+    for key in "${ORG_READONLY_KEYS[@]}"; do
+        local expected_json actual_json
+        expected_json=$(org_policy_json "$key")
+        actual_json=$(jq -c ".$key" <<<"$settings")
+
+        if [ "$actual_json" = "$expected_json" ]; then
+            echo -e "  ${GREEN}OK${NC}: $key = $(jq -r '.' <<<"$expected_json") (audit-only)"
+            SETTINGS_OK=$((SETTINGS_OK + 1))
+        else
+            SETTINGS_MISSING=$((SETTINGS_MISSING + 1))
+            if [ "$apply" = "true" ]; then
+                echo -e "  ${YELLOW}BLOCKED${NC}: $key is audit-only (not writable via PATCH /orgs) — live: $(jq -r '.' <<<"$actual_json"), policy: $(jq -r '.' <<<"$expected_json")"
+            else
+                echo -e "  ${RED}WRONG${NC}: $key = $(jq -r '.' <<<"$actual_json") (should be $(jq -r '.' <<<"$expected_json"), but audit-only — can't be applied)"
+            fi
+        fi
+    done
+
+    if [ "$apply" = "true" ] && [ "$fixes" != "{}" ]; then
+        gh api "orgs/$GITHUB_ORG" \
+            --method PATCH \
+            --input - <<<"$fixes" \
+            --silent
+    fi
+}
+
+# Audit organization-wide Actions permissions, two flat objects on two PUT
+# full-replace endpoints. Both PUTs always send every governed key, not just
+# the drifted ones — a partial PUT to either endpoint would reset the
+# unlisted fields to GitHub's default, not leave them alone.
+audit_org_actions() {
+    local apply="$1"
+
+    echo -e "\n${BLUE}=== Organization Actions Permissions: $GITHUB_ORG ===${NC}"
+
+    local perms workflow
+    perms=$(gh api "orgs/$GITHUB_ORG/actions/permissions")
+    workflow=$(gh api "orgs/$GITHUB_ORG/actions/permissions/workflow")
+
+    local perms_drift=false workflow_drift=false
+    local key
+
+    for key in "${ORG_ACTIONS_PERMISSIONS_KEYS[@]}"; do
+        local expected_json actual_json
+        expected_json=$(org_policy_json "actions.$key")
+        actual_json=$(jq -c ".$key" <<<"$perms")
+
+        if [ "$actual_json" = "$expected_json" ]; then
+            echo -e "  ${GREEN}OK${NC}: actions.$key = $(jq -r '.' <<<"$expected_json")"
+            SETTINGS_OK=$((SETTINGS_OK + 1))
+        else
+            SETTINGS_MISSING=$((SETTINGS_MISSING + 1))
+            perms_drift=true
+            if [ "$apply" = "true" ]; then
+                echo -e "  ${YELLOW}SETTING${NC}: actions.$key to $(jq -r '.' <<<"$expected_json") (was: $(jq -r '.' <<<"$actual_json"))"
+            else
+                echo -e "  ${RED}WRONG${NC}: actions.$key = $(jq -r '.' <<<"$actual_json") (should be $(jq -r '.' <<<"$expected_json"))"
+            fi
+        fi
+    done
+
+    for key in "${ORG_ACTIONS_WORKFLOW_KEYS[@]}"; do
+        local expected_json actual_json
+        expected_json=$(org_policy_json "actions.$key")
+        actual_json=$(jq -c ".$key" <<<"$workflow")
+
+        if [ "$actual_json" = "$expected_json" ]; then
+            echo -e "  ${GREEN}OK${NC}: actions.$key = $(jq -r '.' <<<"$expected_json")"
+            SETTINGS_OK=$((SETTINGS_OK + 1))
+        else
+            SETTINGS_MISSING=$((SETTINGS_MISSING + 1))
+            workflow_drift=true
+            if [ "$apply" = "true" ]; then
+                echo -e "  ${YELLOW}SETTING${NC}: actions.$key to $(jq -r '.' <<<"$expected_json") (was: $(jq -r '.' <<<"$actual_json"))"
+            else
+                echo -e "  ${RED}WRONG${NC}: actions.$key = $(jq -r '.' <<<"$actual_json") (should be $(jq -r '.' <<<"$expected_json"))"
+            fi
+        fi
+    done
+
+    if [ "$apply" = "true" ] && [ "$perms_drift" = "true" ]; then
+        local body="{}"
+        for key in "${ORG_ACTIONS_PERMISSIONS_KEYS[@]}"; do
+            body=$(jq --arg k "$key" --argjson v "$(org_policy_json "actions.$key")" '. + {($k): $v}' <<<"$body")
+        done
+        gh api "orgs/$GITHUB_ORG/actions/permissions" --method PUT --input - <<<"$body" --silent
+    fi
+
+    if [ "$apply" = "true" ] && [ "$workflow_drift" = "true" ]; then
+        local body="{}"
+        for key in "${ORG_ACTIONS_WORKFLOW_KEYS[@]}"; do
+            body=$(jq --arg k "$key" --argjson v "$(org_policy_json "actions.$key")" '. + {($k): $v}' <<<"$body")
+        done
+        gh api "orgs/$GITHUB_ORG/actions/permissions/workflow" --method PUT --input - <<<"$body" --silent
+    fi
+}
+
 # Compare a policy-declared ruleset against its live API representation.
 # Emits one tab-separated record per line to stdout:
 #   OK|WRONG    <key>            <expected>  <actual>
@@ -1172,6 +1450,60 @@ import_repo() {
     echo ""
 }
 
+# Dump ONLY the parts of org-level settings that drift from policy, as a
+# paste-ready github_org: YAML block — the same read-only, never-writes
+# contract as import_repo (diff by hand against
+# governance/repository-settings-policy.yaml). Only reached via --org --import.
+import_org() {
+    echo "# ---- drift from policy: org $GITHUB_ORG ($(date -u +%Y-%m-%dT%H:%M:%SZ)) ----"
+
+    local settings actions_perms actions_workflow
+    settings=$(gh api "orgs/$GITHUB_ORG")
+    actions_perms=$(gh api "orgs/$GITHUB_ORG/actions/permissions")
+    actions_workflow=$(gh api "orgs/$GITHUB_ORG/actions/permissions/workflow")
+
+    local settings_json="{}"
+    local key
+    for key in "${ORG_SETTING_KEYS[@]}" "${ORG_READONLY_KEYS[@]}"; do
+        local expected_json actual_json
+        expected_json=$(org_policy_json "$key")
+        actual_json=$(jq -c ".$key" <<<"$settings")
+        if [ "$actual_json" != "$expected_json" ]; then
+            settings_json=$(jq --arg k "$key" --argjson v "$actual_json" '. + {($k): $v}' <<<"$settings_json")
+        fi
+    done
+
+    local actions_json="{}"
+    for key in "${ORG_ACTIONS_PERMISSIONS_KEYS[@]}"; do
+        local expected_json actual_json
+        expected_json=$(org_policy_json "actions.$key")
+        actual_json=$(jq -c ".$key" <<<"$actions_perms")
+        if [ "$actual_json" != "$expected_json" ]; then
+            actions_json=$(jq --arg k "$key" --argjson v "$actual_json" '. + {($k): $v}' <<<"$actions_json")
+        fi
+    done
+    for key in "${ORG_ACTIONS_WORKFLOW_KEYS[@]}"; do
+        local expected_json actual_json
+        expected_json=$(org_policy_json "actions.$key")
+        actual_json=$(jq -c ".$key" <<<"$actions_workflow")
+        if [ "$actual_json" != "$expected_json" ]; then
+            actions_json=$(jq --arg k "$key" --argjson v "$actual_json" '. + {($k): $v}' <<<"$actions_json")
+        fi
+    done
+
+    if [ "$settings_json" = "{}" ] && [ "$actions_json" = "{}" ]; then
+        echo "# org: matches policy — nothing to import"
+        echo ""
+        return 0
+    fi
+
+    local body="$settings_json"
+    [ "$actions_json" != "{}" ] && body=$(jq --argjson a "$actions_json" '. + {actions: $a}' <<<"$body")
+
+    jq -n --argjson body "$body" '{github_org: $body}' | yq -p=json -o=yaml -
+    echo ""
+}
+
 # Audit a single repository
 audit_repo() {
     local repo="$1"
@@ -1241,6 +1573,35 @@ audit_repo() {
     return 0
 }
 
+# Audit (and, with --apply, apply) organization-level settings. Only reached
+# via --org — never called from --all or a single-repo invocation, so no
+# other code path requires admin:org or touches orgs/{org} at all.
+audit_org() {
+    local apply="$1"
+
+    echo -e "\n${BLUE}========================================${NC}"
+    echo -e "${BLUE}Organization: $GITHUB_ORG${NC}"
+    echo -e "${BLUE}========================================${NC}"
+
+    local settings_ok_before=$SETTINGS_OK
+    local settings_missing_before=$SETTINGS_MISSING
+
+    audit_org_settings "$apply"
+    audit_org_actions "$apply"
+
+    if [ "$JSON_OUTPUT" = "true" ]; then
+        local org_settings_ok=$((SETTINGS_OK - settings_ok_before))
+        local org_settings_missing=$((SETTINGS_MISSING - settings_missing_before))
+        local org_status="OK"
+        [ "$org_settings_missing" -gt 0 ] && org_status="WARN"
+        json_org_result=$(jq -n \
+            --argjson so "$org_settings_ok" \
+            --argjson sm "$org_settings_missing" \
+            --arg st "$org_status" \
+            '{"settings_ok": $so, "settings_missing": $sm, "status": $st}')
+    fi
+}
+
 # Print summary
 print_summary() {
     local apply="${1:-false}"
@@ -1274,7 +1635,8 @@ print_summary() {
             --argjson ro "$RULESET_OK" \
             --argjson rm "$RULESET_MISSING" \
             --argjson repos "$json_results" \
-            '{"generated": $ts, "labels_ok": $lo, "labels_missing": $lm, "labels_renamed": $lr, "labels_extra": $le, "labels_blocked": $lb, "settings_ok": $so, "settings_missing": $sm, "rulesets_ok": $ro, "rulesets_missing": $rm, "repos": $repos}' \
+            --argjson org "$json_org_result" \
+            '{"generated": $ts, "labels_ok": $lo, "labels_missing": $lm, "labels_renamed": $lr, "labels_extra": $le, "labels_blocked": $lb, "settings_ok": $so, "settings_missing": $sm, "rulesets_ok": $ro, "rulesets_missing": $rm, "repos": $repos, "org": $org}' \
             > github-settings-report.json
         echo ""
         echo "JSON report: github-settings-report.json"
@@ -1293,6 +1655,7 @@ print_summary() {
 main() {
     local repo=""
     local all_repos=false
+    local org_mode=false
     local apply=false
     local import_mode=false
 
@@ -1301,6 +1664,10 @@ main() {
         case $1 in
             --all)
                 all_repos=true
+                shift
+                ;;
+            --org)
+                org_mode=true
                 shift
                 ;;
             --apply)
@@ -1335,7 +1702,12 @@ main() {
     done
 
     # Validate arguments
-    if [ "$all_repos" = "false" ] && [ -z "$repo" ]; then
+    if [ "$org_mode" = "true" ] && { [ "$all_repos" = "true" ] || [ -n "$repo" ]; }; then
+        echo "ERROR: --org is mutually exclusive with --all and <repo> — they are different scopes"
+        exit 1
+    fi
+
+    if [ "$org_mode" = "false" ] && [ "$all_repos" = "false" ] && [ -z "$repo" ]; then
         usage
     fi
 
@@ -1347,8 +1719,14 @@ main() {
     setup_colors
     check_requirements
 
+    if [ "$org_mode" = "true" ]; then
+        require_org_scope
+    fi
+
     if [ "$import_mode" = "true" ]; then
-        if [ "$all_repos" = "true" ]; then
+        if [ "$org_mode" = "true" ]; then
+            import_org
+        elif [ "$all_repos" = "true" ]; then
             for r in ${GITHUB_REPOS:-}; do
                 import_repo "$r"
             done
@@ -1365,7 +1743,9 @@ main() {
     fi
 
     # Run audits
-    if [ "$all_repos" = "true" ]; then
+    if [ "$org_mode" = "true" ]; then
+        audit_org "$apply"
+    elif [ "$all_repos" = "true" ]; then
         for r in ${GITHUB_REPOS:-}; do
             audit_repo "$r" "$apply" || true
         done

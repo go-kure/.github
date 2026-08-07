@@ -93,3 +93,67 @@ jobs:
             echo ""
             echo "_Generated: $(date -u '+%Y-%m-%d %H:%M UTC')_"
           } >> $GITHUB_STEP_SUMMARY
+
+  # Separate from the `settings` job above: organization-level settings need
+  # a token with the admin:org scope, which secrets.SETTINGS_PAT may not yet
+  # carry (unverified as of when --org was added — check
+  # https://github.com/settings/tokens and rotate if not). continue-on-error
+  # keeps that gap from blocking the repo-level job above, which needs no
+  # such scope and must keep running regardless.
+  settings-org:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install yq
+        env:
+          YQ_VERSION: '4.44.6'
+        run: |
+          sudo curl -fsSL -o /usr/local/bin/yq \
+            https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Run settings --org
+        env:
+          GH_TOKEN: ${{ secrets.SETTINGS_PAT }}
+          INPUT_MODE: ${{ inputs.mode || 'audit' }}
+        run: |
+          set -o pipefail
+          FLAGS="--org --ci --json"
+          [ "$INPUT_MODE" = "apply" ] && FLAGS="$FLAGS --apply"
+          bash scripts/github-settings.sh $FLAGS 2>&1 | tee settings-org-output.txt
+
+      - name: Post org summary
+        if: always()
+        env:
+          INPUT_MODE: ${{ inputs.mode || 'audit' }}
+        run: |
+          [ -f github-settings-report.json ] || exit 0
+          {
+            echo "## Org Settings — ${INPUT_MODE}"
+            echo ""
+            python3 - <<'EOF'
+          import json
+          with open("github-settings-report.json") as f:
+              d = json.load(f)
+          org = d.get("org") or {}
+          if org:
+              status = "OK" if org.get("settings_missing", 0) == 0 else f"**{org['settings_missing']} issues**"
+              print(f"Settings: {org.get('settings_ok', 0)} ok, {org.get('settings_missing', 0)} wrong — {status}")
+          else:
+              print("No org data in report (require_org_scope likely failed — see job log).")
+          EOF
+            if grep -qE 'MISSING|WRONG|BLOCKED|SETTING|UPDATING' settings-org-output.txt 2>/dev/null; then
+              echo ""
+              echo "## Changes"
+              echo '```'
+              grep -E 'MISSING|WRONG|BLOCKED|SETTING|UPDATING' settings-org-output.txt
+              echo '```'
+            fi
+            echo ""
+            echo "_Generated: $(date -u '+%Y-%m-%d %H:%M UTC')_"
+          } >> $GITHUB_STEP_SUMMARY
