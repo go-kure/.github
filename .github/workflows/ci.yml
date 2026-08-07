@@ -112,7 +112,7 @@ jobs:
           tar -xJf /tmp/shellcheck.tar.xz -C /tmp
           sudo install -m755 "/tmp/shellcheck-v${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck
       - name: shellcheck
-        run: shellcheck scripts/check-doc-sync.sh scripts/check-doc-gate.sh scripts/check-links.sh scripts/exact-array-member.sh
+        run: shellcheck scripts/check-doc-sync.sh scripts/check-doc-gate.sh scripts/check-links.sh scripts/exact-array-member.sh scripts/check-workflow-refs.sh
       - name: Install yq
         env:
           YQ_VERSION: '4.44.6'
@@ -123,6 +123,8 @@ jobs:
         run: bash scripts/check-doc-sync.sh .
       - name: check-doc-gate.sh against the previous commit
         run: bash scripts/check-doc-gate.sh "$(git rev-parse HEAD~1)" .
+      - name: check-workflow-refs.sh against AGENTS.md / docs/standards.md
+        run: bash scripts/check-workflow-refs.sh .
       - name: Install lychee
         env:
           LYCHEE_VERSION: '0.24.2'

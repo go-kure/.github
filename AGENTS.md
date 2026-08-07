@@ -27,23 +27,23 @@ labels reference, and design docs in sync when you change them.
 │   └── repository-settings-policy.yaml  # Machine-readable settings policy
 ├── standards/
 │   ├── labels.json                      # Standard issue labels
-│   └── labels.md                        # Label naming conventions
+│   ├── labels.md                        # Label naming conventions
+│   └── release-process.md               # Release process reference
 ├── scripts/
 │   ├── github-settings.sh               # Settings audit/apply script
+│   ├── check-doc-sync.sh                # Doc-sync Layer 2 (structure) — canonical
+│   ├── check-doc-gate.sh                # Doc-sync Layer 3 (change-gate) — canonical
+│   ├── check-links.sh                   # Doc-sync Layer 1 (link check) — canonical
+│   ├── check-forbidden-terms.sh         # No Downstream References guard — canonical
+│   ├── check-workflow-refs.sh           # Guards AGENTS.md/standards.md against dead workflow refs
+│   ├── exact-array-member.sh            # Shared helper used by the check-*.sh scripts
+│   ├── migrate-kure-labels.sh           # One-off label migration script
 │   └── lib/api.sh                       # Shared HTTP API utilities
 ├── .github/
-│   └── workflows/                       # GitHub Actions (CI + reusable)
-│       ├── ci.yml                       # Self-CI: lint, test, build
-│       ├── release.yml                  # Reusable: GoReleaser release
-│       ├── release-create.yml           # Reusable: create release tag
-│       ├── auto-rebase.yml              # Reusable: rebase open PRs
-│       ├── auto-rebase-caller.yml       # Calls auto-rebase on main push
-│       ├── pr-review.yml                # Reusable: AI code review
-│       ├── pr-review-caller.yml         # Calls pr-review on PR events
-│       ├── claude.yml                   # Reusable: @claude assistant
-│       ├── claude-caller.yml            # Calls claude on PR/issue mentions
-│       ├── audit-settings.yml           # Scheduled: audit org settings
-│       └── apply-settings.yml           # Manual: apply org settings
+│   ├── workflows/                       # GitHub Actions — self-CI, org settings, and the
+│   │                                     # reusable/caller workflows; see "Available reusable
+│   │                                     # workflows" below for the full list, don't duplicate it here
+│   └── actions/                         # Composite actions — see "Composite Actions" below
 ├── ISSUE_TEMPLATE/
 │   ├── bug.yml
 │   └── feature.yml
@@ -57,6 +57,7 @@ labels reference, and design docs in sync when you change them.
 │       ├── api-stability.md
 │       ├── package-structure.md
 │       └── oam-runtime.md
+├── docs-map.yaml                        # This repo's own doc-sync map (repo_type: docs-only)
 ├── CODE_OF_CONDUCT.md                   # Org-wide default
 ├── CONTRIBUTING.md                      # Org-wide default
 ├── SECURITY.md                          # Org-wide default
@@ -78,15 +79,16 @@ Settings are defined in `governance/repository-settings-policy.yaml` and applied
 ./scripts/github-settings.sh kure --ci
 ```
 
-The `audit-settings.yml` workflow runs this automatically on push to main (when `governance/` or
-`standards/` files change) and weekly on Mondays.
+The `settings.yml` workflow runs this automatically in audit mode on push to main (when
+`governance/` or `standards/` files change) and daily at 06:00 UTC.
 
 ### Applying settings changes
 
 1. Edit `governance/repository-settings-policy.yaml`
 2. Run `./scripts/github-settings.sh --all` locally to preview changes
 3. Commit and open a PR
-4. After merge, trigger `apply-settings.yml` manually with `dry_run: false`
+4. After merge, trigger `settings.yml` manually via `workflow_dispatch` with `mode: apply`
+   (`repo` defaults to `all`)
 
 ### Adding or changing labels
 
@@ -137,15 +139,17 @@ Changes here propagate to all repos automatically. Review carefully.
 Reusable workflows have `on: workflow_call` in their trigger. Caller workflows (ending in
 `-caller.yml`) are the thin wrappers that live in each consumer repo and delegate to these.
 
-### Available reusable workflows
+### Available reusable workflows (`on: workflow_call`)
 
 | Workflow | Consumer trigger | Purpose | Key inputs | Secrets needed |
 |----------|-----------------|---------|------------|----------------|
-| `auto-rebase.yml` | push to `main` | Rebases all open PRs when main is updated | — | `AUTO_REBASE_PAT` |
-| `claude.yml` | PR/issue/comment events | @claude AI assistant on PRs and issues | — | `CLAUDE_CODE_OAUTH_TOKEN` |
-| `pr-review.yml` | PR open/sync/ready | 2-pass AI code review; posts advisory comment | `pr_review_context` (string, optional) | none (uses cluster sidecar) |
+| `auto-rebase.yml` | push to `main` (via `auto-rebase-caller.yml`) | Rebases all open PRs when main is updated | — | `AUTO_REBASE_PAT` |
+| `claude.yml` | PR/issue/comment events (via `claude-caller.yml`) | @claude AI assistant on PRs and issues | — | `CLAUDE_CODE_OAUTH_TOKEN` |
+| `pr-review.yml` | PR open/sync/ready (via `pr-review-caller.yml`) | 2-pass AI code review; posts advisory comment | `pr_review_context` (string, optional) | none (uses cluster sidecar) |
 | `release-create.yml` | `workflow_dispatch` | Pre-flight CI gate + git-cliff tag creation | `type` (required), `scope`, `dry_run` | `RELEASE_APP_ID`, `RELEASE_APP_PRIVATE_KEY` |
-| `release.yml` | version tags (`v*`) | GoReleaser, SBOM, docs deploy, Go proxy refresh | `go_module` (required, e.g. `github.com/go-kure/kure`) | `RELEASE_APP_ID`, `RELEASE_APP_PRIVATE_KEY` |
+| `release-bump.yml` | `workflow_dispatch` | Bump `versions.env`/changelog without tagging a release | `scope` (required), `dry_run` | `RELEASE_APP_ID`, `RELEASE_APP_PRIVATE_KEY` |
+| `release-promote.yml` | `workflow_dispatch` | Promote a prerelease (beta → rc → stable) | `to` (required: `beta`\|`rc`\|`stable`), `dry_run` | `RELEASE_APP_ID`, `RELEASE_APP_PRIVATE_KEY` |
+| `release-publish.yml` | version tags (`v*`), via `release-publish.yml` caller | GoReleaser, SBOM, docs deploy, Go proxy refresh | `go_module` (required, e.g. `github.com/go-kure/kure`) | `RELEASE_APP_ID`, `RELEASE_APP_PRIVATE_KEY` |
 
 Consumer repos call these as:
 ```yaml
@@ -153,11 +157,19 @@ uses: go-kure/.github/.github/workflows/<name>.yml@main
 secrets: inherit
 ```
 
+`ci.yml` and `settings.yml` are **not** reusable — `ci.yml` is this repo's own self-CI
+(`pull_request` + `workflow_dispatch`), `settings.yml` is this repo's own org-settings audit/apply
+job (push to `governance/`/`standards/` + daily schedule + `workflow_dispatch`, see above). Neither
+is consumed by kure/launcher.
+
 ### When updating a reusable workflow
 
 - Changes take effect for **all consumer repos immediately** after merge to `main`
-- Test by triggering the corresponding `-caller.yml` workflow manually before merging
-- For `release.yml` or `release-create.yml`, test with `dry_run: true` first
+- Test by triggering the corresponding `-caller.yml` workflow manually before merging (or, for the
+  release workflows, by running the workflow itself via `workflow_dispatch` with `dry_run: true`)
+- `release-create.yml`, `release-bump.yml` and `release-promote.yml` all accept `dry_run: true` for
+  a preview run. `release-publish.yml` has no `dry_run` input — it triggers on the version tag
+  itself, so test changes to it via a caller repo's tag on a fork or a scratch tag first.
 
 ## Composite Actions
 
