@@ -269,6 +269,86 @@ else
 fi
 assert_contains "validate_policy's actions-enum error names the offending key" "$org_bad_enum_out" "allowed_actions"
 
+# ---- ruleset_names_missing: the set-difference behind --import's "policy
+# ruleset expected but not found live (deleted?)" warning. ----
+
+assert_eq "ruleset_names_missing detects a live-deleted ruleset" '["b"]' \
+    "$(ruleset_names_missing '["a","b","c"]' '["a","c"]')"
+assert_eq "ruleset_names_missing returns empty when nothing is missing" '[]' \
+    "$(ruleset_names_missing '["a","b"]' '["a","b","c"]')"
+
+# ---- ruleset_diff: bypass_actors must compare the full actor object (id,
+# actor_type, bypass_mode), not just actor_id — a live actor with the same
+# id but a widened bypass_mode is real drift, and the id-only comparison
+# used to miss it entirely. ----
+
+main_live_mode_drift=$(jq '(.bypass_actors[0].bypass_mode) = "pull_request"' <<<"$main_live_match")
+diff_main_mode_drift=$(ruleset_diff "kure" "main-protection" "$main_live_mode_drift")
+assert_contains "a bypass_mode-only drift (same actor_id) is reported WRONG" "$diff_main_mode_drift" "$(printf 'WRONG\tbypass_actors')"
+
+copilot_live_unexpected_actor=$(jq '.bypass_actors = [{actor_id: 1, actor_type: "Integration", bypass_mode: "always"}]' <<<"$copilot_live_match")
+diff_copilot_unexpected_actor=$(ruleset_diff "kure" "$COPILOT" "$copilot_live_unexpected_actor")
+assert_contains "a live bypass actor where policy expects none is reported WRONG" "$diff_copilot_unexpected_actor" "$(printf 'WRONG\tbypass_actors')"
+
+# ---- validate_policy: GITHUB_REPOS narrowed to a subset for a single run
+# (documented behavior) must not misreport policy-known repos: scope entries
+# (e.g. Copilot's repos: [kure, launcher]) as unknown. ----
+
+subset_rc=$( (GITHUB_REPOS=".github" validate_policy) >/dev/null 2>&1; echo $? )
+if [ "$subset_rc" -eq 0 ]; then
+    echo "PASS: validate_policy accepts the real policy under a GITHUB_REPOS=.github subset"
+    pass_count=$((pass_count + 1))
+else
+    echo "FAIL: validate_policy should not reject known repos: scope entries omitted from a GITHUB_REPOS subset"
+    failures=$((failures + 1))
+fi
+
+typo_scope_json=$(jq '.github_defaults.rulesets["main-protection"].repos = ["totally-bogus-repo"]' <<<"$POLICY_JSON")
+typo_out=$( (POLICY_JSON="$typo_scope_json" GITHUB_REPOS=".github" validate_policy) 2>&1 )
+typo_rc=$?
+if [ "$typo_rc" -ne 0 ]; then
+    echo "PASS: validate_policy still rejects a genuine repos: scope typo under a GITHUB_REPOS subset"
+    pass_count=$((pass_count + 1))
+else
+    echo "FAIL: validate_policy should still catch a repo name not in GITHUB_REPOS_DEFAULT or GITHUB_REPOS"
+    failures=$((failures + 1))
+fi
+assert_contains "validate_policy's scope-typo error names the offending repo" "$typo_out" "totally-bogus-repo"
+
+# ---- ruleset_names / ruleset_applies: a ruleset declared only under
+# github_repos.<repo>.rulesets (no github_defaults counterpart — e.g. an
+# --import dump of an unmanaged live ruleset pasted as directed) must be
+# discoverable and scoped to just that repo. ----
+
+repo_only_json=$(jq '.github_repos.kure.rulesets["Repo-Only Ruleset"] = {target: "branch", enforcement: "active", conditions: {}, rules: {}}' <<<"$POLICY_JSON")
+
+names_with_repo_only=$(POLICY_JSON="$repo_only_json" ruleset_names)
+assert_contains "ruleset_names includes a repo-only ruleset with no github_defaults entry" "$names_with_repo_only" "Repo-Only Ruleset"
+
+if (POLICY_JSON="$repo_only_json" ruleset_applies "kure" "Repo-Only Ruleset"); then
+    echo "PASS: a repo-only ruleset applies to the repo that declares it"
+    pass_count=$((pass_count + 1))
+else
+    echo "FAIL: a repo-only ruleset should apply to the repo that declares it"
+    failures=$((failures + 1))
+fi
+
+if ! (POLICY_JSON="$repo_only_json" ruleset_applies "launcher" "Repo-Only Ruleset"); then
+    echo "PASS: a repo-only ruleset does not apply to a repo that doesn't declare it"
+    pass_count=$((pass_count + 1))
+else
+    echo "FAIL: a repo-only ruleset should not apply anywhere it isn't explicitly declared"
+    failures=$((failures + 1))
+fi
+
+# ---- print_summary: blocked (audit-only) org settings drift must be
+# reported separately from applied drift under --apply, not folded into the
+# "applied" count (nothing was actually written for a blocked key). ----
+
+summary_out=$( (SETTINGS_OK=5 SETTINGS_MISSING=2 SETTINGS_BLOCKED=1 JSON_OUTPUT=false print_summary true) 2>&1 )
+assert_contains "print_summary (--apply) keeps the applied count exclusive of blocked settings" "$summary_out" "2 applied"
+assert_contains "print_summary (--apply) reports blocked settings separately" "$summary_out" "1 blocked (audit-only, unresolved)"
+
 echo ""
 echo "github-settings-test: $pass_count passed, $failures failed"
 if [ "$failures" -gt 0 ]; then
