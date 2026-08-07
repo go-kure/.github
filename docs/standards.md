@@ -76,7 +76,7 @@ centrally by this repo's `settings.yml` workflow. The source of truth is
 |-------------------|-------------------|
 | Merge method      | Rebase only       |
 | Branch protection | GitHub rulesets   |
-| Auto-merge        | Disabled          |
+| Auto-merge        | Enabled (org-wide); kure/launcher still land via the merge queue |
 | Wiki              | Disabled          |
 
 ## Release Process
