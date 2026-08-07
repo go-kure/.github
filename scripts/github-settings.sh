@@ -2,6 +2,7 @@
 # Audit and apply GitHub repository settings
 # Usage: ./github-settings.sh <repo> [--apply] [--ci] [--json]
 #        ./github-settings.sh --all [--apply] [--ci] [--json]
+#        ./github-settings.sh <repo>|--all --import
 #
 # Requires: gh CLI (authenticated), jq, yq
 #
@@ -12,6 +13,10 @@
 #   ./github-settings.sh --all --apply     # Apply to all GitHub repos
 #   ./github-settings.sh --all --ci        # Audit all repos (no colors, CI-friendly)
 #   ./github-settings.sh --all --json      # Output JSON summary
+#   ./github-settings.sh kure --import     # Dump kure's live settings as policy-shaped YAML
+#   ./github-settings.sh --all --import > /tmp/live.yaml   # Dump all repos, then diff by hand
+#                                                            # against governance/repository-settings-policy.yaml
+#                                                            # to decide what to fold in as a default vs override
 
 set -euo pipefail
 
@@ -27,12 +32,115 @@ POLICY_FILE="$WHARF_DIR/governance/repository-settings-policy.yaml"
 CI_MODE=false
 JSON_OUTPUT=false
 
+# Whole policy file, loaded once as JSON in check_requirements(). All lookup
+# helpers read this instead of re-invoking yq per key — yq's dot-path parser
+# can't handle quoted keys containing spaces (e.g. a ruleset named "Code
+# Quality Copilot review for default branch"), and re-spawning yq per lookup
+# is slow across --all. jq --arg/getpath sidesteps both.
+POLICY_JSON=""
+
+# Cache for build_ruleset_import_jq() — assembled once from the rule
+# registry below, reused across repos/rulesets in --import.
+RULESET_IMPORT_JQ_CACHE=""
+
 # Label rename mapping: GitHub default name -> standard name
 # Used to detect drifted labels that should be renamed instead of created
 declare -A LABEL_RENAME_MAP=(
     ["bug"]="type/bug"
     ["enhancement"]="type/feature"
 )
+
+# Top-level repo settings tracked by policy (audit_repo_settings + import_repo).
+# Shared so --import emits the same key set the auditor checks. Existing keys
+# stay first so audit-output diffs from adding new ones stay readable.
+# Deliberately excluded: archived, private/visibility, disabled — flipping
+# any of those is a different class of operation than a settings sync.
+SETTING_KEYS=(
+    "allow_rebase_merge"
+    "allow_squash_merge"
+    "allow_merge_commit"
+    "delete_branch_on_merge"
+    "allow_update_branch"
+    "has_wiki"
+    "allow_auto_merge"
+    "has_projects"
+    "has_issues"
+    "has_discussions"
+    "has_downloads"
+    "is_template"
+    "allow_forking"
+    "web_commit_signoff_required"
+    "merge_commit_title"
+    "merge_commit_message"
+    "squash_merge_commit_title"
+    "squash_merge_commit_message"
+)
+
+# Rule-type registry. This is the single source of truth for which ruleset
+# rule types this script understands — build_ruleset_payload (apply),
+# ruleset_diff (audit + drift detection) and build_ruleset_import_jq
+# (--import) all derive their expected rule list from RULE_TYPE_ORDER /
+# RULE_KIND, so they cannot silently diverge from each other. A policy rule
+# type missing from RULE_KIND is a validate_policy() startup error, not a
+# silently-dropped field — GitHub's ruleset PUT is a full replace, so a
+# dropped field on apply means a deleted rule, not a no-op.
+RULE_TYPE_ORDER=(
+    deletion
+    non_fast_forward
+    required_linear_history
+    pull_request
+    required_status_checks
+    merge_queue
+    copilot_code_review
+)
+
+# flag: no parameters, emitted as {"type": X} when the policy value is true.
+# passthrough: policy params object maps 1:1 onto the API "parameters" object.
+# transform: policy <-> API shapes differ; see RULE_TO_API_JQ/RULE_FROM_API_JQ.
+declare -A RULE_KIND=(
+    [deletion]=flag
+    [non_fast_forward]=flag
+    [required_linear_history]=flag
+    [pull_request]=passthrough
+    [required_status_checks]=transform
+    [merge_queue]=passthrough
+    [copilot_code_review]=passthrough
+)
+
+# policy rule params -> API "parameters" object. Types not listed here pass
+# through unchanged ("."). Only required_status_checks needs a real remap:
+# policy uses {strict, contexts}, the API uses
+# {strict_required_status_checks_policy, required_status_checks: [{context}]}.
+declare -A RULE_TO_API_JQ=(
+    [required_status_checks]='{strict_required_status_checks_policy: .strict, required_status_checks: [.contexts[] | {context: .}]}'
+)
+
+# API "parameters" object -> policy rule params. Types not listed here pass
+# through unchanged ("."). pull_request additionally drops dismissal_restriction
+# and required_reviewers: the live API returns them, but they're read-shaped —
+# pasting them back into policy and applying would risk a 422 on write.
+declare -A RULE_FROM_API_JQ=(
+    [required_status_checks]='{strict: .strict_required_status_checks_policy, contexts: [.required_status_checks[].context]}'
+    [pull_request]='del(.dismissal_restriction, .required_reviewers)'
+)
+
+rule_kind() {
+    echo "${RULE_KIND[$1]:-}"
+}
+
+rule_to_api_jq() {
+    echo "${RULE_TO_API_JQ[$1]:-.}"
+}
+
+rule_from_api_jq() {
+    echo "${RULE_FROM_API_JQ[$1]:-.}"
+}
+
+# Canonicalize a JSON value for comparison: sort every array (recursively),
+# leave everything else untouched. Used wherever policy and live-API JSON
+# need to compare equal regardless of array ordering (contexts, rule types,
+# bypass actor ids, ...).
+CANON_JQ='walk(if type == "array" then sort else . end)'
 
 # Colors for output (disabled in CI mode)
 setup_colors() {
@@ -68,11 +176,16 @@ json_results="[]"
 usage() {
     echo "Usage: $0 <repo> [--apply] [--ci] [--json]"
     echo "       $0 --all [--apply] [--ci] [--json]"
+    echo "       $0 <repo>|--all --import"
     echo ""
     echo "Options:"
     echo "  <repo>     Repository name (e.g., kure)"
-    echo "  --all      Audit/apply to all GitHub repos (\$GITHUB_REPOS)"
+    echo "  --all      Audit/apply/import all GitHub repos (\$GITHUB_REPOS)"
     echo "  --apply    Apply settings (default is dry-run/audit only)"
+    echo "  --import   Print live settings as policy-shaped YAML instead of auditing"
+    echo "             (never writes; diff the output against"
+    echo "             governance/repository-settings-policy.yaml by hand). Mutually"
+    echo "             exclusive with --apply."
     echo "  --ci       Disable ANSI colors for clean CI log output"
     echo "  --json     Output machine-readable JSON summary"
     echo ""
@@ -87,6 +200,8 @@ usage() {
     echo "  $0 --all --apply           # Apply settings to all repos"
     echo "  $0 --all --ci              # CI-friendly audit (no ANSI colors)"
     echo "  $0 --all --json            # Output JSON summary"
+    echo "  $0 kure --import           # Dump kure's live settings as policy-shaped YAML"
+    echo "  $0 --all --import > /tmp/live.yaml   # Dump all repos, then diff by hand"
     exit 1
 }
 
@@ -134,161 +249,296 @@ check_requirements() {
         echo -e "${RED}ERROR: Policy file missing 'github_defaults.rulesets' section: $POLICY_FILE${NC}"
         exit 1
     fi
+
+    POLICY_JSON=$(yq -oj '.' "$POLICY_FILE")
+
+    validate_policy
 }
 
-# Read a policy value with per-repo override falling back to github_defaults
+# Sanity-check the policy file against what this script actually knows how
+# to manage. Run once at startup so a bad policy fails loudly here instead
+# of silently mis-auditing or (worse) deleting a rule on --apply.
+validate_policy() {
+    local errors=0
+
+    # 1. Every rule type declared anywhere in policy (defaults or any repo
+    #    override) must be a known registry type. This is the check that
+    #    prevents the silent-drop-then-delete failure this script used to
+    #    have: an unmodeled rule type used to just vanish from the payload
+    #    on the next --apply.
+    local declared_types
+    declared_types=$(jq -r '
+        [
+            (.github_defaults.rulesets // {} | to_entries[] | .value.rules // {} | keys[]),
+            ((.github_repos // {}) | to_entries[] | .value.rulesets // {} | to_entries[] | .value.rules // {} | keys[])
+        ] | unique | .[]
+    ' <<<"$POLICY_JSON")
+    local t
+    while IFS= read -r t; do
+        [ -z "$t" ] && continue
+        if [ -z "$(rule_kind "$t")" ]; then
+            echo -e "${RED}ERROR: policy declares rule type '$t' this script does not model (see RULE_KIND in $0)${NC}"
+            errors=$((errors + 1))
+        fi
+    done <<<"$declared_types"
+
+    # 2. SETTING_KEYS and github_defaults' scalar keys must agree in both
+    #    directions — a key in one but not the other is either dead code or
+    #    an unmanaged live setting silently omitted from the audit.
+    local policy_scalar_keys setting_keys_sorted
+    policy_scalar_keys=$(jq -r '
+        .github_defaults
+        | to_entries
+        | map(select((.value | type) != "object" and (.value | type) != "array"))
+        | .[].key
+    ' <<<"$POLICY_JSON" | sort)
+    setting_keys_sorted=$(printf '%s\n' "${SETTING_KEYS[@]}" | sort)
+    if [ "$policy_scalar_keys" != "$setting_keys_sorted" ]; then
+        echo -e "${RED}ERROR: SETTING_KEYS and github_defaults scalar keys disagree${NC}"
+        echo "  SETTING_KEYS only:"
+        comm -23 <(echo "$setting_keys_sorted") <(echo "$policy_scalar_keys") | sed 's/^/    /'
+        echo "  github_defaults only:"
+        comm -13 <(echo "$setting_keys_sorted") <(echo "$policy_scalar_keys") | sed 's/^/    /'
+        errors=$((errors + 1))
+    fi
+
+    # 3. Enum sanity on every declared ruleset's enforcement/target.
+    local bad_enforcement bad_target
+    bad_enforcement=$(jq -r '
+        [
+            (.github_defaults.rulesets // {} | to_entries[] | select(.value.enforcement != null and (.value.enforcement | IN("active","evaluate","disabled") | not)) | .key),
+            ((.github_repos // {}) | to_entries[] | .value.rulesets // {} | to_entries[] | select(.value.enforcement != null and (.value.enforcement | IN("active","evaluate","disabled") | not)) | .key)
+        ] | unique | .[]
+    ' <<<"$POLICY_JSON")
+    if [ -n "$bad_enforcement" ]; then
+        echo -e "${RED}ERROR: ruleset(s) with invalid enforcement (must be active/evaluate/disabled): $bad_enforcement${NC}"
+        errors=$((errors + 1))
+    fi
+    bad_target=$(jq -r '
+        [
+            (.github_defaults.rulesets // {} | to_entries[] | select(.value.target != null and (.value.target | IN("branch","tag","push") | not)) | .key),
+            ((.github_repos // {}) | to_entries[] | .value.rulesets // {} | to_entries[] | select(.value.target != null and (.value.target | IN("branch","tag","push") | not)) | .key)
+        ] | unique | .[]
+    ' <<<"$POLICY_JSON")
+    if [ -n "$bad_target" ]; then
+        echo -e "${RED}ERROR: ruleset(s) with invalid target (must be branch/tag/push): $bad_target${NC}"
+        errors=$((errors + 1))
+    fi
+
+    # 4. Every repos: scope entry must be a repo this script actually knows
+    #    about — catches a typo that would silently disable a ruleset everywhere.
+    local bad_scope_repos repo_list_json
+    repo_list_json=$(printf '%s\n' ${GITHUB_REPOS:-} | jq -R . | jq -s .)
+    bad_scope_repos=$(jq -r --argjson known "$repo_list_json" '
+        [.github_defaults.rulesets // {} | to_entries[] | select(.value.repos != null) | .value.repos[] | select(. as $r | $known | index($r) | not)] | unique | .[]
+    ' <<<"$POLICY_JSON")
+    if [ -n "$bad_scope_repos" ]; then
+        echo -e "${RED}ERROR: ruleset repos: scope references unknown repo(s): $bad_scope_repos${NC}"
+        errors=$((errors + 1))
+    fi
+
+    if [ "$errors" -gt 0 ]; then
+        exit 1
+    fi
+}
+
+# Read a policy value with per-repo override falling back to github_defaults.
+# key may be dotted (e.g. "security.dependabot_security_updates") for nested
+# lookups. Prints the literal text "null" when absent in both, matching the
+# old yq -r behavior callers already guard against with [ "$val" != "null" ].
 gh_policy_value() {
     local repo="$1"
     local key="$2"
-    local override_val
-    override_val=$(yq -r ".github_repos.\"$repo\".$key" "$POLICY_FILE")
-    if [ "$override_val" != "null" ] && [ -n "$override_val" ]; then
-        echo "$override_val"
-    else
-        yq -r ".github_defaults.$key" "$POLICY_FILE"
-    fi
+    jq -r --arg repo "$repo" --arg key "$key" '
+        ($key | split(".")) as $path
+        | (.github_repos[$repo] // {} | getpath($path)) as $o
+        | if $o != null then $o else (.github_defaults | getpath($path)) end
+    ' <<<"$POLICY_JSON"
 }
 
-# Read a policy array value (returns JSON array)
-gh_policy_array() {
+# Same override -> default resolution as gh_policy_value, but returns
+# compact JSON instead of a raw/unquoted scalar. Use this (not
+# gh_policy_value) wherever the result feeds `jq --argjson` — a raw string
+# value like PR_TITLE isn't valid JSON on its own and --argjson rejects it.
+gh_policy_json() {
     local repo="$1"
     local key="$2"
-    local override_val
-    override_val=$(yq -oj ".github_repos.\"$repo\".$key" "$POLICY_FILE" 2>/dev/null)
-    if [ "$override_val" != "null" ] && [ -n "$override_val" ]; then
-        echo "$override_val"
-    else
-        yq -oj ".github_defaults.$key" "$POLICY_FILE"
-    fi
+    jq -c --arg repo "$repo" --arg key "$key" '
+        ($key | split(".")) as $path
+        | (.github_repos[$repo] // {} | getpath($path)) as $o
+        | if $o != null then $o else (.github_defaults | getpath($path)) end
+    ' <<<"$POLICY_JSON"
 }
 
-# Read a ruleset rule scalar with per-repo override falling back to github_defaults.
-# path is relative to the ruleset (e.g. "rules.required_status_checks.strict").
+# Read a policy array value (returns JSON array). Kept for interface parity;
+# identical resolution to gh_policy_json.
+gh_policy_array() {
+    gh_policy_json "$1" "$2"
+}
+
+# Read a ruleset rule scalar with per-repo override falling back to
+# github_defaults. path is relative to the ruleset (e.g.
+# "rules.required_status_checks.strict"). ruleset name is passed as --arg,
+# not interpolated into the jq program, so names containing spaces work.
 ruleset_value() {
     local repo="$1"
     local ruleset="$2"
     local path="$3"
-    local override_val
-    override_val=$(yq -r ".github_repos.\"$repo\".rulesets.\"$ruleset\".$path" "$POLICY_FILE" 2>/dev/null)
-    if [ "$override_val" != "null" ] && [ -n "$override_val" ]; then
-        echo "$override_val"
-    else
-        yq -r ".github_defaults.rulesets.\"$ruleset\".$path" "$POLICY_FILE"
-    fi
+    jq -r --arg repo "$repo" --arg ruleset "$ruleset" --arg path "$path" '
+        ($path | split(".")) as $p
+        | (.github_repos[$repo].rulesets[$ruleset] // {} | getpath($p)) as $o
+        | if $o != null then $o else (.github_defaults.rulesets[$ruleset] | getpath($p)) end
+    ' <<<"$POLICY_JSON"
 }
 
-# Read a ruleset rule value as JSON with per-repo override falling back to defaults.
-# Returns "null" when the key is absent in both (callers treat that as "omit").
+# Read a ruleset rule value as JSON with per-repo override falling back to
+# defaults. Returns "null" when the key is absent in both (callers treat
+# that as "omit").
 ruleset_json() {
     local repo="$1"
     local ruleset="$2"
     local path="$3"
-    local override_val
-    override_val=$(yq -oj ".github_repos.\"$repo\".rulesets.\"$ruleset\".$path" "$POLICY_FILE" 2>/dev/null)
-    if [ "$override_val" != "null" ] && [ -n "$override_val" ]; then
-        echo "$override_val"
-    else
-        yq -oj ".github_defaults.rulesets.\"$ruleset\".$path" "$POLICY_FILE" 2>/dev/null
-    fi
+    jq -c --arg repo "$repo" --arg ruleset "$ruleset" --arg path "$path" '
+        ($path | split(".")) as $p
+        | (.github_repos[$repo].rulesets[$ruleset] // {} | getpath($p)) as $o
+        | if $o != null then $o else (.github_defaults.rulesets[$ruleset] | getpath($p)) end
+    ' <<<"$POLICY_JSON"
 }
 
-# Build the expected ruleset payload from policy YAML.
-# All rule values honor per-repo overrides (ruleset_value/ruleset_json) so a repo
-# like .github can keep rebase-check + strict while kure/launcher use a merge queue.
+# All ruleset names declared in policy (github_defaults.rulesets keys), one
+# per line — safe to mapfile even when a name contains spaces.
+ruleset_names() {
+    jq -r '.github_defaults.rulesets | keys[]' <<<"$POLICY_JSON"
+}
+
+# Does ruleset `name` apply to `repo`? A ruleset with no "repos" field
+# applies everywhere; one with "repos: [...]" only applies to listed repos
+# (mirrors the existing label-scoping pattern in standards/labels.json). An
+# explicit empty list means "applies nowhere" — deliberately distinguished
+# from "field absent" via the `// "ALL"` sentinel (`//` treats [] as truthy).
+ruleset_applies() {
+    local repo="$1"
+    local name="$2"
+    jq -e --arg repo "$repo" --arg name "$name" '
+        (.github_defaults.rulesets[$name].repos // "ALL") as $scope
+        | if $scope == "ALL" then true else ($scope | index($repo) != null) end
+    ' <<<"$POLICY_JSON" >/dev/null
+}
+
+# Read a top-level ruleset field (target/enforcement) with per-repo override
+# falling back to default, falling back to `default_val` if declared nowhere.
+ruleset_field() {
+    local repo="$1"
+    local name="$2"
+    local field="$3"
+    local default_val="$4"
+    jq -r --arg repo "$repo" --arg name "$name" --arg field "$field" --arg default "$default_val" '
+        (.github_repos[$repo].rulesets[$name][$field]) as $o
+        | if $o != null then $o
+          elif (.github_defaults.rulesets[$name][$field]) != null then .github_defaults.rulesets[$name][$field]
+          else $default end
+    ' <<<"$POLICY_JSON"
+}
+
+# The merged `rules:` object for this repo+ruleset: github_defaults deep-
+# merged with the repo override (repo values win, `*` merges maps
+# recursively and replaces arrays wholesale — same semantics the old
+# per-leaf ruleset_value/ruleset_json calls had).
+ruleset_rules_json() {
+    local repo="$1"
+    local name="$2"
+    jq -c --arg repo "$repo" --arg name "$name" '
+        (.github_defaults.rulesets[$name].rules // {}) as $d
+        | (.github_repos[$repo].rulesets[$name].rules // {}) as $o
+        | $d * $o
+    ' <<<"$POLICY_JSON"
+}
+
+# Conditions are not currently overridden per repo in practice, but are
+# resolvable per repo (a repo override wins wholesale over the default).
+ruleset_conditions_json() {
+    local repo="$1"
+    local name="$2"
+    jq -c --arg repo "$repo" --arg name "$name" '
+        (.github_repos[$repo].rulesets[$name].conditions) as $o
+        | (if $o != null then $o else .github_defaults.rulesets[$name].conditions end) as $c
+        | {ref_name: {include: ($c.ref_name.include // []), exclude: ($c.ref_name.exclude // [])}}
+    ' <<<"$POLICY_JSON"
+}
+
+# Bypass actors are per-repo only — github_defaults never declares them.
+ruleset_bypass_json() {
+    local repo="$1"
+    local name="$2"
+    jq -c --arg repo "$repo" --arg name "$name" '
+        .github_repos[$repo].rulesets[$name].bypass_actors // []
+    ' <<<"$POLICY_JSON"
+}
+
+# Rule types this repo's policy expects to be present on `name`, in
+# RULE_TYPE_ORDER, one per line. flag types are included only when true;
+# passthrough/transform types are included only when their params object is
+# present (non-null) in the merged rules.
+expected_rule_types() {
+    local repo="$1"
+    local name="$2"
+    local rules_json
+    rules_json=$(ruleset_rules_json "$repo" "$name")
+
+    local t
+    for t in "${RULE_TYPE_ORDER[@]}"; do
+        case "$(rule_kind "$t")" in
+            flag)
+                jq -e --arg t "$t" '(.[$t] // false) == true' <<<"$rules_json" >/dev/null && echo "$t"
+                ;;
+            passthrough | transform)
+                jq -e --arg t "$t" '.[$t] != null' <<<"$rules_json" >/dev/null && echo "$t"
+                ;;
+        esac
+    done
+}
+
+# Build the expected ruleset payload from policy YAML, driven entirely by
+# the rule registry — adding a new rule type means adding a RULE_KIND entry,
+# not editing this function.
 build_ruleset_payload() {
     local repo="$1"
     local ruleset_name="$2"
 
-    # Read status check contexts + strict (per-repo override -> default)
-    local contexts strict
-    contexts=$(ruleset_json "$repo" "$ruleset_name" "rules.required_status_checks.contexts")
-    strict=$(ruleset_value "$repo" "$ruleset_name" "rules.required_status_checks.strict")
+    local target enforcement conditions bypass_actors rules_json
+    target=$(ruleset_field "$repo" "$ruleset_name" target branch)
+    enforcement=$(ruleset_field "$repo" "$ruleset_name" enforcement active)
+    conditions=$(ruleset_conditions_json "$repo" "$ruleset_name")
+    bypass_actors=$(ruleset_bypass_json "$repo" "$ruleset_name")
+    rules_json=$(ruleset_rules_json "$repo" "$ruleset_name")
 
-    # Read pull_request settings (per-repo override -> default)
-    local pr_review_count pr_dismiss_stale pr_code_owner pr_last_push pr_thread_resolution
-    pr_review_count=$(ruleset_value "$repo" "$ruleset_name" "rules.pull_request.required_approving_review_count")
-    pr_dismiss_stale=$(ruleset_value "$repo" "$ruleset_name" "rules.pull_request.dismiss_stale_reviews_on_push")
-    pr_code_owner=$(ruleset_value "$repo" "$ruleset_name" "rules.pull_request.require_code_owner_review")
-    pr_last_push=$(ruleset_value "$repo" "$ruleset_name" "rules.pull_request.require_last_push_approval")
-    pr_thread_resolution=$(ruleset_value "$repo" "$ruleset_name" "rules.pull_request.required_review_thread_resolution")
+    local rules="[]"
+    local t
+    while IFS= read -r t; do
+        [ -z "$t" ] && continue
+        if [ "$(rule_kind "$t")" = "flag" ]; then
+            rules=$(jq --arg t "$t" '. + [{"type": $t}]' <<<"$rules")
+        else
+            local params
+            params=$(jq -c --arg t "$t" '.[$t]' <<<"$rules_json" | jq -c "$(rule_to_api_jq "$t")")
+            rules=$(jq --arg t "$t" --argjson p "$params" '. + [{"type": $t, "parameters": $p}]' <<<"$rules")
+        fi
+    done < <(expected_rule_types "$repo" "$ruleset_name")
 
-    # Read conditions (not overridden per repo)
-    local conditions
-    conditions=$(yq -oj ".github_defaults.rulesets.\"$ruleset_name\".conditions" "$POLICY_FILE")
-
-    # Read per-repo bypass actors (if any)
-    local bypass_actors="[]"
-    local repo_bypass
-    repo_bypass=$(yq -oj ".github_repos.\"$repo\".rulesets.\"$ruleset_name\".bypass_actors // []" "$POLICY_FILE" 2>/dev/null)
-    if [ "$repo_bypass" != "null" ] && [ "$repo_bypass" != "[]" ]; then
-        bypass_actors="$repo_bypass"
-    fi
-
-    # Optional merge_queue rule (per-repo override -> default). "null"/absent => omitted.
-    # The YAML parameter keys map 1:1 to the rulesets API merge_queue parameters.
-    local merge_queue
-    merge_queue=$(ruleset_json "$repo" "$ruleset_name" "rules.merge_queue")
-
-    # Build status checks array for the API
-    local status_checks_api
-    status_checks_api=$(echo "$contexts" | jq '[.[] | {"context": .}]')
-
-    # Build the rules array (merge_queue appended below if present)
-    local rules
-    rules=$(jq -n \
-        --argjson status_checks "$status_checks_api" \
-        --argjson strict "$strict" \
-        --argjson pr_review_count "$pr_review_count" \
-        --argjson pr_dismiss_stale "$pr_dismiss_stale" \
-        --argjson pr_code_owner "$pr_code_owner" \
-        --argjson pr_last_push "$pr_last_push" \
-        --argjson pr_thread_resolution "$pr_thread_resolution" \
-        '[
-            {"type": "deletion"},
-            {"type": "non_fast_forward"},
-            {"type": "required_linear_history"},
-            {
-                "type": "pull_request",
-                "parameters": {
-                    "required_approving_review_count": $pr_review_count,
-                    "dismiss_stale_reviews_on_push": $pr_dismiss_stale,
-                    "require_code_owner_review": $pr_code_owner,
-                    "require_last_push_approval": $pr_last_push,
-                    "required_review_thread_resolution": $pr_thread_resolution
-                }
-            },
-            {
-                "type": "required_status_checks",
-                "parameters": {
-                    "strict_required_status_checks_policy": $strict,
-                    "required_status_checks": $status_checks
-                }
-            }
-        ]')
-
-    if [ "$merge_queue" != "null" ] && [ -n "$merge_queue" ]; then
-        rules=$(echo "$rules" | jq --argjson mq "$merge_queue" \
-            '. + [{"type": "merge_queue", "parameters": $mq}]')
-    fi
-
-    # Build the full payload
     jq -n \
         --arg name "$ruleset_name" \
+        --arg target "$target" \
+        --arg enforcement "$enforcement" \
         --argjson conditions "$conditions" \
         --argjson bypass_actors "$bypass_actors" \
         --argjson rules "$rules" \
         '{
-            "name": $name,
-            "target": "branch",
-            "enforcement": "active",
-            "conditions": {
-                "ref_name": {
-                    "include": $conditions.ref_name.include,
-                    "exclude": ($conditions.ref_name.exclude // [])
-                }
-            },
-            "bypass_actors": $bypass_actors,
-            "rules": $rules
+            name: $name,
+            target: $target,
+            enforcement: $enforcement,
+            conditions: $conditions,
+            bypass_actors: $bypass_actors,
+            rules: $rules
         }'
 }
 
@@ -300,9 +550,12 @@ apply_ruleset() {
     local payload
     payload=$(build_ruleset_payload "$repo" "$ruleset_name")
 
-    # Check if ruleset already exists
+    # Check if ruleset already exists. includes_parents=false so an
+    # org-inherited ruleset of the same name can't yield an id that 404s on
+    # the PUT below.
     local existing_id
-    existing_id=$(gh api "repos/$GITHUB_ORG/$repo/rulesets" --jq ".[] | select(.name == \"$ruleset_name\") | .id" 2>/dev/null)
+    existing_id=$(gh api "repos/$GITHUB_ORG/$repo/rulesets?includes_parents=false" 2>/dev/null \
+        | jq -r --arg n "$ruleset_name" '.[] | select(.name == $n) | .id')
 
     local api_err
     if [ -n "$existing_id" ]; then
@@ -365,7 +618,7 @@ audit_labels() {
     local repo="$1"
     local apply="$2"
 
-    echo -e "\n${BLUE}=== Labels ===${NC}"
+    echo -e "\n${BLUE}=== Labels: $GITHUB_ORG/$repo ===${NC}"
 
     local existing_labels
     existing_labels=$(get_github_labels "$repo")
@@ -463,40 +716,31 @@ audit_repo_settings() {
     local repo="$1"
     local apply="$2"
 
-    echo -e "\n${BLUE}=== Repository Settings ===${NC}"
+    echo -e "\n${BLUE}=== Repository Settings: $GITHUB_ORG/$repo ===${NC}"
 
     local settings
     settings=$(gh api "repos/$GITHUB_ORG/$repo")
 
-    # Settings to check: policy key -> GitHub API field
-    local -a setting_keys=(
-        "allow_rebase_merge"
-        "allow_squash_merge"
-        "allow_merge_commit"
-        "delete_branch_on_merge"
-        "allow_update_branch"
-        "has_wiki"
-        "allow_auto_merge"
-        "has_projects"
-    )
-
     local fixes="{}"
 
-    for key in "${setting_keys[@]}"; do
-        local expected actual
-        expected=$(gh_policy_value "$repo" "$key")
-        actual=$(echo "$settings" | jq -r ".$key")
+    for key in "${SETTING_KEYS[@]}"; do
+        # Compare JSON-encoded forms on both sides so this works uniformly
+        # for booleans and strings (a raw/JSON mismatch here would falsely
+        # report drift on every string-valued setting).
+        local expected_json actual_json
+        expected_json=$(gh_policy_json "$repo" "$key")
+        actual_json=$(jq -c ".$key" <<<"$settings")
 
-        if [ "$actual" = "$expected" ]; then
-            echo -e "  ${GREEN}OK${NC}: $key = $expected"
+        if [ "$actual_json" = "$expected_json" ]; then
+            echo -e "  ${GREEN}OK${NC}: $key = $(jq -r '.' <<<"$expected_json")"
             SETTINGS_OK=$((SETTINGS_OK + 1))
         else
             SETTINGS_MISSING=$((SETTINGS_MISSING + 1))
             if [ "$apply" = "true" ]; then
-                echo -e "  ${YELLOW}SETTING${NC}: $key to $expected (was: $actual)"
-                fixes=$(echo "$fixes" | jq --arg k "$key" --argjson v "$expected" '. + {($k): $v}')
+                echo -e "  ${YELLOW}SETTING${NC}: $key to $(jq -r '.' <<<"$expected_json") (was: $(jq -r '.' <<<"$actual_json"))"
+                fixes=$(jq --arg k "$key" --argjson v "$expected_json" '. + {($k): $v}' <<<"$fixes")
             else
-                echo -e "  ${RED}WRONG${NC}: $key = $actual (should be $expected)"
+                echo -e "  ${RED}WRONG${NC}: $key = $(jq -r '.' <<<"$actual_json") (should be $(jq -r '.' <<<"$expected_json"))"
             fi
         fi
     done
@@ -521,6 +765,8 @@ audit_repo_settings() {
 audit_security_settings() {
     local repo="$1"
     local apply="$2"
+
+    echo -e "\n${BLUE}=== Security: $GITHUB_ORG/$repo ===${NC}"
 
     local settings
     settings=$(gh api "repos/$GITHUB_ORG/$repo")
@@ -582,12 +828,95 @@ audit_security_settings() {
     fi
 }
 
+# Compare a policy-declared ruleset against its live API representation.
+# Emits one tab-separated record per line to stdout:
+#   OK|WRONG    <key>            <expected>  <actual>
+#   MISSING     rules.<type>     -           -   (expected rule type absent)
+#   EXTRA       rules.<type>     -           -   (live rule type not in policy)
+# Keys are in policy vocabulary (enforcement, target, conditions,
+# bypass_actors, rules.<type>, rules.<type>.<param>) so both audit_rulesets
+# (renderer) and ruleset_has_drift (collapse-to-boolean) can share this one
+# comparison engine and can never diverge from each other.
+ruleset_diff() {
+    local repo="$1"
+    local ruleset_name="$2"
+    local full_ruleset="$3"
+
+    local expected_enforcement expected_target
+    expected_enforcement=$(ruleset_field "$repo" "$ruleset_name" enforcement active)
+    expected_target=$(ruleset_field "$repo" "$ruleset_name" target branch)
+    _rd_scalar "enforcement" "$expected_enforcement" "$(jq -r '.enforcement' <<<"$full_ruleset")"
+    _rd_scalar "target" "$expected_target" "$(jq -r '.target' <<<"$full_ruleset")"
+
+    local expected_conditions actual_conditions
+    expected_conditions=$(ruleset_conditions_json "$repo" "$ruleset_name" | jq -Sc "$CANON_JQ")
+    actual_conditions=$(jq -c '.conditions' <<<"$full_ruleset" | jq -Sc "$CANON_JQ")
+    _rd_scalar "conditions" "$expected_conditions" "$actual_conditions"
+
+    local -a expected_types actual_types
+    mapfile -t expected_types < <(expected_rule_types "$repo" "$ruleset_name")
+    mapfile -t actual_types < <(jq -r '.rules[].type' <<<"$full_ruleset" | sort)
+
+    local t
+    for t in "${expected_types[@]}"; do
+        if printf '%s\n' "${actual_types[@]}" | grep -qx "$t"; then
+            printf 'OK\trules.%s\tpresent\tpresent\n' "$t"
+        else
+            printf 'MISSING\trules.%s\t-\t-\n' "$t"
+        fi
+    done
+    for t in "${actual_types[@]}"; do
+        if ! printf '%s\n' "${expected_types[@]}" | grep -qx "$t"; then
+            printf 'EXTRA\trules.%s\t-\t-\n' "$t"
+        fi
+    done
+
+    local rules_json
+    rules_json=$(ruleset_rules_json "$repo" "$ruleset_name")
+
+    for t in "${expected_types[@]}"; do
+        printf '%s\n' "${actual_types[@]}" | grep -qx "$t" || continue
+        [ "$(rule_kind "$t")" = "flag" ] && continue
+
+        local expected_params actual_params
+        expected_params=$(jq -c --arg t "$t" '.[$t] // {}' <<<"$rules_json")
+        actual_params=$(jq -c --arg t "$t" '.rules[] | select(.type == $t) | .parameters' <<<"$full_ruleset" \
+            | jq -c "$(rule_from_api_jq "$t")")
+
+        local k
+        for k in $(jq -r 'keys[]' <<<"$expected_params"); do
+            local exp_val act_val
+            exp_val=$(jq -Sc --arg k "$k" '.[$k]' <<<"$expected_params" | jq -Sc "$CANON_JQ")
+            act_val=$(jq -Sc --arg k "$k" '.[$k]' <<<"$actual_params" | jq -Sc "$CANON_JQ")
+            _rd_scalar "rules.$t.$k" "$exp_val" "$act_val"
+        done
+    done
+
+    local expected_bypass
+    expected_bypass=$(ruleset_bypass_json "$repo" "$ruleset_name")
+    if [ "$expected_bypass" != "[]" ]; then
+        local expected_ids actual_ids
+        expected_ids=$(jq -Sc '[.[].actor_id] | sort' <<<"$expected_bypass")
+        actual_ids=$(jq -Sc '[.bypass_actors[].actor_id] | sort' <<<"$full_ruleset")
+        _rd_scalar "bypass_actors" "$expected_ids" "$actual_ids"
+    fi
+}
+
+_rd_scalar() {
+    local key="$1" expected="$2" actual="$3"
+    if [ "$expected" = "$actual" ]; then
+        printf 'OK\t%s\t%s\t%s\n' "$key" "$expected" "$actual"
+    else
+        printf 'WRONG\t%s\t%s\t%s\n' "$key" "$expected" "$actual"
+    fi
+}
+
 # Audit rulesets
 audit_rulesets() {
     local repo="$1"
     local apply="$2"
 
-    echo -e "\n${BLUE}=== Rulesets (main) ===${NC}"
+    echo -e "\n${BLUE}=== Rulesets (main): $GITHUB_ORG/$repo ===${NC}"
 
     # Check for leftover classic branch protection
     if gh api "repos/$GITHUB_ORG/$repo/branches/main/protection" --silent 2>/dev/null; then
@@ -598,9 +927,13 @@ audit_rulesets() {
         fi
     fi
 
-    # Get list of expected ruleset names from policy
-    local ruleset_names
-    ruleset_names=$(yq -r '.github_defaults.rulesets | keys | .[]' "$POLICY_FILE")
+    local -a all_names applicable_names
+    mapfile -t all_names < <(ruleset_names)
+    applicable_names=()
+    local name
+    for name in "${all_names[@]}"; do
+        ruleset_applies "$repo" "$name" && applicable_names+=("$name")
+    done
 
     # Get existing rulesets. includes_parents=false excludes org-level rulesets that
     # apply here by inheritance — those are managed at the org level, not this repo's,
@@ -608,178 +941,235 @@ audit_rulesets() {
     local existing_rulesets
     existing_rulesets=$(gh api "repos/$GITHUB_ORG/$repo/rulesets?includes_parents=false" 2>/dev/null || echo "[]")
 
-    for ruleset_name in $ruleset_names; do
-        local existing
-        existing=$(echo "$existing_rulesets" | jq -r ".[] | select(.name == \"$ruleset_name\")")
+    for name in "${applicable_names[@]}"; do
+        local existing_id
+        existing_id=$(jq -r --arg n "$name" '.[] | select(.name == $n) | .id' <<<"$existing_rulesets")
 
-        if [ -z "$existing" ]; then
+        if [ -z "$existing_id" ]; then
             RULESET_MISSING=$((RULESET_MISSING + 1))
-            echo -e "  ${RED}MISSING${NC}: Ruleset '$ruleset_name' not found"
+            echo -e "  ${RED}MISSING${NC}: Ruleset '$name' not found"
             if [ "$apply" = "true" ]; then
-                apply_ruleset "$repo" "$ruleset_name"
+                apply_ruleset "$repo" "$name"
             fi
             continue
         fi
 
-        local existing_id
-        existing_id=$(echo "$existing" | jq -r '.id')
-
-        echo -e "  ${GREEN}OK${NC}: Ruleset '$ruleset_name' exists (id: $existing_id)"
+        echo -e "  ${GREEN}OK${NC}: Ruleset '$name' exists (id: $existing_id)"
         RULESET_OK=$((RULESET_OK + 1))
 
         # Fetch full ruleset details (list endpoint doesn't include all fields)
         local full_ruleset
         full_ruleset=$(gh api "repos/$GITHUB_ORG/$repo/rulesets/$existing_id" 2>/dev/null)
 
-        # Check enforcement
-        local actual_enforcement
-        actual_enforcement=$(echo "$full_ruleset" | jq -r '.enforcement')
-        if [ "$actual_enforcement" = "active" ]; then
-            echo -e "  ${GREEN}OK${NC}: Enforcement = active"
-            RULESET_OK=$((RULESET_OK + 1))
-        else
-            RULESET_MISSING=$((RULESET_MISSING + 1))
-            echo -e "  ${RED}WRONG${NC}: Enforcement = $actual_enforcement (should be active)"
-        fi
-
-        # Check required status checks (per-repo override -> default)
-        local expected_contexts
-        expected_contexts=$(ruleset_json "$repo" "$ruleset_name" "rules.required_status_checks.contexts")
-
-        local actual_contexts
-        actual_contexts=$(echo "$full_ruleset" | jq '[.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context] // []')
-
-        if [ "$(echo "$actual_contexts" | jq 'sort')" = "$(echo "$expected_contexts" | jq 'sort')" ]; then
-            echo -e "  ${GREEN}OK${NC}: Required status checks match policy"
-            RULESET_OK=$((RULESET_OK + 1))
-        else
-            RULESET_MISSING=$((RULESET_MISSING + 1))
-            echo -e "  ${RED}WRONG${NC}: Status checks differ"
-            echo -e "    Expected: $(echo "$expected_contexts" | jq -c 'sort')"
-            echo -e "    Actual:   $(echo "$actual_contexts" | jq -c 'sort')"
-        fi
-
-        # Check strict policy (per-repo override -> default)
-        local expected_strict actual_strict
-        expected_strict=$(ruleset_value "$repo" "$ruleset_name" "rules.required_status_checks.strict")
-        actual_strict=$(echo "$full_ruleset" | jq -r '.rules[] | select(.type == "required_status_checks") | .parameters.strict_required_status_checks_policy')
-        if [ "$actual_strict" = "$expected_strict" ]; then
-            echo -e "  ${GREEN}OK${NC}: strict_required_status_checks_policy = $expected_strict"
-            RULESET_OK=$((RULESET_OK + 1))
-        else
-            RULESET_MISSING=$((RULESET_MISSING + 1))
-            echo -e "  ${RED}WRONG${NC}: strict = $actual_strict (should be $expected_strict)"
-        fi
-
-        # Expected rule types — merge_queue only when the repo's policy defines it
-        local expected_merge_queue
-        expected_merge_queue=$(ruleset_json "$repo" "$ruleset_name" "rules.merge_queue")
-        local -a expected_rule_types=(deletion non_fast_forward required_linear_history pull_request required_status_checks)
-        if [ "$expected_merge_queue" != "null" ] && [ -n "$expected_merge_queue" ]; then
-            expected_rule_types+=(merge_queue)
-        fi
-
-        # Check rule types present
-        local actual_rule_types
-        actual_rule_types=$(echo "$full_ruleset" | jq '[.rules[].type] | sort')
-        for rule_type in "${expected_rule_types[@]}"; do
-            if echo "$actual_rule_types" | jq -e "index(\"$rule_type\")" >/dev/null 2>&1; then
-                echo -e "  ${GREEN}OK${NC}: Rule '$rule_type' present"
-                RULESET_OK=$((RULESET_OK + 1))
-            else
-                RULESET_MISSING=$((RULESET_MISSING + 1))
-                echo -e "  ${RED}MISSING${NC}: Rule '$rule_type' not found"
-            fi
-        done
-
-        # Flag any unexpected rule types (e.g. a merge_queue rule that slipped onto a
-        # repo whose policy omits it) — present-only checks would miss this drift.
-        local unexpected_rule_types
-        unexpected_rule_types=$(echo "$actual_rule_types" | jq -c \
-            --argjson expected "$(printf '%s\n' "${expected_rule_types[@]}" | jq -R . | jq -s 'sort')" \
-            '. - $expected')
-        if [ "$unexpected_rule_types" != "[]" ]; then
-            RULESET_MISSING=$((RULESET_MISSING + 1))
-            echo -e "  ${RED}WRONG${NC}: Unexpected rule(s) present (not in policy): $unexpected_rule_types"
-        fi
-
-        # Check pull_request rule parameters
-        local pr_params
-        pr_params=$(echo "$full_ruleset" | jq '.rules[] | select(.type == "pull_request") | .parameters')
-        if [ -n "$pr_params" ] && [ "$pr_params" != "null" ]; then
-            for param in required_approving_review_count dismiss_stale_reviews_on_push require_code_owner_review require_last_push_approval required_review_thread_resolution; do
-                local expected_param actual_param
-                expected_param=$(ruleset_value "$repo" "$ruleset_name" "rules.pull_request.$param")
-                actual_param=$(echo "$pr_params" | jq -r ".$param")
-                if [ "$actual_param" = "$expected_param" ]; then
-                    echo -e "  ${GREEN}OK${NC}: pull_request.$param = $expected_param"
-                    RULESET_OK=$((RULESET_OK + 1))
-                else
-                    RULESET_MISSING=$((RULESET_MISSING + 1))
-                    echo -e "  ${RED}WRONG${NC}: pull_request.$param = $actual_param (should be $expected_param)"
-                fi
-            done
-        fi
-
-        # Check merge_queue parameters (only when the repo's policy defines a queue)
-        if [ "$expected_merge_queue" != "null" ] && [ -n "$expected_merge_queue" ]; then
-            local mq_params
-            mq_params=$(echo "$full_ruleset" | jq '.rules[] | select(.type == "merge_queue") | .parameters')
-            if [ -n "$mq_params" ] && [ "$mq_params" != "null" ]; then
-                for param in merge_method grouping_strategy min_entries_to_merge max_entries_to_merge max_entries_to_build min_entries_to_merge_wait_minutes check_response_timeout_minutes; do
-                    local expected_mq actual_mq
-                    expected_mq=$(echo "$expected_merge_queue" | jq -r ".$param")
-                    actual_mq=$(echo "$mq_params" | jq -r ".$param")
-                    if [ "$actual_mq" = "$expected_mq" ]; then
-                        echo -e "  ${GREEN}OK${NC}: merge_queue.$param = $expected_mq"
-                        RULESET_OK=$((RULESET_OK + 1))
+        # Apply is gated on drift local to THIS ruleset only — a global
+        # cumulative counter would trigger a PUT of every ruleset in the
+        # loop (including ones with no drift) as soon as any one of them
+        # had an issue.
+        local drift=0
+        local status key expected actual
+        while IFS=$'\t' read -r status key expected actual; do
+            case "$status" in
+                OK)
+                    if [ "$expected" = "present" ]; then
+                        echo -e "  ${GREEN}OK${NC}: Rule '${key#rules.}' present"
                     else
-                        RULESET_MISSING=$((RULESET_MISSING + 1))
-                        echo -e "  ${RED}WRONG${NC}: merge_queue.$param = $actual_mq (should be $expected_mq)"
+                        echo -e "  ${GREEN}OK${NC}: $key = $expected"
                     fi
-                done
-            fi
-        fi
+                    RULESET_OK=$((RULESET_OK + 1))
+                    ;;
+                WRONG)
+                    echo -e "  ${RED}WRONG${NC}: $key = $actual (should be $expected)"
+                    RULESET_MISSING=$((RULESET_MISSING + 1))
+                    drift=$((drift + 1))
+                    ;;
+                MISSING)
+                    echo -e "  ${RED}MISSING${NC}: Rule '${key#rules.}' not found"
+                    RULESET_MISSING=$((RULESET_MISSING + 1))
+                    drift=$((drift + 1))
+                    ;;
+                EXTRA)
+                    echo -e "  ${RED}WRONG${NC}: Unexpected rule '${key#rules.}' present (not in policy)"
+                    RULESET_MISSING=$((RULESET_MISSING + 1))
+                    drift=$((drift + 1))
+                    ;;
+            esac
+        done < <(ruleset_diff "$repo" "$name" "$full_ruleset")
 
-        # Check bypass actors (per-repo)
-        local expected_bypass
-        expected_bypass=$(yq -oj ".github_repos.\"$repo\".rulesets.\"$ruleset_name\".bypass_actors // []" "$POLICY_FILE" 2>/dev/null)
-        if [ "$expected_bypass" != "null" ] && [ "$expected_bypass" != "[]" ]; then
-            local expected_bypass_ids
-            expected_bypass_ids=$(echo "$expected_bypass" | jq '[.[].actor_id] | sort')
-            local actual_bypass_ids
-            actual_bypass_ids=$(echo "$full_ruleset" | jq '[.bypass_actors[].actor_id] | sort')
-
-            if [ "$actual_bypass_ids" = "$expected_bypass_ids" ]; then
-                echo -e "  ${GREEN}OK${NC}: Bypass actors match policy"
-                RULESET_OK=$((RULESET_OK + 1))
-            else
-                RULESET_MISSING=$((RULESET_MISSING + 1))
-                echo -e "  ${RED}WRONG${NC}: Bypass actors differ"
-                echo -e "    Expected: $(echo "$expected_bypass_ids" | jq -c '.')"
-                echo -e "    Actual:   $(echo "$actual_bypass_ids" | jq -c '.')"
-            fi
-        fi
-
-        if [ "$apply" = "true" ] && [ $RULESET_MISSING -gt 0 ]; then
-            apply_ruleset "$repo" "$ruleset_name"
+        if [ "$apply" = "true" ] && [ "$drift" -gt 0 ]; then
+            apply_ruleset "$repo" "$name"
         fi
     done
 
-    # Flag rulesets that exist on the repo but aren't named in policy at all
-    # (e.g. a "Code Quality Copilot review" ruleset created via the UI). The loop
-    # above can only check rulesets the policy knows about; without this, a
-    # ruleset created out-of-band is invisible to the audit forever. Report-only
-    # — never auto-deleted, since it may be an intentional per-repo addition.
-    local policy_ruleset_names_json
-    policy_ruleset_names_json=$(printf '%s\n' $ruleset_names | jq -R . | jq -s 'sort')
-    local unmanaged_rulesets
-    unmanaged_rulesets=$(echo "$existing_rulesets" | jq -c --argjson known "$policy_ruleset_names_json" \
-        '[.[] | select(.name as $n | $known | index($n) | not) | .name]')
+    # Flag rulesets that exist on the repo but aren't applicable-and-known
+    # (e.g. a "Code Quality Copilot review" ruleset created via the UI
+    # before policy modeled it, or a ruleset whose repos: scope excludes
+    # this repo). Report-only — never auto-deleted, since it may be an
+    # intentional per-repo addition.
+    local applicable_names_json unmanaged_rulesets
+    applicable_names_json=$(printf '%s\n' "${applicable_names[@]}" | jq -R . | jq -s 'sort')
+    unmanaged_rulesets=$(jq -c --argjson known "$applicable_names_json" \
+        '[.[] | select(.name as $n | $known | index($n) | not) | .name]' <<<"$existing_rulesets")
     if [ "$unmanaged_rulesets" != "[]" ]; then
-        RULESET_MISSING=$((RULESET_MISSING + $(echo "$unmanaged_rulesets" | jq 'length')))
+        RULESET_MISSING=$((RULESET_MISSING + $(jq 'length' <<<"$unmanaged_rulesets")))
         echo -e "  ${RED}UNMANAGED${NC}: Ruleset(s) not in policy (created out-of-band): $unmanaged_rulesets"
     fi
+}
+
+# Does this known (policy-declared) ruleset's live config match what policy
+# resolves to for this repo? Delegates to ruleset_diff — the same
+# comparison audit_rulesets renders — so "no drift" here means
+# audit_rulesets would print nothing but OK lines.
+# Returns 0 (bash true) if drift was found, 1 if the live ruleset matches policy.
+ruleset_has_drift() {
+    local repo="$1"
+    local ruleset_name="$2"
+    local full_ruleset="$3"
+
+    local status
+    while IFS=$'\t' read -r status _ _ _; do
+        [ "$status" != "OK" ] && return 0
+    done < <(ruleset_diff "$repo" "$ruleset_name" "$full_ruleset")
+
+    return 1
+}
+
+# Assemble the jq filter that maps a live API ruleset onto the compact
+# policy shape, generated from the rule registry so adding a rule type
+# means adding a RULE_KIND entry, not hand-editing this filter. Cached on
+# first call — this doesn't change during a run.
+build_ruleset_import_jq() {
+    if [ -n "$RULESET_IMPORT_JQ_CACHE" ]; then
+        printf '%s' "$RULESET_IMPORT_JQ_CACHE"
+        return 0
+    fi
+
+    local -a pieces=()
+    local t
+    for t in "${RULE_TYPE_ORDER[@]}"; do
+        if [ "$(rule_kind "$t")" = "flag" ]; then
+            pieces+=("{\"$t\": (\$r[\"$t\"] // false)}")
+        else
+            pieces+=("(if \$r[\"$t\"] then {\"$t\": (\$r[\"$t\"] | $(rule_from_api_jq "$t"))} else {} end)")
+        fi
+    done
+
+    local rule_expr
+    rule_expr=$(IFS='+'; printf '%s' "${pieces[*]}")
+
+    local known_types_json
+    known_types_json=$(printf '%s\n' "${RULE_TYPE_ORDER[@]}" | jq -R . | jq -c -s .)
+
+    RULESET_IMPORT_JQ_CACHE="(.rules | map({(.type): (.parameters // true)}) | add) as \$r
+| {
+    target: .target,
+    enforcement: .enforcement,
+    conditions: {
+      ref_name: {
+        include: (.conditions.ref_name.include // []),
+        exclude: (.conditions.ref_name.exclude // [])
+      }
+    },
+    bypass_actors: (.bypass_actors // []),
+    rules: ($rule_expr),
+    unmapped_rule_types: ([\$r | keys[]] - $known_types_json)
+  }"
+
+    printf '%s' "$RULESET_IMPORT_JQ_CACHE"
+}
+
+# Dump ONLY the parts of a repo's live settings that drift from what policy
+# currently resolves to (via default or per-repo override) — settings/security
+# keys use a JSON-vs-JSON comparison; rulesets already known to (and scoped
+# to this repo by) policy use ruleset_has_drift(); rulesets policy doesn't
+# apply here at all always print in full since there's nothing to diff
+# against. Values that already match policy are omitted entirely — the
+# point is to show what needs a decision, not the whole resolved config.
+# Read-only: prints to stdout for the caller to diff against
+# governance/repository-settings-policy.yaml and paste under github_defaults
+# (general) or github_repos.<repo> (override). Never writes the policy file
+# itself — it carries hand-authored comments a yq round-trip would risk
+# mangling, and default-vs-override is a judgment call.
+import_repo() {
+    local repo="$1"
+
+    echo "# ---- drift from policy: $GITHUB_ORG/$repo ($(date -u +%Y-%m-%dT%H:%M:%SZ)) ----"
+
+    local settings
+    settings=$(gh api "repos/$GITHUB_ORG/$repo")
+
+    local settings_json="{}"
+    local key
+    for key in "${SETTING_KEYS[@]}"; do
+        local expected_json actual_json
+        expected_json=$(gh_policy_json "$repo" "$key")
+        actual_json=$(jq -c ".$key" <<<"$settings")
+        if [ "$actual_json" != "$expected_json" ]; then
+            settings_json=$(jq --arg k "$key" --argjson v "$actual_json" '. + {($k): $v}' <<<"$settings_json")
+        fi
+    done
+
+    local security_json="{}"
+    for key in secret_scanning secret_scanning_push_protection dependabot_security_updates; do
+        local expected actual
+        expected=$(gh_policy_value "$repo" "security.$key")
+        [ "$expected" = "null" ] && continue
+        actual=$(echo "$settings" | jq -r ".security_and_analysis.$key.status // \"disabled\"")
+        if [ "$actual" != "$expected" ]; then
+            security_json=$(echo "$security_json" | jq --arg k "$key" --arg v "$actual" '. + {($k): $v}')
+        fi
+    done
+
+    local -a all_names applicable_names
+    mapfile -t all_names < <(ruleset_names)
+    applicable_names=()
+    local n
+    for n in "${all_names[@]}"; do
+        ruleset_applies "$repo" "$n" && applicable_names+=("$n")
+    done
+
+    # includes_parents=false: same reasoning as audit_rulesets — org-inherited
+    # rulesets are managed at the org level, importing them here would duplicate them.
+    local existing_rulesets
+    existing_rulesets=$(gh api "repos/$GITHUB_ORG/$repo/rulesets?includes_parents=false" 2>/dev/null || echo "[]")
+
+    local rulesets_json="{}"
+    local ruleset_id
+    for ruleset_id in $(echo "$existing_rulesets" | jq -r '.[].id'); do
+        local full_ruleset ruleset_name
+        full_ruleset=$(gh api "repos/$GITHUB_ORG/$repo/rulesets/$ruleset_id" 2>/dev/null)
+        ruleset_name=$(echo "$full_ruleset" | jq -r '.name')
+
+        local is_applicable=false
+        for n in "${applicable_names[@]}"; do
+            [ "$n" = "$ruleset_name" ] && is_applicable=true && break
+        done
+
+        if [ "$is_applicable" = "true" ] && ! ruleset_has_drift "$repo" "$ruleset_name" "$full_ruleset"; then
+            continue # matches policy exactly — nothing to show
+        fi
+
+        local transformed unmapped clean
+        transformed=$(jq "$(build_ruleset_import_jq)" <<<"$full_ruleset")
+        unmapped=$(echo "$transformed" | jq -c '.unmapped_rule_types')
+        if [ "$unmapped" != "[]" ]; then
+            echo "# WARNING: ruleset '$ruleset_name' has rule type(s) this script doesn't model, omitted from import: $unmapped" >&2
+        fi
+        clean=$(echo "$transformed" | jq 'del(.unmapped_rule_types)')
+        rulesets_json=$(echo "$rulesets_json" | jq --arg n "$ruleset_name" --argjson v "$clean" '. + {($n): $v}')
+    done
+
+    if [ "$settings_json" = "{}" ] && [ "$security_json" = "{}" ] && [ "$rulesets_json" = "{}" ]; then
+        echo "# $repo: matches policy — nothing to import"
+        echo ""
+        return 0
+    fi
+
+    local body="$settings_json"
+    [ "$security_json" != "{}" ] && body=$(echo "$body" | jq --argjson s "$security_json" '. + {security: $s}')
+    [ "$rulesets_json" != "{}" ] && body=$(echo "$body" | jq --argjson r "$rulesets_json" '. + {rulesets: $r}')
+
+    jq -n --arg repo "$repo" --argjson body "$body" '{($repo): $body}' | yq -p=json -o=yaml -
+    echo ""
 }
 
 # Audit a single repository
@@ -904,6 +1294,7 @@ main() {
     local repo=""
     local all_repos=false
     local apply=false
+    local import_mode=false
 
     # Parse arguments
     while [[ $# -gt 0 ]]; do
@@ -914,6 +1305,10 @@ main() {
                 ;;
             --apply)
                 apply=true
+                shift
+                ;;
+            --import)
+                import_mode=true
                 shift
                 ;;
             --ci)
@@ -944,8 +1339,24 @@ main() {
         usage
     fi
 
+    if [ "$import_mode" = "true" ] && [ "$apply" = "true" ]; then
+        echo "ERROR: --import and --apply are mutually exclusive (--import never writes)"
+        exit 1
+    fi
+
     setup_colors
     check_requirements
+
+    if [ "$import_mode" = "true" ]; then
+        if [ "$all_repos" = "true" ]; then
+            for r in ${GITHUB_REPOS:-}; do
+                import_repo "$r"
+            done
+        else
+            import_repo "$repo"
+        fi
+        return 0
+    fi
 
     if [ "$apply" = "true" ]; then
         echo -e "${YELLOW}Running in APPLY mode - changes will be made${NC}"
@@ -965,4 +1376,9 @@ main() {
     print_summary "$apply"
 }
 
-main "$@"
+# Sourceable for tests (scripts/test/github-settings-test.sh sources this file
+# to exercise the registry/diff/payload functions directly, without a live
+# `gh`) while remaining a normal, unchanged CLI when executed directly.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi

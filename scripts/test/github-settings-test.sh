@@ -1,0 +1,225 @@
+#!/usr/bin/env bash
+# github-settings-test.sh — function-level regression tests for the rule
+# registry / ruleset diff engine / import filter in scripts/github-settings.sh.
+#
+# Why not a full mock-`gh` end-to-end harness: audit_labels() reads the
+# real standards/labels.json (35 live labels) with no override hook, so an
+# end-to-end mock would either have to mirror that file exactly (fragile —
+# breaks on unrelated label changes) or fake it too (then it's not testing
+# the real audit path anyway). This instead sources github-settings.sh
+# directly (the BASH_SOURCE guard at its end keeps `main` from auto-running)
+# and drives the registry/diff/payload functions with crafted JSON fixtures
+# — no network, no `gh` token, no coupling to label drift. This is also
+# exactly where this unit of work's real bugs lived: silent rule deletion
+# on apply, the yq spaces-in-key parse failure, false settings drift.
+#
+# Usage: github-settings-test.sh [REPO_ROOT]
+
+set -uo pipefail # deliberately not -e: assertions continue past failures to report all of them
+
+ROOT="${1:-.}"
+ROOT="$(cd "$ROOT" && pwd)"
+
+# shellcheck source=/dev/null
+source "$ROOT/scripts/github-settings.sh"
+
+# github-settings.sh's own `set -euo pipefail` runs at source time and
+# silently adds -e to THIS shell too (source shares the current shell, it
+# doesn't sandbox options) — without undoing it, the first assertion whose
+# right-hand side returns non-zero would abort this whole test script with
+# no error message, well before checking the last one.
+set +e
+
+# main() normally calls this before touching any function that echoes
+# ${RED}/${GREEN}/etc — under the inherited `set -u`, an unset color
+# variable is itself a hard error, not just a missing color code.
+# shellcheck disable=SC2034 # read by setup_colors(), defined in the
+# sourced (source=/dev/null) github-settings.sh, invisible to this file's lint.
+CI_MODE=true
+setup_colors
+
+POLICY_FILE="$ROOT/governance/repository-settings-policy.yaml"
+POLICY_JSON="$(yq -oj '.' "$POLICY_FILE")"
+COPILOT="Code Quality Copilot review for default branch"
+
+failures=0
+pass_count=0
+
+assert_eq() {
+    local desc="$1" expected="$2" actual="$3"
+    if [ "$expected" = "$actual" ]; then
+        echo "PASS: $desc"
+        pass_count=$((pass_count + 1))
+    else
+        echo "FAIL: $desc"
+        echo "  expected: $expected"
+        echo "  actual:   $actual"
+        failures=$((failures + 1))
+    fi
+}
+
+assert_contains() {
+    local desc="$1" haystack="$2" needle="$3"
+    if grep -qF -- "$needle" <<<"$haystack"; then
+        echo "PASS: $desc"
+        pass_count=$((pass_count + 1))
+    else
+        echo "FAIL: $desc — expected to find: $needle"
+        echo "  in: $haystack"
+        failures=$((failures + 1))
+    fi
+}
+
+# ---- validate_policy ----
+# validate_policy() calls `exit` on failure, so it must run in a subshell
+# here or it would kill the whole test run.
+
+if (validate_policy) >/dev/null 2>&1; then
+    echo "PASS: validate_policy accepts the real policy file"
+    pass_count=$((pass_count + 1))
+else
+    echo "FAIL: validate_policy rejects the real policy file (should accept it)"
+    failures=$((failures + 1))
+fi
+
+bogus_policy_json=$(jq '.github_defaults.rulesets["main-protection"].rules.bogus_type = true' <<<"$POLICY_JSON")
+bogus_out=$( (POLICY_JSON="$bogus_policy_json" validate_policy) 2>&1 )
+bogus_rc=$?
+if [ "$bogus_rc" -ne 0 ]; then
+    echo "PASS: validate_policy exits non-zero on an unmodeled rule type"
+    pass_count=$((pass_count + 1))
+else
+    echo "FAIL: validate_policy should reject an unmodeled rule type"
+    failures=$((failures + 1))
+fi
+assert_contains "validate_policy's error names the offending rule type" "$bogus_out" "bogus_type"
+
+# ---- ruleset_applies scoping ----
+
+if ruleset_applies "kure" "$COPILOT"; then
+    echo "PASS: Copilot ruleset applies to kure"
+    pass_count=$((pass_count + 1))
+else
+    echo "FAIL: Copilot ruleset should apply to kure"
+    failures=$((failures + 1))
+fi
+
+if ! ruleset_applies ".github" "$COPILOT"; then
+    echo "PASS: Copilot ruleset does not apply to .github"
+    pass_count=$((pass_count + 1))
+else
+    echo "FAIL: Copilot ruleset should not apply to .github"
+    failures=$((failures + 1))
+fi
+
+if ruleset_applies ".github" "main-protection"; then
+    echo "PASS: main-protection (no repos: scope) applies to .github"
+    pass_count=$((pass_count + 1))
+else
+    echo "FAIL: main-protection should apply everywhere (no repos: field)"
+    failures=$((failures + 1))
+fi
+
+# ---- build_ruleset_payload: the direct regression test for the core bug
+# this unit of work exists to fix — a payload builder that only knew 6
+# hardcoded rule types silently dropped anything else (e.g. copilot_code_review)
+# on the next full-replace PUT. If this payload doesn't carry exactly the
+# Copilot rule, --apply would still delete it today. ----
+
+copilot_payload=$(build_ruleset_payload "kure" "$COPILOT")
+assert_eq "Copilot payload has exactly 1 rule" "1" "$(jq '.rules | length' <<<"$copilot_payload")"
+assert_eq "Copilot payload rule type" "copilot_code_review" "$(jq -r '.rules[0].type' <<<"$copilot_payload")"
+assert_eq "Copilot payload enforcement" "disabled" "$(jq -r '.enforcement' <<<"$copilot_payload")"
+assert_eq "Copilot payload target" "branch" "$(jq -r '.target' <<<"$copilot_payload")"
+assert_eq "Copilot payload conditions" '~DEFAULT_BRANCH' "$(jq -r '.conditions.ref_name.include[0]' <<<"$copilot_payload")"
+assert_eq "Copilot payload rule parameters" \
+    '{"review_draft_pull_requests":true,"review_on_push":true}' \
+    "$(jq -Sc '.rules[0].parameters' <<<"$copilot_payload")"
+
+main_payload=$(build_ruleset_payload "kure" "main-protection")
+assert_eq "kure main-protection payload has 6 rules" "6" \
+    "$(jq '.rules | length' <<<"$main_payload")"
+assert_eq "kure main-protection payload rule types" \
+    "deletion,merge_queue,non_fast_forward,pull_request,required_linear_history,required_status_checks" \
+    "$(jq -r '[.rules[].type] | sort | join(",")' <<<"$main_payload")"
+
+github_main_payload=$(build_ruleset_payload ".github" "main-protection")
+assert_eq ".github main-protection payload has no merge_queue (no override)" \
+    "deletion,non_fast_forward,pull_request,required_linear_history,required_status_checks" \
+    "$(jq -r '[.rules[].type] | sort | join(",")' <<<"$github_main_payload")"
+assert_eq ".github main-protection keeps rebase-check context" "true" \
+    "$(jq -r '.rules[] | select(.type=="required_status_checks") | .parameters.required_status_checks | map(.context) | index("rebase-check") != null' <<<"$github_main_payload")"
+
+# ---- ruleset_diff: the comparison engine shared by audit_rulesets and
+# ruleset_has_drift. Crafted "live API" fixtures, no gh needed. ----
+
+copilot_live_match=$(jq -n --arg t "$COPILOT" '{
+    id: 19397361, name: $t, target: "branch", enforcement: "disabled",
+    conditions: {ref_name: {include: ["~DEFAULT_BRANCH"], exclude: []}},
+    bypass_actors: [],
+    rules: [{type: "copilot_code_review", parameters: {review_on_push: true, review_draft_pull_requests: true}}]
+}')
+
+diff_clean=$(ruleset_diff "kure" "$COPILOT" "$copilot_live_match")
+diff_clean_bad=$(awk -F'\t' '$1 != "OK"' <<<"$diff_clean")
+assert_eq "clean Copilot ruleset produces zero non-OK diff records" "" "$diff_clean_bad"
+
+copilot_live_dropped=$(jq '.rules = []' <<<"$copilot_live_match")
+diff_dropped=$(ruleset_diff "kure" "$COPILOT" "$copilot_live_dropped")
+assert_contains "a dropped copilot_code_review rule is reported MISSING" "$diff_dropped" "$(printf 'MISSING\trules.copilot_code_review')"
+
+main_live_match=$(jq -n '{
+    id: 12903081, name: "main-protection", target: "branch", enforcement: "active",
+    conditions: {ref_name: {include: ["refs/heads/main"], exclude: []}},
+    bypass_actors: [{actor_id: 2882845, actor_type: "Integration", bypass_mode: "always"}],
+    rules: [
+        {type: "deletion"}, {type: "non_fast_forward"}, {type: "required_linear_history"},
+        {type: "pull_request", parameters: {
+            required_approving_review_count: 0, dismiss_stale_reviews_on_push: false,
+            require_code_owner_review: false, require_last_push_approval: false,
+            required_review_thread_resolution: true,
+            dismissal_restriction: {enabled: false}, required_reviewers: []
+        }},
+        {type: "required_status_checks", parameters: {
+            strict_required_status_checks_policy: false,
+            required_status_checks: [{context: "lint"}, {context: "test"}, {context: "build"}],
+            do_not_enforce_on_create: false
+        }},
+        {type: "merge_queue", parameters: {
+            merge_method: "REBASE", grouping_strategy: "ALLGREEN",
+            min_entries_to_merge: 1, max_entries_to_merge: 1, max_entries_to_build: 1,
+            min_entries_to_merge_wait_minutes: 0, check_response_timeout_minutes: 60
+        }}
+    ]
+}')
+
+diff_main_clean=$(ruleset_diff "kure" "main-protection" "$main_live_match")
+diff_main_clean_bad=$(awk -F'\t' '$1 != "OK"' <<<"$diff_main_clean")
+assert_eq "clean kure main-protection (with API-only pull_request extras) produces zero non-OK records" "" "$diff_main_clean_bad"
+
+main_live_strict_drift=$(jq '(.rules[] | select(.type == "required_status_checks") | .parameters.strict_required_status_checks_policy) = true' <<<"$main_live_match")
+diff_main_strict=$(ruleset_diff "kure" "main-protection" "$main_live_strict_drift")
+assert_contains "a strict=true drift on kure is reported WRONG" "$diff_main_strict" "$(printf 'WRONG\trules.required_status_checks.strict\tfalse\ttrue')"
+
+# ---- build_ruleset_import_jq: strips API-only pull_request fields, flags
+# an injected unmodeled rule type instead of silently dropping it. ----
+
+import_filter=$(build_ruleset_import_jq)
+imported=$(jq "$import_filter" <<<"$main_live_match")
+assert_eq "import strips dismissal_restriction from pull_request" "null" \
+    "$(jq -r '.rules.pull_request.dismissal_restriction // "null"' <<<"$imported")"
+assert_eq "import maps required_status_checks to policy shape" '{"contexts":["lint","test","build"],"strict":false}' \
+    "$(jq -Sc '.rules.required_status_checks' <<<"$imported")"
+assert_eq "import reports no unmapped rule types for a fully-modeled ruleset" "[]" \
+    "$(jq -c '.unmapped_rule_types' <<<"$imported")"
+
+main_live_with_unmodeled=$(jq '.rules += [{type: "code_scanning", parameters: {code_scanning_tools: []}}]' <<<"$main_live_match")
+imported_unmodeled=$(jq "$import_filter" <<<"$main_live_with_unmodeled")
+assert_eq "import flags an injected unmodeled rule type" '["code_scanning"]' \
+    "$(jq -c '.unmapped_rule_types' <<<"$imported_unmodeled")"
+
+echo ""
+echo "github-settings-test: $pass_count passed, $failures failed"
+if [ "$failures" -gt 0 ]; then
+    exit 1
+fi
