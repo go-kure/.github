@@ -510,6 +510,54 @@ audit_repo_settings() {
     fi
 }
 
+# Audit security_and_analysis settings. These live under a nested
+# security_and_analysis.<key>.status object in both the GET response and the PATCH
+# body ("enabled"/"disabled" strings, not top-level booleans), so they can't share
+# audit_repo_settings' setting_keys loop — that loop reads/writes top-level boolean
+# fields.
+audit_security_settings() {
+    local repo="$1"
+    local apply="$2"
+
+    local settings
+    settings=$(gh api "repos/$GITHUB_ORG/$repo")
+
+    local -a security_keys=(
+        "secret_scanning"
+        "secret_scanning_push_protection"
+        "dependabot_security_updates"
+    )
+
+    local fixes="{}"
+
+    for key in "${security_keys[@]}"; do
+        local expected actual
+        expected=$(gh_policy_value "$repo" "security.$key")
+        [ "$expected" = "null" ] && continue # not declared in policy — skip, don't report as drift
+        actual=$(echo "$settings" | jq -r ".security_and_analysis.$key.status // \"disabled\"")
+
+        if [ "$actual" = "$expected" ]; then
+            echo -e "  ${GREEN}OK${NC}: security.$key = $expected"
+            SETTINGS_OK=$((SETTINGS_OK + 1))
+        else
+            SETTINGS_MISSING=$((SETTINGS_MISSING + 1))
+            if [ "$apply" = "true" ]; then
+                echo -e "  ${YELLOW}SETTING${NC}: security.$key to $expected (was: $actual)"
+                fixes=$(echo "$fixes" | jq --arg k "$key" --arg v "$expected" '. + {($k): {"status": $v}}')
+            else
+                echo -e "  ${RED}WRONG${NC}: security.$key = $actual (should be $expected)"
+            fi
+        fi
+    done
+
+    if [ "$apply" = "true" ] && [ "$fixes" != "{}" ]; then
+        gh api "repos/$GITHUB_ORG/$repo" \
+            --method PATCH \
+            --input - <<<"$(jq -n --argjson f "$fixes" '{security_and_analysis: $f}')" \
+            --silent
+    fi
+}
+
 # Audit rulesets
 audit_rulesets() {
     local repo="$1"
@@ -691,6 +739,21 @@ audit_rulesets() {
             apply_ruleset "$repo" "$ruleset_name"
         fi
     done
+
+    # Flag rulesets that exist on the repo but aren't named in policy at all
+    # (e.g. a "Code Quality Copilot review" ruleset created via the UI). The loop
+    # above can only check rulesets the policy knows about; without this, a
+    # ruleset created out-of-band is invisible to the audit forever. Report-only
+    # — never auto-deleted, since it may be an intentional per-repo addition.
+    local policy_ruleset_names_json
+    policy_ruleset_names_json=$(printf '%s\n' $ruleset_names | jq -R . | jq -s 'sort')
+    local unmanaged_rulesets
+    unmanaged_rulesets=$(echo "$existing_rulesets" | jq -c --argjson known "$policy_ruleset_names_json" \
+        '[.[] | select(.name as $n | $known | index($n) | not) | .name]')
+    if [ "$unmanaged_rulesets" != "[]" ]; then
+        RULESET_MISSING=$((RULESET_MISSING + 1))
+        echo -e "  ${RED}UNMANAGED${NC}: Ruleset(s) not in policy (created out-of-band): $unmanaged_rulesets"
+    fi
 }
 
 # Audit a single repository
@@ -726,6 +789,7 @@ audit_repo() {
     # Run audits
     audit_labels "$repo" "$apply"
     audit_repo_settings "$repo" "$apply"
+    audit_security_settings "$repo" "$apply"
     audit_rulesets "$repo" "$apply"
 
     # JSON output for this repo

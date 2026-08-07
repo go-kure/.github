@@ -10,6 +10,14 @@ github_defaults:
   has_wiki: false
   allow_auto_merge: true
   has_projects: true
+  # security_and_analysis settings — status strings ("enabled"/"disabled"), not
+  # booleans, matching the GitHub API's own vocabulary for this nested object.
+  # Read/applied by audit_security_settings() in scripts/github-settings.sh, not
+  # the generic setting_keys loop (that loop only handles top-level booleans).
+  security:
+    secret_scanning: enabled
+    secret_scanning_push_protection: enabled
+    dependabot_security_updates: enabled
   rulesets:
     main-protection:
       target: branch
