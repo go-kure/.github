@@ -1469,8 +1469,15 @@ import_repo() {
 
     # includes_parents=false: same reasoning as audit_rulesets — org-inherited
     # rulesets are managed at the org level, importing them here would duplicate them.
-    local existing_rulesets
-    existing_rulesets=$(gh api "repos/$GITHUB_ORG/$repo/rulesets?includes_parents=false" 2>/dev/null || echo "[]")
+    # Failure tracked separately from "genuinely zero live rulesets" — falling
+    # through to [] on a permissions/rate-limit/transient error would otherwise
+    # make the missing-ruleset check below report every applicable ruleset as
+    # deleted, a false and actively misleading claim from a read-only diff tool.
+    local existing_rulesets rulesets_fetch_ok=true
+    if ! existing_rulesets=$(gh api "repos/$GITHUB_ORG/$repo/rulesets?includes_parents=false" 2>/dev/null); then
+        existing_rulesets="[]"
+        rulesets_fetch_ok=false
+    fi
 
     local rulesets_json="{}"
     local -a existing_ruleset_names=()
@@ -1502,16 +1509,24 @@ import_repo() {
 
     # A ruleset policy expects here but that no longer exists live (deleted
     # on GitHub) leaves no live JSON to dump — flag it instead of letting it
-    # silently drop out of rulesets_json and read as "matches policy".
-    local applicable_names_json existing_names_json missing_rulesets_json
-    applicable_names_json=$(bash_array_to_json "${applicable_names[@]}")
-    existing_names_json=$(bash_array_to_json "${existing_ruleset_names[@]}")
-    missing_rulesets_json=$(ruleset_names_missing "$applicable_names_json" "$existing_names_json")
-    if [ "$missing_rulesets_json" != "[]" ]; then
-        echo "# WARNING: policy ruleset(s) expected on $repo but not found live (deleted?): $(jq -r 'join(", ")' <<<"$missing_rulesets_json")"
+    # silently drop out of rulesets_json and read as "matches policy". Skipped
+    # entirely when the rulesets fetch itself failed above: existing_rulesets
+    # is "[]" either way, and computing "missing" from that would report
+    # every applicable ruleset as deleted — a false claim, not an unknown one.
+    local missing_rulesets_json="[]"
+    if [ "$rulesets_fetch_ok" = "true" ]; then
+        local applicable_names_json existing_names_json
+        applicable_names_json=$(bash_array_to_json "${applicable_names[@]}")
+        existing_names_json=$(bash_array_to_json "${existing_ruleset_names[@]}")
+        missing_rulesets_json=$(ruleset_names_missing "$applicable_names_json" "$existing_names_json")
+        if [ "$missing_rulesets_json" != "[]" ]; then
+            echo "# WARNING: policy ruleset(s) expected on $repo but not found live (deleted?): $(jq -r 'join(", ")' <<<"$missing_rulesets_json")"
+        fi
+    else
+        echo "# WARNING: could not fetch live rulesets for $repo — ruleset drift and missing-ruleset detection skipped this run" >&2
     fi
 
-    if [ "$settings_json" = "{}" ] && [ "$security_json" = "{}" ] && [ "$rulesets_json" = "{}" ] && [ "$missing_rulesets_json" = "[]" ]; then
+    if [ "$rulesets_fetch_ok" = "true" ] && [ "$settings_json" = "{}" ] && [ "$security_json" = "{}" ] && [ "$rulesets_json" = "{}" ] && [ "$missing_rulesets_json" = "[]" ]; then
         echo "# $repo: matches policy — nothing to import"
         echo ""
         return 0

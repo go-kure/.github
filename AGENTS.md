@@ -112,7 +112,17 @@ The `settings.yml` workflow runs this automatically in audit mode on push to mai
 A repo with nothing to fold in prints `# <repo>: matches policy — nothing to import`. A live
 ruleset rule type the script doesn't model yet (not in the `RULE_KIND` registry) is omitted
 from the printed YAML and flagged with an `unmapped_rule_types` warning on stderr instead of
-being silently dropped.
+being silently dropped. A policy-applicable ruleset that no longer exists on the repo (deleted
+on GitHub) is flagged with a `# WARNING: policy ruleset(s) expected ... not found live
+(deleted?)` comment instead of reading as a clean match; if the live-rulesets fetch itself
+fails (permissions, rate limit, transient error), that check is skipped rather than reporting
+every applicable ruleset as deleted, and a `could not fetch live rulesets` warning is printed
+instead.
+
+A ruleset can also be declared **repo-only**, under `github_repos.<repo>.rulesets` with no
+matching `github_defaults.rulesets` entry — the normal target for pasting an `--import` dump of
+an unmanaged live ruleset that shouldn't become an org-wide default. It applies only to the
+repo(s) that declare it.
 
 ### Environment variables
 

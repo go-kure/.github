@@ -76,6 +76,13 @@ source of truth is `governance/repository-settings-policy.yaml`; per-repo overri
 `scripts/check-settings-doc.sh` in CI — a key here with no policy match, or vice versa, fails the
 build.
 
+A ruleset normally has a `github_defaults.rulesets` entry (optionally scoped to specific repos
+via `repos:`, per-repo fields overridden under `github_repos.<repo>.rulesets`). It can also be
+declared **repo-only**, entirely under `github_repos.<repo>.rulesets` with no
+`github_defaults` counterpart — the usual target for pasting an `./scripts/github-settings.sh
+--import` dump of an unmanaged live ruleset that's intentionally repo-specific rather than an
+org-wide default. A repo-only ruleset applies solely to the repo(s) that declare it.
+
 ### Top-level settings
 
 | Setting                            | Default               |
