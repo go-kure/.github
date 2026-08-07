@@ -4,8 +4,9 @@
 #
 # go-kure/.github#33: AGENTS.md named a nonexistent apply-settings.yml workflow
 # and a dry_run input it never had. The same defect had already been fixed once
-# downstream (autops/wharf/meta!110) and recurred here — this script is the
-# fix that makes it recur no further: it fails CI instead of a human catching it.
+# in a downstream consumer's copy of this guidance and recurred here — this
+# script is the fix that makes it recur no further: it fails CI instead of a
+# human catching it.
 #
 # Scans AGENTS.md and docs/standards.md for backtick-quoted bare workflow
 # filenames (e.g. `settings.yml`) and asserts each exists under
