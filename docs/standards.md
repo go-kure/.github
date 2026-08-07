@@ -47,7 +47,7 @@ workflows here.
 | Aspect | Workspace Default  | kure                     | launcher                 | .github            |
 |--------|----------------|--------------------------|--------------------------|--------------------|
 | Tool   | Renovate       | Dependabot               | Dependabot               | Dependabot         |
-| Config | `renovate.json`| `.github/dependabot.yml` | `.github/dependabot.yml` | N/A (no Go deps)   |
+| Config | `renovate.json`| `.github/dependabot.yml` | `.github/dependabot.yml` | `.github/dependabot.yml` (github-actions only — no Go deps) |
 
 ## Container Builds
 
