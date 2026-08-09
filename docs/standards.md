@@ -68,6 +68,14 @@ Exempt: `./local-action` paths, `docker://` refs, and first-party
 Consumer repos run the same checker via
 `uses: go-kure/.github/.github/actions/check-action-pins@main` — do not vendor a copy.
 
+**Known gap:** Dependabot rewrites the trailing tag comment together with the SHA
+when it bumps a pin, but has documented edge cases where it resolves to an
+untagged branch-HEAD commit and leaves the comment stale
+(dependabot/dependabot-core#14716, #13466, #7912). `check-action-pins.sh` only
+verifies the ref is a 40-hex SHA — it cannot detect a comment that no longer
+names the commit's actual tag. Treat a suspicious version comment as a reason
+to check the SHA by hand, not as ground truth.
+
 ## Container Builds
 
 Not applicable. kure is a library with no binary output. launcher ships binaries via GoReleaser,
