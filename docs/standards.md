@@ -65,6 +65,9 @@ enforces the same rule at the org level, independently.
 Exempt: `./local-action` paths, `docker://` refs, and first-party
 `go-kure/*@main` refs, which are governed by this org's branch protection.
 
+Consumer repos run the same checker via
+`uses: go-kure/.github/.github/actions/check-action-pins@main` — do not vendor a copy.
+
 ## Container Builds
 
 Not applicable. kure is a library with no binary output. launcher ships binaries via GoReleaser,
