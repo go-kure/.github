@@ -19,6 +19,11 @@ documentation change in the same PR. This repo hosts the canon
 `scripts/check-doc-sync.sh`. As a docs-only repo, keep `docs/standards.md`, the
 labels reference, and design docs in sync when you change them.
 
+## Local Development
+
+`mise tasks` lists every local check, test, and script wrapper (lint, doc-sync, action-pins,
+settings audit/apply, ...); `mise run <task>` runs one, `mise run verify` runs everything CI runs.
+
 ## Repository Structure
 
 ```
@@ -87,13 +92,15 @@ permissions, collaborators, ...).
 ./scripts/github-settings.sh kure --ci
 ```
 
+Or via mise, which forwards every argument after `--` (`mise run settings -- --all --ci --json`).
+
 The `settings.yml` workflow runs this automatically in audit mode on push to main (when
 `governance/` or `standards/` files change) and daily at 06:00 UTC.
 
 ### Applying settings changes
 
 1. Edit `governance/repository-settings-policy.yaml`
-2. Run `./scripts/github-settings.sh --all` locally to preview changes
+2. Run `./scripts/github-settings.sh --all` locally to preview changes (or `mise run settings -- --all`)
 3. Commit and open a PR
 4. After merge, trigger `settings.yml` manually via `workflow_dispatch` with `mode: apply`
    (`repo` defaults to `all`)
@@ -159,6 +166,8 @@ https://github.com/settings/tokens and rotate if it doesn't have it). Without th
 # Print live org settings that drift from policy, as paste-ready github_org: YAML
 ./scripts/github-settings.sh --org --import
 ```
+
+Or via mise: `mise run settings -- --org --ci` / `--org --apply` / `--org --import`.
 
 Some fields are readable but not writable via `PATCH /orgs/{org}` (`ORG_READONLY_KEYS` in
 the script — e.g. `two_factor_requirement_enabled`, set via the org/enterprise UI).

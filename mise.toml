@@ -1,0 +1,62 @@
+[tools]
+# Pinned to the versions ci.yml installs, so local runs match CI exactly.
+actionlint = "1.7.7"
+shellcheck = "0.10.0"
+yq = "4.44.6"
+lychee = "0.24.2"
+
+[tasks.lint]
+description = "Lint all workflow YAML"
+run = "actionlint"
+
+[tasks."lint:shell"]
+description = "shellcheck the scripts this repo ships"
+run = "shellcheck scripts/check-doc-sync.sh scripts/check-doc-gate.sh scripts/check-links.sh scripts/exact-array-member.sh scripts/check-workflow-refs.sh scripts/github-settings.sh scripts/check-settings-doc.sh scripts/check-action-pins.sh"
+
+[tasks."check:links"]
+description = "Check every internal markdown link resolves"
+run = "lychee --offline --no-progress './**/*.md'"
+
+[tasks."check:forbidden-terms"]
+description = "Guard against downstream/closed-source references (No Downstream References)"
+run = "bash scripts/check-forbidden-terms.sh --full-tree"
+
+[tasks."check:doc-sync"]
+description = "Validate docs-map.yaml against the filesystem"
+run = "bash scripts/check-doc-sync.sh ."
+
+[tasks."check:doc-gate"]
+description = "Check mapped docs changed alongside mapped code (vs. the previous commit)"
+run = 'bash scripts/check-doc-gate.sh "$(git rev-parse HEAD~1)" .'
+
+[tasks."check:workflow-refs"]
+description = "Guard against AGENTS.md / docs/standards.md naming a workflow file that doesn't exist"
+run = "bash scripts/check-workflow-refs.sh ."
+
+[tasks."check:action-pins"]
+description = "Assert every third-party GitHub Actions ref is a 40-char commit SHA"
+run = "bash scripts/check-action-pins.sh ."
+
+[tasks."check:settings-doc"]
+description = "Guard against docs/standards.md and the settings policy drifting apart"
+run = "bash scripts/check-settings-doc.sh ."
+
+[tasks.check]
+description = "Run all repo checks (matches the scripts-smoke-test CI job)"
+depends = ["lint:shell", "check:doc-sync", "check:doc-gate", "check:workflow-refs", "check:action-pins", "check:settings-doc"]
+
+[tasks.test]
+description = "Run this repo's own script test suites"
+run = """
+bash scripts/test/check-action-pins-test.sh .
+bash scripts/test/github-settings-test.sh .
+"""
+
+[tasks.verify]
+description = "Run everything CI runs (lint, checks, tests, forbidden-terms, links)"
+depends = ["lint", "check", "test", "check:forbidden-terms", "check:links"]
+
+[tasks.settings]
+description = "Audit or apply GitHub repo/org settings (dry-run by default — pass --apply to mutate). Forwards args, e.g.: mise run settings -- --org"
+run = "bash scripts/github-settings.sh"
+raw = true
