@@ -1,0 +1,13 @@
+name: 'Check action pins'
+description: 'Fail if any third-party GitHub Actions ref is not a 40-char commit SHA'
+
+runs:
+  using: composite
+  steps:
+    - name: Check action pins
+      shell: bash
+      # Canonical script lives at the repo root of go-kure/.github; $GITHUB_ACTION_PATH
+      # points at this action's dir (.github/actions/check-action-pins), so three levels
+      # up is that repo root. The script checks the CALLER's checked-out tree (its own
+      # ROOT default is ".", i.e. the composite step's cwd, which is the caller's checkout).
+      run: bash "$GITHUB_ACTION_PATH/../../../scripts/check-action-pins.sh"
