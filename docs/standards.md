@@ -49,6 +49,22 @@ workflows here.
 | Tool   | Renovate       | Dependabot               | Dependabot               | Dependabot         |
 | Config | `renovate.json`| `.github/dependabot.yml` | `.github/dependabot.yml` | `.github/dependabot.yml` (github-actions only — no Go deps) |
 
+### GitHub Actions pinning
+
+Every third-party action is pinned to a full 40-character commit SHA, with the
+tag kept as a trailing comment so Dependabot still bumps it:
+
+    uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+A tag is a mutable pointer. In March 2025 (CVE-2025-30066) an attacker moved the
+tags of `tj-actions/changed-files` onto a poisoned commit and ~23,000 repositories
+executed it. `scripts/check-action-pins.sh` fails CI on any unpinned ref;
+`actions.sha_pinning_required` in `governance/repository-settings-policy.yaml`
+enforces the same rule at the org level, independently.
+
+Exempt: `./local-action` paths, `docker://` refs, and first-party
+`go-kure/*@main` refs, which are governed by this org's branch protection.
+
 ## Container Builds
 
 Not applicable. kure is a library with no binary output. launcher ships binaries via GoReleaser,
