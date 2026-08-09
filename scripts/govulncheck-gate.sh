@@ -21,7 +21,7 @@
 # Exit 1 — at least one unallowed reachable advisory.
 # Exit 2 — the report is missing, empty or unparseable; verdict unknown.
 #
-# This file is duplicated verbatim in the wharf `meta` repo, which serves the
+# This file is duplicated verbatim in the `meta` repo, which serves the
 # GitLab side and cannot read this one. Change both, or they drift.
 
 set -euo pipefail
