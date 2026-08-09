@@ -115,7 +115,7 @@ jobs:
           tar -xJf /tmp/shellcheck.tar.xz -C /tmp
           sudo install -m755 "/tmp/shellcheck-v${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck
       - name: shellcheck
-        run: shellcheck scripts/check-doc-sync.sh scripts/check-doc-gate.sh scripts/check-links.sh scripts/exact-array-member.sh scripts/check-workflow-refs.sh scripts/github-settings.sh scripts/check-settings-doc.sh scripts/check-action-pins.sh
+        run: shellcheck scripts/check-doc-sync.sh scripts/check-doc-gate.sh scripts/check-links.sh scripts/exact-array-member.sh scripts/check-workflow-refs.sh scripts/github-settings.sh scripts/check-settings-doc.sh scripts/check-action-pins.sh scripts/govulncheck-gate.sh
       - name: Install yq
         env:
           YQ_VERSION: '4.44.6'
@@ -132,6 +132,8 @@ jobs:
         run: bash scripts/test/check-action-pins-test.sh .
       - name: check-action-pins.sh against this repo
         run: bash scripts/check-action-pins.sh .
+      - name: govulncheck-gate.sh test suite
+        run: bash scripts/test/govulncheck-gate-test.sh .
       - name: check-settings-doc.sh against governance policy
         run: bash scripts/check-settings-doc.sh .
       - name: github-settings.sh mock-gh test suite
