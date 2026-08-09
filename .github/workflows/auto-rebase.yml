@@ -17,7 +17,7 @@ jobs:
 
     steps:
       - name: Rebase open PRs
-        uses: peter-evans/rebase@v4
+        uses: peter-evans/rebase@e4945786f7ca41fe6e101cead4395f5489593943 # v4
         with:
           token: ${{ secrets.AUTO_REBASE_PAT }}
           base: main
