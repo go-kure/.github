@@ -10,8 +10,12 @@
 # Allowed unpinned forms, and why:
 #   ./path                    — an action inside this repo; same commit as the caller.
 #   docker://image:tag        — not a git ref; image pinning is a container concern.
-#   go-kure/*@main            — first-party, and the org's own branch protection
-#                               governs what can land on main.
+#   go-kure/*/.github/workflows/x.yml@ref
+#                             — a first-party REUSABLE WORKFLOW. GitHub's own
+#                               sha_pinning_required policy exempts reusable
+#                               workflows; this checker matches that boundary
+#                               exactly rather than inventing a stricter one.
+#                               First-party COMPOSITE ACTIONS are not exempt.
 #
 # Known limitation: this is a line-anchored grep, not a YAML parser. A `run: |`
 # block scalar whose shell text happens to start a line with `uses:` would be
@@ -31,7 +35,12 @@ ROOT="$(cd "$ROOT" && pwd)"
 errors=0
 fail() { echo "FAIL: $*" >&2; errors=$((errors + 1)); }
 
-FIRST_PARTY_PREFIX="go-kure/"
+# Reusable workflows are exempt from GitHub's sha_pinning_required policy
+# ("Reusable workflows can still be referenced by tag"), so this checker
+# exempts them too — deliberately mirroring the policy rather than being
+# stricter than it. First-party *composite actions* are NOT exempt from
+# that policy and are NOT exempt here.
+FIRST_PARTY_WORKFLOW_RE='^go-kure/[^/]+/\.github/workflows/[^@]+@'
 
 checked=0
 while IFS= read -r -d '' file; do
@@ -41,8 +50,8 @@ while IFS= read -r -d '' file; do
     checked=$((checked + 1))
     case "$ref" in
       ./*|docker://*) continue ;;
-      "$FIRST_PARTY_PREFIX"*) continue ;;
     esac
+    if [[ "$ref" =~ $FIRST_PARTY_WORKFLOW_RE ]]; then continue; fi
     if [[ ! "$ref" =~ @[0-9a-f]{40}$ ]]; then
       fail "$(basename "$file"): unpinned action ref '$ref' (pin to a 40-char commit SHA, keep the tag as a trailing comment)"
     fi
