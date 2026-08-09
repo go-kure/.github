@@ -62,11 +62,19 @@ executed it. `scripts/check-action-pins.sh` fails CI on any unpinned ref;
 `actions.sha_pinning_required` in `governance/repository-settings-policy.yaml`
 enforces the same rule at the org level, independently.
 
-Exempt: `./local-action` paths, `docker://` refs, and first-party
-`go-kure/*@main` refs, which are governed by this org's branch protection.
+Exempt: `./local-action` paths, `docker://` refs, and first-party *reusable
+workflow* refs (`go-kure/*/.github/workflows/x.yml@main`), which are governed
+by this org's branch protection. First-party *composite action* refs
+(`go-kure/*/.github/actions/x@main`) are **not** exempt — see below.
 
 Consumer repos run the same checker via
 `uses: go-kure/.github/.github/actions/check-action-pins@main` — do not vendor a copy.
+
+Enabling `sha_pinning_required` covers actions from this organization too — a
+`go-kure/.github/.github/actions/x@main` reference is rejected at runtime just
+like a third-party one. Reusable workflows (`go-kure/.github/.github/workflows/
+x.yml@main`) are exempt by GitHub's own rule and deliberately stay on `main`;
+`scripts/check-action-pins.sh` draws the same line.
 
 **Known gap:** Dependabot rewrites the trailing tag comment together with the SHA
 when it bumps a pin, but has documented edge cases where it resolves to an

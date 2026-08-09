@@ -84,10 +84,18 @@ jobs:
 EOF
 }
 
-fixture_first_party_main() { cat <<'EOF'
+fixture_first_party_reusable_workflow() { cat <<'EOF'
 jobs:
   a:
     uses: go-kure/.github/.github/workflows/ci.yml@main
+EOF
+}
+
+fixture_first_party_composite_action() { cat <<'EOF'
+jobs:
+  a:
+    steps:
+      - uses: go-kure/.github/.github/actions/check-links@main
 EOF
 }
 
@@ -144,8 +152,11 @@ assert_rc "the CVE-2025-30066 action by tag fails" 1 \
 assert_rc "third-party @main fails" 1 \
   "$(run_fixture "$(fixture_third_party_main)")"
 
-assert_rc "first-party go-kure @main is allowed" 0 \
-  "$(run_fixture "$(fixture_first_party_main)")"
+assert_rc "first-party reusable workflow @main is allowed (policy exempts it)" 0 \
+  "$(run_fixture "$(fixture_first_party_reusable_workflow)")"
+
+assert_rc "first-party composite action @main fails (policy does NOT exempt it)" 1 \
+  "$(run_fixture "$(fixture_first_party_composite_action)")"
 
 assert_rc "local ./ action is allowed" 0 \
   "$(run_fixture "$(fixture_local_action)")"
