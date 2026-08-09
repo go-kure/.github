@@ -84,6 +84,28 @@ verifies the ref is a 40-hex SHA — it cannot detect a comment that no longer
 names the commit's actual tag. Treat a suspicious version comment as a reason
 to check the SHA by hand, not as ground truth.
 
+### Vulnerability gating (govulncheck)
+
+`scripts/govulncheck-gate.sh` turns a `govulncheck -format json` report into a CI verdict:
+
+- **Exit 0** — no reachable advisory outside the allowlist.
+- **Exit 1** — at least one unallowed *reachable* advisory (a trace frame names a
+  function that is actually called — not merely a required-but-unused dependency).
+- **Exit 2** — the report is missing, empty, or unparseable. This is a distinct,
+  fail-**closed** outcome: an unparseable report is treated as an unknown verdict,
+  never as "no findings". A crashed or truncated scan must not read as clean.
+
+Consumer repos run it via `uses: go-kure/.github/.github/actions/govulncheck-gate@main`
+(inputs: `report`, default `govulncheck.json`; `allowlist`, a space-separated list of
+OSV IDs, default empty) — do not vendor a copy. Every allowlist entry must carry a
+written justification (the reachable path, and why no version bump clears it) in the
+comment above it in the consuming workflow; an entry with no justification is a bug,
+not a waiver.
+
+This script is duplicated verbatim in the `meta` repo for the GitLab side, which
+cannot read files from this repo (`include:` transports YAML only). Change both, or
+they drift.
+
 ## Container Builds
 
 Not applicable. kure is a library with no binary output. launcher ships binaries via GoReleaser,

@@ -1,0 +1,25 @@
+name: 'govulncheck gate'
+description: 'Fail if a govulncheck JSON report contains a reachable advisory outside the allowlist'
+
+inputs:
+  report:
+    description: 'Path to the govulncheck -format json report'
+    required: false
+    default: 'govulncheck.json'
+  allowlist:
+    description: 'Space-separated OSV IDs accepted as known risk. Every entry needs a written justification in the caller.'
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Evaluate govulncheck report
+      shell: bash
+      # Canonical script lives at the repo root of go-kure/.github; $GITHUB_ACTION_PATH
+      # points at this action's dir (.github/actions/govulncheck-gate), so three levels
+      # up is that repo root. The script checks the CALLER's report (relative to the
+      # composite step's cwd, which is the caller's checkout).
+      run: |
+        bash "$GITHUB_ACTION_PATH/../../../scripts/govulncheck-gate.sh" \
+          "${{ inputs.report }}" "${{ inputs.allowlist }}"
