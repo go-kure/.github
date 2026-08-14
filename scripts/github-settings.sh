@@ -28,7 +28,7 @@ WHARF_DIR="$(dirname "$SCRIPT_DIR")"
 # subset for a single run (e.g. GITHUB_REPOS=.github) — validate_policy uses
 # it so a partial run doesn't misreport policy-known repos as unknown.
 GITHUB_ORG="${GITHUB_ORG:-go-kure}"
-GITHUB_REPOS_DEFAULT=".github kure launcher"
+GITHUB_REPOS_DEFAULT=".github kure launcher go-kure.github.io"
 GITHUB_REPOS="${GITHUB_REPOS:-$GITHUB_REPOS_DEFAULT}"
 
 LABELS_FILE="$WHARF_DIR/standards/labels.json"

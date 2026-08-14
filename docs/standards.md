@@ -141,6 +141,12 @@ source of truth is `governance/repository-settings-policy.yaml`; per-repo overri
 `scripts/check-settings-doc.sh` in CI — a key here with no policy match, or vice versa, fails the
 build.
 
+Four repositories are governed: `.github`, `kure`, `launcher` and `go-kure.github.io`.
+The Pages content repository is governed for settings and labels but is deliberately
+outside `main-protection`: its default branch is written directly by the `kure` and
+`launcher` docs-deploy workflows and by its own sitemap job, and it runs none of the
+status checks that ruleset requires.
+
 A ruleset normally has a `github_defaults.rulesets` entry (optionally scoped to specific repos
 via `repos:`, per-repo fields overridden under `github_repos.<repo>.rulesets`). It can also be
 declared **repo-only**, entirely under `github_repos.<repo>.rulesets` with no
@@ -183,7 +189,7 @@ org-wide default. A repo-only ruleset applies solely to the repo(s) that declare
 
 | Ruleset                                            | Enforcement | Scope             |
 |-----------------------------------------------------|-------------|-------------------|
-| `main-protection`                                    | `active`    | all repos         |
+| `main-protection`                                    | `active`    | .github, kure, launcher |
 | `Code Quality Copilot review for default branch`      | `disabled`  | kure, launcher only |
 
 ## Organization Settings
