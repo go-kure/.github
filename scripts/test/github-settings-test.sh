@@ -112,11 +112,27 @@ else
     failures=$((failures + 1))
 fi
 
-if ruleset_applies ".github" "main-protection"; then
-    echo "PASS: main-protection (no repos: scope) applies to .github"
+# main-protection is repos:-scoped. Assert every managed repo individually:
+# scoping it to fewer repos than intended would silently leave an existing
+# branch protection unmanaged, and no other assertion would notice.
+for managed_repo in .github kure launcher; do
+    if ruleset_applies "$managed_repo" "main-protection"; then
+        echo "PASS: main-protection applies to $managed_repo"
+        pass_count=$((pass_count + 1))
+    else
+        echo "FAIL: main-protection should apply to $managed_repo"
+        failures=$((failures + 1))
+    fi
+done
+
+# go-kure.github.io is a Pages content repo: the kure/launcher deploy-docs
+# workflows and its own gen-sitemap-index job write main directly, and it runs
+# none of the lint/test/build/rebase-check contexts this ruleset requires.
+if ! ruleset_applies "go-kure.github.io" "main-protection"; then
+    echo "PASS: main-protection does not apply to go-kure.github.io"
     pass_count=$((pass_count + 1))
 else
-    echo "FAIL: main-protection should apply everywhere (no repos: field)"
+    echo "FAIL: main-protection must not apply to go-kure.github.io (bots write main directly)"
     failures=$((failures + 1))
 fi
 

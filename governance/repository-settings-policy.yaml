@@ -35,6 +35,11 @@ github_defaults:
     dependabot_security_updates: enabled
   rulesets:
     main-protection:
+      # go-kure.github.io is deliberately excluded. It is a GitHub Pages content
+      # repo whose default branch is written directly by the kure and launcher
+      # deploy-docs workflows and by its own gen-sitemap-index job, and it runs
+      # none of the lint/test/build/rebase-check contexts required below.
+      repos: [.github, kure, launcher]
       target: branch
       enforcement: active
       conditions:
