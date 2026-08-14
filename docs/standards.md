@@ -67,8 +67,12 @@ workflow* refs (`go-kure/*/.github/workflows/x.yml@main`), which are governed
 by this org's branch protection. First-party *composite action* refs
 (`go-kure/*/.github/actions/x@main`) are **not** exempt — see below.
 
-Consumer repos run the same checker via
-`uses: go-kure/.github/.github/actions/check-action-pins@main` — do not vendor a copy.
+Consumer repos run the same checker as a composite action — do not vendor a copy.
+Pin it like any other action. This organization publishes no tags on `.github`, so
+the ref is a `main` commit with `# main` as the trailing comment, and Dependabot
+cannot bump it — it is maintained by hand:
+
+    uses: go-kure/.github/.github/actions/check-action-pins@1793023365e5af6923e9bb6b424fcea1dca1279e # main
 
 Enabling `sha_pinning_required` covers actions from this organization too — a
 `go-kure/.github/.github/actions/x@main` reference is rejected at runtime just
@@ -95,9 +99,13 @@ to check the SHA by hand, not as ground truth.
   fail-**closed** outcome: an unparseable report is treated as an unknown verdict,
   never as "no findings". A crashed or truncated scan must not read as clean.
 
-Consumer repos run it via `uses: go-kure/.github/.github/actions/govulncheck-gate@main`
-(inputs: `report`, default `govulncheck.json`; `allowlist`, a space-separated list of
-OSV IDs, default empty) — do not vendor a copy. Every allowlist entry must carry a
+Consumer repos run it as a composite action, pinned the same way as
+`check-action-pins` above:
+
+    uses: go-kure/.github/.github/actions/govulncheck-gate@1793023365e5af6923e9bb6b424fcea1dca1279e # main
+
+It takes inputs `report`, default `govulncheck.json`; `allowlist`, a space-separated list of
+OSV IDs, default empty — do not vendor a copy. Every allowlist entry must carry a
 written justification (the reachable path, and why no version bump clears it) in the
 comment above it in the consuming workflow; an entry with no justification is a bug,
 not a waiver.
