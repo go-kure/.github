@@ -133,9 +133,10 @@ repo(s) that declare it.
 
 ### Environment variables
 
-`GITHUB_ORG` (default `go-kure`) and `GITHUB_REPOS` (default `.github kure launcher`,
-space-separated) override which org/repos every mode above targets — useful for testing
-against a fork or a subset of repos.
+`GITHUB_ORG` (default `go-kure`) and `GITHUB_REPOS` (default `.github kure launcher
+go-kure.github.io`, space-separated) override which org/repos every mode above targets —
+useful for testing against a fork or a subset of repos. `--all --apply` mutates every
+repo in this list, including `go-kure.github.io`.
 
 ### Adding or changing labels
 
