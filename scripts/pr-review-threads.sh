@@ -341,26 +341,36 @@ fi # PRT_MODE = enforce
 
 # --- PR-wide severity cap: rank VALID/PARTIALLY_VALID across ALL chunks,
 # top N gate, the rest overflow. FALSE_POSITIVE never competes for a slot.
-# Computed AFTER OWNED, not before, and excludes any finding that already
-# matches an OWNED thread — not just a collision-quarantined or human-
-# resolved one. reconcile.sh's prt_decide_finding only ever reads its
-# WITHIN_CAP argument inside the thread_exists=false branch (row 4); every
-# row reachable once thread_exists=true (5 open/NONE, 6 human-resolved/NONE,
-# 7 bot-resolved-and-recurred/REPLY_UNRESOLVE) decides independent of cap
-# status. A finding matching ANY existing thread therefore never needs a cap
-# slot for its own action — but before this fix, GATING_ELIGIBLE ranked such
-# findings anyway, so admitting one into the top N (a collision-quarantined
-# thread, iteration-4 finding B2-followup; a deliberately human-resolved
-# thread never meant to reopen, iteration-5 finding #1) still consumed a
-# slot that would otherwise have gone to a finding with no thread yet,
-# silently demoting it to non-gating overflow. Excluding every OWNED-matched
-# fp closes the whole class at once rather than one persisted-flag value at
-# a time (dot-github#50 gmr findings B2, B2-followup, iter5-codex #1). ---
+# Computed AFTER OWNED, not before, and excludes only the OWNED-matched
+# findings that are GUARANTEED non-gating this run: collision-quarantined
+# (row 1, always NONE) and human-resolved (row 6, NONE, a deliberate
+# resolution is never reopened). This is NOT "exclude every OWNED match" —
+# a broader exclusion was tried and reverted (dot-github#50 gmr finding
+# iter5-code-reviewer F1): row 5 (open, still gating, NONE) and row 7
+# (bot-resolved and recurred, REPLY_UNRESOLVE) are ALSO reachable once
+# thread_exists=true, but BOTH leave the thread gating after this run. The
+# cap's whole job is to bound how many threads are gating at once — a
+# finding on one of those two rows must keep occupying a rank slot, or the
+# cap stops bounding anything: exclude them and every already-open thread
+# stops competing for a slot, so a full 5 NEW threads (not 5 total) get
+# created on the very next run, growing without limit across reruns even
+# with no push in between (traced by hand: 12 valid findings, cap 5 — run 1
+# creates 5, run 2 was correctly still 5 gating before this fix, un-reverted
+# would have produced 10, run 3 would have produced all 12). reconcile.sh's
+# WITHIN_CAP argument is read only in the thread_exists=false branch (row
+# 4), which is exactly why the ORIGINAL narrower exclusion (collision-only,
+# iteration 4) undercounted: it missed the human-resolved case, which is
+# the OTHER row where WITHIN_CAP truly doesn't matter and the slot is
+# genuinely free (dot-github#50 gmr finding iter5-codex #1). Row 5 and row 7
+# are not that case — they are rows where the thread stays or becomes
+# gating regardless of WITHIN_CAP, so they must still consume the budget. ---
 SEV_RANK='{"Critical":0,"High":1,"Medium":2}'
-OWNED_FPS="$(jq -c '[.[] | .fp]' <<< "$OWNED")"
-GATING_ELIGIBLE="$(jq -c --argjson rank "$SEV_RANK" --argjson owned_fps "$OWNED_FPS" '
+NON_GATING_OWNED_FPS="$(jq -c '
+  [.[] | select(.collision == true or (.resolved == true and .resolved_by_bot != true)) | .fp]
+' <<< "$OWNED")"
+GATING_ELIGIBLE="$(jq -c --argjson rank "$SEV_RANK" --argjson non_gating "$NON_GATING_OWNED_FPS" '
   [.[] | select((.verdict == "VALID" or .verdict == "PARTIALLY_VALID" or .verdict == null)
-                and (.collision != true) and ((.fp | IN($owned_fps[])) | not))]
+                and (.collision != true) and ((.fp | IN($non_gating[])) | not))]
   | sort_by($rank[.severity] // 99)
 ' <<< "$ALL_FINDINGS")"
 CAPPED_FPS="$(jq -c --argjson n "$PRT_MAX_FINDINGS_TOTAL" '[limit($n; .[])] | map(.fp)' <<< "$GATING_ELIGIBLE")"
