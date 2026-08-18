@@ -26,6 +26,10 @@ PRT_API_BASE="${PRT_API_BASE:-https://api.github.com}"
 # (e.g. under the test stub, which never writes to -D's file).
 PRT_LAST_RATELIMIT_REMAINING=""
 PRT_LAST_RETRY_AFTER=""
+# The literal HTTP status of the most recent prt_gh_rest call (2xx or not) —
+# callers that must distinguish failure *kinds* (e.g. a genuine 422 vs. a
+# transient 403/502) read this instead of only the 0/1 return code.
+PRT_LAST_HTTP_STATUS=""
 
 # prt_gh_rest METHOD PATH [DATA_JSON] — PATH is relative to PRT_API_BASE
 # (e.g. "/repos/owner/repo/pulls/1/comments"). Prints the response body on
@@ -55,6 +59,8 @@ prt_gh_rest() {
   # redirect chain can repeat the header per hop).
   PRT_LAST_RATELIMIT_REMAINING="$(grep -i '^x-ratelimit-remaining:' "$hdrs" 2>/dev/null | tail -1 | cut -d: -f2- | tr -d ' \r\n')"
   PRT_LAST_RETRY_AFTER="$(grep -i '^retry-after:' "$hdrs" 2>/dev/null | tail -1 | cut -d: -f2- | tr -d ' \r\n')"
+  # shellcheck disable=SC2034 # read by callers in pr-review-threads.sh (the 422 ladder), not within this file
+  PRT_LAST_HTTP_STATUS="$status"
   rm -f "$hdrs"
   if [[ "$status" =~ ^2[0-9]{2}$ ]]; then
     cat "$tmp"
@@ -102,6 +108,20 @@ prt_freshness_check() {
   [ "$live_sha" = "$expected_sha" ]
 }
 
+# prt_gh_rest_fresh METHOD REPO PR_NUMBER EXPECTED_SHA PATH [DATA_JSON] —
+# freshness-gated prt_gh_rest, meant to be passed to prt_retry so EVERY
+# retry attempt rechecks freshness immediately before its write, not just
+# once before the retry loop starts. A rate-limit backoff sleep inside
+# prt_retry can run up to ~60s per attempt (up to ~120s across 3 attempts);
+# a single check before the loop began does not cover a write that actually
+# lands a minute or two later, after the PR head may have moved
+# (dot-github#50 gmr finding C9).
+prt_gh_rest_fresh() {
+  local method="$1" repo="$2" pr_number="$3" expected_sha="$4" path="$5" data="${6:-}"
+  prt_freshness_check "$repo" "$pr_number" "$expected_sha" || return 1
+  prt_gh_rest "$method" "$path" "$data"
+}
+
 # prt_retry N CMD... — retries CMD up to N times. Between attempts, honors
 # GitHub's own back-off signal if the last prt_gh_rest call set one
 # (Retry-After, or x-ratelimit-remaining: 0 — the documented HTTP-200-with-
@@ -112,7 +132,10 @@ prt_freshness_check() {
 # almost always a transient 5xx, not a network partition worth waiting out.
 prt_retry() {
   local n="$1"; shift
-  local i rc
+  # rc defaults to 1 so `return "$rc"` never reads unset under `set -u` if
+  # called with n<1 (no caller does today, but the loop body — the only
+  # place rc is otherwise assigned — never runs in that case).
+  local i rc=1
   for ((i = 1; i <= n; i++)); do
     # Never `if "$@"; then return 0; fi` followed by `rc=$?` — when the
     # condition is false and no branch runs, bash reports the if construct's
