@@ -67,6 +67,15 @@ for req in PRT_GH_TOKEN PRT_REPO PRT_PR_NUMBER PRT_HEAD_SHA PRT_BOT_LOGIN PRT_PR
   [ -n "${!req:-}" ] || { echo "ERROR: $req is required" >&2; exit 1; }
 done
 
+# These three feed --argjson calls downstream (e.g. line 246, 436) — a
+# non-numeric value fails jq with an unclear error deep in the run instead
+# of a clear one here.
+for numeric in PRT_PR_NUMBER PRT_MAX_TOKENS PRT_MAX_FINDINGS_TOTAL; do
+  case "${!numeric}" in
+    ''|*[!0-9]*) echo "ERROR: $numeric must be a non-negative integer, got '${!numeric}'" >&2; exit 1 ;;
+  esac
+done
+
 # --- Mode resolution: an unrecognized value degrades to advisory, never to
 # enforce — a typo must fail toward the safe side of a gate. ---
 case "$PRT_MODE" in
@@ -155,6 +164,15 @@ for chunk_file in "$CHUNK_DIR"/chunk-*.diff; do
   ALL_FINDINGS="$(jq -c -n --argjson a "$ALL_FINDINGS" --argjson b "$tagged" '$a + $b')"
   chunk_idx=$((chunk_idx + 1))
 done
+
+# chunk_idx (chunks actually iterated, via the glob above) should always
+# equal chunk_count (chunks prt_split_diff reported writing) — a mismatch
+# means the glob saw fewer/more files than were written (e.g. a partial
+# write) and the review below silently covers less of the diff than
+# intended, with nothing else to catch it.
+if [ "$chunk_idx" -ne "$chunk_count" ]; then
+  prt_mark_incomplete "chunk count mismatch: prt_split_diff reported $chunk_count, $chunk_idx were iterated"
+fi
 
 # Ordinals/collisions assigned across the WHOLE run, not per chunk.
 ALL_FINDINGS="$(prt_assign_ordinals "$ALL_FINDINGS")"
@@ -276,7 +294,9 @@ if [ "$list_failed" = 1 ]; then
   echo "ERROR: failed to list review threads; aborting before any write." >&2
   prt_mark_incomplete "GraphQL reviewThreads listing failed"
   {
-    prt_render_summary "$PRT_MODE" "$PRT_HEAD_SHA" "$chunk_idx" "$ALL_FINDINGS" "$(prt_incomplete_reasons)"
+    # 0, not $SUPPRESSED_COUNT: this abort happens before loop 1 (which
+    # increments it) ever runs, so nothing has been suppressed yet.
+    prt_render_summary "$PRT_MODE" "$PRT_HEAD_SHA" "$chunk_idx" "$ALL_FINDINGS" 0 "$(prt_incomplete_reasons)"
   } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
   exit 1
 fi
@@ -361,10 +381,20 @@ fi # PRT_MODE = enforce
 # all. Fix: compute RESERVED_COUNT by walking OWNED (every currently-known
 # bot thread, matched or not against this run's findings) and asking "does
 # prt_decide_finding's outcome for this thread leave it gating after this
-# run?" — mirroring reconcile.sh's own row order exactly, not approximating
-# it via rank:
+# run?" — mirroring reconcile.sh's own row order, not approximating it via
+# rank. "Gating" below means the intended terminal outcome of that row, not
+# a guarantee the mutation behind it succeeds (a failed REPLY_RESOLVE/
+# REPLY_UNRESOLVE leaves a thread reserved-as-non-gating or vice versa for
+# this run only; it self-heals next run via REVIEW_INCOMPLETE and the
+# freshness gate, dot-github#50 gmr finding N2-iter6):
 #   thread absent from this run's findings -> gating iff currently open
-#     (loop 2/absence needs 2 consecutive misses to close it; can't reopen)
+#     (approximation, safe in the over-reserving direction only: a thread
+#     already on its SECOND consecutive absence this run resolves via row
+#     10/REPLY_RESOLVE and stops gating, but first_absent_sha persists
+#     across runs in the marker so that can't be told apart here from a
+#     first-ever absence without re-deriving loop 2's own state; treating
+#     both as still-gating can only under-utilize the cap for this one run,
+#     never exceed it, dot-github#50 gmr finding N1-iter6)
 #   effective collision (this run's or persisted)      -> row 1: gating iff open
 #   verdict FALSE_POSITIVE                              -> row 2/3: never gating
 #     (already resolved, or about to become resolved via REPLY_RESOLVE)
@@ -381,7 +411,11 @@ fi # PRT_MODE = enforce
 # rank), REMAINING_SLOTS=0, none of the other 7 compete -> still 5 gating,
 # unconditionally. A persisted open collision thread + 5 new eligible
 # findings, cap 5 -> RESERVED_COUNT=1, REMAINING_SLOTS=4 -> 1+4=5, not 6. ---
-SEV_RANK='{"Critical":0,"High":1,"Medium":2}'
+# Lowercase keys: the rank lookup below normalizes .severity through
+# ascii_downcase first, so a model returning off-canonical casing
+# ("critical", "HIGH") still ranks correctly instead of falling to // 99
+# and sorting below a correctly-cased Medium (dot-github#50 gmr finding N-h).
+SEV_RANK='{"critical":0,"high":1,"medium":2}'
 RESERVED_COUNT="$(jq -c --argjson findings "$ALL_FINDINGS" '
   [ .[] as $o
     | ($findings | map(select(.fp == $o.fp)) | .[0]) as $f
@@ -406,7 +440,7 @@ GATING_ELIGIBLE="$(jq -c --argjson rank "$SEV_RANK" --argjson owned "$OWNED" '
     | . as $f
     | select(($owned | map(select(.fp == $f.fp)) | length) == 0)
   ]
-  | sort_by($rank[.severity] // 99)
+  | sort_by($rank[.severity | ascii_downcase] // 99)
 ' <<< "$ALL_FINDINGS")"
 REMAINING_SLOTS="$(jq -n --argjson n "$PRT_MAX_FINDINGS_TOTAL" --argjson r "$RESERVED_COUNT" '[($n - $r), 0] | max')"
 CAPPED_FPS="$(jq -c --argjson n "$REMAINING_SLOTS" '[limit($n; .[])] | map(.fp)' <<< "$GATING_ELIGIBLE")"
@@ -747,7 +781,7 @@ if [ "$PRT_MODE" = enforce ] && [ "$(jq 'length' <<< "$OVERFLOW")" -gt 0 ]; then
 fi
 
 {
-  prt_render_summary "$PRT_MODE" "$PRT_HEAD_SHA" "$chunk_idx" "$ALL_FINDINGS" "$(prt_incomplete_reasons)"
+  prt_render_summary "$PRT_MODE" "$PRT_HEAD_SHA" "$chunk_idx" "$ALL_FINDINGS" "$SUPPRESSED_COUNT" "$(prt_incomplete_reasons)"
 } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
 
 exit 0

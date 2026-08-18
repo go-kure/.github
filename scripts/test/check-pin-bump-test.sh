@@ -100,5 +100,15 @@ git -C "$dir" add -A && git -C "$dir" commit -q -m "change action, bump pin"
 assert_rc "delegate changed, pin bumped -> OK" "0" "$?"
 rm -rf "$dir"
 
+# Fixture 5: BASE_REF does not resolve -> FAIL loudly, not a silent OK.
+dir="$(new_repo)"
+mkdir -p "$dir/.github/workflows" "$dir/.github/actions/pr-review-threads"
+workflow_with_pin "$SHA_A" > "$dir/.github/workflows/pr-review.yml"
+echo "name: x" > "$dir/.github/actions/pr-review-threads/action.yml"
+git -C "$dir" add -A && git -C "$dir" commit -q -m base
+(cd "$dir" && bash "$CHECKER" this-ref-does-not-exist) >/dev/null 2>&1
+assert_rc "unresolvable BASE_REF -> FAIL, not a silent pass" "1" "$?"
+rm -rf "$dir"
+
 echo "passed: $pass_count, failed: $failures"
 [ "$failures" -eq 0 ]

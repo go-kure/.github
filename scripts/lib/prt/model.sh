@@ -18,7 +18,14 @@ prt_strip_thinking() {
     /<thinking>/ { skip=1; next }
     /<\/thinking>/ { sub(/.*<\/thinking>/, ""); skip=0; if (length($0) > 0) print; next }
     skip==0 { print }
-  ' | sed '/./,$!d'
+  ' | sed '/./,$!d' | prt_strip_fence
+}
+
+# prt_strip_fence — the system prompt forbids markdown code fences, but drop
+# a leading/trailing ``` or ```json line if the model emits one anyway,
+# rather than losing the whole chunk to a jq parse failure.
+prt_strip_fence() {
+  sed -e '1{/^```/d}' -e '${/^```$/d}'
 }
 
 _prt_review_system_prompt() {
@@ -27,9 +34,10 @@ You review GitHub pull requests.
 
 ANTI-HALLUCINATION RULES:
 - Only flag issues you can point to with a specific file and line from the diff.
-- Do NOT flag standards violations unless the standard text appears in the PROJECT STANDARDS section below.
+- Do NOT flag standards violations unless the standard text appears in one of the ADDITIONAL
+  PROJECT CONTEXT / PROJECT DOCUMENTATION (AGENTS.md) / PROJECT NOTES sections below.
 - Do NOT invent or assume coding standards — only cite rules explicitly provided.
-  If no PROJECT STANDARDS section is present, do not flag any standards violations.
+  If none of those sections is present, do not flag any standards violations.
 - If unsure whether something is a real issue, skip it. Precision matters more than recall.
 - Never reference documentation, files, or code not present in this diff chunk or the context provided.
 - This is one CHUNK of a larger diff. Only report on code actually shown in this chunk.
