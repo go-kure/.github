@@ -6,3 +6,5 @@ set -uo pipefail
 
 user_input="$1"
 printf '%s\n' "$user_input"
+
+# retry trigger
