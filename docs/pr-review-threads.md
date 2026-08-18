@@ -38,6 +38,39 @@ This is the design/operations reference the code cites but didn't yet have:
   exit-code tests (mocked `curl`), not by exercising the full reconciliation flow end to end —
   that only happens against a real PR.
 
+## Token and bot identity
+
+`pr-review.yml` wires `github-token: ${{ secrets.KURE_BOT_PAT || github.token }}` and
+`bot-login: ${{ secrets.KURE_BOT_PAT != '' && 'kure-bot' || 'github-actions[bot]' }}` into the
+`pr-review-threads` composite action. `bot-login` is how `scripts/pr-review-threads.sh` matches a
+thread's first-comment author to decide whether a thread is "ours" to reconcile — it must always
+match whichever identity `github-token` actually authors comments as.
+
+**Why not just `github.token`:** `GITHUB_TOKEN` (and any GitHub App installation token) gets
+`viewerCanResolve:false` on review threads it authors, even with `pull-requests: write` granted.
+This is a categorical rejection of bot/App actor types by `resolveReviewThread`, not a scope gap —
+see go-kure/.github#68 and the V6/V7 rows in `docs/pr-review-threads-live-findings.md` for the live
+evidence (a GitHub App token created a comment successfully as `kure-bot[bot]` but still got
+`viewerCanResolve:false` on that same thread). In `enforce` mode this means absence-resolve passes
+fail closed forever — the thread blocks merge and nothing can ever auto-resolve it.
+
+**The fix:** `KURE_BOT_PAT`, a fine-grained PAT owned by a dedicated human machine-user account
+(`kure-bot`), set as an org secret with visibility limited to `.github`, `kure`, `launcher`. A
+human-owned PAT is not subject to the bot/App restriction — a live probe confirmed
+`viewerCanResolve:true` and a successful `resolveReviewThread` on a thread the PAT authored itself.
+It reaches `pr-review.yml` via `pr-review-caller.yml`'s `secrets: inherit`; any repo where the
+secret isn't set falls back to `github.token`/`github-actions[bot]`, i.e. today's create-but-never-
+resolve behavior — this is a degrade, not a hard failure.
+
+**Gotcha, if this secret ever needs regenerating:** a fine-grained PAT's "Repository access: All
+repositories" is scoped to repos the token's **resource owner** account owns, not to org repos
+that account merely has collaborator access to. `KURE_BOT_PAT` must be created with the **`go-kure`
+org itself** selected as resource owner (available in the token-creation resource-owner dropdown
+once the org's Settings → Personal access tokens policy allows fine-grained PAT access — it does).
+Creating it with `kure-bot`'s personal account as resource owner produces a token that
+authenticates fine but gets 403 `Resource not accessible by personal access token` on every write
+to an org repo, with no repo picker even offered for org repos.
+
 ## Modes
 
 `PRT_MODE` (env `PR_REVIEW_THREADS_MODE`, org/repo variable `vars.PR_REVIEW_THREADS_MODE`
