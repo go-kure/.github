@@ -95,8 +95,10 @@ prt_normalize_findings() {
     ]' <<< "$objects")"
 
   filtered_count="$(jq 'length' <<< "$normalized")"
+  local dropped=0
   if [ "$filtered_count" != "$raw_count" ]; then
-    echo "prt_normalize_findings: dropped $((raw_count - filtered_count)) of $raw_count malformed finding(s)" >&2
+    dropped=$((raw_count - filtered_count))
+    echo "prt_normalize_findings: dropped $dropped of $raw_count malformed finding(s)" >&2
   fi
 
   # Clamp category to the closed enum (jq can't call the shell function, so
@@ -113,7 +115,10 @@ prt_normalize_findings() {
   done
 
   printf '%s' "$clamped"
-  return 0
+  # A dropped row must not read as a clean run — the caller only marks
+  # REVIEW_INCOMPLETE on nonzero return, and a silently-dropped finding's
+  # existing thread would otherwise read as absent this run.
+  [ "$dropped" -eq 0 ]
 }
 
 # prt_assign_ordinals FINDINGS_JSON — input: normalized findings array

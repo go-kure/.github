@@ -370,7 +370,7 @@ if [ "$PRT_MODE" = advisory ]; then
   payload="$(jq -n --arg b "$body" '{body:$b}')"
   if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
     prt_gh_rest POST "/repos/${PRT_REPO}/issues/${PRT_PR_NUMBER}/comments" "$payload" >/dev/null || \
-      echo "WARNING: failed to post advisory comment" >&2
+      prt_mark_incomplete "failed to post advisory comment (HTTP ${PRT_LAST_HTTP_STATUS:-unknown})"
   else
     prt_mark_incomplete "stale head SHA, skipped advisory comment"
   fi
@@ -412,9 +412,10 @@ else
               [ "$fas" = null ] && fas=""
               new_marker="$(prt_marker_build "$fp" "true" "$fas")"
               new_body="$(prt_marker_replace "$cur_body" "$new_marker")"
-              prt_retry 3 prt_gh_rest PATCH "/repos/${PRT_REPO}/pulls/comments/${db_id}" \
+              prt_retry 3 prt_gh_rest_fresh PATCH "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA" \
+                "/repos/${PRT_REPO}/pulls/comments/${db_id}" \
                 "$(jq -n --arg b "$new_body" '{body:$b}')" >/dev/null || \
-                prt_mark_incomplete "fp=$fp: persisting collision=true onto existing thread failed after 3 retries"
+                prt_mark_incomplete "fp=$fp: persisting collision=true onto existing thread failed after 3 retries (or went stale mid-retry)"
             else
               prt_mark_incomplete "fp=$fp: GET before collision-marker persist failed or returned empty body, skipped"
             fi
@@ -508,15 +509,26 @@ else
             '{body:$b, commit_id:$sha, path:$path, subject_type:"file"}')"
         fi
         if ! prt_gh_rest POST "/repos/${PRT_REPO}/pulls/${PRT_PR_NUMBER}/comments" "$create_payload" >/dev/null; then
-          if [ "$anchored" = true ]; then
-            # 422 ladder: line rejected (out-of-diff line, deleted file
-            # anchor, etc.) — fall back to a file-level thread once.
-            fallback_payload="$(jq -n --arg b "$body" --arg sha "$PRT_HEAD_SHA" --arg path "$file" \
-              '{body:$b, commit_id:$sha, path:$path, subject_type:"file"}')"
-            prt_gh_rest POST "/repos/${PRT_REPO}/pulls/${PRT_PR_NUMBER}/comments" "$fallback_payload" >/dev/null || \
-              prt_mark_incomplete "fp=$fp: create failed (line-anchored and file-level fallback both rejected)"
+          # 422 ladder gated on the actual status, not "any non-2xx": a
+          # transient 403 (secondary rate limit) or 502 here previously
+          # triggered an immediate second POST, which can succeed and leave
+          # a duplicate gating thread for the same finding once the first
+          # POST's failure was itself transient rather than a genuine
+          # line/anchor rejection (dot-github#50 gmr finding N9).
+          if [ "$anchored" = true ] && [ "$PRT_LAST_HTTP_STATUS" = 422 ]; then
+            # Line rejected (out-of-diff line, deleted file anchor, etc.) —
+            # fall back to a file-level thread once. Recheck freshness
+            # immediately before this second write.
+            if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
+              fallback_payload="$(jq -n --arg b "$body" --arg sha "$PRT_HEAD_SHA" --arg path "$file" \
+                '{body:$b, commit_id:$sha, path:$path, subject_type:"file"}')"
+              prt_gh_rest POST "/repos/${PRT_REPO}/pulls/${PRT_PR_NUMBER}/comments" "$fallback_payload" >/dev/null || \
+                prt_mark_incomplete "fp=$fp: create failed (line-anchored 422 and file-level fallback both rejected)"
+            else
+              prt_mark_incomplete "fp=$fp: create failed with 422, stale head SHA before file-level fallback"
+            fi
           else
-            prt_mark_incomplete "fp=$fp: create (file-level) failed"
+            prt_mark_incomplete "fp=$fp: create failed (HTTP ${PRT_LAST_HTTP_STATUS:-unknown}$([ "$anchored" = true ] && echo ", not 422 — no fallback attempted"))"
           fi
         fi
         ;;
@@ -556,7 +568,9 @@ if [ "$PRT_MODE" = enforce ]; then
     # no human reply since falls through to row 10's REPLY_RESOLVE, which
     # is the intended conservative behavior only if the maintenance failure
     # was transient — a real gap, tracked below as unanswered_maint_failure
-    # always false. See docs/pr-review-threads.md "Known limitations".
+    # always false, disclosed as a known residual gap in the PR's own review
+    # ledger and iteration comments (dot-github#50 gmr finding R6), not in a
+    # standalone doc this PR doesn't create.
     unanswered_maint_failure=false
 
     action="$(prt_decide_absent "$collision" "$has_human_reply" "$thread_resolved" \
@@ -567,7 +581,7 @@ if [ "$PRT_MODE" = enforce ]; then
     case "$action" in
       NONE) : ;;
       SET_FIRST_ABSENT)
-        prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA" || continue
+        prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA" || { prt_mark_incomplete "fp=$fp: stale head SHA, skipped setting first_absent_sha"; continue; }
         new_marker="$(prt_marker_build "$fp" "$collision" "$PRT_HEAD_SHA")"
         # first_comment_id currently unused here (body comes from a fresh
         # GET so prt_marker_replace preserves the finding text exactly).
@@ -585,9 +599,10 @@ if [ "$PRT_MODE" = enforce ]; then
           continue
         fi
         new_body="$(prt_marker_replace "$cur_body" "$new_marker")"
-        if ! prt_retry 3 prt_gh_rest PATCH "/repos/${PRT_REPO}/pulls/comments/${first_comment_db_id}" \
+        if ! prt_retry 3 prt_gh_rest_fresh PATCH "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA" \
+             "/repos/${PRT_REPO}/pulls/comments/${first_comment_db_id}" \
              "$(jq -n --arg b "$new_body" '{body:$b}')" >/dev/null; then
-          prt_mark_incomplete "fp=$fp: setting first_absent_sha failed after 3 retries"
+          prt_mark_incomplete "fp=$fp: setting first_absent_sha failed after 3 retries (or went stale mid-retry)"
         fi
         ;;
       CLEAR_MARKER)
@@ -600,9 +615,14 @@ if [ "$PRT_MODE" = enforce ]; then
           continue
         fi
         new_body="$(prt_marker_replace "$cur_body" "$new_marker")"
-        if ! prt_retry 3 prt_gh_rest PATCH "/repos/${PRT_REPO}/pulls/comments/${first_comment_db_id}" \
+        if ! prt_retry 3 prt_gh_rest_fresh PATCH "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA" \
+             "/repos/${PRT_REPO}/pulls/comments/${first_comment_db_id}" \
              "$(jq -n --arg b "$new_body" '{body:$b}')" >/dev/null; then
-          reply="$(prt_render_reply_maint_failure "clearing the absence marker failed after 3 retries")"
+          # No freshness gate on this reply itself: it documents a failure
+          # that already happened and is structurally independent of the
+          # marker (render.sh's prt_render_reply_maint_failure docstring) —
+          # deliberately allowed to post even if the head moved meanwhile.
+          reply="$(prt_render_reply_maint_failure "clearing the absence marker failed after 3 retries (or went stale mid-retry)")"
           prt_gh_rest POST "/repos/${PRT_REPO}/pulls/${PRT_PR_NUMBER}/comments" \
             "$(jq -n --arg b "$reply" --argjson r "$first_comment_db_id" '{body:$b, in_reply_to:$r}')" >/dev/null || true
         fi
@@ -641,7 +661,7 @@ if [ "$PRT_MODE" = enforce ] && [ "$(jq 'length' <<< "$OVERFLOW")" -gt 0 ]; then
     overflow_body="$(prt_render_overflow_comment "$OVERFLOW")"
     prt_gh_rest POST "/repos/${PRT_REPO}/issues/${PRT_PR_NUMBER}/comments" \
       "$(jq -n --arg b "$overflow_body" '{body:$b}')" >/dev/null || \
-      echo "WARNING: failed to post overflow comment" >&2
+      prt_mark_incomplete "failed to post overflow comment (HTTP ${PRT_LAST_HTTP_STATUS:-unknown})"
   else
     prt_mark_incomplete "stale head SHA, skipped overflow comment"
   fi

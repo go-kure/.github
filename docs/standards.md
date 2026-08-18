@@ -113,6 +113,14 @@ ever be the SHA that ends up on `main`:
 2. After PR1 merges, **PR2** replaces the placeholder with the real, now-final SHA of
    the merged commit on `main`.
 
+**Interim outage window, disclosed rather than discovered:** the moment PR1 merges to
+`main`, every consumer that calls the wrapping reusable workflow at `@main` (e.g.
+`kure`/`launcher`'s `pr-review.yml`) picks up the new code immediately — including the
+placeholder SHA. Until PR2 lands, the composite-action step fails to resolve for every
+PR in those consumers, and the step it's part of goes silently dark under
+`continue-on-error: true` (PRs still merge; the AI review job simply reports nothing).
+Land PR2 as soon as possible after PR1 merges to keep this window short.
+
 Every later PR that touches the action's delegate code bumps the pin in the same PR,
 exactly like updating a third-party dependency by hand (Dependabot cannot open this PR
 for you — it doesn't track same-repo paths as a dependency).
