@@ -28,6 +28,44 @@ prt_strip_fence() {
   sed -e '1{/^```/d}' -e '${/^```$/d}'
 }
 
+# prt_extract_json_braces CONTENT — salvage pass for a parse failure
+# (go-kure/.github#60/#61 round 2 fold-in, launcher#283 run 32175849548): a
+# chattier generation on this backend can wrap the JSON object in prose
+# ("Here you go:\n{...}\nHope that helps!"), which prt_strip_fence above
+# doesn't handle — it only strips a fenced-code-block marker that is itself
+# the first/last line, not prose before or after the JSON. Prints the
+# substring from the first '{' to the last '}' in CONTENT and returns 0; if
+# either brace is absent, prints nothing and returns 1. A no-op (round-trips
+# to the same content) when CONTENT is already clean JSON. Plain
+# parameter-expansion substring extraction — no new dependency, same idiom
+# as the pattern-based trims above.
+prt_extract_json_braces() {
+  local content="$1" before after middle
+  before="${content%%\{*}"
+  [ "${#before}" -lt "${#content}" ] || return 1
+  after="${content##*\}}"
+  [ "${#after}" -lt "${#content}" ] || return 1
+  middle="${content#"$before"}"
+  middle="${middle%"$after"}"
+  printf '%s' "$middle"
+}
+
+# prt_response_shape CONTENT — shape-only diagnostic for a response that
+# stayed unparseable after retry and salvage: length and a leading-character
+# class, never the response text itself. Never logging raw model responses
+# or comment bodies is a standing rule for this whole action (see
+# docs/pr-review-threads.md "Failure surface"); a shape summary is not the
+# content. Leading whitespace is trimmed before classifying.
+prt_response_shape() {
+  local content="$1" trimmed
+  trimmed="${content#"${content%%[![:space:]]*}"}"
+  case "$trimmed" in
+    '{'*) printf 'len=%d leading=starts-with-brace' "${#content}" ;;
+    '```'*) printf 'len=%d leading=starts-with-fence' "${#content}" ;;
+    *) printf 'len=%d leading=starts-with-prose' "${#content}" ;;
+  esac
+}
+
 _prt_review_system_prompt() {
   cat <<'PROMPT'
 You review GitHub pull requests.
