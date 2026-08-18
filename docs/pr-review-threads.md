@@ -107,11 +107,14 @@ and the composite action step — before anything can fail; the script also chec
 before any GitHub or model call, in case the job-level check is ever bypassed. Between the two,
 `off` covers every failure mode after the workflow starts: GitHub API rate-limiting, the model
 proxy being down, a review-script bug, a checkout failure, a Setup-tools `apt-get` failure, or an
-unresolvable composite-action pin. **Which repo's variable actually applies is not yet verified
-for kure/launcher** — whether `vars.PR_REVIEW_THREADS_MODE` inside this called reusable workflow
-resolves against the caller repo (kure/launcher) or this one is open question V2, tracked in
-`docs/pr-review-threads-live-findings.md`; until it's answered, set the variable on **both** this
-repo and the affected consumer to be safe. Unset the variable (or set it back to
+unresolvable composite-action pin. **Which repo's variable applies (V2, resolved 2026-08-18):**
+`vars.PR_REVIEW_THREADS_MODE` inside this called reusable workflow resolves against the **caller's**
+repository (kure/launcher), not this one — GitHub docs: "the `github` context is always associated
+with the caller workflow"; `vars`/`secrets` follow the same caller-bound context. So during an
+incident, set the variable on the **affected consumer** (kure or launcher); setting a repo-level
+override only on `.github` has no effect on their jobs. The **org**-level variable (today's default)
+is unaffected by this — it's visible identically everywhere. Full record:
+`docs/pr-review-threads-live-findings.md`. Unset the variable (or set it back to
 `advisory`/`enforce`) to resume.
 
 ## What this does not cover
