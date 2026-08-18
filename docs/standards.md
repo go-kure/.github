@@ -134,11 +134,10 @@ resolve action `go-kure/.github@0000...0`", confirmed live 2026-08-18) while a b
 pin-bump PR was open-but-unmerged — at that time `off` genuinely could not have helped.
 **V2 resolved (2026-08-18):** `vars.PR_REVIEW_THREADS_MODE` inside the called reusable
 workflow resolves against the **caller's** repository (kure/launcher), not this one —
-GitHub docs: "When a reusable workflow is triggered by a caller workflow, the `github`
-context is always associated with the caller workflow"
-(docs.github.com/en/actions/reference/workflows-and-actions/reusing-workflow-configurations);
-`vars`/`secrets` follow the same caller-bound execution context (it is also why `secrets:
-inherit` passes the caller's secrets, not this repo's). Practical consequence: today
+GitHub docs: "For reusable workflows, the variables from the caller workflow's repository
+are used. Variables from the repository that contains the called workflow are not made
+available to the caller workflow."
+(docs.github.com/en/actions/reference/workflows-and-actions/variables). Practical consequence: today
 `PR_REVIEW_THREADS_MODE` is an **org**-level variable, visible identically everywhere, so
 this doesn't change anything in the common case — but during an incident, a **repo-level**
 override must be set on the affected consumer (kure or launcher), not on `.github`; setting
