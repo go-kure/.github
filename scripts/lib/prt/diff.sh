@@ -29,10 +29,14 @@ prt_split_diff() {
 
   # Split into per-file records at `diff --git` boundaries. NUL-separated so
   # a record's own content (which may contain anything) can never be
-  # mistaken for the separator.
+  # mistaken for the separator. `printf "%c", 0` — not `\x00`, which is a
+  # gawk-only printf escape; mawk (the default /usr/bin/awk on GitHub's
+  # Ubuntu runners) silently drops it and everything after, collapsing every
+  # record into one (caught via CI-only chunking test failures — passed
+  # under this sandbox's gawk, failed under the runner's mawk).
   local records_file="$out_dir/.records"
   awk '
-    /^diff --git / { if (n++) printf "\x00"; }
+    /^diff --git / { if (n++) printf "%c", 0; }
     { print }
   ' "$diff_file" > "$records_file"
 
@@ -76,7 +80,7 @@ prt_split_diff() {
     header="$(awk '/^@@ /{exit} {print}' <<< "$rec")"
     hunks_file="$out_dir/.hunks"
     awk '
-      /^@@ / { if (n++) printf "\x00"; }
+      /^@@ / { if (n++) printf "%c", 0; }
       n > 0 { print }
     ' <<< "$rec" > "$hunks_file"
 

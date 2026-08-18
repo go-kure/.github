@@ -9,8 +9,8 @@
 # No code path ever scans both ranges with the same test — ownership questions
 # ask about the first comment; has_human_reply questions ask about the rest.
 #
-# `gokure-pr-review` (not `wharf-mr-review`, the GitLab prefix) — this repo's
-# No Downstream References standard forbids `wharf` in-tree.
+# Prefix is org-namespaced, not reused from the sibling GitLab template's prefix —
+# see docs/standards.md, "No Downstream References (MUST)".
 
 set -uo pipefail
 
