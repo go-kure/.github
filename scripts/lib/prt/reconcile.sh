@@ -100,7 +100,12 @@ prt_decide_absent() {
   [ "$collision" = true ] && { echo NONE; return 0; }
 
   # Row 12: this run's evidence can't be trusted — never act on absence.
-  [ "$review_incomplete" = true ] && { echo CLEAR_MARKER; return 0; }
+  # Nothing to clear if first_absent_sha is already empty — skip the wasted
+  # GET+PATCH round-trip rather than reissuing a no-op CLEAR_MARKER.
+  if [ "$review_incomplete" = true ]; then
+    [ -z "$first_absent_sha" ] && { echo NONE; return 0; }
+    echo CLEAR_MARKER; return 0
+  fi
 
   # Row 13: a human reply protects the thread from every absence action,
   # including the initial first_absent_sha stamp (a human already engaged;

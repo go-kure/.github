@@ -81,11 +81,11 @@ EOF
 }
 
 # prt_render_summary MODE SOURCE_SHA CHUNK_COUNT FINDINGS_JSON \
-#                     INCOMPLETE_REASONS
+#                     SUPPRESSED_COUNT INCOMPLETE_REASONS
 # Written to $GITHUB_STEP_SUMMARY — free, no API call, the audit surface
 # that survives even under continue-on-error: true.
 prt_render_summary() {
-  local mode="$1" sha="$2" chunk_count="$3" findings="$4" incomplete_reasons="$5"
+  local mode="$1" sha="$2" chunk_count="$3" findings="$4" suppressed_count="$5" incomplete_reasons="$6"
   {
     printf '## PR Review Threads (%s mode)\n\n' "$mode"
     printf -- '- Source SHA: %s\n' "$sha"
@@ -96,13 +96,14 @@ prt_render_summary() {
     # (deliberately not -e), silently drops just that one summary line
     # rather than aborting (dot-github#50 gmr finding iter5-codex #2).
     printf -- '- Diff chunks reviewed: %s\n' "$chunk_count"
-    printf -- '- Findings: %s\n\n' "$(jq 'length' <<< "$findings")"
+    printf -- '- Findings: %s\n' "$(jq 'length' <<< "$findings")"
+    printf -- '- Suppressed (FALSE POSITIVE, no thread created): %s\n\n' "$suppressed_count"
     if [ "$(jq 'length' <<< "$findings")" -gt 0 ]; then
-      printf '| fp | Severity | Category | File | Verdict | Action |\n'
-      printf '|----|----------|----------|------|---------|--------|\n'
+      printf '| fp | Severity | Category | File | Verdict |\n'
+      printf '|----|----------|----------|------|---------|\n'
       jq -r '
         def esc: tostring | gsub("\r\n"; " ") | gsub("[\n\r]"; " ") | gsub("\\|"; "\\|");
-        .[] | "| `\(.fp)` | \(.severity|esc) | \(.category|esc) | \(.file|esc) | \((.verdict // "n/a")|esc) | \((.action // "n/a")|esc) |"
+        .[] | "| `\(.fp)` | \(.severity|esc) | \(.category|esc) | \(.file|esc) | \((.verdict // "n/a")|esc) |"
       ' <<< "$findings"
     fi
     if [ -n "$incomplete_reasons" ]; then

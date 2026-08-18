@@ -25,6 +25,15 @@ DELEGATE_PATHS=(
   "scripts/lib/prt"
 )
 
+# A bad/unreachable BASE_REF must fail loudly, not fall through to the
+# "nothing changed" path below — `git diff` on an unresolvable ref exits
+# non-zero with its error on stderr, which the `|| true` two lines down
+# would otherwise silently swallow and read as an empty (all-clear) diff.
+git rev-parse --verify --quiet "${BASE_REF}^{commit}" >/dev/null || {
+  echo "check-pin-bump: FAIL — BASE_REF '${BASE_REF}' does not resolve to a commit (fetch it first?)." >&2
+  exit 1
+}
+
 changed="$(git diff --name-only "${BASE_REF}...HEAD" -- "${DELEGATE_PATHS[@]}" 2>/dev/null || true)"
 if [ -z "$changed" ]; then
   echo "check-pin-bump: no pr-review-threads delegate code changed, OK."
@@ -60,7 +69,7 @@ fi
 if [ "$old_pin" = "$new_pin" ]; then
   echo "check-pin-bump: FAIL — delegate code changed but the pin in $WORKFLOW was not bumped:" >&2
   printf '%s\n' "$changed" | sed 's/^/  - /' >&2
-  echo "See docs/standards.md, 'GitHub Actions pinning' — same-repo pin bootstrap." >&2
+  echo "See docs/standards.md, 'GitHub Actions pinning' > 'Same-repo composite actions and the pin-bump procedure.'" >&2
   exit 1
 fi
 

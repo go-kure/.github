@@ -14,8 +14,10 @@
 # judged a false positive) via the pr-review-threads composite action — see
 # .github/actions/pr-review-threads/action.yml and scripts/pr-review-threads.sh.
 #
-# PR_REVIEW_THREADS_MODE default is deliberately "advisory" below, NOT the
-# action's own "enforce" default: required_review_thread_resolution is
+# PR_REVIEW_THREADS_MODE is set to "advisory" below (matching the composite
+# action's and the underlying script's own default — no mode is ever
+# implicitly "enforce" anywhere in this chain). It's set explicitly, not
+# left to fall through, because required_review_thread_resolution is
 # ALREADY true org-wide (governance/repository-settings-policy.yaml), so an
 # unresolved thread already blocks merge today, independent of the
 # still-open Gating-section work (making this job itself a required check,
@@ -27,14 +29,16 @@
 # mode is intentionally the only wired path (still posts one plain issue
 # comment with the merged findings table, matching pre-existing behavior).
 #
-# Optional repository variables to override defaults:
+# Defaults below (only actually overridable via a `vars.*` repository variable
+# for PR_REVIEW_THREADS_MODE — see note above; every other one is env: only,
+# so overriding it means editing this file, not setting a repo variable):
 #   PR_REVIEW_MODEL             (default: claude-opus-4)
 #   PR_REVIEW_MAX_DIFF_CHARS    (default: 50000)
 #   PR_REVIEW_MAX_TOKENS        (default: 1500)
 #   PR_REVIEW_ASSESS_MODEL      (default: claude-sonnet-4-6)
 #   PR_REVIEW_ASSESS_MAX_TOKENS (default: 4096)
 #   PR_REVIEW_AGENTS_FILE       (default: AGENTS.md)
-#   PR_REVIEW_THREADS_MODE      (default: advisory; see note above)
+#   PR_REVIEW_THREADS_MODE      (default: advisory; vars.PR_REVIEW_THREADS_MODE overrides — see note above)
 #   PR_REVIEW_MAX_FINDINGS_TOTAL (default: 5)
 
 name: PR Review
@@ -95,7 +99,7 @@ jobs:
           done
 
       - name: Run PR review threads
-        uses: go-kure/.github/.github/actions/pr-review-threads@0000000000000000000000000000000000000000 # BOOTSTRAP — see docs/standards.md "same-repo pin bootstrap"; replace with `git rev-parse HEAD` of this branch's first real commit before committing, then bump to the merged main SHA in a follow-up PR.
+        uses: go-kure/.github/.github/actions/pr-review-threads@0000000000000000000000000000000000000000 # BOOTSTRAP — see docs/standards.md, "GitHub Actions pinning" > "Same-repo composite actions and the pin-bump procedure."; replace with `git rev-parse HEAD` of this branch's first real commit before committing, then bump to the merged main SHA in a follow-up PR.
         with:
           github-token: ${{ github.token }}
           pr-number: ${{ github.event.pull_request.number }}

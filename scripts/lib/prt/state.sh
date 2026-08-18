@@ -22,15 +22,6 @@ prt_mark_incomplete() {
   printf '%s\n' "$reason" >> "$PRT_INCOMPLETE_FILE"
 }
 
-# prt_state_reset — used only by reconciliation row 12 (absent thread +
-# REVIEW_INCOMPLETE forces a clean restart on a LATER run). This run's own
-# REVIEW_INCOMPLETE outcome is never reset mid-run — only the persisted
-# marker state that gates row 12 is affected by that row's action.
-prt_state_reset() {
-  [ -n "${PRT_INCOMPLETE_FILE:-}" ] || { echo "ERROR: prt_state_init not called" >&2; return 1; }
-  : > "$PRT_INCOMPLETE_FILE"
-}
-
 prt_is_incomplete() {
   [ -n "${PRT_INCOMPLETE_FILE:-}" ] || return 1
   [ -s "$PRT_INCOMPLETE_FILE" ]

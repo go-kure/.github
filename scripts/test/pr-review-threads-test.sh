@@ -309,8 +309,10 @@ assert_eq "decide_finding: unmatched verdict (NONE) behaves like VALID for exist
 # ============================================================ reconcile: prt_decide_absent
 assert_eq "decide_absent: collision beats everything" \
   "NONE" "$(prt_decide_absent true false false "" abc false false)"
-assert_eq "decide_absent: REVIEW_INCOMPLETE -> clear marker, don't trust absence" \
-  "CLEAR_MARKER" "$(prt_decide_absent false false false "" abc true false)"
+assert_eq "decide_absent: REVIEW_INCOMPLETE with a stamped first_absent_sha -> clear it" \
+  "CLEAR_MARKER" "$(prt_decide_absent false false false xyz abc true false)"
+assert_eq "decide_absent: REVIEW_INCOMPLETE with no first_absent_sha -> nothing to clear" \
+  "NONE" "$(prt_decide_absent false false false "" abc true false)"
 assert_eq "decide_absent: human reply protects thread from every absence action" \
   "NONE" "$(prt_decide_absent false true false "" abc false false)"
 assert_eq "decide_absent: already resolved -> nothing to auto-close" \
