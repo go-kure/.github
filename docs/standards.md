@@ -88,6 +88,35 @@ verifies the ref is a 40-hex SHA — it cannot detect a comment that no longer
 names the commit's actual tag. Treat a suspicious version comment as a reason
 to check the SHA by hand, not as ground truth.
 
+**Same-repo composite actions and the pin-bump procedure.** A first-party composite
+action that lives in this repo (e.g. `.github/actions/pr-review-threads/`) is pinned
+by SHA in `.github/workflows/pr-review.yml` exactly like any other action above — but
+because the action and its consumer both live here, a PR can edit the action's
+delegate code without touching the pin at all, silently leaving the pinned reference
+running stale code until someone remembers to bump it by hand.
+
+`scripts/check-pin-bump.sh` closes that gap in CI: it diffs the PR against its base
+ref, and if any of `.github/actions/pr-review-threads/**`, `scripts/pr-review-threads.sh`,
+or `scripts/lib/prt/**` changed, it fails unless `.github/workflows/pr-review.yml`'s
+pinned SHA also changed. It only checks that the pin *moved*, not that it points at a
+reachable commit — see the bootstrap note below for why.
+
+Bootstrapping a same-repo action is a two-PR sequence, because this repo merges via
+rebase, which rewrites every commit's SHA — so no SHA known while the PR is open can
+ever be the SHA that ends up on `main`:
+
+1. **PR1** lands the action and its delegate scripts, with the workflow pinned to a
+   40-hex placeholder SHA (all zeros is fine) and an inline comment marking it as a
+   placeholder pending PR2. `check-pin-bump.sh` treats "no prior pin on the base ref"
+   as the documented bootstrap exception and passes trivially — there is nothing to
+   compare the bump against yet.
+2. After PR1 merges, **PR2** replaces the placeholder with the real, now-final SHA of
+   the merged commit on `main`.
+
+Every later PR that touches the action's delegate code bumps the pin in the same PR,
+exactly like updating a third-party dependency by hand (Dependabot cannot open this PR
+for you — it doesn't track same-repo paths as a dependency).
+
 ### Vulnerability gating (govulncheck)
 
 `scripts/govulncheck-gate.sh` turns a `govulncheck -format json` report into a CI verdict:

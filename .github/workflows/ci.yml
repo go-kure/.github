@@ -105,7 +105,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          fetch-depth: 2 # check-doc-gate.sh below diffs against HEAD~1
+          fetch-depth: 0 # check-doc-gate.sh diffs against HEAD~1; check-pin-bump.sh needs origin/main
       - name: Install shellcheck
         env:
           SHELLCHECK_VERSION: '0.10.0'
@@ -115,7 +115,7 @@ jobs:
           tar -xJf /tmp/shellcheck.tar.xz -C /tmp
           sudo install -m755 "/tmp/shellcheck-v${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck
       - name: shellcheck
-        run: shellcheck scripts/check-doc-sync.sh scripts/check-doc-gate.sh scripts/check-links.sh scripts/exact-array-member.sh scripts/check-workflow-refs.sh scripts/github-settings.sh scripts/check-settings-doc.sh scripts/check-action-pins.sh scripts/govulncheck-gate.sh
+        run: shellcheck scripts/check-doc-sync.sh scripts/check-doc-gate.sh scripts/check-links.sh scripts/exact-array-member.sh scripts/check-workflow-refs.sh scripts/github-settings.sh scripts/check-settings-doc.sh scripts/check-action-pins.sh scripts/govulncheck-gate.sh scripts/check-forbidden-terms.sh scripts/check-pin-bump.sh scripts/pr-review-threads.sh scripts/lib/prt/state.sh scripts/lib/prt/marker.sh scripts/lib/prt/finding.sh scripts/lib/prt/gh.sh scripts/lib/prt/diff.sh scripts/lib/prt/render.sh scripts/lib/prt/model.sh scripts/lib/prt/reconcile.sh
       - name: Install yq
         env:
           YQ_VERSION: '4.44.6'
@@ -132,6 +132,14 @@ jobs:
         run: bash scripts/test/check-action-pins-test.sh .
       - name: check-action-pins.sh against this repo
         run: bash scripts/check-action-pins.sh .
+      - name: pr-review-threads.sh unit test suite
+        run: bash scripts/test/pr-review-threads-test.sh .
+      - name: check-pin-bump.sh unit test suite
+        run: bash scripts/test/check-pin-bump-test.sh .
+      - name: Fetch origin/main for check-pin-bump.sh
+        run: git fetch origin main
+      - name: check-pin-bump.sh against origin/main
+        run: bash scripts/check-pin-bump.sh origin/main .
       - name: govulncheck-gate.sh test suite
         run: bash scripts/test/govulncheck-gate-test.sh .
       - name: check-settings-doc.sh against governance policy

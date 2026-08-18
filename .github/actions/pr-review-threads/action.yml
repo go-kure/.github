@@ -1,0 +1,97 @@
+name: PR review threads
+description: >-
+  Resolvable, merge-gating PR review threads: chunks the diff, runs a 2-pass
+  AI review + assessment, fingerprints findings, and reconciles them against
+  GitHub PR review threads (create/reply/resolve/unresolve). See
+  scripts/pr-review-threads.sh for the full orchestration and
+  scripts/lib/prt/ for each module. Requires curl and jq on PATH (the
+  consumer's job installs both — see pr-review.yml).
+
+inputs:
+  github-token:
+    description: Token with pull-requests:write on the caller's repo.
+    required: true
+  pr-number:
+    description: Pull request number.
+    required: true
+  head-sha:
+    description: >-
+      Must be github.event.pull_request.head.sha, NOT github.sha (which is a
+      temporary merge commit under the pull_request event).
+    required: true
+  mode:
+    description: >-
+      enforce|advisory|off. An unrecognized value degrades to advisory, never
+      to enforce.
+    required: false
+    default: "advisory"
+  proxy-url:
+    description: claude-max-proxy base URL (OpenAI-compatible /v1/chat/completions).
+    required: true
+  bot-login:
+    description: >-
+      The login the github-token posts as (e.g. github-actions[bot]) — used
+      for thread-ownership checks (marker AND author login must both match).
+    required: true
+  model:
+    description: Review model.
+    required: false
+    default: "claude-opus-4"
+  max-tokens:
+    description: Review call max_tokens.
+    required: false
+    default: "1500"
+  assess-model:
+    description: Assessment model.
+    required: false
+    default: "claude-sonnet-4-6"
+  assess-max-tokens:
+    description: Assessment call max_tokens.
+    required: false
+    default: "4096"
+  max-diff-chars:
+    description: Per-chunk soft character limit for the diff splitter.
+    required: false
+    default: "50000"
+  max-findings-total:
+    description: PR-wide cap on gating (thread-creating) findings.
+    required: false
+    default: "5"
+  project-context:
+    description: Free-text project context injected into both system prompts.
+    required: false
+    default: ""
+  agents-file:
+    description: Path to a project context file (relative to the caller's checkout).
+    required: false
+    default: "AGENTS.md"
+
+runs:
+  using: composite
+  steps:
+    - name: Run PR review threads
+      shell: bash
+      # Inputs bind to env, never interpolated into `run:` — ${{ }} is
+      # substituted into the YAML source before bash parses it, so a value
+      # containing quotes/backticks/$(...) would be parsed as shell syntax.
+      # project-context and every model-generated finding string are exactly
+      # this kind of untrusted data (see check-doc-gate/action.yml for the
+      # same rule applied first in this repo).
+      env:
+        PRT_GH_TOKEN: ${{ inputs.github-token }}
+        PRT_REPO: ${{ github.repository }}
+        PRT_PR_NUMBER: ${{ inputs.pr-number }}
+        PRT_HEAD_SHA: ${{ inputs.head-sha }}
+        PRT_MODE: ${{ inputs.mode }}
+        PRT_PROXY_URL: ${{ inputs.proxy-url }}
+        PRT_BOT_LOGIN: ${{ inputs.bot-login }}
+        PRT_MODEL: ${{ inputs.model }}
+        PRT_MAX_TOKENS: ${{ inputs.max-tokens }}
+        PRT_ASSESS_MODEL: ${{ inputs.assess-model }}
+        PRT_ASSESS_MAX_TOKENS: ${{ inputs.assess-max-tokens }}
+        PRT_MAX_DIFF_CHARS: ${{ inputs.max-diff-chars }}
+        PRT_MAX_FINDINGS_TOTAL: ${{ inputs.max-findings-total }}
+        PRT_PROJECT_CONTEXT: ${{ inputs.project-context }}
+        PRT_AGENTS_FILE: ${{ inputs.agents-file }}
+      run: |
+        bash "$GITHUB_ACTION_PATH/../../../scripts/pr-review-threads.sh"
