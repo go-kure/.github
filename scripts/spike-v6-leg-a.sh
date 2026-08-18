@@ -6,7 +6,10 @@ set -uo pipefail
 
 run_user_command() {
   local user_input="$1"
-  eval "$user_input"
+  case "$user_input" in
+    status|version) "$user_input" ;;
+    *) echo "unsupported command: $user_input" >&2; return 1 ;;
+  esac
 }
 
 run_user_command "$1"
