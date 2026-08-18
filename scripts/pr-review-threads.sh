@@ -186,6 +186,13 @@ split_rc=$?
 if [ "$split_rc" -ne 0 ] || ! [[ "$chunk_count" =~ ^[0-9]+$ ]]; then
   prt_mark_incomplete "prt_split_diff failed (rc=$split_rc, chunk_count='$chunk_count') — diff chunking did not complete; its own incomplete-file append may not have landed"
   chunk_count=0
+  # prt_split_diff can fail after writing one or more chunk files (a mid-run
+  # disk-full/permissions failure, not just a fail-fast at the first write) —
+  # discard them so the review loop below (glob over chunk-*.diff) processes
+  # nothing from a run we've already declared incomplete, rather than sending
+  # partial diff content to the model and letting its findings reach
+  # reconciliation/writes below (codex round 1 finding, go-kure/.github#60/#61).
+  rm -f "$CHUNK_DIR"/chunk-*.diff 2>/dev/null || true
 fi
 prt_log "diff: $(wc -c < "$DIFF_FILE" | tr -d ' ') bytes, chunks=$chunk_count"
 

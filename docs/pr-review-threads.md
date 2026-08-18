@@ -123,13 +123,17 @@ reason to stderr (prefixed `  - `) and as capped `::error title=...::` workflow 
 from "the review ran and found nothing" by exit code *and* job-log output, not only by a human
 reading the summary by hand.
 
-Every run — clean or broken — also emits `prt_log` stage tracing to stderr (`prt: mode=...`,
-`prt: diff: <n> bytes, chunks=<n>`, per-chunk review/assess outcome, `prt: threads listed: N,
-owned=M`, a `prt: fp=<fp> -> <action>` line per reconciliation decision, and a closing
+Every run that reaches the main body also emits `prt_log` stage tracing to stderr (`prt:
+mode=...`, `prt: diff: <n> bytes, chunks=<n>`, per-chunk review/assess outcome, `prt: threads
+listed: N, owned=M`, a `prt: fp=<fp> -> <action>` line per reconciliation decision, and a closing
 `prt: done: findings=N gating=N suppressed=N incomplete=N` line) — a successful run used to print
 nothing at all between the workflow's own log markers, indistinguishable at a glance from a job
-that hung (go-kure/.github#61). Never logged: `PRT_GH_TOKEN`, raw model responses, comment bodies
-— only fingerprints, actions, and outcomes.
+that hung (go-kure/.github#61). An early exit ahead of the first `prt_log` call — the `off`-mode
+short-circuit, a non-2xx diff fetch, or a PR-metadata fetch failure — still prints its own `ERROR`/
+mode line but not the full stage sequence or the closing `prt: done` line; those exits are already
+unambiguous on their own (a non-zero exit code plus one explicit `ERROR:` line), so the tracing
+gap there doesn't reintroduce the silent-hang shape #61 exists to close. Never logged:
+`PRT_GH_TOKEN`, raw model responses, comment bodies — only fingerprints, actions, and outcomes.
 
 GitHub curl calls carry `--connect-timeout 10 --max-time 120`; the model proxy call carries
 `--connect-timeout 10 --max-time 300` — a per-call ceiling so one hung call can't alone consume
