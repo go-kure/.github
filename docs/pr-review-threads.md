@@ -100,14 +100,19 @@ same retry helper every write path already used.
 
 ## Incident procedure
 
-Set the **org** variable `PR_REVIEW_THREADS_MODE=off`. The workflow reads
-`vars.PR_REVIEW_THREADS_MODE || env.PR_REVIEW_THREADS_MODE`, so the org variable overrides the
-workflow's own `advisory` default; every consuming repo (kure, launcher, `.github` itself)
-inherits it on the next run. `off` short-circuits before any GitHub or model call, so it works
-even if the outage is GitHub API rate-limiting, the model proxy being down, or the review script
-itself having a bug — nothing after the mode check in `pr-review-threads.sh` needs to be
-healthy for `off` to restore merges. Unset the variable (or set it back to `advisory`/`enforce`)
-to resume.
+Set the **org** variable `PR_REVIEW_THREADS_MODE=off`. It is checked twice: the `pr-review` job's
+own `if:` (`vars.PR_REVIEW_THREADS_MODE != 'off'`) skips the whole job — checkout, Setup tools,
+and the composite action step — before anything can fail; the script also checks
+`vars.PR_REVIEW_THREADS_MODE || env.PR_REVIEW_THREADS_MODE` as a second, redundant short-circuit
+before any GitHub or model call, in case the job-level check is ever bypassed. Between the two,
+`off` covers every failure mode after the workflow starts: GitHub API rate-limiting, the model
+proxy being down, a review-script bug, a checkout failure, a Setup-tools `apt-get` failure, or an
+unresolvable composite-action pin. **Which repo's variable actually applies is not yet verified
+for kure/launcher** — whether `vars.PR_REVIEW_THREADS_MODE` inside this called reusable workflow
+resolves against the caller repo (kure/launcher) or this one is open question V2, tracked in
+`docs/pr-review-threads-live-findings.md`; until it's answered, set the variable on **both** this
+repo and the affected consumer to be safe. Unset the variable (or set it back to
+`advisory`/`enforce`) to resume.
 
 ## What this does not cover
 

@@ -45,8 +45,8 @@
 # "Incident procedure"). It is checked twice: inside the script (short-circuits
 # before any GitHub or model call) and, since a review finding on this same PR
 # (a checkout or Setup-tools failure would otherwise be unrecoverable by the
-# script-level check, since neither step has run yet), in the job-level `if:`
-# above — `vars.PR_REVIEW_THREADS_MODE != 'off'` skips checkout, setup, AND
+# script-level check, since neither step has run yet), in the `pr-review` job's
+# own `if:` below — `vars.PR_REVIEW_THREADS_MODE != 'off'` skips checkout, setup, AND
 # the composite action entirely, so `off` now also covers a checkout failure,
 # a Setup-tools apt-get failure, and an unresolvable action pin (see the
 # PENDING comment on the `uses:` line below and docs/standards.md's pin-bump
