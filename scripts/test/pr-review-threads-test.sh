@@ -703,14 +703,44 @@ fake_curl_orchestrator() {
 
   case "$url" in
     */chat/completions)
-      # Discard _prt_test_bump's own stdout (the running count, unused
-      # here) — leaving it uncaptured would leak into this function's own
-      # stdout, which the caller reads as curl's -w '%{http_code}' output.
-      _prt_test_bump "${PRT_TEST_MODEL_COUNTFILE:?}" >/dev/null
+      # _prt_test_bump's return value (not discarded here, unlike the other
+      # call sites below) is the running per-run model-call count, used by
+      # the garbage_then_clean mode to tell the original attempt from the
+      # round-2 fold-in's bounded retry apart.
+      mc="$(_prt_test_bump "${PRT_TEST_MODEL_COUNTFILE:?}")"
       if [ "${PRT_TEST_MODEL_ALWAYS_FAIL:-0}" = 1 ]; then
         : > "$out"; echo 500; return 0
       fi
-      printf '%s' '{"choices":[{"message":{"content":"{\"findings\":[]}"}}]}' > "$out"
+      # PRT_TEST_MODEL_RESPONSE_MODE (go-kure/.github#60/#61 round 2
+      # fold-in): exercises the salvage pass and the bounded retry added
+      # around the jq -c '.' parse in pr-review-threads.sh's chunk-review
+      # loop. clean (default) is the pre-existing well-formed response.
+      # prose wraps well-formed JSON in commentary on both sides — no braces
+      # missing, salvageable without ever needing the retry (fact 3 in the
+      # incident record: launcher#283 run 32175849548, a chattier generation
+      # wraps the JSON object in prose). garbage has no '{'/'}' at all —
+      # unsalvageable, and stays garbage on the retry too, every call.
+      # garbage_then_clean is garbage only on call 1 (mc<=1); the retry
+      # (call 2) gets clean JSON, proving the retry path actually runs and
+      # not just that it's accepted in principle.
+      case "${PRT_TEST_MODEL_RESPONSE_MODE:-clean}" in
+        prose)
+          printf '%s' '{"choices":[{"message":{"content":"Here you go:\n{\"findings\":[]}\nHope that helps!"}}]}' > "$out"
+          ;;
+        garbage)
+          printf '%s' '{"choices":[{"message":{"content":"not json at all, sorry"}}]}' > "$out"
+          ;;
+        garbage_then_clean)
+          if [ "$mc" -le 1 ]; then
+            printf '%s' '{"choices":[{"message":{"content":"not json at all, sorry"}}]}' > "$out"
+          else
+            printf '%s' '{"choices":[{"message":{"content":"{\"findings\":[]}"}}]}' > "$out"
+          fi
+          ;;
+        *)
+          printf '%s' '{"choices":[{"message":{"content":"{\"findings\":[]}"}}]}' > "$out"
+          ;;
+      esac
       echo 200
       ;;
     */issues/*/comments)
@@ -833,6 +863,7 @@ run_orchestrator() {
     PRT_TEST_EMPTY_DIFF="${PRT_TEST_EMPTY_DIFF:-0}" \
     PRT_TEST_FIRST_ABSENT_SHA="${PRT_TEST_FIRST_ABSENT_SHA:-}" \
     PRT_TEST_OWNED_FP="${PRT_TEST_OWNED_FP:-deadbeefcafebabe}" \
+    PRT_TEST_MODEL_RESPONSE_MODE="${PRT_TEST_MODEL_RESPONSE_MODE:-clean}" \
     PRT_GH_TOKEN=x PRT_REPO=owner/repo PRT_PR_NUMBER=1 \
     PRT_HEAD_SHA=1111111111111111111111111111111111111111 \
     PRT_BOT_LOGIN="test-bot[bot]" PRT_PROXY_URL="http://proxy.invalid" \
@@ -871,6 +902,50 @@ assert_eq "orchestrator: fail-closed exit — stderr carries \"failing closed\""
   "true" "$(grep -q 'failing closed' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 assert_eq "orchestrator: fail-closed exit — stdout carries a ::error title= annotation" \
   "true" "$(grep -q '::error title=' "$PRT_TEST_STDOUT_FILE" && echo true || echo false)"
+
+# ---- Cases i-iii: model-response resilience (go-kure/.github#60/#61 round
+# 2 fold-in) — the salvage pass and the bounded-to-1 retry added around the
+# jq -c '.' parse in pr-review-threads.sh's chunk-review loop. Asserted on
+# stderr (prt_mark_incomplete's own "REVIEW_INCOMPLETE: <reason>" line and
+# prt_log's per-chunk tracing), not on PRT_INCOMPLETE_FILE directly — that
+# file lives under the orchestrator's own per-run mktemp -d WORKDIR and is
+# removed by its EXIT trap before this subprocess returns, but stderr is
+# captured to PRT_TEST_STDERR_FILE by run_orchestrator (not discarded), so
+# it carries the same information out.
+
+# Case i — prose-wrapped JSON on the (only) attempt: salvaged without ever
+# needing the retry, chunk succeeds, exits 0.
+PRT_TEST_MODEL_RESPONSE_MODE=prose
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "orchestrator: prose-wrapped JSON salvaged -> exits 0" "0" "$rc"
+assert_eq "orchestrator: prose-wrapped JSON salvaged -> model called exactly once (no retry needed)" \
+  "1" "$(cat "$PRT_TEST_MODEL_COUNTFILE")"
+assert_eq "orchestrator: prose-wrapped JSON salvaged -> stderr carries the recovered line with salvaged=true" \
+  "true" "$(grep -q 'review recovered (retried=false salvaged=true)' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+
+# Case ii — garbage on the original attempt AND the bounded retry: exits 1,
+# with the shape-only diagnostic present in the REVIEW_INCOMPLETE reason —
+# never the response text itself (never "not json at all, sorry" verbatim).
+PRT_TEST_MODEL_RESPONSE_MODE=garbage
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "orchestrator: garbage on original + retry -> exits 1" "1" "$rc"
+assert_eq "orchestrator: garbage on original + retry -> model called exactly twice (original + 1 bounded retry)" \
+  "2" "$(cat "$PRT_TEST_MODEL_COUNTFILE")"
+assert_eq "orchestrator: garbage on original + retry -> REVIEW_INCOMPLETE carries retry=true, salvage_attempted=true, and a leading-char shape class" \
+  "true" "$(grep -qE 'REVIEW_INCOMPLETE:.*retry=true, salvage_attempted=true \(len=[0-9]+ leading=starts-with-prose\)' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator: garbage on original + retry -> REVIEW_INCOMPLETE does NOT leak the raw response text" \
+  "false" "$(grep -qF 'not json at all' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+
+# Case iii — garbage on the first attempt, clean JSON on the retry: proves
+# the retry path actually runs (not just accepted in principle) — exits 0.
+PRT_TEST_MODEL_RESPONSE_MODE=garbage_then_clean
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "orchestrator: garbage then clean on retry -> exits 0" "0" "$rc"
+assert_eq "orchestrator: garbage then clean on retry -> model called exactly twice (retry fired)" \
+  "2" "$(cat "$PRT_TEST_MODEL_COUNTFILE")"
+assert_eq "orchestrator: garbage then clean on retry -> stderr carries the recovered line with retried=true" \
+  "true" "$(grep -q 'review recovered (retried=true salvaged=false)' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_MODEL_RESPONSE_MODE=clean
 
 # Case 3a — permanent metadata-fetch failure (F3): every attempt (matching
 # prt_retry 3's own attempt count) returns 502, unlike meta_fail=1 below
