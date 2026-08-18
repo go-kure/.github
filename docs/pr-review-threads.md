@@ -109,8 +109,9 @@ before any GitHub or model call, in case the job-level check is ever bypassed. B
 proxy being down, a review-script bug, a checkout failure, a Setup-tools `apt-get` failure, or an
 unresolvable composite-action pin. **Which repo's variable applies (V2, resolved 2026-08-18):**
 `vars.PR_REVIEW_THREADS_MODE` inside this called reusable workflow resolves against the **caller's**
-repository (kure/launcher), not this one — GitHub docs: "the `github` context is always associated
-with the caller workflow"; `vars`/`secrets` follow the same caller-bound context. So during an
+repository (kure/launcher), not this one — GitHub docs: "For reusable workflows, the variables from
+the caller workflow's repository are used. Variables from the repository that contains the called
+workflow are not made available to the caller workflow." So during an
 incident, set the variable on the **affected consumer** (kure or launcher); setting a repo-level
 override only on `.github` has no effect on their jobs. The **org**-level variable (today's default)
 is unaffected by this — it's visible identically everywhere. Full record:
