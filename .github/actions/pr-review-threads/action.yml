@@ -30,8 +30,12 @@ inputs:
     required: true
   bot-login:
     description: >-
-      The login the github-token posts as (e.g. github-actions[bot]) — used
-      for thread-ownership checks (marker AND author login must both match).
+      The login the github-token posts as, REST spelling (e.g.
+      github-actions[bot]) — used for thread-ownership checks (marker AND
+      author login must both match). Ownership is checked against GraphQL's
+      author.login, which omits the "[bot]" suffix REST uses for the same
+      account; the script strips it internally before comparing, so pass the
+      REST spelling here unchanged.
     required: true
   model:
     description: Review model.

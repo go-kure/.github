@@ -191,10 +191,21 @@ GATING_ELIGIBLE="$(jq -c --argjson rank "$SEV_RANK" '
 ' <<< "$ALL_FINDINGS")"
 CAPPED_FPS="$(jq -c --argjson n "$PRT_MAX_FINDINGS_TOTAL" '[limit($n; .[])] | map(.fp)' <<< "$GATING_ELIGIBLE")"
 ALL_FINDINGS="$(jq -c --argjson capped "$CAPPED_FPS" '
-  map(. + {within_cap: (([.fp] | inside($capped))) })
+  # IN(), not [x] | inside(y) — jq inside() on strings is substring
+  # containment, not array-element equality: `["fp"] | inside(["fp-2"])` is
+  # true. A base fingerprint would then read as "within cap" whenever an
+  # unrelated ordinal-suffixed sibling fp happened to be capped.
+  map(. + {within_cap: (.fp | IN($capped[]))})
 ' <<< "$ALL_FINDINGS")"
 
-# --- List existing owned threads (GraphQL, paginated) ---
+# --- List existing owned threads (GraphQL, paginated) — enforce mode only.
+# advisory/off never read OWNED (advisory's branch below doesn't touch it,
+# and loop 2 is already enforce-gated), so a transient GraphQL failure here
+# must not cost the review that mode already computed and is about to post
+# (dot-github#50 gmr finding R3: this used to run unconditionally and abort
+# the whole job on any listing hiccup, in the mode that ships wired live). ---
+OWNED='[]'
+if [ "$PRT_MODE" = enforce ]; then
 # shellcheck disable=SC2016  # $owner/$repo/$pr/$cursor are GraphQL variable
 # references, resolved server-side from the `variables` JSON object built
 # below via jq -n — they must NOT be shell-expanded here.
@@ -209,10 +220,25 @@ query($owner:String!, $repo:String!, $pr:Int!, $cursor:String) {
           isResolved
           isOutdated
           resolvedBy { login }
+          viewerCanResolve
+          viewerCanUnresolve
           comments(first:50) {
+            pageInfo { hasNextPage endCursor }
             nodes { id databaseId body author { login } }
           }
         }
+      }
+    }
+  }
+}'
+# shellcheck disable=SC2016
+comment_page_query='
+query($id:ID!, $cursor:String) {
+  node(id:$id) {
+    ... on PullRequestReviewThread {
+      comments(first:50, after:$cursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes { id databaseId body author { login } }
       }
     }
   }
@@ -234,6 +260,34 @@ while :; do
   cursor="$(jq -c '.pageInfo.endCursor' <<< "$page")"
 done
 
+# Comment pagination: a thread with more than 50 comments hides any human
+# reply past the 50th from the (first:50) page above — the absence loop
+# would then treat an actively-discussed thread as unmatched and eligible
+# for auto-resolve (dot-github#50 gmr finding C4). Fetch the rest, per
+# thread, only for threads that actually need it.
+if [ "$list_failed" != 1 ]; then
+  n_threads_pg="$(jq 'length' <<< "$THREADS")"
+  for ((tpi = 0; tpi < n_threads_pg; tpi++)); do
+    th_pg="$(jq -c ".[$tpi]" <<< "$THREADS")"
+    has_more="$(jq -r '.comments.pageInfo.hasNextPage // false' <<< "$th_pg")"
+    [ "$has_more" = true ] || continue
+    tcursor="$(jq -c '.comments.pageInfo.endCursor' <<< "$th_pg")"
+    tid_pg="$(jq -r '.id' <<< "$th_pg")"
+    extra_nodes='[]'
+    while :; do
+      cvars="$(jq -n --arg id "$tid_pg" --argjson cursor "$tcursor" '{id:$id, cursor:$cursor}')"
+      cdata="$(prt_gh_graphql "$comment_page_query" "$cvars")" || { list_failed=1; break; }
+      cpage="$(jq -c '.node.comments' <<< "$cdata")"
+      extra_nodes="$(jq -c -n --argjson a "$extra_nodes" --argjson b "$(jq -c '.nodes' <<< "$cpage")" '$a + $b')"
+      chas_next="$(jq -r '.pageInfo.hasNextPage' <<< "$cpage")"
+      [ "$chas_next" = true ] || break
+      tcursor="$(jq -c '.pageInfo.endCursor' <<< "$cpage")"
+    done
+    [ "$list_failed" = 1 ] && break
+    THREADS="$(jq -c --argjson i "$tpi" --argjson extra "$extra_nodes" '.[$i].comments.nodes += $extra' <<< "$THREADS")"
+  done
+fi
+
 if [ "$list_failed" = 1 ]; then
   echo "ERROR: failed to list review threads; aborting before any write." >&2
   prt_mark_incomplete "GraphQL reviewThreads listing failed"
@@ -244,8 +298,15 @@ if [ "$list_failed" = 1 ]; then
 fi
 
 # Ownership = marker on first comment AND that comment's author is the bot.
+# GraphQL's Bot.login omits the REST "[bot]" suffix PRT_BOT_LOGIN is
+# documented and wired with (e.g. "github-actions[bot]" vs "github-actions",
+# proven against a live comment — dot-github#50 gmr finding R1); strip it
+# before comparing against a GraphQL-sourced login. A caller wiring a plain
+# user login (no "[bot]" suffix) is unaffected — stripping a suffix that
+# isn't present is a no-op.
+PRT_BOT_LOGIN_GQL="${PRT_BOT_LOGIN%\[bot\]}"
+
 # Build a lookup: fp -> {thread_id, resolved, resolved_by_bot, first_comment_id, has_human_reply}
-OWNED='[]'
 n_threads="$(jq 'length' <<< "$THREADS")"
 for ((ti = 0; ti < n_threads; ti++)); do
   th="$(jq -c ".[$ti]" <<< "$THREADS")"
@@ -253,7 +314,7 @@ for ((ti = 0; ti < n_threads; ti++)); do
   [ -n "$first_comment" ] || continue
   first_author="$(jq -r '.author.login // empty' <<< "$first_comment")"
   first_body="$(jq -r '.body' <<< "$first_comment")"
-  [ "$first_author" = "$PRT_BOT_LOGIN" ] || continue
+  [ "$first_author" = "$PRT_BOT_LOGIN_GQL" ] || continue
   parsed="$(prt_marker_parse "$first_body")" || continue
   fp="$(cut -f1 <<< "$parsed")"
   collision="$(cut -f2 <<< "$parsed")"
@@ -266,7 +327,7 @@ for ((ti = 0; ti < n_threads; ti++)); do
   # thread is treated as human-resolved, never reopened. Costs a missed
   # reopen, never a wrong one.
   resolved_by_bot=false
-  [ "$is_resolved" = true ] && [ "$resolved_by" = "$PRT_BOT_LOGIN" ] && resolved_by_bot=true
+  [ "$is_resolved" = true ] && [ "$resolved_by" = "$PRT_BOT_LOGIN_GQL" ] && resolved_by_bot=true
 
   has_human_reply=false
   n_comments="$(jq -c '.comments.nodes | length' <<< "$th")"
@@ -278,16 +339,21 @@ for ((ti = 0; ti < n_threads; ti++)); do
   first_comment_id="$(jq -r '.id' <<< "$first_comment")"
   first_comment_db_id="$(jq -r '.databaseId' <<< "$first_comment")"
   thread_id="$(jq -r '.id' <<< "$th")"
+  viewer_can_resolve="$(jq -r '.viewerCanResolve' <<< "$th")"
+  viewer_can_unresolve="$(jq -r '.viewerCanUnresolve' <<< "$th")"
 
   OWNED="$(jq -c -n --argjson a "$OWNED" \
     --arg fp "$fp" --arg collision "$collision" --arg fas "$first_absent_sha" \
     --arg resolved "$is_resolved" --arg rbb "$resolved_by_bot" --arg hhr "$has_human_reply" \
     --arg tid "$thread_id" --arg fcid "$first_comment_id" --arg fcdbid "$first_comment_db_id" \
+    --arg vcr "$viewer_can_resolve" --arg vcu "$viewer_can_unresolve" \
     '$a + [{fp:$fp, collision:($collision=="true"), first_absent_sha:$fas,
             resolved:($resolved=="true"), resolved_by_bot:($rbb=="true"),
             has_human_reply:($hhr=="true"), thread_id:$tid,
-            first_comment_id:$fcid, first_comment_db_id:$fcdbid}]')"
+            first_comment_id:$fcid, first_comment_db_id:$fcdbid,
+            viewer_can_resolve:($vcr=="true"), viewer_can_unresolve:($vcu=="true")}]')"
 done
+fi # PRT_MODE = enforce
 
 # ============================= LOOP 1: findings =============================
 # Evaluates every finding this run produced to completion (successes and
@@ -302,8 +368,12 @@ if [ "$PRT_MODE" = advisory ]; then
   advisory_findings="$(jq -c '[.[] | select(.verdict != "FALSE_POSITIVE")]' <<< "$ALL_FINDINGS")"
   body="$(prt_render_advisory_comment "$advisory_findings")"
   payload="$(jq -n --arg b "$body" '{body:$b}')"
-  prt_gh_rest POST "/repos/${PRT_REPO}/issues/${PRT_PR_NUMBER}/comments" "$payload" >/dev/null || \
-    echo "WARNING: failed to post advisory comment" >&2
+  if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
+    prt_gh_rest POST "/repos/${PRT_REPO}/issues/${PRT_PR_NUMBER}/comments" "$payload" >/dev/null || \
+      echo "WARNING: failed to post advisory comment" >&2
+  else
+    prt_mark_incomplete "stale head SHA, skipped advisory comment"
+  fi
 else
   n_findings="$(jq 'length' <<< "$ALL_FINDINGS")"
   for ((fi = 0; fi < n_findings; fi++)); do
@@ -320,6 +390,39 @@ else
       thread_resolved="$(jq -r '.resolved' <<< "$owned_match")"
       resolved_by_bot="$(jq -r '.resolved_by_bot' <<< "$owned_match")"
       MATCHED_FPS="$(jq -c --arg fp "$fp" '. + [$fp]' <<< "$MATCHED_FPS")"
+
+      # Collision quarantine must be durable the moment multiplicity is
+      # detected, even against a thread that predates the collision and is
+      # therefore still marked collision=false — prt_decide_finding's row 1
+      # returns NONE unconditionally for a colliding finding, so without
+      # this write the thread's own marker would never learn it's
+      # quarantined, and a later run reverting to a single finding on this
+      # fp_base would silently resume normal reconcile/resolve/reopen
+      # against what is actually an ambiguous identity (dot-github#50 gmr
+      # finding C5).
+      if [ "$collision" = true ]; then
+        owned_collision="$(jq -r '.collision' <<< "$owned_match")"
+        if [ "$owned_collision" != true ]; then
+          if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
+            db_id="$(jq -r '.first_comment_db_id' <<< "$owned_match")"
+            cur_resp="$(prt_gh_rest GET "/repos/${PRT_REPO}/pulls/comments/${db_id}")"
+            cur_body="$(jq -r '.body // empty' <<< "${cur_resp:-}" 2>/dev/null || true)"
+            if [ -n "$cur_body" ]; then
+              fas="$(jq -r '.first_absent_sha' <<< "$owned_match")"
+              [ "$fas" = null ] && fas=""
+              new_marker="$(prt_marker_build "$fp" "true" "$fas")"
+              new_body="$(prt_marker_replace "$cur_body" "$new_marker")"
+              prt_retry 3 prt_gh_rest PATCH "/repos/${PRT_REPO}/pulls/comments/${db_id}" \
+                "$(jq -n --arg b "$new_body" '{body:$b}')" >/dev/null || \
+                prt_mark_incomplete "fp=$fp: persisting collision=true onto existing thread failed after 3 retries"
+            else
+              prt_mark_incomplete "fp=$fp: GET before collision-marker persist failed or returned empty body, skipped"
+            fi
+          else
+            prt_mark_incomplete "fp=$fp: stale head SHA, skipped collision-marker persist"
+          fi
+        fi
+      fi
     fi
 
     action="$(prt_decide_finding "$collision" "$verdict" "$thread_exists" "$thread_resolved" "$resolved_by_bot" "$within_cap")"
@@ -330,29 +433,59 @@ else
       OVERFLOW) OVERFLOW="$(jq -c --argjson f "$f" '. + [$f]' <<< "$OVERFLOW")" ;;
       REPLY_RESOLVE)
         prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA" || { prt_mark_incomplete "fp=$fp: stale head SHA, skipped reply+resolve"; continue; }
-        reasoning="$(jq -r '.reasoning // "no reasoning provided"' <<< "$f")"
-        reply="$(prt_render_reply_false_positive "$reasoning")"
-        db_id="$(jq -r '.first_comment_db_id' <<< "$owned_match")"
+        can_resolve="$(jq -r '.viewer_can_resolve' <<< "$owned_match")"
+        if [ "$can_resolve" != true ]; then
+          prt_mark_incomplete "fp=$fp: viewerCanResolve=false, skipping resolve"
+          continue
+        fi
         thread_id="$(jq -r '.thread_id' <<< "$owned_match")"
-        reply_payload="$(jq -n --arg b "$reply" --argjson r "$db_id" '{body:$b, in_reply_to:$r}')"
-        if prt_gh_rest POST "/repos/${PRT_REPO}/pulls/${PRT_PR_NUMBER}/comments" "$reply_payload" >/dev/null; then
-          mut="mutation(\$id:ID!){resolveReviewThread(input:{threadId:\$id}){thread{id}}}"
-          prt_gh_graphql "$mut" "$(jq -n --arg id "$thread_id" '{id:$id}')" >/dev/null || prt_mark_incomplete "fp=$fp: resolveReviewThread failed after reply"
+        db_id="$(jq -r '.first_comment_db_id' <<< "$owned_match")"
+        # Mutate first, reply only on success — reversing the naive
+        # reply-then-mutate order. A resolve/unresolve failure (permission
+        # gap, transient 5xx, secondary rate limit) previously left an
+        # explanatory reply attached to a thread that stayed unresolved and
+        # merge-blocking; the next run's decision table re-derives the same
+        # REPLY_RESOLVE action with no memory that a reply was already sent,
+        # so every subsequent run posted another identical reply forever
+        # (dot-github#50 gmr finding R2). Mutating first means a failure
+        # costs one skipped, retryable reply next run — not an unbounded
+        # spam loop on a thread that never closes.
+        mut="mutation(\$id:ID!){resolveReviewThread(input:{threadId:\$id}){thread{id}}}"
+        if prt_gh_graphql "$mut" "$(jq -n --arg id "$thread_id" '{id:$id}')" >/dev/null; then
+          if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
+            reasoning="$(jq -r '.reasoning // "no reasoning provided"' <<< "$f")"
+            reply="$(prt_render_reply_false_positive "$reasoning")"
+            reply_payload="$(jq -n --arg b "$reply" --argjson r "$db_id" '{body:$b, in_reply_to:$r}')"
+            prt_gh_rest POST "/repos/${PRT_REPO}/pulls/${PRT_PR_NUMBER}/comments" "$reply_payload" >/dev/null || \
+              prt_mark_incomplete "fp=$fp: resolveReviewThread succeeded but the explanatory reply failed"
+          else
+            prt_mark_incomplete "fp=$fp: resolveReviewThread succeeded but head SHA went stale before the reply"
+          fi
         else
-          prt_mark_incomplete "fp=$fp: reply (FALSE POSITIVE) failed, resolve skipped"
+          prt_mark_incomplete "fp=$fp: resolveReviewThread (FALSE POSITIVE) failed, reply skipped to avoid a duplicate on retry"
         fi
         ;;
       REPLY_UNRESOLVE)
         prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA" || { prt_mark_incomplete "fp=$fp: stale head SHA, skipped reply+unresolve"; continue; }
-        reply="$(prt_render_reply_recurrence)"
-        db_id="$(jq -r '.first_comment_db_id' <<< "$owned_match")"
+        can_unresolve="$(jq -r '.viewer_can_unresolve' <<< "$owned_match")"
+        if [ "$can_unresolve" != true ]; then
+          prt_mark_incomplete "fp=$fp: viewerCanUnresolve=false, skipping unresolve"
+          continue
+        fi
         thread_id="$(jq -r '.thread_id' <<< "$owned_match")"
-        reply_payload="$(jq -n --arg b "$reply" --argjson r "$db_id" '{body:$b, in_reply_to:$r}')"
-        if prt_gh_rest POST "/repos/${PRT_REPO}/pulls/${PRT_PR_NUMBER}/comments" "$reply_payload" >/dev/null; then
-          mut="mutation(\$id:ID!){unresolveReviewThread(input:{threadId:\$id}){thread{id}}}"
-          prt_gh_graphql "$mut" "$(jq -n --arg id "$thread_id" '{id:$id}')" >/dev/null || prt_mark_incomplete "fp=$fp: unresolveReviewThread failed after reply"
+        db_id="$(jq -r '.first_comment_db_id' <<< "$owned_match")"
+        mut="mutation(\$id:ID!){unresolveReviewThread(input:{threadId:\$id}){thread{id}}}"
+        if prt_gh_graphql "$mut" "$(jq -n --arg id "$thread_id" '{id:$id}')" >/dev/null; then
+          if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
+            reply="$(prt_render_reply_recurrence)"
+            reply_payload="$(jq -n --arg b "$reply" --argjson r "$db_id" '{body:$b, in_reply_to:$r}')"
+            prt_gh_rest POST "/repos/${PRT_REPO}/pulls/${PRT_PR_NUMBER}/comments" "$reply_payload" >/dev/null || \
+              prt_mark_incomplete "fp=$fp: unresolveReviewThread succeeded but the explanatory reply failed"
+          else
+            prt_mark_incomplete "fp=$fp: unresolveReviewThread succeeded but head SHA went stale before the reply"
+          fi
         else
-          prt_mark_incomplete "fp=$fp: recurrence reply failed, unresolve skipped"
+          prt_mark_incomplete "fp=$fp: unresolveReviewThread failed, reply skipped to avoid a duplicate on retry"
         fi
         ;;
       CREATE)
@@ -401,7 +534,9 @@ if [ "$PRT_MODE" = enforce ]; then
   for ((oi = 0; oi < n_owned; oi++)); do
     th="$(jq -c ".[$oi]" <<< "$OWNED")"
     fp="$(jq -r '.fp' <<< "$th")"
-    already_matched="$(jq --arg fp "$fp" '([$fp] | inside(.))' <<< "$MATCHED_FPS")"
+    # IN(), not [x] | inside(y) — see the within_cap comment above; same
+    # substring-vs-exact-match trap for the same collision-ordinal fp shapes.
+    already_matched="$(jq --arg fp "$fp" '. as $arr | $fp | IN($arr[])' <<< "$MATCHED_FPS")"
     [ "$already_matched" = true ] && continue
 
     collision="$(jq -r '.collision' <<< "$th")"
@@ -427,6 +562,8 @@ if [ "$PRT_MODE" = enforce ]; then
     action="$(prt_decide_absent "$collision" "$has_human_reply" "$thread_resolved" \
       "$first_absent_sha" "$PRT_HEAD_SHA" "$incomplete_now" "$unanswered_maint_failure")"
 
+    viewer_can_resolve="$(jq -r '.viewer_can_resolve' <<< "$th")"
+
     case "$action" in
       NONE) : ;;
       SET_FIRST_ABSENT)
@@ -434,7 +571,19 @@ if [ "$PRT_MODE" = enforce ]; then
         new_marker="$(prt_marker_build "$fp" "$collision" "$PRT_HEAD_SHA")"
         # first_comment_id currently unused here (body comes from a fresh
         # GET so prt_marker_replace preserves the finding text exactly).
-        cur_body="$(prt_gh_rest GET "/repos/${PRT_REPO}/pulls/comments/${first_comment_db_id}" | jq -r '.body')"
+        # The GET's own success/non-empty-body is checked before ever
+        # calling prt_marker_replace: an unchecked failure fed an empty
+        # cur_body into prt_marker_replace's no-marker fallback, which
+        # returns just the marker, and the PATCH that follows then
+        # overwrote the whole finding comment down to that one line — the
+        # exact blind-overwrite bug the marker module exists to prevent
+        # (dot-github#50 gmr finding C2).
+        cur_resp="$(prt_gh_rest GET "/repos/${PRT_REPO}/pulls/comments/${first_comment_db_id}")"
+        cur_body="$(jq -r '.body // empty' <<< "${cur_resp:-}" 2>/dev/null || true)"
+        if [ -z "$cur_body" ]; then
+          prt_mark_incomplete "fp=$fp: GET before setting first_absent_sha failed or returned empty body, skipped"
+          continue
+        fi
         new_body="$(prt_marker_replace "$cur_body" "$new_marker")"
         if ! prt_retry 3 prt_gh_rest PATCH "/repos/${PRT_REPO}/pulls/comments/${first_comment_db_id}" \
              "$(jq -n --arg b "$new_body" '{body:$b}')" >/dev/null; then
@@ -442,8 +591,14 @@ if [ "$PRT_MODE" = enforce ]; then
         fi
         ;;
       CLEAR_MARKER)
+        prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA" || { prt_mark_incomplete "fp=$fp: stale head SHA, skipped marker clear"; continue; }
         new_marker="$(prt_marker_build "$fp" "$collision" "")"
-        cur_body="$(prt_gh_rest GET "/repos/${PRT_REPO}/pulls/comments/${first_comment_db_id}" | jq -r '.body')"
+        cur_resp="$(prt_gh_rest GET "/repos/${PRT_REPO}/pulls/comments/${first_comment_db_id}")"
+        cur_body="$(jq -r '.body // empty' <<< "${cur_resp:-}" 2>/dev/null || true)"
+        if [ -z "$cur_body" ]; then
+          prt_mark_incomplete "fp=$fp: GET before clearing marker failed or returned empty body, skipped"
+          continue
+        fi
         new_body="$(prt_marker_replace "$cur_body" "$new_marker")"
         if ! prt_retry 3 prt_gh_rest PATCH "/repos/${PRT_REPO}/pulls/comments/${first_comment_db_id}" \
              "$(jq -n --arg b "$new_body" '{body:$b}')" >/dev/null; then
@@ -454,14 +609,26 @@ if [ "$PRT_MODE" = enforce ]; then
         ;;
       REPLY_RESOLVE)
         prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA" || continue
-        reply="$(prt_render_reply_absent_resolved)"
-        if prt_gh_rest POST "/repos/${PRT_REPO}/pulls/${PRT_PR_NUMBER}/comments" \
-             "$(jq -n --arg b "$reply" --argjson r "$first_comment_db_id" '{body:$b, in_reply_to:$r}')" >/dev/null; then
-          mut="mutation(\$id:ID!){resolveReviewThread(input:{threadId:\$id}){thread{id}}}"
-          prt_gh_graphql "$mut" "$(jq -n --arg id "$thread_id" '{id:$id}')" >/dev/null || \
-            prt_mark_incomplete "fp=$fp: absence resolveReviewThread failed after reply"
+        if [ "$viewer_can_resolve" != true ]; then
+          prt_mark_incomplete "fp=$fp: viewerCanResolve=false, skipping absence auto-close"
+          continue
+        fi
+        # Mutate first, reply only on success — same reasoning as loop 1's
+        # REPLY_RESOLVE (dot-github#50 gmr finding R2): a resolve failure
+        # must not leave an "resolving automatically" reply glued to a
+        # thread that stays open, or every later run repeats the reply.
+        mut="mutation(\$id:ID!){resolveReviewThread(input:{threadId:\$id}){thread{id}}}"
+        if prt_gh_graphql "$mut" "$(jq -n --arg id "$thread_id" '{id:$id}')" >/dev/null; then
+          if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
+            reply="$(prt_render_reply_absent_resolved)"
+            prt_gh_rest POST "/repos/${PRT_REPO}/pulls/${PRT_PR_NUMBER}/comments" \
+              "$(jq -n --arg b "$reply" --argjson r "$first_comment_db_id" '{body:$b, in_reply_to:$r}')" >/dev/null || \
+              prt_mark_incomplete "fp=$fp: absence resolveReviewThread succeeded but the explanatory reply failed"
+          else
+            prt_mark_incomplete "fp=$fp: absence resolveReviewThread succeeded but head SHA went stale before the reply"
+          fi
         else
-          prt_mark_incomplete "fp=$fp: absence auto-close reply failed, resolve skipped"
+          prt_mark_incomplete "fp=$fp: absence resolveReviewThread failed, reply skipped to avoid a duplicate on retry"
         fi
         ;;
     esac
@@ -470,10 +637,14 @@ fi
 
 # --- Overflow / advisory output, summary ---
 if [ "$PRT_MODE" = enforce ] && [ "$(jq 'length' <<< "$OVERFLOW")" -gt 0 ]; then
-  overflow_body="$(prt_render_overflow_comment "$OVERFLOW")"
-  prt_gh_rest POST "/repos/${PRT_REPO}/issues/${PRT_PR_NUMBER}/comments" \
-    "$(jq -n --arg b "$overflow_body" '{body:$b}')" >/dev/null || \
-    echo "WARNING: failed to post overflow comment" >&2
+  if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
+    overflow_body="$(prt_render_overflow_comment "$OVERFLOW")"
+    prt_gh_rest POST "/repos/${PRT_REPO}/issues/${PRT_PR_NUMBER}/comments" \
+      "$(jq -n --arg b "$overflow_body" '{body:$b}')" >/dev/null || \
+      echo "WARNING: failed to post overflow comment" >&2
+  else
+    prt_mark_incomplete "stale head SHA, skipped overflow comment"
+  fi
 fi
 
 {

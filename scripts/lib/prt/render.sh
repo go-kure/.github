@@ -94,7 +94,10 @@ prt_render_summary() {
     if [ "$(jq 'length' <<< "$findings")" -gt 0 ]; then
       printf '| fp | Severity | Category | File | Verdict | Action |\n'
       printf '|----|----------|----------|------|---------|--------|\n'
-      jq -r '.[] | "| `\(.fp)` | \(.severity) | \(.category) | \(.file) | \(.verdict // "n/a") | \(.action // "n/a") |"' <<< "$findings"
+      jq -r '
+        def esc: tostring | gsub("\r\n"; " ") | gsub("[\n\r]"; " ") | gsub("\\|"; "\\|");
+        .[] | "| `\(.fp)` | \(.severity|esc) | \(.category|esc) | \(.file|esc) | \((.verdict // "n/a")|esc) | \((.action // "n/a")|esc) |"
+      ' <<< "$findings"
     fi
     if [ -n "$incomplete_reasons" ]; then
       printf '\n### REVIEW_INCOMPLETE\n\n'
@@ -117,7 +120,10 @@ prt_render_overflow_comment() {
     printf 'but are worth a look:\n\n'
     printf '| Severity | Category | File | Issue |\n'
     printf '|----------|----------|------|-------|\n'
-    jq -r '.[] | "| \(.severity) | \(.category) | \(.file) | \(.issue) |"' <<< "$findings"
+    jq -r '
+      def esc: tostring | gsub("\r\n"; " ") | gsub("[\n\r]"; " ") | gsub("\\|"; "\\|");
+      .[] | "| \(.severity|esc) | \(.category|esc) | \(.file|esc) | \(.issue|esc) |"
+    ' <<< "$findings"
     printf '\n---\n*Automated review — advisory only, not merge-gating.*\n'
   }
 }
@@ -136,7 +142,15 @@ prt_render_advisory_comment() {
     else
       printf '| Severity | Category | File | Issue | Fix |\n'
       printf '|----------|----------|------|-------|-----|\n'
-      jq -r '.[] | "| \(.severity) | \(.category) | \(.file) | \(.issue) | \(.fix) |"' <<< "$findings"
+      # A `|` or embedded newline in model-generated issue/fix text breaks
+      # table structure — a bare `|` adds a phantom column, and a `\n` ends
+      # the row outright, dropping every finding after it into loose prose
+      # (dot-github#50 gmr findings C7/R4, folded into one shared escape
+      # here since both defects live in the exact same interpolation).
+      jq -r '
+        def esc: tostring | gsub("\r\n"; " ") | gsub("[\n\r]"; " ") | gsub("\\|"; "\\|");
+        .[] | "| \(.severity|esc) | \(.category|esc) | \(.file|esc) | \(.issue|esc) | \(.fix|esc) |"
+      ' <<< "$findings"
     fi
     printf '\n---\n*Automated review — advisory only (PR_REVIEW_THREADS_MODE=advisory). '
     printf 'No threads were created or resolved.*\n'

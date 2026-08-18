@@ -218,7 +218,13 @@ prt_join_assessment() {
         | $f + {verdict: $v.verdict, reasoning: $v.reasoning}
       ) as $matched
     | ($matched | map(.fp)) as $matched_fps
-    | ($findings | map(select(([.fp] | inside($matched_fps)) | not) + {verdict: null, reasoning: null})) as $unmatched
+    # IN(), not [x] | inside(y): inside() on strings is substring
+    # containment, so a base fp (e.g. "abcd1234") reads as already-matched
+    # whenever an unrelated ordinal-suffixed sibling ("abcd1234-2") is in
+    # $matched_fps. Wrongly excludes that finding from $unmatched, and since
+    # it was never in $matched either (no exact verdict row matched it),
+    # this silently dropped the finding from the joined output entirely.
+    | ($findings | map(select((.fp | IN($matched_fps[])) | not) + {verdict: null, reasoning: null})) as $unmatched
     | $matched + $unmatched
   ' <<< "$findings_json" 2>/dev/null || jq -c '.' <<< "$findings_json"
 }
