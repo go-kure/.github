@@ -119,11 +119,11 @@ reasons are also rendered as their own section in the job summary (`render.sh:10
 checked at exit: a non-empty `REVIEW_INCOMPLETE` state makes the top-level script print every
 reason to stderr (prefixed `  - `) and as capped `::error title=...::` workflow annotations
 (escaped via `prt_annotation_escape`, `state.sh`), then exit 1 instead of 0
-(`pr-review-threads.sh:785-793`) — "the review could not run to completion" is now distinguishable
+(`pr-review-threads.sh:826-835`) — "the review could not run to completion" is now distinguishable
 from "the review ran and found nothing" by exit code *and* job-log output, not only by a human
 reading the summary by hand.
 
-The model-review call (`prt_model_review`, `model.sh:181-197`) gets one bounded retry — not
+The model-review call (`prt_model_review`, `model.sh:181-199`) gets one bounded retry — not
 `prt_retry`'s usual 3, each call already costs 40-60s against the job's `timeout-minutes: 20`
 budget — when the response fails the `jq -c '.'` parse
 (`pr-review-threads.sh:214-256`), with a salvage attempt interposed ahead of that retry:
