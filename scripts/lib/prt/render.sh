@@ -128,15 +128,26 @@ prt_render_overflow_comment() {
   }
 }
 
-# prt_render_advisory_comment FINDINGS_JSON — used in `advisory` mode, where
-# NO thread is ever created; this single comment carries the merged
-# review+assessment table, matching today's plain-comment behavior exactly.
+# prt_render_advisory_comment FINDINGS_JSON [INCOMPLETE_REASONS] — used in
+# `advisory` mode, where NO thread is ever created; this single comment
+# carries the merged review+assessment table, matching today's plain-comment
+# behavior exactly. INCOMPLETE_REASONS, when non-empty, is rendered as a
+# visible warning banner — advisory is the only live-wired mode, so if every
+# chunk's model call failed the empty findings list must not read as a clean
+# "No issues found." on the review's own output surface, with the failure
+# visible only in $GITHUB_STEP_SUMMARY (dot-github#50 gmr finding B4).
 prt_render_advisory_comment() {
-  local findings="$1"
+  local findings="$1" incomplete_reasons="${2:-}"
   local count
   count="$(jq 'length' <<< "$findings")"
   {
     printf '## AI Code Review (advisory mode — %s finding(s))\n\n' "$count"
+    if [ -n "$incomplete_reasons" ]; then
+      printf '> **⚠ This review run was incomplete** — some or all chunks failed to review.'
+      printf ' The finding count/table below reflects only what succeeded; it is not a clean bill of health.\n'
+      printf '%s\n' "$incomplete_reasons" | sed 's/^/> - /'
+      printf '\n'
+    fi
     if [ "$count" -eq 0 ]; then
       printf 'No issues found.\n'
     else
