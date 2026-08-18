@@ -10,7 +10,9 @@ name: Probe kure-bot token resolve capability
 # Prints only booleans/IDs to the job summary — never secret material.
 
 on:
-  workflow_dispatch: {}
+  push:
+    branches:
+      - probe/kure-bot-token-check
 
 permissions:
   contents: write
