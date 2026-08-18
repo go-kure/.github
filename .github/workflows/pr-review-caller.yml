@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   pr-review:
-    uses: go-kure/.github/.github/workflows/pr-review.yml@main
+    uses: go-kure/.github/.github/workflows/pr-review.yml@spike/68-pat-live-accept
     with:
       pr_review_context: "Shared GitHub Actions reusable workflows for the go-kure organization."
     secrets: inherit

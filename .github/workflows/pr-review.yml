@@ -124,12 +124,12 @@ jobs:
       - name: Run PR review threads
         uses: go-kure/.github/.github/actions/pr-review-threads@11c1fa61291d9e829df13c915e60a12c5887f1ef # go-kure/.github#60/#61 (#64) pin-bump PR2 — see docs/standards.md "GitHub Actions pinning"
         with:
-          github-token: ${{ github.token }}
+          github-token: ${{ secrets.KURE_BOT_PAT || github.token }}
           pr-number: ${{ github.event.pull_request.number }}
           head-sha: ${{ github.event.pull_request.head.sha }}
           mode: ${{ vars.PR_REVIEW_THREADS_MODE || env.PR_REVIEW_THREADS_MODE }}
           proxy-url: ${{ env.CCPROXY_URL }}
-          bot-login: "github-actions[bot]"
+          bot-login: ${{ secrets.KURE_BOT_PAT != '' && 'kure-bot' || 'github-actions[bot]' }}
           model: ${{ env.PR_REVIEW_MODEL }}
           max-tokens: ${{ env.PR_REVIEW_MAX_TOKENS }}
           assess-model: ${{ env.PR_REVIEW_ASSESS_MODEL }}
