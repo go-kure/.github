@@ -115,10 +115,20 @@ prt_gh_graphql() {
 prt_freshness_check() {
   local repo="$1" pr_number="$2" expected_sha="$3"
   local body live_sha
-  body="$(prt_gh_rest GET "/repos/${repo}/pulls/${pr_number}")" || return 1
+  body="$(prt_gh_rest GET "/repos/${repo}/pulls/${pr_number}")" || {
+    echo "prt_freshness_check: failed to read PR ${repo}#${pr_number} (see prt_gh_rest error above)" >&2
+    return 1
+  }
   live_sha="$(jq -r '.head.sha // empty' <<< "$body" 2>/dev/null || true)"
-  [ -n "$live_sha" ] || return 1
-  [ "$live_sha" = "$expected_sha" ]
+  if [ -z "$live_sha" ]; then
+    echo "prt_freshness_check: PR ${repo}#${pr_number} response had no .head.sha" >&2
+    return 1
+  fi
+  if [ "$live_sha" != "$expected_sha" ]; then
+    echo "prt_freshness_check: head moved: $expected_sha -> $live_sha" >&2
+    return 1
+  fi
+  return 0
 }
 
 # prt_gh_rest_fresh METHOD REPO PR_NUMBER EXPECTED_SHA PATH [DATA_JSON] —
