@@ -431,10 +431,17 @@ for ((ti = 0; ti < n_threads; ti++)); do
 
   is_resolved="$(jq -r '.isResolved' <<< "$th")"
   resolved_by="$(jq -r '.resolvedBy.login // empty' <<< "$th")"
-  # Fail-closed on the resolvedBy:User vs Actions-token-is-a-Bot ambiguity
-  # (V6, unverified until a live spike): a null resolvedBy on a resolved
-  # thread is treated as human-resolved, never reopened. Costs a missed
-  # reopen, never a wrong one.
+  # Fail-closed on the resolvedBy:User vs Actions-token-is-a-Bot ambiguity:
+  # a null resolvedBy on a resolved thread is treated as human-resolved,
+  # never reopened. Costs a missed reopen, never a wrong one.
+  #
+  # V6 (live spike, 2026-08-18, go-kure/.github#66): this branch is currently
+  # unreachable in production. The default GITHUB_TOKEN the workflow runs as
+  # reports viewerCanResolve:false on threads it created itself, so the
+  # resolveReviewThread mutation below (see the REPLY_RESOLVE path) never
+  # fires and resolved_by_bot never becomes true via automatic resolution —
+  # every gating thread needs a human to resolve it, even when the finding
+  # is genuinely fixed. See docs/pr-review-threads-live-findings.md V6.
   resolved_by_bot=false
   [ "$is_resolved" = true ] && [ "$resolved_by" = "$PRT_BOT_LOGIN_GQL" ] && resolved_by_bot=true
 
