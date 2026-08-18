@@ -372,96 +372,12 @@ fi # PRT_MODE = enforce
 
 # --- PR-wide severity cap: bound the number of gating (currently open, or
 # about to become open/reopened) review threads to PRT_MAX_FINDINGS_TOTAL.
-#
-# Rewritten in iteration 6 (dot-github#50 gmr finding iter6-codex#1) after 3
-# successive narrower fixes each left a gap. The root cause common to all of
-# them: reconcile.sh's WITHIN_CAP argument is read ONLY in prt_decide_finding's
-# thread_exists=false branch (row 4) — rows 1, 5, 6, 7 never consult it. So an
-# OWNED-matched finding never needs to WIN a rank slot; it only needs its
-# thread's fate (stays open / stays resolved / reopens) counted against the
-# budget BEFORE any row-4 candidate is allowed to compete for what's left.
-# Ranking existing threads (every prior version of this block did that, by
-# excluding some fp set from GATING_ELIGIBLE) is provably insufficient: a
-# reserved thread that ranks outside the top N still stays gating (rows
-# 1-open/5/7 ignore rank), so it silently stopped reserving anything the
-# moment cap-worth of higher-priority candidates existed — confirmed by two
-# independent counterexamples: (a) severity reordering across reruns can
-# rank an already-gating thread below new candidates even with an unchanged
-# finding set, and (b) a persisted open collision thread (previously
-# excluded from ranking entirely, unconditionally) never reserved a slot at
-# all. Fix: compute RESERVED_COUNT by walking OWNED (every currently-known
-# bot thread, matched or not against this run's findings) and asking "does
-# prt_decide_finding's outcome for this thread leave it gating after this
-# run?" — mirroring reconcile.sh's own row order, not approximating it via
-# rank. "Gating" below means the intended terminal outcome of that row, not
-# a guarantee the mutation behind it succeeds (a failed REPLY_RESOLVE/
-# REPLY_UNRESOLVE leaves a thread reserved-as-non-gating or vice versa for
-# this run only; it self-heals next run via REVIEW_INCOMPLETE and the
-# freshness gate, dot-github#50 gmr finding N2-iter6):
-#   thread absent from this run's findings -> gating iff currently open
-#     (approximation, safe in the over-reserving direction only: a thread
-#     already on its SECOND consecutive absence this run resolves via row
-#     10/REPLY_RESOLVE and stops gating, but first_absent_sha persists
-#     across runs in the marker so that can't be told apart here from a
-#     first-ever absence without re-deriving loop 2's own state; treating
-#     both as still-gating can only under-utilize the cap for this one run,
-#     never exceed it, dot-github#50 gmr finding N1-iter6)
-#   effective collision (this run's or persisted)      -> row 1: gating iff open
-#   verdict FALSE_POSITIVE                              -> row 2/3: never gating
-#     (already resolved, or about to become resolved via REPLY_RESOLVE)
-#   currently open (non-collision, non-FALSE_POSITIVE)  -> row 5: gating
-#   currently resolved, resolved_by_bot                 -> row 7: gating (reopens)
-#   currently resolved, not by bot                       -> row 6: never gating
-# Only genuinely NEW findings (no OWNED match at all) ever need a rank slot —
-# they're the only candidates row 4 can CREATE — so GATING_ELIGIBLE is now
-# restricted to exactly that set, and REMAINING_SLOTS = max(0, N -
-# RESERVED_COUNT) bounds how many of them can be within_cap. Re-derived by
-# hand: 12 findings, cap 5, nothing fixed between reruns -> run 1 creates 5
-# (RESERVED_COUNT=0, 5 of 12 new candidates ranked in); run 2, same or
-# reordered severities -> RESERVED_COUNT=5 (the 5 open threads, regardless of
-# rank), REMAINING_SLOTS=0, none of the other 7 compete -> still 5 gating,
-# unconditionally. A persisted open collision thread + 5 new eligible
-# findings, cap 5 -> RESERVED_COUNT=1, REMAINING_SLOTS=4 -> 1+4=5, not 6. ---
-# Lowercase keys: the rank lookup below normalizes .severity through
-# ascii_downcase first, so a model returning off-canonical casing
-# ("critical", "HIGH") still ranks correctly instead of falling to // 99
-# and sorting below a correctly-cased Medium (dot-github#50 gmr finding N-h).
-SEV_RANK='{"critical":0,"high":1,"medium":2}'
-RESERVED_COUNT="$(jq -c --argjson findings "$ALL_FINDINGS" '
-  [ .[] as $o
-    | ($findings | map(select(.fp == $o.fp)) | .[0]) as $f
-    | if $f == null then
-        ($o.resolved != true)
-      elif (($f.collision == true) or ($o.collision == true)) then
-        ($o.resolved != true)
-      elif ($f.verdict == "FALSE_POSITIVE") then
-        false
-      elif ($o.resolved != true) then
-        true
-      elif ($o.resolved_by_bot == true) then
-        true
-      else
-        false
-      end
-  ] | map(select(. == true)) | length
-' <<< "$OWNED")"
-GATING_ELIGIBLE="$(jq -c --argjson rank "$SEV_RANK" --argjson owned "$OWNED" '
-  [ .[] | select((.verdict == "VALID" or .verdict == "PARTIALLY_VALID" or .verdict == null)
-                 and (.collision != true))
-    | . as $f
-    | select(($owned | map(select(.fp == $f.fp)) | length) == 0)
-  ]
-  | sort_by($rank[.severity | ascii_downcase] // 99)
-' <<< "$ALL_FINDINGS")"
-REMAINING_SLOTS="$(jq -n --argjson n "$PRT_MAX_FINDINGS_TOTAL" --argjson r "$RESERVED_COUNT" '[($n - $r), 0] | max')"
-CAPPED_FPS="$(jq -c --argjson n "$REMAINING_SLOTS" '[limit($n; .[])] | map(.fp)' <<< "$GATING_ELIGIBLE")"
-ALL_FINDINGS="$(jq -c --argjson capped "$CAPPED_FPS" '
-  # IN(), not [x] | inside(y) — jq inside() on strings is substring
-  # containment, not array-element equality: `["fp"] | inside(["fp-2"])` is
-  # true. A base fingerprint would then read as "within cap" whenever an
-  # unrelated ordinal-suffixed sibling fp happened to be capped.
-  map(. + {within_cap: (.fp | IN($capped[]))})
-' <<< "$ALL_FINDINGS")"
+# The budget-derivation rationale (why this walks OWNED via prt_decide_finding
+# instead of ranking existing threads, the 4-rewrite history, dot-github#51)
+# now lives in scripts/lib/prt/reconcile.sh above prt_thread_stays_gating —
+# it is the specification for the functions this line calls; not duplicated
+# here.
+ALL_FINDINGS="$(prt_apply_cap "$PRT_MAX_FINDINGS_TOTAL" "$OWNED" "$ALL_FINDINGS")"
 
 # ============================= LOOP 1: findings =============================
 # Evaluates every finding this run produced to completion (successes and

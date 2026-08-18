@@ -29,7 +29,10 @@ This is the design/operations reference the code cites but didn't yet have:
   `marker.sh` (the HTML-comment marker embedded in each thread's first comment, carrying the
   fingerprint across runs), `render.sh` (job summary and comment bodies), `model.sh` (the two
   LLM calls), `reconcile.sh` (the pure decision tables — `prt_decide_finding` /
-  `prt_decide_absent` — that loops 1 and 2 execute).
+  `prt_decide_absent` — that loops 1 and 2 execute, plus the PR-wide gating-cap functions
+  `prt_thread_stays_gating` / `prt_reserved_count` / `prt_gating_eligible` / `prt_apply_cap`
+  that derive the cap reservation *by calling* the decision table above, rather than
+  re-implementing it — the orchestrator's cap block is a single call to `prt_apply_cap`).
 - `scripts/test/pr-review-threads-test.sh` — the unit suite. Every pure module function is
   covered directly; the orchestrator script itself is covered by a handful of subprocess-level
   exit-code tests (mocked `curl`), not by exercising the full reconciliation flow end to end —
@@ -52,7 +55,10 @@ overrides the workflow's own default) is one of three values. An unrecognized va
   disappears from the diff, reopened (reply + unresolve) if a bot-resolved thread's issue
   recurs. A thread a *human* resolved is never reopened. A PR-wide cap
   (`PRT_MAX_FINDINGS_TOTAL`, default 5) bounds how many threads can be gating at once; findings
-  beyond the cap go into one overflow comment instead of a thread.
+  beyond the cap go into one overflow comment instead of a thread. Threads whose decision outcome
+  remains gating reserve first (regardless of severity rank) before new findings compete for what
+  remains — an open thread newly assessed `FALSE_POSITIVE` is currently gating but deliberately
+  frees its slot rather than reserving it.
 
 ## The two-PR pin-bump requirement
 

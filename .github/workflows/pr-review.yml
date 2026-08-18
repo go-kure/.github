@@ -122,7 +122,13 @@ jobs:
           done
 
       - name: Run PR review threads
-        uses: go-kure/.github/.github/actions/pr-review-threads@7fc14a940e69074574e0a1807b2154b7e4f3d896 # main
+        # PENDING: placeholder pin — this PR changed pr-review-threads delegate code
+        # (scripts/lib/prt/reconcile.sh, scripts/pr-review-threads.sh). Rebase-merge
+        # rewrites every commit's SHA, so no SHA known while this PR is open can be
+        # the one that lands on main — see docs/standards.md, 'Same-repo composite
+        # actions and the pin-bump procedure'. A follow-up PR2 bumps this to the
+        # real merged SHA immediately after this PR merges.
+        uses: go-kure/.github/.github/actions/pr-review-threads@0000000000000000000000000000000000000000 # main
         with:
           github-token: ${{ github.token }}
           pr-number: ${{ github.event.pull_request.number }}
