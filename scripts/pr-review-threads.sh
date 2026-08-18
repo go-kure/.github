@@ -31,9 +31,10 @@
 
 set -uo pipefail  # not -e: every stage must run to completion and report,
                    # a single failed write must not abort the whole run —
-                   # continue-on-error at the job level already accepts a
-                   # hard failure, but a soft per-finding failure here must
-                   # not cascade into skipping every other finding.
+                   # the job now fails closed on the final exit (see the
+                   # REVIEW_INCOMPLETE check at the bottom of this file), but
+                   # a soft per-finding failure here must still not cascade
+                   # into skipping every other finding before that check runs.
 
 PRT_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/lib/prt" && pwd)"
 # shellcheck source=scripts/lib/prt/state.sh
@@ -741,6 +742,7 @@ if [ "$PRT_MODE" = enforce ]; then
         if ! prt_retry 3 prt_gh_rest_fresh PATCH "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA" \
              "/repos/${PRT_REPO}/pulls/comments/${first_comment_db_id}" \
              "$(jq -n --arg b "$new_body" '{body:$b}')" >/dev/null; then
+          prt_mark_incomplete "fp=$fp: clearing the absence marker failed after 3 retries (or went stale mid-retry)"
           # No freshness gate on this reply itself: it documents a failure
           # that already happened and is structurally independent of the
           # marker (render.sh's prt_render_reply_maint_failure docstring) —

@@ -122,9 +122,16 @@ closed as of Phase 2 Task 5 — `continue-on-error: true` was removed once the f
 surface was hardened). PRs still merge as long as `pr-review / AI Code Review` is not a
 required status check (see governance/repository-settings-policy.yaml); once it is
 required, this window blocks every PR in the affected consumers until PR2 lands, so land
-PR2 immediately after PR1 merges — do not let the window span a working day. The
-incident escape hatch, `PR_REVIEW_THREADS_MODE=off` (an org variable), restores merges
-during the window if needed.
+PR2 immediately after PR1 merges — do not let the window span a working day.
+
+**`PR_REVIEW_THREADS_MODE=off` does NOT cover this specific window.** The org variable is
+read by the script the composite action runs — but an unresolvable action SHA fails the
+job at GitHub's own "Getting action download info" step, before the composite action (and
+so the script, and so the mode check) ever starts. Confirmed live 2026-08-18: kure#669 hit
+exactly this ("Unable to resolve action `go-kure/.github@0000...0`") while a bootstrap
+pin-bump PR was open-but-unmerged. The only mitigation for this window is landing PR2
+fast; `off` remains the correct escape hatch for every failure *after* the action
+resolves and the script starts running.
 
 Every later PR that touches the action's delegate code needs the same two-PR sequence as
 the bootstrap, not a single PR: rebase-merge still rewrites the commit's SHA on landing, so
