@@ -1,0 +1,180 @@
+name: Probe kure-bot token resolve capability
+
+# TEMPORARY — throwaway probe for go-kure/.github#68 (A1 go/no-go gate). Not
+# part of the pr-review-threads delegate code; never merged to main. Opens a
+# scratch PR against this same repo, creates a review thread AS the kure-bot
+# app identity, and immediately attempts to resolve it with the same
+# identity — mirroring exactly what pr-review-threads.sh does in production,
+# to answer: does an installation token from the renamed/re-permissioned
+# kure-bot app get viewerCanResolve:true on a thread it authored?
+# Prints only booleans/IDs to the job summary — never secret material.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  probe:
+    runs-on: autops-kube-kure
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Setup tools
+        run: |
+          for cmd in curl jq; do
+            if ! command -v "$cmd" &>/dev/null; then
+              if command -v sudo &>/dev/null; then
+                sudo apt-get update -qq && sudo apt-get install -y -qq curl jq
+              else
+                apt-get update -qq && apt-get install -y -qq curl jq
+              fi
+              break
+            fi
+          done
+
+      - name: Create scratch branch + commit + PR (github.token)
+        id: scratch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          BR="probe/scratch-$(echo "$GITHUB_RUN_ID")"
+          git config user.name "probe-bot"
+          git config user.email "probe-bot@noreply"
+          git checkout -b "$BR"
+          echo "probe $GITHUB_RUN_ID" >> docs/pr-review-threads-live-findings.md
+          git add docs/pr-review-threads-live-findings.md
+          git commit -m "probe: scratch commit for #68 token check (not for merge)"
+          git push origin "$BR"
+          PR_JSON=$(curl -sS -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/pulls" \
+            -d "$(jq -n --arg h "$BR" --arg b "main" '{title:"[scratch] probe #68 token check", head:$h, base:$b, body:"Throwaway, closes unmerged."}")")
+          PR_NUM=$(jq -r '.number' <<<"$PR_JSON")
+          echo "pr_number=$PR_NUM" >> "$GITHUB_OUTPUT"
+          echo "branch=$BR" >> "$GITHUB_OUTPUT"
+          echo "scratch PR #$PR_NUM on branch $BR"
+
+      - name: Generate kure-bot app token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          app-id: ${{ secrets.KURE_BOT_APP_ID }}
+          private-key: ${{ secrets.KURE_BOT_APP_PRIVATE_KEY }}
+
+      - name: Create review thread AS the app, then attempt to resolve it
+        env:
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_NUM: ${{ steps.scratch.outputs.pr_number }}
+        run: |
+          set -euo pipefail
+          REPO="${{ github.repository }}"
+
+          # Need the head SHA + a commentable file/line from the diff.
+          PR_META=$(curl -sS -H "Authorization: Bearer ${APP_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${REPO}/pulls/${PR_NUM}")
+          HEAD_SHA=$(jq -r '.head.sha' <<<"$PR_META")
+
+          COMMENT_JSON=$(curl -sS -X POST \
+            -H "Authorization: Bearer ${APP_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${REPO}/pulls/${PR_NUM}/comments" \
+            -d "$(jq -n --arg sha "$HEAD_SHA" '{body:"probe #68: created by kure-bot app token", commit_id:$sha, path:"docs/pr-review-threads-live-findings.md", line:1, side:"RIGHT"}')")
+          echo "$COMMENT_JSON" | jq '{id, path, line, author: .user.login}'
+          COMMENT_ID=$(jq -r '.id' <<<"$COMMENT_JSON")
+
+          if [ "$COMMENT_ID" = "null" ] || [ -z "$COMMENT_ID" ]; then
+            echo "FAILED to create review comment:" >&2
+            echo "$COMMENT_JSON" >&2
+            {
+              echo "## Probe result: FAILED (could not create comment)"
+              echo '```json'
+              echo "$COMMENT_JSON"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          # GraphQL: find the thread containing this comment, read viewerCanResolve.
+          QUERY='query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){pullRequest(number:$n){reviewThreads(first:20){nodes{id isResolved viewerCanResolve viewerCanUnresolve comments(first:1){nodes{databaseId author{login}}}}}}}}'
+          OWNER="${REPO%%/*}"
+          NAME="${REPO##*/}"
+          GQL_RESP=$(curl -sS -X POST \
+            -H "Authorization: Bearer ${APP_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/graphql" \
+            -d "$(jq -n --arg q "$QUERY" --arg o "$OWNER" --arg n "$NAME" --argjson num "$PR_NUM" \
+              '{query:$q, variables:{owner:$o, name:$n, n:$num}}')")
+
+          THREAD=$(jq -c --argjson cid "$COMMENT_ID" \
+            '.data.repository.pullRequest.reviewThreads.nodes[] | select(.comments.nodes[0].databaseId == $cid)' \
+            <<<"$GQL_RESP")
+          echo "thread: $THREAD"
+          THREAD_ID=$(jq -r '.id' <<<"$THREAD")
+          VIEWER_CAN_RESOLVE=$(jq -r '.viewerCanResolve' <<<"$THREAD")
+          AUTHOR_LOGIN=$(jq -r '.comments.nodes[0].author.login' <<<"$THREAD")
+
+          RESOLVE_RESULT="not attempted"
+          IS_RESOLVED_AFTER="n/a"
+          RESOLVED_BY_AFTER="n/a"
+          if [ "$VIEWER_CAN_RESOLVE" = "true" ]; then
+            RESOLVE_MUTATION='mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{id isResolved resolvedBy{login}}}}'
+            RESOLVE_RESP=$(curl -sS -X POST \
+              -H "Authorization: Bearer ${APP_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/graphql" \
+              -d "$(jq -n --arg q "$RESOLVE_MUTATION" --arg id "$THREAD_ID" '{query:$q, variables:{id:$id}}')")
+            echo "resolve response: $RESOLVE_RESP"
+            ERR=$(jq -c '.errors // empty' <<<"$RESOLVE_RESP")
+            if [ -n "$ERR" ]; then
+              RESOLVE_RESULT="FAILED: $ERR"
+            else
+              RESOLVE_RESULT="SUCCESS"
+              IS_RESOLVED_AFTER=$(jq -r '.data.resolveReviewThread.thread.isResolved' <<<"$RESOLVE_RESP")
+              RESOLVED_BY_AFTER=$(jq -r '.data.resolveReviewThread.thread.resolvedBy.login // "null"' <<<"$RESOLVE_RESP")
+            fi
+          fi
+
+          {
+            echo "## Probe result — go-kure/.github#68 A1 gate"
+            echo ""
+            echo "| field | value |"
+            echo "|---|---|"
+            echo "| PR | #${PR_NUM} |"
+            echo "| comment author login | \`${AUTHOR_LOGIN}\` |"
+            echo "| thread id | \`${THREAD_ID}\` |"
+            echo "| viewerCanResolve (as app) | \`${VIEWER_CAN_RESOLVE}\` |"
+            echo "| resolve mutation | ${RESOLVE_RESULT} |"
+            echo "| isResolved after | \`${IS_RESOLVED_AFTER}\` |"
+            echo "| resolvedBy.login after | \`${RESOLVED_BY_AFTER}\` |"
+            echo "| run id | \`${GITHUB_RUN_ID}\` |"
+            echo "| job id | \`${GITHUB_JOB}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$VIEWER_CAN_RESOLVE" != "true" ]; then
+            echo "GO/NO-GO: NO-GO — viewerCanResolve was false for the app identity too." >&2
+            exit 1
+          fi
+          echo "GO/NO-GO: GO"
+
+      - name: Cleanup — close scratch PR (github.token)
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUM: ${{ steps.scratch.outputs.pr_number }}
+        run: |
+          set -euo pipefail
+          [ -n "${PR_NUM:-}" ] || exit 0
+          curl -sS -X PATCH \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/pulls/${PR_NUM}" \
+            -d '{"state":"closed"}' >/dev/null
+          echo "closed PR #${PR_NUM}"
