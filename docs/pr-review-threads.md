@@ -123,6 +123,24 @@ reason to stderr (prefixed `  - `) and as capped `::error title=...::` workflow 
 from "the review ran and found nothing" by exit code *and* job-log output, not only by a human
 reading the summary by hand.
 
+The model-review call (`prt_model_review`, `model.sh:181-197`) gets one bounded retry — not
+`prt_retry`'s usual 3, each call already costs 40-60s against the job's `timeout-minutes: 20`
+budget — when the response fails the `jq -c '.'` parse
+(`pr-review-threads.sh:214-256`), with a salvage attempt interposed ahead of that retry:
+`prt_extract_json_braces` (`model.sh:31-51`) takes the substring from the first `{` to the last
+`}` in the raw content and re-parses that, a no-op on already-clean JSON and a fix for a chattier
+generation that wraps the JSON object in prose (`prt_strip_fence`, `model.sh:24-29`, only strips a
+fenced-code-block marker that is itself the first/last line, not surrounding prose). This closes a
+live incident: launcher#283 run 32175849548 hit `chunk 0: review response was not valid JSON` ->
+`prt_mark_incomplete` -> fail-closed exit, then succeeded on a same-head-SHA retry 39s later.
+Raising `PRT_MAX_TOKENS` or checking for `finish_reason == "length"` cannot fix this against the
+current model-proxy backend — it hard-codes `maxTokens` server-side and `finish_reason` is
+unconditionally `"stop"` on its non-streaming path. If both the retry and the salvage still fail
+to parse, the `REVIEW_INCOMPLETE` reason for that chunk carries a shape-only diagnostic
+(`prt_response_shape`, `model.sh:53-67`) — content length and a leading-character class
+(`starts-with-brace` / `starts-with-fence` / `starts-with-prose`) — never the response text
+itself, consistent with the "never logged" list below.
+
 Every run that reaches the main body also emits `prt_log` stage tracing to stderr (`prt:
 mode=...`, `prt: diff: <n> bytes, chunks=<n>`, per-chunk review/assess outcome, `prt: threads
 listed: N, owned=M`, a `prt: fp=<fp> -> <action>` line per reconciliation decision, and a closing
