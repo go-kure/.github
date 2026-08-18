@@ -355,5 +355,156 @@ fake_curl_ratelimited() {
 PRT_CURL=fake_curl_ratelimited PRT_GH_TOKEN=x prt_gh_graphql 'query{viewer{login}}' '{}' >/dev/null 2>&1
 assert_eq "gh.sh: HTTP 200 with errors[] is classified as failure, not success" "1" "$?"
 
+# ============================================================ orchestrator: exit-code contract (subprocess, mocked curl)
+# pr-review-threads.sh itself is not exercised by the rest of this suite (its
+# own header comment says so — it's wiring, not a pure function) but its
+# top-level exit code IS a contract worth pinning down directly: :787's
+# REVIEW_INCOMPLETE -> exit 1, PRT_MODE=off's exit 0 staying ahead of that
+# check, and the two prt_retry-wrapped reads actually retrying. Run as a real
+# subprocess (not sourced) so $? reflects the same exit path CI observes,
+# against a mocked PRT_CURL exported into that subprocess's environment
+# (function export is required for a child bash process to see it — a plain
+# variable assignment on the invocation line is not enough on its own).
+#
+# fake_curl_orchestrator dispatches on URL suffix + Accept header — enough to
+# tell the three real callers apart without needing -X: model.sh's proxy
+# call always targets */chat/completions; the advisory-comment POST always
+# targets .../issues/<N>/comments; the diff-fetch curl in
+# pr-review-threads.sh itself sends Accept: application/vnd.github.diff,
+# while every other prt_gh_rest GET pulls/<N> call (initial meta fetch and
+# every later freshness re-check) sends the plain +json Accept instead.
+fake_curl_orchestrator() {
+  local args=("$@") out="" accept="" url="" h
+  local i n=${#args[@]}
+  for ((i = 0; i < n; i++)); do
+    case "${args[$i]}" in
+      -o) out="${args[$((i + 1))]}" ;;
+      -H)
+        h="${args[$((i + 1))]}"
+        case "$h" in
+          Accept:*) accept="${h#Accept: }" ;;
+        esac
+        ;;
+      http://*|https://*)
+        # The URL's position varies by caller — last positional for
+        # prt_gh_rest and the diff-fetch curl, but BEFORE -H/-d for
+        # model.sh's proxy call (-X POST "$url" -H ... -d ...) — so match by
+        # shape, not position.
+        url="${args[$i]}" ;;
+    esac
+  done
+
+  case "$url" in
+    */chat/completions)
+      # Discard _prt_test_bump's own stdout (the running count, unused
+      # here) — leaving it uncaptured would leak into this function's own
+      # stdout, which the caller reads as curl's -w '%{http_code}' output.
+      _prt_test_bump "${PRT_TEST_MODEL_COUNTFILE:?}" >/dev/null
+      if [ "${PRT_TEST_MODEL_ALWAYS_FAIL:-0}" = 1 ]; then
+        : > "$out"; echo 500; return 0
+      fi
+      printf '%s' '{"choices":[{"message":{"content":"{\"findings\":[]}"}}]}' > "$out"
+      echo 200
+      ;;
+    */issues/*/comments)
+      printf '%s' '{"id":1}' > "$out"
+      echo 200
+      ;;
+    *)
+      case "$accept" in
+        *vnd.github.diff*)
+          c="$(_prt_test_bump "${PRT_TEST_DIFF_COUNTFILE:?}")"
+          if [ "$c" -le "${PRT_TEST_DIFF_FAIL_TIMES:-0}" ]; then
+            : > "$out"; echo 502; return 0
+          fi
+          printf 'diff --git a/x.go b/x.go\nindex 1111111..2222222 100644\n--- a/x.go\n+++ b/x.go\n@@ -1,1 +1,1 @@\n-old\n+new\n' > "$out"
+          echo 200
+          ;;
+        *)
+          # meta fetch (:125) and every later freshness re-check (gh.sh:114)
+          # share this same GET pulls/<N> shape — deliberately: a freshness
+          # check after the meta fetch has already consumed the fail budget
+          # must succeed immediately, matching how the real one-run head-SHA
+          # only moves once, not repeatedly.
+          c="$(_prt_test_bump "${PRT_TEST_META_COUNTFILE:?}")"
+          if [ "$c" -le "${PRT_TEST_META_FAIL_TIMES:-0}" ]; then
+            : > "$out"; echo 502; return 0
+          fi
+          printf '{"title":"t","body":"d","head":{"sha":"%s"}}' "$PRT_HEAD_SHA" > "$out"
+          echo 200
+          ;;
+      esac
+      ;;
+  esac
+}
+_prt_test_bump() {
+  local f="$1" c
+  c=$(($(cat "$f" 2>/dev/null || echo 0) + 1))
+  echo "$c" > "$f"
+  echo "$c"
+}
+export -f fake_curl_orchestrator _prt_test_bump
+
+# run_orchestrator MODE DIFF_FAIL_TIMES META_FAIL_TIMES MODEL_ALWAYS_FAIL —
+# prints the subprocess exit code; countfiles are left behind in the paths
+# given via the PRT_TEST_*_COUNTFILE globals set by the caller.
+run_orchestrator() {
+  local mode="$1" diff_fail="$2" meta_fail="$3" model_fail="$4"
+  local scratch summary rc
+  scratch="$(mktemp -d)"
+  summary="$(mktemp)"
+  : > "$PRT_TEST_DIFF_COUNTFILE"
+  : > "$PRT_TEST_META_COUNTFILE"
+  : > "$PRT_TEST_MODEL_COUNTFILE"
+  (
+    cd "$scratch" && \
+    PRT_CURL=fake_curl_orchestrator \
+    PRT_TEST_DIFF_COUNTFILE="$PRT_TEST_DIFF_COUNTFILE" \
+    PRT_TEST_META_COUNTFILE="$PRT_TEST_META_COUNTFILE" \
+    PRT_TEST_MODEL_COUNTFILE="$PRT_TEST_MODEL_COUNTFILE" \
+    PRT_TEST_DIFF_FAIL_TIMES="$diff_fail" \
+    PRT_TEST_META_FAIL_TIMES="$meta_fail" \
+    PRT_TEST_MODEL_ALWAYS_FAIL="$model_fail" \
+    PRT_GH_TOKEN=x PRT_REPO=owner/repo PRT_PR_NUMBER=1 \
+    PRT_HEAD_SHA=1111111111111111111111111111111111111111 \
+    PRT_BOT_LOGIN="test-bot[bot]" PRT_PROXY_URL="http://proxy.invalid" \
+    PRT_MODE="$mode" GITHUB_STEP_SUMMARY="$summary" \
+    bash "$ROOT/scripts/pr-review-threads.sh" >/dev/null 2>&1
+  )
+  rc=$?
+  rm -rf "$scratch" "$summary"
+  echo "$rc"
+}
+
+PRT_TEST_DIFF_COUNTFILE="$(mktemp)"
+PRT_TEST_META_COUNTFILE="$(mktemp)"
+PRT_TEST_MODEL_COUNTFILE="$(mktemp)"
+
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "orchestrator: clean run (diff/meta/model all succeed first try) exits 0" "0" "$rc"
+
+rc="$(run_orchestrator advisory 0 0 1)"
+assert_eq "orchestrator: model call failing every chunk marks REVIEW_INCOMPLETE -> exits 1" "1" "$rc"
+
+# PRT_MODE=off must short-circuit before any curl call at all (:93-99, ahead
+# of the diff fetch at :103) — proven here by wiring in settings that would
+# fail the run if the off-mode gate were ever bypassed (an always-failing
+# model call, on top of a diff-fetch failure budget deliberately larger than
+# the retry cap, so a non-off run would exit 1 either way).
+rc="$(run_orchestrator off 99 0 1)"
+assert_eq "orchestrator: PRT_MODE=off exits 0 even when everything else would fail/incomplete" "0" "$rc"
+
+rc="$(run_orchestrator advisory 1 0 0)"
+assert_eq "orchestrator: diff-fetch retry — one mocked 502 then success still exits 0" "0" "$rc"
+assert_eq "orchestrator: diff-fetch retry actually fired (mock hit more than once)" \
+  "true" "$([ "$(cat "$PRT_TEST_DIFF_COUNTFILE")" -ge 2 ] && echo true || echo false)"
+
+rc="$(run_orchestrator advisory 0 1 0)"
+assert_eq "orchestrator: PR-metadata GET retry — one mocked 502 then success still exits 0" "0" "$rc"
+assert_eq "orchestrator: PR-metadata GET retry actually fired (mock hit more than once)" \
+  "true" "$([ "$(cat "$PRT_TEST_META_COUNTFILE")" -ge 2 ] && echo true || echo false)"
+
+rm -f "$PRT_TEST_DIFF_COUNTFILE" "$PRT_TEST_META_COUNTFILE" "$PRT_TEST_MODEL_COUNTFILE"
+
 echo "passed: $pass_count, failed: $failures"
 [ "$failures" -eq 0 ]
