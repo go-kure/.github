@@ -21,11 +21,17 @@ set -uo pipefail
 PRT_HARD_CEILING_MULT=4
 
 # prt_split_diff DIFF_FILE MAX_CHARS OUT_DIR — writes OUT_DIR/chunk-NNN.diff
-# for each chunk, in order. Prints the number of chunks written to stdout.
+# for each chunk, in order. Prints the number of chunks written to stdout,
+# ONLY on success — returns 1 (no stdout) if any write failed. A caller
+# capturing this via `$(...)` must check the command substitution's own exit
+# status ($? immediately after the assignment), not just parse stdout — a
+# swallowed write failure here must not surface as a plausible-looking
+# zero/short chunk count.
 prt_split_diff() {
   local diff_file="$1" max_chars="$2" out_dir="$3"
   local hard_ceiling=$((max_chars * PRT_HARD_CEILING_MULT))
-  mkdir -p "$out_dir"
+  local write_failed=0
+  mkdir -p "$out_dir" || write_failed=1               # :28
 
   # Split into per-file records at `diff --git` boundaries. NUL-separated so
   # a record's own content (which may contain anything) can never be
@@ -38,7 +44,7 @@ prt_split_diff() {
   awk '
     /^diff --git / { if (n++) printf "%c", 0; }
     { print }
-  ' "$diff_file" > "$records_file"
+  ' "$diff_file" > "$records_file" || write_failed=1   # :41
 
   local -a records=()
   mapfile -d $'\0' -t records < "$records_file"
@@ -47,15 +53,19 @@ prt_split_diff() {
   local chunk_idx=0
   local cur_file
   cur_file="$out_dir/chunk-$(printf '%03d' "$chunk_idx").diff"
-  : > "$cur_file"
+  : > "$cur_file" || write_failed=1                    # :50
   local cur_size=0
 
   new_chunk() {
     chunk_idx=$((chunk_idx + 1))
     cur_file="$out_dir/chunk-$(printf '%03d' "$chunk_idx").diff"
-    : > "$cur_file"
+    : > "$cur_file" || write_failed=1                  # :56
     cur_size=0
   }
+
+  # Covers every `printf '%s\n' "$X" >> "$cur_file"` site — :70, :92, the
+  # compound-statement site (below), :106, :112, :120, :125.
+  _prt_chunk_write() { printf '%s\n' "$1" >> "$cur_file" || write_failed=1; }
 
   local rec rec_size
   for rec in "${records[@]}"; do
@@ -67,7 +77,7 @@ prt_split_diff() {
     fi
 
     if [ "$rec_size" -le "$max_chars" ]; then
-      printf '%s\n' "$rec" >> "$cur_file"
+      _prt_chunk_write "$rec"                          # :70
       cur_size=$((cur_size + rec_size))
       continue
     fi
@@ -82,14 +92,14 @@ prt_split_diff() {
     awk '
       /^@@ / { if (n++) printf "%c", 0; }
       n > 0 { print }
-    ' <<< "$rec" > "$hunks_file"
+    ' <<< "$rec" > "$hunks_file" || write_failed=1      # :85
 
     local -a hunks=()
     mapfile -d $'\0' -t hunks < "$hunks_file"
     rm -f "$hunks_file"
 
     local piece_size=${#header}
-    printf '%s\n' "$header" >> "$cur_file"
+    _prt_chunk_write "$header"                           # :92
     cur_size=$piece_size
 
     local hunk hunk_size
@@ -102,14 +112,17 @@ prt_split_diff() {
         # ceiling. Truncate its body and mark the run incomplete — a
         # narrower miss than truncating the whole diff blind, and the only
         # path that still sets REVIEW_INCOMPLETE from this module.
-        if [ "$piece_size" -gt "${#header}" ]; then new_chunk; printf '%s\n' "$header" >> "$cur_file"; piece_size=${#header}; cur_size=$piece_size; fi
-        printf '%s\n' "${hunk:0:hard_ceiling}" >> "$cur_file"
-        printf '\n... (hunk truncated at %d chars, exceeds hard ceiling)\n' "$hard_ceiling" >> "$cur_file"
+        if [ "$piece_size" -gt "${#header}" ]; then new_chunk; _prt_chunk_write "$header"; piece_size=${#header}; cur_size=$piece_size; fi  # :105
+        _prt_chunk_write "${hunk:0:hard_ceiling}"        # :106
+        # :107 does not fit _prt_chunk_write's '%s\n' "$X" shape (two-arg
+        # printf, embedded %d) — guard it directly instead of forcing it
+        # through the helper.
+        printf '\n... (hunk truncated at %d chars, exceeds hard ceiling)\n' "$hard_ceiling" >> "$cur_file" || write_failed=1   # :107
         if command -v prt_mark_incomplete >/dev/null 2>&1; then
           prt_mark_incomplete "diff chunking: a single hunk exceeded the ${hard_ceiling}-char hard ceiling and was truncated"
         fi
         new_chunk
-        printf '%s\n' "$header" >> "$cur_file"
+        _prt_chunk_write "$header"                       # :112
         piece_size=${#header}
         cur_size=$piece_size
         continue
@@ -117,12 +130,12 @@ prt_split_diff() {
 
       if [ $((piece_size + hunk_size)) -gt "$max_chars" ] && [ "$piece_size" -gt "${#header}" ]; then
         new_chunk
-        printf '%s\n' "$header" >> "$cur_file"
+        _prt_chunk_write "$header"                       # :120
         piece_size=${#header}
         cur_size=$piece_size
       fi
 
-      printf '%s\n' "$hunk" >> "$cur_file"
+      _prt_chunk_write "$hunk"                            # :125
       piece_size=$((piece_size + hunk_size))
       cur_size=$piece_size
     done
@@ -135,6 +148,12 @@ prt_split_diff() {
     chunk_idx=$((chunk_idx - 1))
   fi
 
+  if [ "$write_failed" = 1 ]; then
+    if command -v prt_mark_incomplete >/dev/null 2>&1; then
+      prt_mark_incomplete "prt_split_diff: one or more chunk writes failed (disk full? permissions?) — chunking did not complete, chunk count below is not trustworthy"
+    fi
+    return 1
+  fi
   echo $((chunk_idx + 1))
 }
 
