@@ -43,17 +43,18 @@ This is the design/operations reference the code cites but didn't yet have:
 `PRT_MODE` (env `PR_REVIEW_THREADS_MODE`, org/repo variable `vars.PR_REVIEW_THREADS_MODE`
 overrides the workflow's own default) is one of three values. An unrecognized value degrades to
 `advisory`, never to `enforce` — a typo must fail toward the safe side of a gate
-(`pr-review-threads.sh:79-87`).
+(`pr-review-threads.sh:80-88`).
 
 - **`off`** — the incident escape hatch. Short-circuits to `exit 0` immediately after state
-  init, before any network call (`pr-review-threads.sh:93-99`). See "Incident procedure" below.
+  init, before any network call (`pr-review-threads.sh:100-107`). See "Incident procedure" below.
 - **`advisory`** (default) — zero thread creates or mutations. One plain (non-resolvable) issue
   comment per run with the merged findings table. This is the staged-rollout mechanism itself:
   advisory mode proves the pipeline works against real PRs without ever blocking a merge.
 - **`enforce`** — findings become resolvable, merge-gating review threads: created on first
   sighting, replied-to-and-resolved when the model calls a finding a false positive or the issue
-  disappears from the diff, reopened (reply + unresolve) if a bot-resolved thread's issue
-  recurs. A thread a *human* resolved is never reopened. A PR-wide cap
+  disappears from the diff (including when the *whole* net diff goes empty — see below), reopened
+  (reply + unresolve) if a bot-resolved thread's issue recurs. A thread a *human* resolved is
+  never reopened. A PR-wide cap
   (`PRT_MAX_FINDINGS_TOTAL`, default 5) bounds how many *new* threads can start gating per run;
   findings beyond what's left of the cap go into one overflow comment instead of a thread.
   Threads whose decision outcome remains gating — or, for a thread absent from this run's
@@ -64,6 +65,17 @@ overrides the workflow's own default) is one of three values. An unrecognized va
   reserved than the cap allows (all `remaining` clamps to 0, never negative) the total gating
   count for that run can still exceed `PRT_MAX_FINDINGS_TOTAL` — the cap bounds growth, not the
   standing total.
+
+  An empty net diff against base (e.g. a file added then deleted again within the same PR) is
+  reviewed in `enforce` as zero findings rather than short-circuiting ahead of thread listing and
+  both reconciliation loops (go-kure/.github#60) — a gating thread whose file was reverted this
+  way can otherwise never be seen as absent and never auto-resolves. `advisory`/`off` keep the
+  cheap `exit 0` on an empty diff, since neither ever creates or reconciles a thread. Auto-resolve
+  from absence still takes **two** separate runs at two different head SHAs, not one: the first
+  empty-diff run stamps a `first_absent_sha` marker; only a later run — empty diff or not — whose
+  head has moved past that SHA replies and resolves. This mirrors the existing two-push behavior
+  for a finding the model itself calls a false positive; an empty diff does not shortcut it to one
+  push.
 
 ## The two-PR pin-bump requirement
 
@@ -93,21 +105,41 @@ pinning" → "Same-repo composite actions and the pin-bump procedure").
 ## Failure surface
 
 Every write (create/reply/resolve/unresolve/marker edit) is preceded by a freshness check
-(`prt_freshness_check`, `gh.sh:106-121`) that re-fetches the PR's live head SHA and refuses to
+(`prt_freshness_check`, `gh.sh:115-132`) that re-fetches the PR's live head SHA and refuses to
 write against a stale one — the run's real wall-clock spans multiple model calls, so the PR can
-move underneath it. A write that can't complete (a failed create, a stale-head skip, a malformed
-model response, a listing failure) is recorded via `prt_mark_incomplete` (`state.sh:19-23`) into
-the `REVIEW_INCOMPLETE` state, rendered as its own section in the job summary
-(`render.sh:109-112`) and, since this run, checked at exit: a non-empty `REVIEW_INCOMPLETE`
-state makes the top-level script exit 1 instead of 0 (`pr-review-threads.sh:787` area) — "the
-review could not run to completion" is now distinguishable from "the review ran and found
-nothing" by exit code alone, not only by a human reading the summary. GitHub curl calls carry
-`--connect-timeout 10 --max-time 120`; the model proxy call carries `--connect-timeout 10
---max-time 300` — a per-call ceiling so one hung call can't alone consume the job's
-`timeout-minutes: 20` budget (see the comment at `scripts/lib/prt/model.sh` next to that value
-for the arithmetic). The two GitHub reads that used to have no retry at all — the initial diff
-fetch and the initial PR-metadata fetch — are now wrapped in `prt_retry` (`gh.sh:145-172`), the
-same retry helper every write path already used.
+move underneath it. `prt_freshness_check` names which of its three failure paths fired (read
+failure, empty `.head.sha`, or a genuinely moved head printed as `expected -> live`) on stderr,
+rather than returning 1 silently for all three alike (go-kure/.github#61). A write that can't
+complete (a failed create, a stale-head skip, a malformed model response, a listing failure) is
+recorded via `prt_mark_incomplete` (`state.sh:54-63`) into the `REVIEW_INCOMPLETE` state: the
+reason is echoed to stderr as `REVIEW_INCOMPLETE: <reason>` immediately (not only written to the
+state file), and if the state file itself can't be appended to, `prt_mark_incomplete` fails
+closed with `exit 1` on the spot rather than silently tracking nothing. `REVIEW_INCOMPLETE`
+reasons are also rendered as their own section in the job summary (`render.sh:109-112`) and
+checked at exit: a non-empty `REVIEW_INCOMPLETE` state makes the top-level script print every
+reason to stderr (prefixed `  - `) and as capped `::error title=...::` workflow annotations
+(escaped via `prt_annotation_escape`, `state.sh`), then exit 1 instead of 0
+(`pr-review-threads.sh:778`) — "the review could not run to completion" is now distinguishable
+from "the review ran and found nothing" by exit code *and* job-log output, not only by a human
+reading the summary by hand.
+
+Every run — clean or broken — also emits `prt_log` stage tracing to stderr (`prt: mode=...`,
+`prt: diff: <n> bytes, chunks=<n>`, per-chunk review/assess outcome, `prt: threads listed: N,
+owned=M`, a `prt: fp=<fp> -> <action>` line per reconciliation decision, and a closing
+`prt: done: findings=N gating=N suppressed=N incomplete=N` line) — a successful run used to print
+nothing at all between the workflow's own log markers, indistinguishable at a glance from a job
+that hung (go-kure/.github#61). Never logged: `PRT_GH_TOKEN`, raw model responses, comment bodies
+— only fingerprints, actions, and outcomes.
+
+GitHub curl calls carry `--connect-timeout 10 --max-time 120`; the model proxy call carries
+`--connect-timeout 10 --max-time 300` — a per-call ceiling so one hung call can't alone consume
+the job's `timeout-minutes: 20` budget (see the comment at `scripts/lib/prt/model.sh` next to
+that value for the arithmetic). The two GitHub reads that used to have no retry at all — the
+initial diff fetch and the initial PR-metadata fetch — are wrapped in `prt_retry`
+(`gh.sh:156-183`), the same retry helper every write path already used; a permanent (retry-
+budget-exhausted) PR-metadata fetch failure now prints its own `ERROR: failed to fetch PR
+metadata` line before exiting 1, instead of relying solely on `prt_gh_rest`'s generic HTTP-status
+line to explain the exit.
 
 ## Incident procedure
 
