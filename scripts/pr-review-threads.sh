@@ -182,26 +182,6 @@ for ((i = 0; i < chunk_idx; i++)); do
 done
 ALL_FINDINGS="$ASSESSED"
 
-# --- PR-wide severity cap: rank VALID/PARTIALLY_VALID across ALL chunks,
-# top N gate, the rest overflow. FALSE_POSITIVE never competes for a slot. ---
-SEV_RANK='{"Critical":0,"High":1,"Medium":2}'
-GATING_ELIGIBLE="$(jq -c --argjson rank "$SEV_RANK" '
-  # collision:true findings are quarantined (row 1 of prt_decide_finding
-  # always returns NONE for them) and can never become a gating thread — a
-  # colliding finding taking a scarce top-N slot silently demotes an actual
-  # gatable finding to non-gating overflow (dot-github#50 gmr finding B2).
-  [.[] | select((.verdict == "VALID" or .verdict == "PARTIALLY_VALID" or .verdict == null) and (.collision != true))]
-  | sort_by($rank[.severity] // 99)
-' <<< "$ALL_FINDINGS")"
-CAPPED_FPS="$(jq -c --argjson n "$PRT_MAX_FINDINGS_TOTAL" '[limit($n; .[])] | map(.fp)' <<< "$GATING_ELIGIBLE")"
-ALL_FINDINGS="$(jq -c --argjson capped "$CAPPED_FPS" '
-  # IN(), not [x] | inside(y) — jq inside() on strings is substring
-  # containment, not array-element equality: `["fp"] | inside(["fp-2"])` is
-  # true. A base fingerprint would then read as "within cap" whenever an
-  # unrelated ordinal-suffixed sibling fp happened to be capped.
-  map(. + {within_cap: (.fp | IN($capped[]))})
-' <<< "$ALL_FINDINGS")"
-
 # --- List existing owned threads (GraphQL, paginated) — enforce mode only.
 # advisory/off never read OWNED (advisory's branch below doesn't touch it,
 # and loop 2 is already enforce-gated), so a transient GraphQL failure here
@@ -358,6 +338,33 @@ for ((ti = 0; ti < n_threads; ti++)); do
             viewer_can_resolve:($vcr=="true"), viewer_can_unresolve:($vcu=="true")}]')"
 done
 fi # PRT_MODE = enforce
+
+# --- PR-wide severity cap: rank VALID/PARTIALLY_VALID across ALL chunks,
+# top N gate, the rest overflow. FALSE_POSITIVE never competes for a slot.
+# Computed AFTER OWNED, not before: the quarantine predicate must match
+# loop 1's effective_collision below (this-run collision OR the matching
+# thread's own persisted collision flag) — computing it only from this run's
+# own collision value (as done before dot-github#50 gmr finding B2-followup)
+# let a finding whose thread was quarantined by a PRIOR run, but that
+# reverts to non-colliding on its own this run, still consume a scarce
+# top-N slot and then resolve to NONE at the effective_collision check,
+# silently demoting a real gatable finding to non-gating overflow — the
+# exact leak B2 closed on the other half of the same predicate. ---
+SEV_RANK='{"Critical":0,"High":1,"Medium":2}'
+OWNED_COLLISION_FPS="$(jq -c '[.[] | select(.collision == true) | .fp]' <<< "$OWNED")"
+GATING_ELIGIBLE="$(jq -c --argjson rank "$SEV_RANK" --argjson owned_collision "$OWNED_COLLISION_FPS" '
+  [.[] | select((.verdict == "VALID" or .verdict == "PARTIALLY_VALID" or .verdict == null)
+                and (.collision != true) and ((.fp | IN($owned_collision[])) | not))]
+  | sort_by($rank[.severity] // 99)
+' <<< "$ALL_FINDINGS")"
+CAPPED_FPS="$(jq -c --argjson n "$PRT_MAX_FINDINGS_TOTAL" '[limit($n; .[])] | map(.fp)' <<< "$GATING_ELIGIBLE")"
+ALL_FINDINGS="$(jq -c --argjson capped "$CAPPED_FPS" '
+  # IN(), not [x] | inside(y) — jq inside() on strings is substring
+  # containment, not array-element equality: `["fp"] | inside(["fp-2"])` is
+  # true. A base fingerprint would then read as "within cap" whenever an
+  # unrelated ordinal-suffixed sibling fp happened to be capped.
+  map(. + {within_cap: (.fp | IN($capped[]))})
+' <<< "$ALL_FINDINGS")"
 
 # ============================= LOOP 1: findings =============================
 # Evaluates every finding this run produced to completion (successes and
