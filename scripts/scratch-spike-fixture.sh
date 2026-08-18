@@ -6,3 +6,5 @@ set -uo pipefail
 
 user_input="$1"
 eval "echo $user_input"
+
+# trigger: enforce-mode run for V3/V4/V6 spike
