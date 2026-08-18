@@ -89,8 +89,14 @@ prt_render_summary() {
   {
     printf '## PR Review Threads (%s mode)\n\n' "$mode"
     printf -- '- Source SHA: %s\n' "$sha"
-    printf '- Diff chunks reviewed: %s\n' "$chunk_count"
-    printf '- Findings: %s\n\n' "$(jq 'length' <<< "$findings")"
+    # `--` required on every one of these: a format string starting with `-`
+    # is parsed by bash's printf builtin as an option (`-v var`), not text —
+    # `printf '- Diff chunks reviewed: %s\n' 3` fails outright with
+    # "printf: - : invalid option" and, under this script's set -uo pipefail
+    # (deliberately not -e), silently drops just that one summary line
+    # rather than aborting (dot-github#50 gmr finding iter5-codex #2).
+    printf -- '- Diff chunks reviewed: %s\n' "$chunk_count"
+    printf -- '- Findings: %s\n\n' "$(jq 'length' <<< "$findings")"
     if [ "$(jq 'length' <<< "$findings")" -gt 0 ]; then
       printf '| fp | Severity | Category | File | Verdict | Action |\n'
       printf '|----|----------|----------|------|---------|--------|\n'

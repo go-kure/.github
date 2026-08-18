@@ -341,20 +341,26 @@ fi # PRT_MODE = enforce
 
 # --- PR-wide severity cap: rank VALID/PARTIALLY_VALID across ALL chunks,
 # top N gate, the rest overflow. FALSE_POSITIVE never competes for a slot.
-# Computed AFTER OWNED, not before: the quarantine predicate must match
-# loop 1's effective_collision below (this-run collision OR the matching
-# thread's own persisted collision flag) — computing it only from this run's
-# own collision value (as done before dot-github#50 gmr finding B2-followup)
-# let a finding whose thread was quarantined by a PRIOR run, but that
-# reverts to non-colliding on its own this run, still consume a scarce
-# top-N slot and then resolve to NONE at the effective_collision check,
-# silently demoting a real gatable finding to non-gating overflow — the
-# exact leak B2 closed on the other half of the same predicate. ---
+# Computed AFTER OWNED, not before, and excludes any finding that already
+# matches an OWNED thread — not just a collision-quarantined or human-
+# resolved one. reconcile.sh's prt_decide_finding only ever reads its
+# WITHIN_CAP argument inside the thread_exists=false branch (row 4); every
+# row reachable once thread_exists=true (5 open/NONE, 6 human-resolved/NONE,
+# 7 bot-resolved-and-recurred/REPLY_UNRESOLVE) decides independent of cap
+# status. A finding matching ANY existing thread therefore never needs a cap
+# slot for its own action — but before this fix, GATING_ELIGIBLE ranked such
+# findings anyway, so admitting one into the top N (a collision-quarantined
+# thread, iteration-4 finding B2-followup; a deliberately human-resolved
+# thread never meant to reopen, iteration-5 finding #1) still consumed a
+# slot that would otherwise have gone to a finding with no thread yet,
+# silently demoting it to non-gating overflow. Excluding every OWNED-matched
+# fp closes the whole class at once rather than one persisted-flag value at
+# a time (dot-github#50 gmr findings B2, B2-followup, iter5-codex #1). ---
 SEV_RANK='{"Critical":0,"High":1,"Medium":2}'
-OWNED_COLLISION_FPS="$(jq -c '[.[] | select(.collision == true) | .fp]' <<< "$OWNED")"
-GATING_ELIGIBLE="$(jq -c --argjson rank "$SEV_RANK" --argjson owned_collision "$OWNED_COLLISION_FPS" '
+OWNED_FPS="$(jq -c '[.[] | .fp]' <<< "$OWNED")"
+GATING_ELIGIBLE="$(jq -c --argjson rank "$SEV_RANK" --argjson owned_fps "$OWNED_FPS" '
   [.[] | select((.verdict == "VALID" or .verdict == "PARTIALLY_VALID" or .verdict == null)
-                and (.collision != true) and ((.fp | IN($owned_collision[])) | not))]
+                and (.collision != true) and ((.fp | IN($owned_fps[])) | not))]
   | sort_by($rank[.severity] // 99)
 ' <<< "$ALL_FINDINGS")"
 CAPPED_FPS="$(jq -c --argjson n "$PRT_MAX_FINDINGS_TOTAL" '[limit($n; .[])] | map(.fp)' <<< "$GATING_ELIGIBLE")"
