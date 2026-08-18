@@ -22,12 +22,24 @@
 # unresolved thread already blocks merge today, independent of the
 # still-open Gating-section work (making this job itself a required check,
 # to close the auto-merge timing race). Flipping the default below to
-# "enforce" is a deliberate later step, only after: (1) V1-V6 live-PR
-# verification (see the design plan) is recorded, (2) the merge_group
-# trigger + moved draft/fork skip land in kure/launcher, (3) the
-# required_status_checks.contexts policy change lands. Until then, advisory
-# mode is intentionally the only wired path (still posts one plain issue
-# comment with the merged findings table, matching pre-existing behavior).
+# "enforce" is a deliberate later step, only after: (1) V1-V7 live-PR
+# verification (see the design plan and docs/pr-review-threads-live-findings.md)
+# is recorded — V1 confirmed 2026-08-18: the required-check context string is
+# byte-identical on merge_group as on pull_request, and reports skipped (not
+# missing) on the queue's temporary ref; the draft/fork if: below needed no
+# change for this to hold, (2) the merge_group trigger lands in kure/launcher
+# (done, Task 3), (3) the required_status_checks.contexts policy change lands.
+# Until then, advisory mode is intentionally the only wired path (still posts
+# one plain issue comment with the merged findings table, matching
+# pre-existing behavior).
+#
+# continue-on-error was removed below once the failure surface was hardened
+# (retries + timeouts on every GitHub/model call, exit 1 on an incomplete
+# review — see docs/pr-review-threads.md) so a genuine problem now fails this
+# job instead of silently reporting nothing. The incident escape hatch is the
+# PR_REVIEW_THREADS_MODE=off org variable (docs/pr-review-threads.md,
+# "Incident procedure") — it short-circuits before any GitHub or model call,
+# so it restores merges even during an active failure here.
 #
 # Defaults below (only actually overridable via a `vars.*` repository variable
 # for PR_REVIEW_THREADS_MODE — see note above; every other one is env: only,
@@ -63,7 +75,6 @@ jobs:
     if: >-
       github.event.pull_request.draft == false &&
       github.event.pull_request.head.repo.full_name == github.repository
-    continue-on-error: true
     timeout-minutes: 20
     permissions:
       contents: read

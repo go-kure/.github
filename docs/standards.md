@@ -117,9 +117,14 @@ ever be the SHA that ends up on `main`:
 `main`, every consumer that calls the wrapping reusable workflow at `@main` (e.g.
 `kure`/`launcher`'s `pr-review.yml`) picks up the new code immediately — including the
 placeholder SHA. Until PR2 lands, the composite-action step fails to resolve for every
-PR in those consumers, and the step it's part of goes silently dark under
-`continue-on-error: true` (PRs still merge; the AI review job simply reports nothing).
-Land PR2 as soon as possible after PR1 merges to keep this window short.
+PR in those consumers, and the job it's part of now fails outright (`pr-review.yml` fails
+closed as of Phase 2 Task 5 — `continue-on-error: true` was removed once the failure
+surface was hardened). PRs still merge as long as `pr-review / AI Code Review` is not a
+required status check (see governance/repository-settings-policy.yaml); once it is
+required, this window blocks every PR in the affected consumers until PR2 lands, so land
+PR2 immediately after PR1 merges — do not let the window span a working day. The
+incident escape hatch, `PR_REVIEW_THREADS_MODE=off` (an org variable), restores merges
+during the window if needed.
 
 Every later PR that touches the action's delegate code needs the same two-PR sequence as
 the bootstrap, not a single PR: rebase-merge still rewrites the commit's SHA on landing, so
