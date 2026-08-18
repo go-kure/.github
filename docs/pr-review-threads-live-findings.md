@@ -12,7 +12,7 @@ Task 3). V2-V7 are answered by Phase 2 Task 5, run against a `.github` scratch P
 
 | # | Question | Answer | Recorded | Evidence |
 |---|----------|--------|----------|----------|
-| V1 | Is the required-check context string (`pr-review / AI Code Review`) byte-identical on a `merge_group` run as on a `pull_request` run? | PENDING — not yet run (Phase 2 Task 4/5) | | |
+| V1 | Is the required-check context string (`pr-review / AI Code Review`) byte-identical on a `merge_group` run as on a `pull_request` run? | **Yes.** Checks API returns `name: "pr-review / AI Code Review"` on both events, byte-identical. On `merge_group` the job reports `conclusion: skipped` (not missing) — the callee's draft/fork `if:` evaluates false since `github.event.pull_request` doesn't exist on that event, matching the predicted no-op. | 2026-08-18 | go-kure/kure#669 enqueued via GitHub merge queue; run `32142799469` on ref `gh-readonly-queue/main/pr-669-6b065743775a886f7fecbfa1bae2151859d65e8c`, check-run `95729260649` (`pr-review / AI Code Review`, `skipped`). Compared against the same context name on the `pull_request` event at commit `559ecb7` (kure#669's own head). |
 | V2 | Does `vars.PR_REVIEW_THREADS_MODE` resolve inside a *called* reusable workflow, and against which repo (caller's or callee's)? | PENDING — not yet run (Phase 2 Task 4/5) | | |
 | V3 | Does an outdated-but-unresolved review thread still block merge? | PENDING — not yet run (Phase 2 Task 4/5) | | |
 | V4 | Does a review thread anchored on a since-deleted file still block merge? | PENDING — not yet run (Phase 2 Task 4/5) | | |
