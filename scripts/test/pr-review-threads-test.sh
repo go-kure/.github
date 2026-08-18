@@ -326,6 +326,173 @@ assert_eq "decide_absent: unanswered maint failure blocks auto-resolve" \
 assert_eq "decide_absent: two absences on different SHAs -> reply+resolve" \
   "REPLY_RESOLVE" "$(prt_decide_absent false false false abc def false false)"
 
+# ============================================================ reconcile: cap reservation (dot-github#51)
+# prt_thread_stays_gating / prt_reserved_count / prt_gating_eligible /
+# prt_apply_cap — the extracted, tested replacement for the orchestrator's
+# former hand-copied inline jq (dot-github#51). Every case below is verified
+# by hand against reconcile.sh's own equivalence table.
+
+# --- 7-row matrix (+ null-verdict variant), one OWNED thread each, matched
+# against a same-fp finding (thread_exists=true throughout) ---
+assert_eq "reserved_count: row1 collision, open -> reserves" \
+  "1" "$(prt_reserved_count \
+    '[{"fp":"r1","collision":true,"resolved":false,"resolved_by_bot":false}]' \
+    '[{"fp":"r1","collision":true,"verdict":"VALID"}]')"
+assert_eq "reserved_count: row1 collision, resolved -> does not reserve" \
+  "0" "$(prt_reserved_count \
+    '[{"fp":"r1","collision":true,"resolved":true,"resolved_by_bot":false}]' \
+    '[{"fp":"r1","collision":true,"verdict":"VALID"}]')"
+assert_eq "reserved_count: row2/3 FALSE_POSITIVE, open -> frees (about to resolve)" \
+  "0" "$(prt_reserved_count \
+    '[{"fp":"r1","collision":false,"resolved":false,"resolved_by_bot":false}]' \
+    '[{"fp":"r1","collision":false,"verdict":"FALSE_POSITIVE"}]')"
+assert_eq "reserved_count: FALSE_POSITIVE, already resolved -> stays free" \
+  "0" "$(prt_reserved_count \
+    '[{"fp":"r1","collision":false,"resolved":true,"resolved_by_bot":false}]' \
+    '[{"fp":"r1","collision":false,"verdict":"FALSE_POSITIVE"}]')"
+assert_eq "reserved_count: row5 open VALID -> reserves" \
+  "1" "$(prt_reserved_count \
+    '[{"fp":"r1","collision":false,"resolved":false,"resolved_by_bot":false}]' \
+    '[{"fp":"r1","collision":false,"verdict":"VALID"}]')"
+assert_eq "reserved_count: row6 resolved by a human -> does not reserve" \
+  "0" "$(prt_reserved_count \
+    '[{"fp":"r1","collision":false,"resolved":true,"resolved_by_bot":false}]' \
+    '[{"fp":"r1","collision":false,"verdict":"VALID"}]')"
+assert_eq "reserved_count: row7 resolved by the bot, recurs -> reserves" \
+  "1" "$(prt_reserved_count \
+    '[{"fp":"r1","collision":false,"resolved":true,"resolved_by_bot":true}]' \
+    '[{"fp":"r1","collision":false,"verdict":"VALID"}]')"
+assert_eq "reserved_count: unassessed (verdict null) behaves like row5 -> reserves" \
+  "1" "$(prt_reserved_count \
+    '[{"fp":"r1","collision":false,"resolved":false,"resolved_by_bot":false}]' \
+    '[{"fp":"r1","collision":false,"verdict":null}]')"
+
+# --- Regression scenario 1: reordered severities across reruns must not
+# un-reserve an already-gating thread (iteration 3/4/5's bug). 5 OWNED open
+# threads matched to low-priority findings, 7 brand-new high-priority
+# candidates, cap 5. ---
+r1_owned='[{"fp":"o1","collision":false,"resolved":false,"resolved_by_bot":false},
+           {"fp":"o2","collision":false,"resolved":false,"resolved_by_bot":false},
+           {"fp":"o3","collision":false,"resolved":false,"resolved_by_bot":false},
+           {"fp":"o4","collision":false,"resolved":false,"resolved_by_bot":false},
+           {"fp":"o5","collision":false,"resolved":false,"resolved_by_bot":false}]'
+r1_findings='[{"fp":"o1","collision":false,"verdict":"VALID","severity":"Low"},
+              {"fp":"o2","collision":false,"verdict":"VALID","severity":"Low"},
+              {"fp":"o3","collision":false,"verdict":"VALID","severity":"Low"},
+              {"fp":"o4","collision":false,"verdict":"VALID","severity":"Low"},
+              {"fp":"o5","collision":false,"verdict":"VALID","severity":"Low"},
+              {"fp":"n1","collision":false,"verdict":"VALID","severity":"Critical"},
+              {"fp":"n2","collision":false,"verdict":"VALID","severity":"Critical"},
+              {"fp":"n3","collision":false,"verdict":"VALID","severity":"Critical"},
+              {"fp":"n4","collision":false,"verdict":"VALID","severity":"Critical"},
+              {"fp":"n5","collision":false,"verdict":"VALID","severity":"Critical"},
+              {"fp":"n6","collision":false,"verdict":"VALID","severity":"Critical"},
+              {"fp":"n7","collision":false,"verdict":"VALID","severity":"Critical"}]'
+assert_eq "reserved_count: reordered-severity scenario reserves all 5 open OWNED threads" \
+  "5" "$(prt_reserved_count "$r1_owned" "$r1_findings")"
+r1_capped="$(prt_apply_cap 5 "$r1_owned" "$r1_findings")"
+assert_eq "apply_cap: reordered-severity scenario — zero of the 7 new findings within_cap" \
+  "0" "$(jq '[.[] | select((.fp | startswith("n")) and .within_cap == true)] | length' <<< "$r1_capped")"
+
+# --- Regression scenario 2: persisted open collision thread with no
+# matching finding this run, plus 5 new eligible findings, cap 5. Must
+# reserve exactly 1, not be excluded from reservation entirely. ---
+r2_owned='[{"fp":"c1","collision":true,"resolved":false,"resolved_by_bot":false}]'
+r2_findings='[{"fp":"n1","collision":false,"verdict":"VALID","severity":"High"},
+              {"fp":"n2","collision":false,"verdict":"VALID","severity":"High"},
+              {"fp":"n3","collision":false,"verdict":"VALID","severity":"Medium"},
+              {"fp":"n4","collision":false,"verdict":"VALID","severity":"Medium"},
+              {"fp":"n5","collision":false,"verdict":"VALID","severity":"Low"}]'
+assert_eq "reserved_count: persisted open collision thread reserves 1" \
+  "1" "$(prt_reserved_count "$r2_owned" "$r2_findings")"
+r2_capped="$(prt_apply_cap 5 "$r2_owned" "$r2_findings")"
+assert_eq "apply_cap: persisted collision + 5 new -> 4 within_cap (1+4=5, not 6)" \
+  "4" "$(jq '[.[] | select(.within_cap == true)] | length' <<< "$r2_capped")"
+
+# --- Regression scenario 3: an open thread newly assessed FALSE_POSITIVE
+# frees its slot for a new candidate. ---
+r3_owned='[{"fp":"o1","collision":false,"resolved":false,"resolved_by_bot":false},
+           {"fp":"o2","collision":false,"resolved":false,"resolved_by_bot":false},
+           {"fp":"o3","collision":false,"resolved":false,"resolved_by_bot":false},
+           {"fp":"o4","collision":false,"resolved":false,"resolved_by_bot":false},
+           {"fp":"o5","collision":false,"resolved":false,"resolved_by_bot":false}]'
+r3_findings='[{"fp":"o1","collision":false,"verdict":"VALID"},
+              {"fp":"o2","collision":false,"verdict":"VALID"},
+              {"fp":"o3","collision":false,"verdict":"VALID"},
+              {"fp":"o4","collision":false,"verdict":"VALID"},
+              {"fp":"o5","collision":false,"verdict":"FALSE_POSITIVE"},
+              {"fp":"n1","collision":false,"verdict":"VALID","severity":"Critical"},
+              {"fp":"n2","collision":false,"verdict":"VALID","severity":"High"},
+              {"fp":"n3","collision":false,"verdict":"VALID","severity":"Medium"}]'
+assert_eq "reserved_count: FALSE_POSITIVE frees a slot -> reserved drops to 4" \
+  "4" "$(prt_reserved_count "$r3_owned" "$r3_findings")"
+r3_capped="$(prt_apply_cap 5 "$r3_owned" "$r3_findings")"
+assert_eq "apply_cap: FALSE_POSITIVE frees exactly one new finding within_cap" \
+  "1" "$(jq '[.[] | select((.fp | startswith("n")) and .within_cap == true)] | length' <<< "$r3_capped")"
+
+# --- Regression scenario 4: absent-but-still-open thread reserves; absent
+# resolved-by-bot does NOT (codex round 1 finding P1-2 — this specific
+# combination is what an unconditional prt_decide_finding call on the
+# absent branch would get wrong: verdict defaults to NONE, thread_resolved
+# =true, resolved_by_bot=true reaches row 7/REPLY_UNRESOLVE, which
+# prt_thread_stays_gating counts as gating). A resolved_by_bot:false
+# (human-resolved) absent variant is kept too, for completeness. ---
+assert_eq "reserved_count: absent, still open -> reserves" \
+  "1" "$(prt_reserved_count \
+    '[{"fp":"a1","collision":false,"resolved":false,"resolved_by_bot":false}]' '[]')"
+assert_eq "reserved_count: absent, resolved_by_bot:true -> does NOT reserve (P1-2)" \
+  "0" "$(prt_reserved_count \
+    '[{"fp":"a2","collision":false,"resolved":true,"resolved_by_bot":true}]' '[]')"
+assert_eq "reserved_count: absent, human-resolved (resolved_by_bot:false) -> does not reserve" \
+  "0" "$(prt_reserved_count \
+    '[{"fp":"a3","collision":false,"resolved":true,"resolved_by_bot":false}]' '[]')"
+
+# --- Regression scenario 5: over-reservation clamps remaining to 0, never
+# negative. ---
+r5_owned='[{"fp":"o1","collision":false,"resolved":false,"resolved_by_bot":false},
+           {"fp":"o2","collision":false,"resolved":false,"resolved_by_bot":false},
+           {"fp":"o3","collision":false,"resolved":false,"resolved_by_bot":false},
+           {"fp":"o4","collision":false,"resolved":false,"resolved_by_bot":false},
+           {"fp":"o5","collision":false,"resolved":false,"resolved_by_bot":false},
+           {"fp":"o6","collision":false,"resolved":false,"resolved_by_bot":false},
+           {"fp":"o7","collision":false,"resolved":false,"resolved_by_bot":false}]'
+r5_findings='[{"fp":"n1","collision":false,"verdict":"VALID","severity":"Critical"}]'
+assert_eq "reserved_count: 7 open OWNED threads, cap 5 -> reserved is still 7 (not clamped here)" \
+  "7" "$(prt_reserved_count "$r5_owned" "$r5_findings")"
+r5_capped="$(prt_apply_cap 5 "$r5_owned" "$r5_findings")"
+assert_eq "apply_cap: over-reservation clamps remaining to 0, new candidate never within_cap" \
+  "false" "$(jq -r '.[] | select(.fp == "n1") | .within_cap' <<< "$r5_capped")"
+
+# --- prt_gating_eligible: excludes OWNED-matched fps, collisions, and
+# FALSE_POSITIVE; keeps verdict:null; sorts mixed-case severities correctly
+# (the N-h regression); unknown severity sorts last via // 99. ---
+ge_owned='[{"fp":"h","collision":false,"resolved":false,"resolved_by_bot":false}]'
+ge_findings='[{"fp":"a","collision":false,"verdict":"VALID","severity":"Medium"},
+              {"fp":"b","collision":false,"verdict":"FALSE_POSITIVE","severity":"High"},
+              {"fp":"c","collision":true,"verdict":"VALID","severity":"High"},
+              {"fp":"d","collision":false,"verdict":null,"severity":"Low"},
+              {"fp":"e","collision":false,"verdict":"VALID","severity":"HIGH"},
+              {"fp":"f","collision":false,"verdict":"VALID","severity":"critical"},
+              {"fp":"g","collision":false,"verdict":"PARTIALLY_VALID","severity":"Unknown"},
+              {"fp":"h","collision":false,"verdict":"VALID","severity":"Medium"}]'
+sev_rank='{"critical":0,"high":1,"medium":2}'
+ge_out="$(prt_gating_eligible "$ge_findings" "$ge_owned" "$sev_rank")"
+assert_eq "gating_eligible: excludes FALSE_POSITIVE, collision, and OWNED-matched fp; keeps null" \
+  "5" "$(jq 'length' <<< "$ge_out")"
+assert_eq "gating_eligible: sorted critical, HIGH(mixed-case), Medium, then unranked in original order" \
+  "f e a d g" "$(jq -r '[.[].fp] | join(" ")' <<< "$ge_out")"
+
+# --- prt_apply_cap fp-substring trap: a base fp must not read as within_cap
+# just because an unrelated ordinal-suffixed sibling fp was capped (the
+# IN()-vs-inside() bug, currently-untested before this). ---
+trap_findings='[{"fp":"abc123","collision":false,"verdict":"VALID","severity":"Medium"},
+                {"fp":"abc123-2","collision":false,"verdict":"VALID","severity":"Critical"}]'
+trap_out="$(prt_apply_cap 1 '[]' "$trap_findings")"
+assert_eq "apply_cap: fp-substring trap — base fp stays within_cap:false when only the sibling is capped" \
+  "false" "$(jq -r '.[] | select(.fp == "abc123") | .within_cap' <<< "$trap_out")"
+assert_eq "apply_cap: fp-substring trap — the sibling itself is within_cap:true" \
+  "true" "$(jq -r '.[] | select(.fp == "abc123-2") | .within_cap' <<< "$trap_out")"
+
 # ============================================================ mode resolution (mirrors pr-review-threads.sh's own case statement)
 resolve_mode() {
   local mode="$1"
