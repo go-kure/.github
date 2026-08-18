@@ -42,11 +42,15 @@
 # timeout but no retry wrapper) so a genuine problem now fails this job
 # instead of silently reporting nothing. The incident escape hatch
 # is the PR_REVIEW_THREADS_MODE=off org variable (docs/pr-review-threads.md,
-# "Incident procedure") — it short-circuits before any GitHub or model call,
-# so it restores merges even during an active failure here. It does NOT cover
-# an unresolvable action pin (see the PENDING comment on the `uses:` line
-# below and docs/standards.md's pin-bump procedure) — that fails before the
-# composite action, and so this mode check, ever starts.
+# "Incident procedure"). It is checked twice: inside the script (short-circuits
+# before any GitHub or model call) and, since a review finding on this same PR
+# (a checkout or Setup-tools failure would otherwise be unrecoverable by the
+# script-level check, since neither step has run yet), in the job-level `if:`
+# above — `vars.PR_REVIEW_THREADS_MODE != 'off'` skips checkout, setup, AND
+# the composite action entirely, so `off` now also covers a checkout failure,
+# a Setup-tools apt-get failure, and an unresolvable action pin (see the
+# PENDING comment on the `uses:` line below and docs/standards.md's pin-bump
+# procedure) — none of those can even start once the job itself is skipped.
 #
 # Defaults below (only actually overridable via a `vars.*` repository variable
 # for PR_REVIEW_THREADS_MODE — see note above; every other one is env: only,
@@ -81,7 +85,8 @@ jobs:
     runs-on: autops-kube-kure
     if: >-
       github.event.pull_request.draft == false &&
-      github.event.pull_request.head.repo.full_name == github.repository
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      vars.PR_REVIEW_THREADS_MODE != 'off'
     timeout-minutes: 20
     permissions:
       contents: read

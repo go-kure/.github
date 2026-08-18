@@ -124,14 +124,19 @@ required status check (see governance/repository-settings-policy.yaml); once it 
 required, this window blocks every PR in the affected consumers until PR2 lands, so land
 PR2 immediately after PR1 merges — do not let the window span a working day.
 
-**`PR_REVIEW_THREADS_MODE=off` does NOT cover this specific window.** The org variable is
-read by the script the composite action runs — but an unresolvable action SHA fails the
-job at GitHub's own "Getting action download info" step, before the composite action (and
-so the script, and so the mode check) ever starts. Confirmed live 2026-08-18: kure#669 hit
-exactly this ("Unable to resolve action `go-kure/.github@0000...0`") while a bootstrap
-pin-bump PR was open-but-unmerged. The only mitigation for this window is landing PR2
-fast; `off` remains the correct escape hatch for every failure *after* the action
-resolves and the script starts running.
+**`PR_REVIEW_THREADS_MODE=off` now covers this window too — with one open caveat.** The
+mode is checked twice: inside the script (as before), and, since a live review finding on
+`.github#56`, in the `pr-review` job's own `if:` (`.github/workflows/pr-review.yml`) —
+`vars.PR_REVIEW_THREADS_MODE != 'off'` skips checkout, Setup tools, AND the composite
+action step entirely when set, so an unresolvable action SHA is never reached. Historical
+note, from *before* this job-level check existed: kure#669 hit exactly this ("Unable to
+resolve action `go-kure/.github@0000...0`", confirmed live 2026-08-18) while a bootstrap
+pin-bump PR was open-but-unmerged — at that time `off` genuinely could not have helped.
+**Open caveat:** whether `vars.PR_REVIEW_THREADS_MODE` resolves against the caller repo
+(kure/launcher) or this repo inside a called reusable workflow is V2, not yet verified
+live (see `docs/pr-review-threads-live-findings.md`) — until V2 is answered, treat this as
+the correct first response to try, but still land PR2 immediately as backup rather than
+relying on `off` alone to hold the window open indefinitely.
 
 Every later PR that touches the action's delegate code needs the same two-PR sequence as
 the bootstrap, not a single PR: rebase-merge still rewrites the commit's SHA on landing, so
