@@ -2,9 +2,4 @@
 # THROWAWAY — go-kure/.github#68 live acceptance spike. Not merged to main.
 set -eu
 
-cleanup_user_dir() {
-  local target=${1:?target required}
-  rm -rf "${target:?}"/*
-}
-
-cleanup_user_dir "$1"
+echo "spike scratch: no-op"
