@@ -99,7 +99,7 @@ jobs:
           done
 
       - name: Run PR review threads
-        uses: go-kure/.github/.github/actions/pr-review-threads@0000000000000000000000000000000000000000 # PENDING — see docs/standards.md, "GitHub Actions pinning" > "Same-repo composite actions and the pin-bump procedure."; this PR changed scripts/pr-review-threads.sh and scripts/lib/prt/**, so check-pin-bump.sh requires the pin to move; replace with `git rev-parse HEAD` of this branch's merged commit on main in a follow-up PR.
+        uses: go-kure/.github/.github/actions/pr-review-threads@03492df05ffc13e4d46e8740d19baa724d5b58e1 # main
         with:
           github-token: ${{ github.token }}
           pr-number: ${{ github.event.pull_request.number }}
