@@ -111,7 +111,7 @@ move underneath it. `prt_freshness_check` names which of its three failure paths
 failure, empty `.head.sha`, or a genuinely moved head printed as `expected -> live`) on stderr,
 rather than returning 1 silently for all three alike (go-kure/.github#61). A write that can't
 complete (a failed create, a stale-head skip, a malformed model response, a listing failure) is
-recorded via `prt_mark_incomplete` (`state.sh:54-63`) into the `REVIEW_INCOMPLETE` state: the
+recorded via `prt_mark_incomplete` (`state.sh:64-73`) into the `REVIEW_INCOMPLETE` state: the
 reason is echoed to stderr as `REVIEW_INCOMPLETE: <reason>` immediately (not only written to the
 state file), and if the state file itself can't be appended to, `prt_mark_incomplete` fails
 closed with `exit 1` on the spot rather than silently tracking nothing. `REVIEW_INCOMPLETE`
@@ -119,7 +119,7 @@ reasons are also rendered as their own section in the job summary (`render.sh:10
 checked at exit: a non-empty `REVIEW_INCOMPLETE` state makes the top-level script print every
 reason to stderr (prefixed `  - `) and as capped `::error title=...::` workflow annotations
 (escaped via `prt_annotation_escape`, `state.sh`), then exit 1 instead of 0
-(`pr-review-threads.sh:778`) — "the review could not run to completion" is now distinguishable
+(`pr-review-threads.sh:785-793`) — "the review could not run to completion" is now distinguishable
 from "the review ran and found nothing" by exit code *and* job-log output, not only by a human
 reading the summary by hand.
 

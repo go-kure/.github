@@ -779,7 +779,7 @@ prt_log "done: findings=$(jq 'length' <<< "$ALL_FINDINGS") gating=$(jq '[.[] | s
 # only reads the job's own exit code (e.g. a future required status check) —
 # only the job summary's REVIEW_INCOMPLETE section told the difference, and
 # nothing consumed that but a human reading the summary by hand. The
-# PRT_MODE=off short-circuit at :99 stays ahead of this check (an unconditional
+# PRT_MODE=off short-circuit at :100 stays ahead of this check (an unconditional
 # exit 0, run before prt_mark_incomplete can ever be called) — the incident
 # escape hatch must keep working even if something else here is broken.
 if prt_is_incomplete; then
