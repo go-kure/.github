@@ -31,7 +31,17 @@ prt_annotation_escape() {
 prt_state_init() {
   local dir="$1"
   PRT_INCOMPLETE_FILE="$dir/review_incomplete"
-  : > "$PRT_INCOMPLETE_FILE"
+  if ! : > "$PRT_INCOMPLETE_FILE"; then
+    # Fail loud here rather than leaving PRT_INCOMPLETE_FILE pointed at a file
+    # that doesn't exist yet: prt_mark_incomplete's own append later would
+    # likely also fail and catch this (its `>>` creates-on-append too), but
+    # only IF something later actually calls it — a run with zero real
+    # problems would otherwise report clean success with its own incomplete-
+    # state bookkeeping silently never established (codex round 1 finding,
+    # go-kure/.github#60/#61).
+    echo "FATAL: prt_state_init: could not create $PRT_INCOMPLETE_FILE (disk full? permissions?) — REVIEW_INCOMPLETE tracking cannot start" >&2
+    exit 1
+  fi
 }
 
 # prt_mark_incomplete REASON — idempotent; safe to call from any subshell.

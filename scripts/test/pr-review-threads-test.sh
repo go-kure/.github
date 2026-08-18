@@ -623,6 +623,25 @@ assert_eq "annotation_escape: LF becomes %0A" "a%0Ab" "$(prt_annotation_escape "
 assert_eq "annotation_escape: percent-then-LF does not double-escape (order: % first, then CR/LF)" \
   "100%25 done%0Anext" "$(prt_annotation_escape "$(printf '100%% done\nnext')")"
 
+# ============================================================ state.sh: prt_state_init fails loud on an unwritable dir (codex round 1, dot-github#60/#61)
+# prt_state_init's own `: > "$PRT_INCOMPLETE_FILE"` used to be unchecked: a
+# failed truncation left PRT_INCOMPLETE_FILE pointed at a file that was never
+# actually created, and a run with zero later prt_mark_incomplete calls would
+# report clean success with its own incomplete-state bookkeeping silently
+# never established. prt_state_init calls `exit 1` directly (same
+# exit-not-return contract as prt_mark_incomplete, documented at state.sh:37-53
+# — this is a bare top-level call at pr-review-threads.sh:92, not inside a
+# $(...) or subshell), so it must be invoked inside an explicit subshell here
+# to observe its exit status without killing the test runner.
+si_dir="$(mktemp -d)"
+chmod 555 "$si_dir"
+( prt_state_init "$si_dir" ) 2>/dev/null
+si_rc=$?
+assert_true "prt_state_init: exits non-zero when its dir is unwritable" \
+  "$([ "$si_rc" -ne 0 ] && echo true || echo false)"
+chmod 755 "$si_dir"
+rm -rf "$si_dir"
+
 # ============================================================ orchestrator: exit-code contract (subprocess, mocked curl)
 # pr-review-threads.sh itself is not exercised by the rest of this suite (its
 # own header comment says so — it's wiring, not a pure function) but its
