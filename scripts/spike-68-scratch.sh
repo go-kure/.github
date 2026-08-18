@@ -3,8 +3,8 @@
 set -eu
 
 cleanup_user_dir() {
-  local target=$1
-  rm -rf $target/*
+  local target=${1:?target required}
+  rm -rf "${target:?}"/*
 }
 
 cleanup_user_dir "$1"
