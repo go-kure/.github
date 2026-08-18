@@ -234,7 +234,7 @@ Reusable workflows have `on: workflow_call` in their trigger. Caller workflows (
 |----------|-----------------|---------|------------|----------------|
 | `auto-rebase.yml` | push to `main` (via `auto-rebase-caller.yml`) | Rebases all open PRs when main is updated | — | `AUTO_REBASE_PAT` |
 | `claude.yml` | PR/issue/comment events (via `claude-caller.yml`) | @claude AI assistant on PRs and issues | — | `CLAUDE_CODE_OAUTH_TOKEN` |
-| `pr-review.yml` | PR open/sync/ready (via `pr-review-caller.yml`) | 2-pass AI code review; posts advisory comment | `pr_review_context` (string, optional) | none (uses cluster sidecar) |
+| `pr-review.yml` | PR open/sync/ready (via `pr-review-caller.yml`) | 2-pass AI code review via the `pr-review-threads` composite action; one resolvable, merge-gating PR review thread per finding (deduped by fingerprint, auto-resolved when fixed or judged a false positive). `PR_REVIEW_THREADS_MODE` is currently pinned to `advisory` (posts one plain issue comment instead) — see the header comment in `pr-review.yml` for the staged rollout to `enforce` | `pr_review_context` (string, optional) | none (uses cluster sidecar) |
 | `release-create.yml` | `workflow_dispatch` | Pre-flight CI gate + git-cliff tag creation | `type` (required), `scope`, `dry_run` | `RELEASE_APP_ID`, `RELEASE_APP_PRIVATE_KEY` |
 | `release-bump.yml` | `workflow_dispatch` | Bump `versions.env`/changelog without tagging a release | `scope` (required), `dry_run` | `RELEASE_APP_ID`, `RELEASE_APP_PRIVATE_KEY` |
 | `release-promote.yml` | `workflow_dispatch` | Promote a prerelease (beta → rc → stable) | `to` (required: `beta`\|`rc`\|`stable`), `dry_run` | `RELEASE_APP_ID`, `RELEASE_APP_PRIVATE_KEY` |
@@ -274,6 +274,7 @@ workflows, which are job-level). Consumer repos reference one as a step:
 | `check-doc-sync` | Documentation-sync Layer 2 (structure). Runs `scripts/check-doc-sync.sh` against the caller's `docs-map.yaml`. Requires `yq` on `PATH` — install it in the consumer's job before this step. |
 | `check-doc-gate` | Documentation-sync Layer 3 (change-gate). Runs `scripts/check-doc-gate.sh` with `base-ref`/`root`/`skip` inputs. Requires `yq` on `PATH`. |
 | `check-links` | Documentation-sync Layer 1 (link check). Runs `scripts/check-links.sh` against a `built-dir` the caller has already rendered (e.g. a Hugo build). Requires `lychee` on `PATH`. |
+| `pr-review-threads` | Runs `scripts/pr-review-threads.sh`: 2-pass AI review + assessment, then reconciles findings into resolvable PR review threads (create/reply/resolve/unresolve via the GraphQL API), deduped by fingerprint and auto-resolved on fix or false-positive verdict. Used only by `pr-review.yml` in this repo — a same-repo action, so it is pinned by SHA like any other (see `docs/standards.md`, "Same-repo composite actions and the pin-bump procedure"), not referenced with a relative `./` path. |
 
 ## Git Workflow
 

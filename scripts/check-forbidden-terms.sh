@@ -16,7 +16,8 @@
 #                      convenience only — MUST NOT gate CI (it diverges PR vs. queue).
 #
 # Scope (both modes): docs/  site/content/  pkg/**  cmd/**  scripts/**  **/*.md
-#   and .github/workflows/**. The guard script itself is excluded from its own scan.
+#   .github/workflows/**  and .github/actions/**. The guard script itself is
+#   excluded from its own scan.
 #
 # Forbidden terms (case-insensitive, whole word):
 #   wharf  crane  barge  harbor  rudder
@@ -50,7 +51,7 @@ in_scope() {
     */check-forbidden-terms.sh|check-forbidden-terms.sh) return 1 ;;
   esac
   case "$f" in
-    docs/*|site/content/*|pkg/*|cmd/*|scripts/*|.github/workflows/*) return 0 ;;
+    docs/*|site/content/*|pkg/*|cmd/*|scripts/*|.github/workflows/*|.github/actions/*) return 0 ;;
     *.md) return 0 ;;
   esac
   return 1
