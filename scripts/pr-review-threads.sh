@@ -210,12 +210,53 @@ for chunk_file in "$CHUNK_DIR"/chunk-*.diff; do
     chunk_idx=$((chunk_idx + 1))
     continue
   fi
+
+  # Parse, with a salvage pass ahead of the (bounded-to-1) retry — cheapest
+  # recovery first. go-kure/.github#60/#61 round 2 fold-in: launcher#283 run
+  # 32175849548 hit "chunk 0: review response was not valid JSON" ->
+  # prt_mark_incomplete -> fail-closed exit; retry 39s later, same head SHA,
+  # succeeded. PRT_MAX_TOKENS and a finish_reason==length check can't fix
+  # this against this proxy backend (both facts confirmed dead — see
+  # model.sh's docstring and the incident record for why); this is the
+  # resilience that's actually available: salvage the JSON out of a
+  # prose-wrapped response (model.sh:prt_extract_json_braces, targets fact 3
+  # — prt_strip_fence only handles a fenced marker on line 1/last line, not
+  # surrounding prose), and one retry of the model call itself (not
+  # prt_retry's usual 3 — each call already costs 40-60s against the job's
+  # 20-minute budget, model.sh:153-159) if salvage doesn't recover it either.
   raw_json="$(jq -c '.' <<< "$raw" 2>/dev/null || echo '')"
+  retried=false
+  salvaged=false
   if [ -z "$raw_json" ]; then
-    prt_mark_incomplete "chunk $chunk_idx: review response was not valid JSON"
-    prt_log "chunk $chunk_idx: review FAILED (invalid JSON)"
+    salvage="$(prt_extract_json_braces "$raw")" && \
+      raw_json="$(jq -c '.' <<< "$salvage" 2>/dev/null || echo '')"
+    [ -n "$raw_json" ] && salvaged=true
+  fi
+  if [ -z "$raw_json" ]; then
+    retried=true
+    raw="$(prt_model_review "$PRT_PROXY_URL" "$PRT_MODEL" "$PRT_MAX_TOKENS" "$chunk_diff" \
+      "$PR_TITLE" "$PR_DESC" "$PRT_PROJECT_CONTEXT" "$PROJECT_AGENTS" "$PROJECT_CLAUDE_MD")"
+    if [ -n "$raw" ]; then
+      raw_json="$(jq -c '.' <<< "$raw" 2>/dev/null || echo '')"
+      if [ -z "$raw_json" ]; then
+        salvage="$(prt_extract_json_braces "$raw")" && \
+          raw_json="$(jq -c '.' <<< "$salvage" 2>/dev/null || echo '')"
+        [ -n "$raw_json" ] && salvaged=true
+      fi
+    fi
+  fi
+  if [ -z "$raw_json" ]; then
+    # Shape-only diagnostic — length + leading-char class + whether salvage
+    # was attempted, never the response text itself (Step 3c rule, "Failure
+    # surface" in docs/pr-review-threads.md, stays in force).
+    shape="$(prt_response_shape "${raw:-}")"
+    prt_mark_incomplete "chunk $chunk_idx: review response was not valid JSON after retry=$retried, salvage_attempted=true ($shape)"
+    prt_log "chunk $chunk_idx: review FAILED (invalid JSON, retried=$retried)"
     chunk_idx=$((chunk_idx + 1))
     continue
+  fi
+  if [ "$retried" = true ] || [ "$salvaged" = true ]; then
+    prt_log "chunk $chunk_idx: review recovered (retried=$retried salvaged=$salvaged)"
   fi
   normalized="$(prt_normalize_findings "$raw_json")" || \
     prt_mark_incomplete "chunk $chunk_idx: .findings missing/null/non-array, or one or more malformed finding rows dropped"
