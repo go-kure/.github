@@ -76,8 +76,8 @@ It is always a two-PR sequence:
    merged SHA of PR1's commit on `main`.
 
 Full procedure, the bootstrap special case, and the interim-outage-window caveat between PR1 and
-PR2: `docs/standards.md:91-132` ("GitHub Actions pinning" → "Same-repo composite actions and the
-pin-bump procedure").
+PR2, including the V2 caller/callee resolution: `docs/standards.md:91-158` ("GitHub Actions
+pinning" → "Same-repo composite actions and the pin-bump procedure").
 
 ## Failure surface
 
