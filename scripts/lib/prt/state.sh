@@ -11,6 +11,23 @@
 
 set -uo pipefail
 
+# prt_log MSG — operator-facing progress on stderr. stdout is reserved for
+# GitHub workflow commands (::error::), which must not be interleaved with
+# free text.
+prt_log() { printf 'prt: %s\n' "$*" >&2; }
+
+# prt_annotation_escape TEXT — escapes a string for use inside a GitHub
+# workflow command (`::error::...`). Order matters: '%' must be escaped
+# FIRST, then CR, then LF — escaping '%' last would double-escape the '%25'
+# produced by the CR/LF substitutions themselves.
+prt_annotation_escape() {
+  local s="$1"
+  s="${s//%/%25}"
+  s="${s//$'\r'/%0D}"
+  s="${s//$'\n'/%0A}"
+  printf '%s' "$s"
+}
+
 prt_state_init() {
   local dir="$1"
   PRT_INCOMPLETE_FILE="$dir/review_incomplete"
@@ -18,10 +35,31 @@ prt_state_init() {
 }
 
 # prt_mark_incomplete REASON — idempotent; safe to call from any subshell.
+# Fail-closed on the append itself: if the reason can't be recorded, the
+# file-based prt_is_incomplete check later would stay blind to it (the
+# incomplete-file would be empty even though something is actually wrong),
+# so an append failure aborts the run immediately via `exit 1` rather than
+# silently continuing as if nothing happened — the same "stderr says one
+# thing, exit code says another" shape dot-github#61 exists to close, just
+# relocated one level down into this function's own bookkeeping.
+#
+# `exit`, not `return`: almost every call site is a bare top-level statement
+# or the RHS of a top-level `||`, where `exit 1` terminates the whole run
+# immediately. The one documented exception is diff.sh's truncation-path
+# call, which runs inside prt_split_diff — itself invoked inside a $(...)
+# command substitution (pr-review-threads.sh) — where `exit 1` collapses
+# only that subshell; the caller-side split_rc check and prt_split_diff's
+# own write_failed/return 1 contract are what close that gap, not a
+# `return` here.
 prt_mark_incomplete() {
   local reason="$1"
   [ -n "${PRT_INCOMPLETE_FILE:-}" ] || { echo "ERROR: prt_state_init not called" >&2; return 1; }
-  printf '%s\n' "$reason" >> "$PRT_INCOMPLETE_FILE"
+  if printf '%s\n' "$reason" >> "$PRT_INCOMPLETE_FILE"; then
+    printf 'REVIEW_INCOMPLETE: %s\n' "$reason" >&2
+  else
+    echo "FATAL: failed to record REVIEW_INCOMPLETE reason (state tracking itself is broken): $reason" >&2
+    exit 1
+  fi
 }
 
 prt_is_incomplete() {
