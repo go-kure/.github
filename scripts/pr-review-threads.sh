@@ -101,12 +101,22 @@ fi
 
 # --- Fetch PR diff + metadata ---
 DIFF_FILE="$WORKDIR/full.diff"
-{
+# Wrapped in prt_retry (gh.sh:145-172): a transient 5xx/timeout here used to
+# fail the whole run with no retry, unlike every write path below. 406 (diff
+# too large) is treated as a terminal, non-retryable outcome — retrying it
+# would only burn the retry budget on a condition that can't change between
+# attempts — so the retryable function itself returns success on 406 and lets
+# the existing check below handle it exactly as before.
+# shellcheck disable=SC2317  # invoked indirectly: prt_retry calls it via "$@"
+_prt_fetch_pr_diff() {
   http_code=$("$PRT_CURL" -sS -o "$DIFF_FILE" -w '%{http_code}' \
+    --connect-timeout 10 --max-time 120 \
     -H "Authorization: Bearer ${PRT_GH_TOKEN}" \
     -H "Accept: application/vnd.github.diff" \
-    "${PRT_API_BASE:-https://api.github.com}/repos/${PRT_REPO}/pulls/${PRT_PR_NUMBER}")
-} || http_code=000
+    "${PRT_API_BASE:-https://api.github.com}/repos/${PRT_REPO}/pulls/${PRT_PR_NUMBER}") || http_code=000
+  [[ "$http_code" =~ ^2[0-9]{2}$ ]] || [ "$http_code" = 406 ]
+}
+prt_retry 3 _prt_fetch_pr_diff
 if [ "$http_code" = 406 ]; then
   echo "PR diff too large for GitHub API (HTTP 406), skipping." >&2
   { echo "## PR Review Threads: skipped"; echo; echo "Diff too large for the GitHub API (406)."; } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
@@ -122,7 +132,7 @@ if [ ! -s "$DIFF_FILE" ]; then
   exit 0
 fi
 
-meta_json="$(prt_gh_rest GET "/repos/${PRT_REPO}/pulls/${PRT_PR_NUMBER}")" || exit 1
+meta_json="$(prt_retry 3 prt_gh_rest GET "/repos/${PRT_REPO}/pulls/${PRT_PR_NUMBER}")" || exit 1
 PR_TITLE="$(jq -r '.title // "Untitled"' <<< "$meta_json")"
 PR_DESC="$(jq -r '.body // ""' <<< "$meta_json")"
 
@@ -783,5 +793,19 @@ fi
 {
   prt_render_summary "$PRT_MODE" "$PRT_HEAD_SHA" "$chunk_idx" "$ALL_FINDINGS" "$SUPPRESSED_COUNT" "$(prt_incomplete_reasons)"
 } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+
+# A non-empty REVIEW_INCOMPLETE state means some part of the review could not
+# be completed (a skipped/failed read or write, a malformed model response,
+# etc. — every prt_mark_incomplete call site above). Exiting 0 anyway used to
+# make the two indistinguishable from a genuinely clean run to anything that
+# only reads the job's own exit code (e.g. a future required status check) —
+# only the job summary's REVIEW_INCOMPLETE section told the difference, and
+# nothing consumed that but a human reading the summary by hand. The
+# PRT_MODE=off short-circuit at :99 stays ahead of this check (an unconditional
+# exit 0, run before prt_mark_incomplete can ever be called) — the incident
+# escape hatch must keep working even if something else here is broken.
+if prt_is_incomplete; then
+  exit 1
+fi
 
 exit 0

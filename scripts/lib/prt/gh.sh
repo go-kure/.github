@@ -42,6 +42,7 @@ prt_gh_rest() {
   tmp="$(mktemp)"
   hdrs="$(mktemp)"
   local -a args=(-sS -o "$tmp" -D "$hdrs" -w '%{http_code}' -X "$method"
+    --connect-timeout 10 --max-time 120
     -H "Authorization: Bearer ${PRT_GH_TOKEN:?PRT_GH_TOKEN not set}"
     -H "Accept: application/vnd.github+json"
     -H "Content-Type: application/json")
