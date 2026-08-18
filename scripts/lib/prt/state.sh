@@ -9,6 +9,8 @@
 # Source after setting PRT_STATE_DIR (a mktemp -d, one per run) and calling
 # prt_state_init.
 
+set -uo pipefail
+
 prt_state_init() {
   local dir="$1"
   PRT_INCOMPLETE_FILE="$dir/review_incomplete"

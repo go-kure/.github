@@ -112,7 +112,15 @@ _prt_call_proxy() {
 
   local tmp
   tmp="$(mktemp)"
+  # --connect-timeout 10 --max-time 300: a per-call ceiling, not a claim the
+  # whole run fits the job's 20-minute budget (.github/workflows/pr-review.yml
+  # timeout-minutes: 20 = 1200s). Up to 5 diff chunks x 2 calls (review +
+  # assess) = up to 10 model calls sharing that budget; 10 x 300s = 3000s can
+  # exceed it if every call maxes out. 300s bounds any single hung call so it
+  # alone can't consume the whole job; the job-level timeout is the backstop
+  # for the aggregate, not this per-call value.
   http_code="$("$PRT_CURL" -s -o "$tmp" -w '%{http_code}' \
+    --connect-timeout 10 --max-time 300 \
     -X POST "${proxy_url}/v1/chat/completions" \
     -H "Content-Type: application/json" \
     -d "$payload")"
