@@ -91,6 +91,12 @@ WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT
 prt_state_init "$WORKDIR"
 
+# prt_log cannot be called before state.sh is sourced (:40-41 area); the
+# earliest safe site with something worth reporting is here, right after
+# prt_state_init — mode resolution above (:80-88) has already run, so this
+# one line covers both.
+prt_log "mode=$PRT_MODE repo=$PRT_REPO pr=$PRT_PR_NUMBER head=${PRT_HEAD_SHA:0:7}"
+
 if [ "$PRT_MODE" = off ]; then
   {
     echo "## PR Review Threads: off"
@@ -127,13 +133,41 @@ if [[ ! "$http_code" =~ ^2[0-9]{2}$ ]]; then
   echo "ERROR: HTTP $http_code fetching PR diff" >&2
   exit 1
 fi
+EMPTY_DIFF=0
 if [ ! -s "$DIFF_FILE" ]; then
-  echo "No diff, nothing to review." >&2
-  { echo "## PR Review Threads: no diff"; } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
-  exit 0
+  EMPTY_DIFF=1
+  # advisory/off create no threads, so there is nothing to reconcile — keep
+  # the cheap exit for them. enforce falls through with zero findings, which
+  # loop 2 reads as "every owned thread is absent" (dot-github#60): the old
+  # unconditional exit 0 here was ahead of the thread listing and both loops,
+  # so a gating thread on a since-reverted file could never auto-resolve.
+  if [ "$PRT_MODE" != enforce ]; then
+    prt_log "no diff, nothing to review (mode=$PRT_MODE)"
+    { echo "## PR Review Threads: no diff"; } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+    exit 0
+  fi
+  prt_log "net diff empty — zero findings; reconciling existing threads only"
+  { echo "Net diff against base is empty — no findings this run; existing threads still reconciled."; echo; } \
+    >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
 fi
 
-meta_json="$(prt_retry 3 prt_gh_rest GET "/repos/${PRT_REPO}/pulls/${PRT_PR_NUMBER}")" || exit 1
+# Initialised before the EMPTY_DIFF guard below regardless of which branch
+# runs — set -u is active (C11): an unbound expansion downstream aborts with
+# exit 127, no ERR trap, no diagnostic, the exact silent shape #61 exists to
+# eliminate. LINE_INDEX is only read in loop 1's CREATE arm, unreachable with
+# zero findings — initialised anyway rather than resting on a reachability
+# argument surviving the next edit.
+ALL_FINDINGS='[]'
+chunk_idx=0
+chunk_count=0
+LINE_INDEX='{}'
+PR_TITLE=""; PR_DESC=""; PROJECT_AGENTS=""; PROJECT_CLAUDE_MD=""
+
+if [ "$EMPTY_DIFF" != 1 ]; then
+meta_json="$(prt_retry 3 prt_gh_rest GET "/repos/${PRT_REPO}/pulls/${PRT_PR_NUMBER}")" || {
+  echo "ERROR: failed to fetch PR metadata" >&2
+  exit 1
+}
 PR_TITLE="$(jq -r '.title // "Untitled"' <<< "$meta_json")"
 PR_DESC="$(jq -r '.body // ""' <<< "$meta_json")"
 
@@ -148,6 +182,12 @@ LINE_INDEX="$(prt_build_line_index "$DIFF_FILE")"
 # --- Chunk + review + assess ---
 CHUNK_DIR="$WORKDIR/chunks"
 chunk_count="$(prt_split_diff "$DIFF_FILE" "$PRT_MAX_DIFF_CHARS" "$CHUNK_DIR")"
+split_rc=$?
+if [ "$split_rc" -ne 0 ] || ! [[ "$chunk_count" =~ ^[0-9]+$ ]]; then
+  prt_mark_incomplete "prt_split_diff failed (rc=$split_rc, chunk_count='$chunk_count') — diff chunking did not complete; its own incomplete-file append may not have landed"
+  chunk_count=0
+fi
+prt_log "diff: $(wc -c < "$DIFF_FILE" | tr -d ' ') bytes, chunks=$chunk_count"
 
 ALL_FINDINGS='[]'
 chunk_idx=0
@@ -159,12 +199,14 @@ for chunk_file in "$CHUNK_DIR"/chunk-*.diff; do
     "$PR_TITLE" "$PR_DESC" "$PRT_PROJECT_CONTEXT" "$PROJECT_AGENTS" "$PROJECT_CLAUDE_MD")"
   if [ -z "$raw" ]; then
     prt_mark_incomplete "chunk $chunk_idx: empty/failed review response"
+    prt_log "chunk $chunk_idx: review FAILED (empty response)"
     chunk_idx=$((chunk_idx + 1))
     continue
   fi
   raw_json="$(jq -c '.' <<< "$raw" 2>/dev/null || echo '')"
   if [ -z "$raw_json" ]; then
     prt_mark_incomplete "chunk $chunk_idx: review response was not valid JSON"
+    prt_log "chunk $chunk_idx: review FAILED (invalid JSON)"
     chunk_idx=$((chunk_idx + 1))
     continue
   fi
@@ -173,6 +215,7 @@ for chunk_file in "$CHUNK_DIR"/chunk-*.diff; do
 
   tagged="$(jq -c --argjson idx "$chunk_idx" 'map(. + {_chunk: $idx})' <<< "$normalized")"
   ALL_FINDINGS="$(jq -c -n --argjson a "$ALL_FINDINGS" --argjson b "$tagged" '$a + $b')"
+  prt_log "chunk $chunk_idx: review ok ($(jq 'length' <<< "$tagged") findings)"
   chunk_idx=$((chunk_idx + 1))
 done
 
@@ -202,14 +245,17 @@ for ((i = 0; i < chunk_idx; i++)); do
   assess_json="$(jq -c '.' <<< "$assess_raw" 2>/dev/null || echo '')"
   if [ -z "$assess_json" ]; then
     prt_mark_incomplete "chunk $i: assessment response was empty/not valid JSON; findings stay unverdicted"
+    prt_log "chunk $i: review ok, assess FAILED (empty/invalid JSON)"
     ASSESSED="$(jq -c -n --argjson a "$ASSESSED" --argjson b "$chunk_findings" '$a + ($b | map(. + {verdict: null, reasoning: null}))')"
     continue
   fi
   joined="$(prt_join_assessment "$chunk_findings" "$assess_json")" || \
     prt_mark_incomplete "chunk $i: .assessments missing/null/non-array"
+  prt_log "chunk $i: review ok, assess ok"
   ASSESSED="$(jq -c -n --argjson a "$ASSESSED" --argjson b "$joined" '$a + $b')"
 done
 ALL_FINDINGS="$ASSESSED"
+fi # EMPTY_DIFF != 1
 
 # --- List existing owned threads (GraphQL, paginated) — enforce mode only.
 # advisory/off never read OWNED (advisory's branch below doesn't touch it,
@@ -368,6 +414,7 @@ for ((ti = 0; ti < n_threads; ti++)); do
             first_comment_id:$fcid, first_comment_db_id:$fcdbid,
             viewer_can_resolve:($vcr=="true"), viewer_can_unresolve:($vcu=="true")}]')"
 done
+prt_log "threads listed: $n_threads, owned=$(jq 'length' <<< "$OWNED")"
 fi # PRT_MODE = enforce
 
 # --- PR-wide severity cap: bound the number of gating (currently open, or
@@ -467,6 +514,7 @@ else
     fi
 
     action="$(prt_decide_finding "$effective_collision" "$verdict" "$thread_exists" "$thread_resolved" "$resolved_by_bot" "$within_cap")"
+    prt_log "fp=$fp -> $action"
 
     case "$action" in
       NONE) : ;;
@@ -615,6 +663,7 @@ if [ "$PRT_MODE" = enforce ]; then
 
     action="$(prt_decide_absent "$collision" "$has_human_reply" "$thread_resolved" \
       "$first_absent_sha" "$PRT_HEAD_SHA" "$incomplete_now" "$unanswered_maint_failure")"
+    prt_log "fp=$fp absent -> $action"
 
     viewer_can_resolve="$(jq -r '.viewer_can_resolve' <<< "$th")"
 
@@ -712,6 +761,10 @@ fi
   prt_render_summary "$PRT_MODE" "$PRT_HEAD_SHA" "$chunk_idx" "$ALL_FINDINGS" "$SUPPRESSED_COUNT" "$(prt_incomplete_reasons)"
 } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
 
+incomplete_count=0
+prt_is_incomplete && incomplete_count="$(prt_incomplete_reasons | grep -c . || true)"
+prt_log "done: findings=$(jq 'length' <<< "$ALL_FINDINGS") gating=$(jq '[.[] | select(.within_cap == true)] | length' <<< "$ALL_FINDINGS") suppressed=$SUPPRESSED_COUNT incomplete=$incomplete_count"
+
 # A non-empty REVIEW_INCOMPLETE state means some part of the review could not
 # be completed (a skipped/failed read or write, a malformed model response,
 # etc. — every prt_mark_incomplete call site above). Exiting 0 anyway used to
@@ -723,6 +776,13 @@ fi
 # exit 0, run before prt_mark_incomplete can ever be called) — the incident
 # escape hatch must keep working even if something else here is broken.
 if prt_is_incomplete; then
+  echo "ERROR: review incomplete — failing closed. Reasons:" >&2
+  prt_incomplete_reasons | sed 's/^/  - /' >&2
+  # Annotations go on stdout and GitHub caps them per step; the stderr list
+  # above is always complete, this is the surfaced excerpt.
+  prt_incomplete_reasons | head -10 | while IFS= read -r r; do
+    printf '::error title=PR review threads incomplete::%s\n' "$(prt_annotation_escape "$r")"
+  done
   exit 1
 fi
 
