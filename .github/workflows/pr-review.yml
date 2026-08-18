@@ -34,11 +34,13 @@
 # pre-existing behavior).
 #
 # continue-on-error was removed below once the failure surface was hardened
-# (a per-call timeout on every GitHub/model curl call, a retry wrapper on
-# every GitHub write plus the two GitHub reads that previously had none,
-# exit 1 on an incomplete review — see docs/pr-review-threads.md; model
-# calls have a timeout but no retry wrapper) so a genuine problem now fails
-# this job instead of silently reporting nothing. The incident escape hatch
+# (a per-call timeout on every GitHub/model curl call; a retry wrapper on the
+# diff fetch, the PR-metadata read, and the marker-update PATCH calls —
+# NOT on every GitHub write, e.g. posting a finding/reply comment or a
+# resolve/unresolve GraphQL mutation is a single attempt; exit 1 on an
+# incomplete review — see docs/pr-review-threads.md; model calls have a
+# timeout but no retry wrapper) so a genuine problem now fails this job
+# instead of silently reporting nothing. The incident escape hatch
 # is the PR_REVIEW_THREADS_MODE=off org variable (docs/pr-review-threads.md,
 # "Incident procedure") — it short-circuits before any GitHub or model call,
 # so it restores merges even during an active failure here. It does NOT cover
