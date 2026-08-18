@@ -149,7 +149,7 @@ for chunk_file in "$CHUNK_DIR"/chunk-*.diff; do
     continue
   fi
   normalized="$(prt_normalize_findings "$raw_json")" || \
-    prt_mark_incomplete "chunk $chunk_idx: .findings missing/null/non-array in review response"
+    prt_mark_incomplete "chunk $chunk_idx: .findings missing/null/non-array, or one or more malformed finding rows dropped"
 
   tagged="$(jq -c --argjson idx "$chunk_idx" 'map(. + {_chunk: $idx})' <<< "$normalized")"
   ALL_FINDINGS="$(jq -c -n --argjson a "$ALL_FINDINGS" --argjson b "$tagged" '$a + $b')"
@@ -186,7 +186,11 @@ ALL_FINDINGS="$ASSESSED"
 # top N gate, the rest overflow. FALSE_POSITIVE never competes for a slot. ---
 SEV_RANK='{"Critical":0,"High":1,"Medium":2}'
 GATING_ELIGIBLE="$(jq -c --argjson rank "$SEV_RANK" '
-  [.[] | select(.verdict == "VALID" or .verdict == "PARTIALLY_VALID" or .verdict == null)]
+  # collision:true findings are quarantined (row 1 of prt_decide_finding
+  # always returns NONE for them) and can never become a gating thread — a
+  # colliding finding taking a scarce top-N slot silently demotes an actual
+  # gatable finding to non-gating overflow (dot-github#50 gmr finding B2).
+  [.[] | select((.verdict == "VALID" or .verdict == "PARTIALLY_VALID" or .verdict == null) and (.collision != true))]
   | sort_by($rank[.severity] // 99)
 ' <<< "$ALL_FINDINGS")"
 CAPPED_FPS="$(jq -c --argjson n "$PRT_MAX_FINDINGS_TOTAL" '[limit($n; .[])] | map(.fp)' <<< "$GATING_ELIGIBLE")"
@@ -366,7 +370,9 @@ if [ "$PRT_MODE" = advisory ]; then
   # advisory: zero thread creates/mutations, one plain issue comment with
   # the merged findings table — the staged-rollout mechanism itself.
   advisory_findings="$(jq -c '[.[] | select(.verdict != "FALSE_POSITIVE")]' <<< "$ALL_FINDINGS")"
-  body="$(prt_render_advisory_comment "$advisory_findings")"
+  advisory_incomplete_reasons=""
+  prt_is_incomplete && advisory_incomplete_reasons="$(prt_incomplete_reasons)"
+  body="$(prt_render_advisory_comment "$advisory_findings" "$advisory_incomplete_reasons")"
   payload="$(jq -n --arg b "$body" '{body:$b}')"
   if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
     prt_gh_rest POST "/repos/${PRT_REPO}/issues/${PRT_PR_NUMBER}/comments" "$payload" >/dev/null || \
@@ -426,7 +432,21 @@ else
       fi
     fi
 
-    action="$(prt_decide_finding "$collision" "$verdict" "$thread_exists" "$thread_resolved" "$resolved_by_bot" "$within_cap")"
+    # OR with the thread's own persisted collision flag, not just this
+    # finding's this-run value: loop 2 already reads owned_match.collision
+    # (the value the block above just persisted) at the absence-side
+    # equivalent, so evaluating this side on the this-run value alone let
+    # the two loops disagree about the same thread — a run that reverts to
+    # a single (non-colliding) finding on an fp_base a prior run quarantined
+    # would resume normal resolve/reopen here, exactly what the C5 write
+    # above exists to prevent (dot-github#50 gmr finding B3).
+    effective_collision="$collision"
+    if [ "$thread_exists" = true ]; then
+      owned_collision_eff="$(jq -r '.collision' <<< "$owned_match")"
+      [ "$owned_collision_eff" = true ] && effective_collision=true
+    fi
+
+    action="$(prt_decide_finding "$effective_collision" "$verdict" "$thread_exists" "$thread_resolved" "$resolved_by_bot" "$within_cap")"
 
     case "$action" in
       NONE) : ;;
@@ -628,7 +648,7 @@ if [ "$PRT_MODE" = enforce ]; then
         fi
         ;;
       REPLY_RESOLVE)
-        prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA" || continue
+        prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA" || { prt_mark_incomplete "fp=$fp: stale head SHA, skipped absence auto-close"; continue; }
         if [ "$viewer_can_resolve" != true ]; then
           prt_mark_incomplete "fp=$fp: viewerCanResolve=false, skipping absence auto-close"
           continue

@@ -48,6 +48,18 @@ prt_gh_rest() {
   if [ -n "$data" ]; then
     args+=(-d "$data")
   fi
+  # Reset before the call, not just on success: a curl transport failure
+  # below returns before these are ever (re)assigned from this call's own
+  # response, so without this reset a caller reading PRT_LAST_HTTP_STATUS
+  # after a transport failure would see a STALE status/rate-limit signal
+  # left over from a completely unrelated earlier call — e.g. the 422-ladder
+  # fallback (dot-github#50 gmr finding N9-followup) reading a prior call's
+  # 422 and firing a duplicate create even though this call's actual
+  # request may have reached GitHub and succeeded server-side, with only
+  # curl losing the response.
+  PRT_LAST_RATELIMIT_REMAINING=""
+  PRT_LAST_RETRY_AFTER=""
+  PRT_LAST_HTTP_STATUS=""
   status="$("$PRT_CURL" "${args[@]}" "${PRT_API_BASE}${path}")" || {
     echo "prt_gh_rest: curl transport failure for $method $path" >&2
     rm -f "$tmp" "$hdrs"
