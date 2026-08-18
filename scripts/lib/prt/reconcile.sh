@@ -208,9 +208,13 @@ prt_thread_stays_gating() {
     REPLY_RESOLVE) echo false ;;
     NONE) [ "$thread_resolved" != true ] && echo true || echo false ;;
     # CREATE/OVERFLOW/SUPPRESS: unreachable when thread_exists=true (every
-    # OWNED row this function is called for) — explicit rather than a
-    # silent default, so a future decision-table change that breaks this
-    # invariant fails loud instead of miscounting.
+    # OWNED row this function is called for) — spelled out explicitly
+    # rather than falling into this default by coincidence. This does NOT
+    # fail loud: an unrecognized action still echoes false, rc 0, same as
+    # the real non-gating case, so a future decision-table change that
+    # breaks the thread_exists=true invariant would silently undercount
+    # here rather than error. Check this function first if the reserved
+    # count looks wrong after adding a new prt_decide_finding action word.
     *) echo false ;;
   esac
 }

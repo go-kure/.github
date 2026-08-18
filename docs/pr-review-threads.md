@@ -54,12 +54,16 @@ overrides the workflow's own default) is one of three values. An unrecognized va
   sighting, replied-to-and-resolved when the model calls a finding a false positive or the issue
   disappears from the diff, reopened (reply + unresolve) if a bot-resolved thread's issue
   recurs. A thread a *human* resolved is never reopened. A PR-wide cap
-  (`PRT_MAX_FINDINGS_TOTAL`, default 5) bounds how many threads can be gating at once; findings
-  beyond the cap go into one overflow comment instead of a thread. Threads whose decision outcome
-  remains gating — or, for a thread absent from this run's findings, that simply stays open —
-  reserve first (regardless of severity rank) before new findings compete for what remains; an
-  open thread newly assessed `FALSE_POSITIVE` is currently gating but deliberately frees its slot
-  rather than reserving it.
+  (`PRT_MAX_FINDINGS_TOTAL`, default 5) bounds how many *new* threads can start gating per run;
+  findings beyond what's left of the cap go into one overflow comment instead of a thread.
+  Threads whose decision outcome remains gating — or, for a thread absent from this run's
+  findings, that simply stays open — reserve first (regardless of severity rank) before new
+  findings compete for what remains; an open thread newly assessed `FALSE_POSITIVE` is currently
+  gating but deliberately frees its slot rather than reserving it. The cap only ever gates *new*
+  candidates: it never forces an already-gating thread closed, so if more threads are already
+  reserved than the cap allows (all `remaining` clamps to 0, never negative) the total gating
+  count for that run can still exceed `PRT_MAX_FINDINGS_TOTAL` — the cap bounds growth, not the
+  standing total.
 
 ## The two-PR pin-bump requirement
 
