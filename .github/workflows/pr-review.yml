@@ -99,7 +99,7 @@ jobs:
           done
 
       - name: Run PR review threads
-        uses: go-kure/.github/.github/actions/pr-review-threads@0000000000000000000000000000000000000000 # BOOTSTRAP — see docs/standards.md, "GitHub Actions pinning" > "Same-repo composite actions and the pin-bump procedure."; replace with `git rev-parse HEAD` of this branch's first real commit before committing, then bump to the merged main SHA in a follow-up PR.
+        uses: go-kure/.github/.github/actions/pr-review-threads@fa2de84686e0a847f8c9ba9fd8accb8ed7a07668 # main
         with:
           github-token: ${{ github.token }}
           pr-number: ${{ github.event.pull_request.number }}
