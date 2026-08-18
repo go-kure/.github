@@ -82,8 +82,8 @@ EOF
 
 # prt_render_summary MODE SOURCE_SHA CHUNK_COUNT FINDINGS_JSON \
 #                     SUPPRESSED_COUNT INCOMPLETE_REASONS
-# Written to $GITHUB_STEP_SUMMARY — free, no API call, the audit surface
-# that survives even under continue-on-error: true.
+# Written to $GITHUB_STEP_SUMMARY — free, no API call, so it survives even
+# when the job itself fails closed on a REVIEW_INCOMPLETE state.
 prt_render_summary() {
   local mode="$1" sha="$2" chunk_count="$3" findings="$4" suppressed_count="$5" incomplete_reasons="$6"
   {
