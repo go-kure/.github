@@ -122,7 +122,7 @@ jobs:
           done
 
       - name: Run PR review threads
-        uses: go-kure/.github/.github/actions/pr-review-threads@d15dcfb8844bde03a3b1152b46976db4ba8babf1 # main
+        uses: go-kure/.github/.github/actions/pr-review-threads@0000000000000000000000000000000000000000 # placeholder pending PR2 (go-kure/.github#60/#61 pin-bump PR1 — see docs/standards.md "GitHub Actions pinning")
         with:
           github-token: ${{ github.token }}
           pr-number: ${{ github.event.pull_request.number }}
