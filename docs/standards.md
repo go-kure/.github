@@ -132,11 +132,19 @@ action step entirely when set, so an unresolvable action SHA is never reached. H
 note, from *before* this job-level check existed: kure#669 hit exactly this ("Unable to
 resolve action `go-kure/.github@0000...0`", confirmed live 2026-08-18) while a bootstrap
 pin-bump PR was open-but-unmerged — at that time `off` genuinely could not have helped.
-**Open caveat:** whether `vars.PR_REVIEW_THREADS_MODE` resolves against the caller repo
-(kure/launcher) or this repo inside a called reusable workflow is V2, not yet verified
-live (see `docs/pr-review-threads-live-findings.md`) — until V2 is answered, treat this as
-the correct first response to try, but still land PR2 immediately as backup rather than
-relying on `off` alone to hold the window open indefinitely.
+**V2 resolved (2026-08-18):** `vars.PR_REVIEW_THREADS_MODE` inside the called reusable
+workflow resolves against the **caller's** repository (kure/launcher), not this one —
+GitHub docs: "When a reusable workflow is triggered by a caller workflow, the `github`
+context is always associated with the caller workflow"
+(docs.github.com/en/actions/reference/workflows-and-actions/reusing-workflow-configurations);
+`vars`/`secrets` follow the same caller-bound execution context (it is also why `secrets:
+inherit` passes the caller's secrets, not this repo's). Practical consequence: today
+`PR_REVIEW_THREADS_MODE` is an **org**-level variable, visible identically everywhere, so
+this doesn't change anything in the common case — but during an incident, a **repo-level**
+override must be set on the affected consumer (kure or launcher), not on `.github`; setting
+it only here has no effect on their jobs. See `docs/pr-review-threads-live-findings.md` for
+the full V2-V7 record, still land PR2 immediately as backup rather than relying on `off`
+alone to hold the window open indefinitely.
 
 Every later PR that touches the action's delegate code needs the same two-PR sequence as
 the bootstrap, not a single PR: rebase-merge still rewrites the commit's SHA on landing, so
