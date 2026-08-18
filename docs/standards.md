@@ -123,12 +123,12 @@ Land PR2 as soon as possible after PR1 merges to keep this window short.
 
 Every later PR that touches the action's delegate code needs the same two-PR sequence as
 the bootstrap, not a single PR: rebase-merge still rewrites the commit's SHA on landing, so
-no SHA known while the PR is open can be the one that ends up on `main`. The first PR lands
-the code changes and bumps the pin to a placeholder (or leaves the previous, now-stale, pin
-in place with a comment noting it's pending); the second bumps it to the real merged SHA.
-Unlike the bootstrap, `check-pin-bump.sh` requires the pin to visibly *move* on the first
-PR (there is a prior pin to compare against here), so the placeholder step is mandatory,
-not optional. Dependabot cannot open this PR for you — it doesn't track same-repo paths as
+no SHA known while the PR is open can be the one that ends up on `main`. The first PR lands the code changes and bumps the pin to a new 40-hex placeholder SHA
+(distinct from the prior real pin, with an inline comment marking it as pending); the
+second bumps it to the real merged SHA. Unlike the bootstrap, `check-pin-bump.sh` requires
+the pin to visibly *move* on the first PR (there is a prior pin to compare against here,
+unlike the bootstrap's "no prior pin" exception) — leaving the previous pin in place would
+fail that check, so the placeholder step is mandatory, not optional. Dependabot cannot open this PR for you — it doesn't track same-repo paths as
 a dependency, so this stays a manual, two-PR habit for every change to the delegate code.
 
 ### Vulnerability gating (govulncheck)
