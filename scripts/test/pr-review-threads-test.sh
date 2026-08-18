@@ -284,6 +284,69 @@ count="$(prt_split_diff "$empty_diff" 50000 "$chunk_dir")"
 assert_eq "chunking: an empty diff produces zero chunks" "0" "$count"
 rm -rf "$chunk_dir" "$empty_diff"
 
+# ============================================================ diff chunking: write-failure hardening (dot-github#61, L7/L9/F1/F2)
+# prt_split_diff is source`d directly into this test script's own shell
+# (:23 above), so these two cases call it as a plain shell function with a
+# controlled out_dir and assert on its own stdout/$? directly — no
+# subprocess, no stubbing (new_chunk/_prt_chunk_write are nested function
+# definitions redefined on every call, so no external stub could survive
+# anyway — see diff.sh's own scoping note next to prt_split_diff).
+
+# Case 10 — chunk-count propagation (L7 fold-in): point PRT_INCOMPLETE_FILE
+# at an unwritable path before a diff sized to hit the hard-ceiling
+# truncation path (diff.sh's single-hunk-too-big branch) — that branch's own
+# prt_mark_incomplete call then hits the FATAL append-failure exit(1)
+# (state.sh), which — because prt_split_diff is always the outermost/only
+# command inside its caller's $(...) — collapses only that subshell's exit
+# status. This is narrower than 3f's write_failed tracking (which doesn't
+# see prt_mark_incomplete's own internal append at all): it guards Step 1's
+# prt_mark_incomplete FATAL branch reaching the caller through the
+# subshell, which 3e's split_rc check then catches.
+truncation_diff="$(mktemp)"
+{
+  echo 'diff --git a/big.go b/big.go'
+  echo 'index 1111111..2222222 100644'
+  echo '--- a/big.go'
+  echo '+++ b/big.go'
+  echo '@@ -1,1 +1,40 @@'
+  for _n in $(seq 1 40); do echo "+line $_n padding padding padding padding"; done
+} > "$truncation_diff"
+trunc_chunk_dir="$(mktemp -d)"
+# shellcheck disable=SC2034  # read by prt_mark_incomplete in state.sh (source=/dev/null above, so shellcheck can't see the cross-file read)
+PRT_INCOMPLETE_FILE="/nonexistent-dir-$$/reasons"
+out="$(prt_split_diff "$truncation_diff" 10 "$trunc_chunk_dir" 2>/dev/null)"
+rc=$?
+assert_true "prt_split_diff: FATAL append failure inside the truncation path's own prt_mark_incomplete propagates via the caller's subshell exit status" \
+  "$([ "$rc" -ne 0 ] && echo true || echo false)"
+unset PRT_INCOMPLETE_FILE
+rm -rf "$trunc_chunk_dir" "$truncation_diff"
+
+# Case 11 — write-failure hardening (L9/F1/F2, the regression this case
+# exists for): a genuinely non-empty diff, OUT_DIR already exists but is
+# mode 555 (read+execute, no write) — mkdir -p on an already-existing
+# directory succeeds regardless of its own permissions (no creation
+# attempted), but every write attempt inside it fails with EACCES.
+wf_chunk_dir="$(mktemp -d)"
+chmod 555 "$wf_chunk_dir"
+nonempty_diff="$(mktemp)"
+cat > "$nonempty_diff" <<'EOF'
+diff --git a/a.go b/a.go
+index 1111111..2222222 100644
+--- a/a.go
++++ b/a.go
+@@ -1,1 +1,1 @@
+-old
++new
+EOF
+out="$(prt_split_diff "$nonempty_diff" 50000 "$wf_chunk_dir" 2>/dev/null)"
+rc=$?
+assert_true "prt_split_diff: write-failure hardening — returns non-zero when OUT_DIR is unwritable" \
+  "$([ "$rc" -ne 0 ] && echo true || echo false)"
+assert_eq "prt_split_diff: write-failure hardening — prints no stdout at all, not even a plausible 0" \
+  "" "$out"
+chmod 755 "$wf_chunk_dir"
+rm -rf "$wf_chunk_dir" "$nonempty_diff"
+
 # ============================================================ reconcile: prt_decide_finding
 assert_eq "decide_finding: collision beats everything" \
   "NONE" "$(prt_decide_finding true VALID false false false true)"
@@ -522,6 +585,44 @@ fake_curl_ratelimited() {
 PRT_CURL=fake_curl_ratelimited PRT_GH_TOKEN=x prt_gh_graphql 'query{viewer{login}}' '{}' >/dev/null 2>&1
 assert_eq "gh.sh: HTTP 200 with errors[] is classified as failure, not success" "1" "$?"
 
+# ============================================================ gh.sh: prt_freshness_check names which failure happened (C4, dot-github#61 Step 2)
+fake_curl_freshness_moved() {
+  local out=""
+  local args=("$@")
+  for ((ai = 0; ai < ${#args[@]}; ai++)); do
+    if [ "${args[$ai]}" = "-o" ]; then out="${args[$((ai + 1))]}"; fi
+  done
+  printf '{"head":{"sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}' > "$out"
+  echo 200
+}
+fresh_err="$(PRT_CURL=fake_curl_freshness_moved PRT_GH_TOKEN=x \
+  prt_freshness_check owner/repo 1 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 2>&1 >/dev/null)"
+assert_eq "prt_freshness_check: a genuinely moved head names expected -> live" \
+  "true" "$(grep -qF 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -> bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' <<< "$fresh_err" && echo true || echo false)"
+
+fake_curl_freshness_500() {
+  local out=""
+  local args=("$@")
+  for ((ai = 0; ai < ${#args[@]}; ai++)); do
+    if [ "${args[$ai]}" = "-o" ]; then out="${args[$((ai + 1))]}"; fi
+  done
+  : > "$out"
+  echo 500
+}
+fresh_err="$(PRT_CURL=fake_curl_freshness_500 PRT_GH_TOKEN=x \
+  prt_freshness_check owner/repo 1 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 2>&1 >/dev/null)"
+rc=$?
+assert_eq "prt_freshness_check: read failure still returns 1 (fail-closed unchanged)" "1" "$rc"
+assert_eq "prt_freshness_check: read failure gets its own diagnostic, distinct from the moved-head one" \
+  "true" "$(grep -qF 'failed to read PR' <<< "$fresh_err" && echo true || echo false)"
+
+# ============================================================ state.sh: prt_annotation_escape (dot-github#61 Step 1)
+assert_eq "annotation_escape: percent escaped first" "a%25b" "$(prt_annotation_escape 'a%b')"
+assert_eq "annotation_escape: CR becomes %0D" "a%0Db" "$(prt_annotation_escape "$(printf 'a\rb')")"
+assert_eq "annotation_escape: LF becomes %0A" "a%0Ab" "$(prt_annotation_escape "$(printf 'a\nb')")"
+assert_eq "annotation_escape: percent-then-LF does not double-escape (order: % first, then CR/LF)" \
+  "100%25 done%0Anext" "$(prt_annotation_escape "$(printf '100%% done\nnext')")"
+
 # ============================================================ orchestrator: exit-code contract (subprocess, mocked curl)
 # pr-review-threads.sh itself is not exercised by the rest of this suite (its
 # own header comment says so — it's wiring, not a pure function) but its
@@ -533,19 +634,39 @@ assert_eq "gh.sh: HTTP 200 with errors[] is classified as failure, not success" 
 # (function export is required for a child bash process to see it — a plain
 # variable assignment on the invocation line is not enough on its own).
 #
-# fake_curl_orchestrator dispatches on URL suffix + Accept header — enough to
-# tell the three real callers apart without needing -X: model.sh's proxy
-# call always targets */chat/completions; the advisory-comment POST always
-# targets .../issues/<N>/comments; the diff-fetch curl in
-# pr-review-threads.sh itself sends Accept: application/vnd.github.diff,
-# while every other prt_gh_rest GET pulls/<N> call (initial meta fetch and
-# every later freshness re-check) sends the plain +json Accept instead.
+# fake_curl_orchestrator dispatches on URL suffix + Accept header, now also
+# -X/-d, to tell every real caller apart: model.sh's proxy call always
+# targets */chat/completions; the advisory/overflow comment POST always
+# targets .../issues/<N>/comments; the diff-fetch curl sends Accept:
+# application/vnd.github.diff; every other prt_gh_rest GET pulls/<N> call
+# (initial meta fetch and every later freshness re-check) sends the plain
+# +json Accept instead; GraphQL calls target */graphql (dispatched further
+# by payload shape); a single review-thread comment's own GET/PATCH targets
+# */pulls/comments/<id> (distinct from */pulls/<N>/comments, the create/
+# reply endpoint, which stays on the catch-all "meta" arm — it's a POST
+# whose response body the caller discards). These GraphQL and
+# pulls/comments arms are placed ahead of the trailing catch-all —
+# ordering is load-bearing, same as the diff/meta split above it.
+_prt_test_owned_thread_body() {
+  # Shared by the reviewThreads GraphQL response and the pulls/comments GET
+  # response below, so a real GET-then-PATCH round trip (SET_FIRST_ABSENT,
+  # CLEAR_MARKER) has a marker-bearing body to operate on. Not required to
+  # byte-for-byte match what a real prt_marker_replace produced — only that
+  # it's non-empty and carries a parseable marker.
+  local marker
+  marker="$(prt_marker_build "${PRT_TEST_OWNED_FP:-deadbeefcafebabe}" "" "${PRT_TEST_FIRST_ABSENT_SHA:-}")"
+  printf '**High**\n\nPlanted test finding for empty-diff absence reconciliation.\n\n%s\n' "$marker"
+}
+export -f _prt_test_owned_thread_body
+
 fake_curl_orchestrator() {
-  local args=("$@") out="" accept="" url="" h
+  local args=("$@") out="" accept="" url="" method="" data="" h
   local i n=${#args[@]}
   for ((i = 0; i < n; i++)); do
     case "${args[$i]}" in
       -o) out="${args[$((i + 1))]}" ;;
+      -X) method="${args[$((i + 1))]}" ;;
+      -d) data="${args[$((i + 1))]}" ;;
       -H)
         h="${args[$((i + 1))]}"
         case "$h" in
@@ -577,9 +698,53 @@ fake_curl_orchestrator() {
       printf '%s' '{"id":1}' > "$out"
       echo 200
       ;;
+    */graphql)
+      _prt_test_bump "${PRT_TEST_GRAPHQL_COUNTFILE:?}" >/dev/null
+      case "$data" in
+        *reviewThreads*)
+          resp="$(jq -n --arg body "$(_prt_test_owned_thread_body)" '
+            {data:{repository:{pullRequest:{reviewThreads:{
+              pageInfo:{hasNextPage:false,endCursor:null},
+              nodes:[{
+                id:"THREAD1", isResolved:false, isOutdated:false,
+                resolvedBy:null, viewerCanResolve:true, viewerCanUnresolve:true,
+                comments:{pageInfo:{hasNextPage:false,endCursor:null},
+                  nodes:[{id:"C1", databaseId:1, body:$body, author:{login:"test-bot"}}]}
+              }]
+            }}}}}')"
+          printf '%s' "$resp" > "$out"
+          echo 200
+          ;;
+        *resolveReviewThread*)
+          _prt_test_bump "${PRT_TEST_RESOLVE_COUNTFILE:?}" >/dev/null
+          printf '%s' '{"data":{"resolveReviewThread":{"thread":{"id":"THREAD1"}}}}' > "$out"
+          echo 200
+          ;;
+        *)
+          printf '%s' '{"data":{}}' > "$out"
+          echo 200
+          ;;
+      esac
+      ;;
+    */pulls/comments/*)
+      case "$method" in
+        PATCH)
+          _prt_test_bump "${PRT_TEST_PATCH_COUNTFILE:?}" >/dev/null
+          printf '%s' '{"id":1}' > "$out"
+          echo 200
+          ;;
+        *)
+          jq -n --arg b "$(_prt_test_owned_thread_body)" '{body:$b}' > "$out"
+          echo 200
+          ;;
+      esac
+      ;;
     *)
       case "$accept" in
         *vnd.github.diff*)
+          if [ "${PRT_TEST_EMPTY_DIFF:-0}" = 1 ]; then
+            : > "$out"; echo 200; return 0
+          fi
           c="$(_prt_test_bump "${PRT_TEST_DIFF_COUNTFILE:?}")"
           if [ "$c" -le "${PRT_TEST_DIFF_FAIL_TIMES:-0}" ]; then
             : > "$out"; echo 502; return 0
@@ -614,29 +779,46 @@ export -f fake_curl_orchestrator _prt_test_bump
 
 # run_orchestrator MODE DIFF_FAIL_TIMES META_FAIL_TIMES MODEL_ALWAYS_FAIL —
 # prints the subprocess exit code; countfiles are left behind in the paths
-# given via the PRT_TEST_*_COUNTFILE globals set by the caller.
+# given via the PRT_TEST_*_COUNTFILE globals set by the caller. stdout/
+# stderr are now captured to PRT_TEST_STDOUT_FILE/PRT_TEST_STDERR_FILE
+# (also caller-set globals) instead of being discarded — #61's whole point
+# is that this output now carries information worth asserting on.
 run_orchestrator() {
   local mode="$1" diff_fail="$2" meta_fail="$3" model_fail="$4"
   local scratch summary rc
   scratch="$(mktemp -d)"
   summary="$(mktemp)"
-  : > "$PRT_TEST_DIFF_COUNTFILE"
-  : > "$PRT_TEST_META_COUNTFILE"
-  : > "$PRT_TEST_MODEL_COUNTFILE"
+  # Seeded with "0", not truncated to empty: a countfile _prt_test_bump never
+  # touches this run must read back as the integer 0, not an empty string a
+  # caller's `-ge`/`-eq` comparison would choke on.
+  echo 0 > "$PRT_TEST_DIFF_COUNTFILE"
+  echo 0 > "$PRT_TEST_META_COUNTFILE"
+  echo 0 > "$PRT_TEST_MODEL_COUNTFILE"
+  echo 0 > "$PRT_TEST_GRAPHQL_COUNTFILE"
+  echo 0 > "$PRT_TEST_PATCH_COUNTFILE"
+  echo 0 > "$PRT_TEST_RESOLVE_COUNTFILE"
+  : > "$PRT_TEST_STDOUT_FILE"
+  : > "$PRT_TEST_STDERR_FILE"
   (
     cd "$scratch" && \
     PRT_CURL=fake_curl_orchestrator \
     PRT_TEST_DIFF_COUNTFILE="$PRT_TEST_DIFF_COUNTFILE" \
     PRT_TEST_META_COUNTFILE="$PRT_TEST_META_COUNTFILE" \
     PRT_TEST_MODEL_COUNTFILE="$PRT_TEST_MODEL_COUNTFILE" \
+    PRT_TEST_GRAPHQL_COUNTFILE="$PRT_TEST_GRAPHQL_COUNTFILE" \
+    PRT_TEST_PATCH_COUNTFILE="$PRT_TEST_PATCH_COUNTFILE" \
+    PRT_TEST_RESOLVE_COUNTFILE="$PRT_TEST_RESOLVE_COUNTFILE" \
     PRT_TEST_DIFF_FAIL_TIMES="$diff_fail" \
     PRT_TEST_META_FAIL_TIMES="$meta_fail" \
     PRT_TEST_MODEL_ALWAYS_FAIL="$model_fail" \
+    PRT_TEST_EMPTY_DIFF="${PRT_TEST_EMPTY_DIFF:-0}" \
+    PRT_TEST_FIRST_ABSENT_SHA="${PRT_TEST_FIRST_ABSENT_SHA:-}" \
+    PRT_TEST_OWNED_FP="${PRT_TEST_OWNED_FP:-deadbeefcafebabe}" \
     PRT_GH_TOKEN=x PRT_REPO=owner/repo PRT_PR_NUMBER=1 \
     PRT_HEAD_SHA=1111111111111111111111111111111111111111 \
     PRT_BOT_LOGIN="test-bot[bot]" PRT_PROXY_URL="http://proxy.invalid" \
     PRT_MODE="$mode" GITHUB_STEP_SUMMARY="$summary" \
-    bash "$ROOT/scripts/pr-review-threads.sh" >/dev/null 2>&1
+    bash "$ROOT/scripts/pr-review-threads.sh" >"$PRT_TEST_STDOUT_FILE" 2>"$PRT_TEST_STDERR_FILE"
   )
   rc=$?
   rm -rf "$scratch" "$summary"
@@ -646,12 +828,38 @@ run_orchestrator() {
 PRT_TEST_DIFF_COUNTFILE="$(mktemp)"
 PRT_TEST_META_COUNTFILE="$(mktemp)"
 PRT_TEST_MODEL_COUNTFILE="$(mktemp)"
+PRT_TEST_GRAPHQL_COUNTFILE="$(mktemp)"
+PRT_TEST_PATCH_COUNTFILE="$(mktemp)"
+PRT_TEST_RESOLVE_COUNTFILE="$(mktemp)"
+PRT_TEST_STDOUT_FILE="$(mktemp)"
+PRT_TEST_STDERR_FILE="$(mktemp)"
 
 rc="$(run_orchestrator advisory 0 0 0)"
 assert_eq "orchestrator: clean run (diff/meta/model all succeed first try) exits 0" "0" "$rc"
+# Case 4 — C7 regression guard: a successful run must also be readable from
+# the job log, not only a failing one.
+assert_eq "orchestrator: clean run — stderr carries prt: mode= stage tracing" \
+  "true" "$(grep -q '^prt: mode=' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator: clean run — stderr carries prt: diff: stage tracing" \
+  "true" "$(grep -q '^prt: diff:' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 
 rc="$(run_orchestrator advisory 0 0 1)"
 assert_eq "orchestrator: model call failing every chunk marks REVIEW_INCOMPLETE -> exits 1" "1" "$rc"
+# Case 3 — the fail-closed exit itself must be loud, not just the exit code.
+assert_eq "orchestrator: fail-closed exit — stderr carries REVIEW_INCOMPLETE:" \
+  "true" "$(grep -q 'REVIEW_INCOMPLETE:' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator: fail-closed exit — stderr carries \"failing closed\"" \
+  "true" "$(grep -q 'failing closed' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator: fail-closed exit — stdout carries a ::error title= annotation" \
+  "true" "$(grep -q '::error title=' "$PRT_TEST_STDOUT_FILE" && echo true || echo false)"
+
+# Case 3a — permanent metadata-fetch failure (F3): every attempt (matching
+# prt_retry 3's own attempt count) returns 502, unlike meta_fail=1 below
+# which only ever exercises the transient-then-success retry path.
+rc="$(run_orchestrator advisory 0 3 0)"
+assert_eq "orchestrator: PR-metadata fetch failing all 3 attempts exits 1" "1" "$rc"
+assert_eq "orchestrator: permanent metadata-fetch failure — stderr carries the Step 3a ERROR line" \
+  "true" "$(grep -qF 'ERROR: failed to fetch PR metadata' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 
 # PRT_MODE=off must short-circuit before any curl call at all (:93-99, ahead
 # of the diff fetch at :103) — proven here by wiring in settings that would
@@ -671,7 +879,46 @@ assert_eq "orchestrator: PR-metadata GET retry — one mocked 502 then success s
 assert_eq "orchestrator: PR-metadata GET retry actually fired (mock hit more than once)" \
   "true" "$([ "$(cat "$PRT_TEST_META_COUNTFILE")" -ge 2 ] && echo true || echo false)"
 
-rm -f "$PRT_TEST_DIFF_COUNTFILE" "$PRT_TEST_META_COUNTFILE" "$PRT_TEST_MODEL_COUNTFILE"
+# ---- Cases 7-9: empty net diff (dot-github#60) ----
+# enforce + empty diff + owned open thread + no first_absent_sha yet ->
+# exit 0, PATCH count >= 1 (the SET_FIRST_ABSENT stamp via GET-then-PATCH
+# on the thread's first comment), resolve count 0 (nothing to resolve on
+# a first sighting), model count 0 (no chunking/review happens on an empty
+# diff, per Step 3b).
+PRT_TEST_EMPTY_DIFF=1
+PRT_TEST_FIRST_ABSENT_SHA=""
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator: enforce + empty diff + first sighting -> exits 0" "0" "$rc"
+assert_eq "orchestrator: enforce + empty diff + first sighting -> PATCH count >= 1 (SET_FIRST_ABSENT)" \
+  "true" "$([ "$(cat "$PRT_TEST_PATCH_COUNTFILE")" -ge 1 ] && echo true || echo false)"
+assert_eq "orchestrator: enforce + empty diff + first sighting -> resolve count 0" \
+  "0" "$(cat "$PRT_TEST_RESOLVE_COUNTFILE" 2>/dev/null || echo 0)"
+assert_eq "orchestrator: enforce + empty diff + first sighting -> model count 0 (no findings pipeline on empty diff)" \
+  "0" "$(cat "$PRT_TEST_MODEL_COUNTFILE" 2>/dev/null || echo 0)"
+
+# enforce + empty diff + owned open thread + first_absent_sha on a
+# different commit than this run's head -> the second absence -> resolve.
+PRT_TEST_EMPTY_DIFF=1
+PRT_TEST_FIRST_ABSENT_SHA="2222222222222222222222222222222222222222"
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator: enforce + empty diff + second absence on a new SHA -> exits 0" "0" "$rc"
+assert_eq "orchestrator: enforce + empty diff + second absence on a new SHA -> resolve count >= 1" \
+  "true" "$([ "$(cat "$PRT_TEST_RESOLVE_COUNTFILE")" -ge 1 ] && echo true || echo false)"
+
+# advisory + empty diff -> the cheap exit (Step 3b's non-enforce branch)
+# must stay ahead of the thread-listing GraphQL call entirely.
+PRT_TEST_EMPTY_DIFF=1
+PRT_TEST_FIRST_ABSENT_SHA=""
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "orchestrator: advisory + empty diff -> exits 0" "0" "$rc"
+assert_eq "orchestrator: advisory + empty diff -> GraphQL count 0 (cheap exit never reaches thread listing)" \
+  "0" "$(cat "$PRT_TEST_GRAPHQL_COUNTFILE" 2>/dev/null || echo 0)"
+PRT_TEST_EMPTY_DIFF=0
+PRT_TEST_FIRST_ABSENT_SHA=""
+
+rm -f "$PRT_TEST_DIFF_COUNTFILE" "$PRT_TEST_META_COUNTFILE" "$PRT_TEST_MODEL_COUNTFILE" \
+      "$PRT_TEST_GRAPHQL_COUNTFILE" "$PRT_TEST_PATCH_COUNTFILE" "$PRT_TEST_RESOLVE_COUNTFILE" \
+      "$PRT_TEST_STDOUT_FILE" "$PRT_TEST_STDERR_FILE"
 
 echo "passed: $pass_count, failed: $failures"
 [ "$failures" -eq 0 ]
