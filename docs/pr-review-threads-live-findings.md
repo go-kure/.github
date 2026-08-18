@@ -45,3 +45,4 @@ Once filled in, cross-reference the corresponding facts already asserted (and ma
   (a PAT or GitHub App installation token) wired into `pr-review.yml`'s `github-token:` input in
   place of `${{ github.token }}`, which is a real (if scoped) infrastructure change and a separate
   decision from documenting the finding.
+probe pat-check scratch commit
