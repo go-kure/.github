@@ -26,12 +26,22 @@
 # verification (see the design plan and docs/pr-review-threads-live-findings.md)
 # is recorded — V1 confirmed 2026-08-18: the required-check context string is
 # byte-identical on merge_group as on pull_request, and reports skipped (not
-# missing) on the queue's temporary ref; the draft/fork if: below needed no
+# missing) on the queue's temporary ref; the fork if: below needed no
 # change for this to hold, (2) the merge_group trigger lands in kure/launcher
 # (done, Task 3), (3) the required_status_checks.contexts policy change lands.
 # Until then, advisory mode is intentionally the only wired path (still posts
 # one plain issue comment with the merged findings table, matching
 # pre-existing behavior).
+#
+# The job's `if:` no longer excludes drafts (2026-08-19) — this workflow was
+# backported from GitLab's `meta/ci-templates/mr-review.yml`, which reviews
+# every merge_request_event pipeline with no draft condition. The GitHub port
+# carried a `draft == false` guard from the pre-centralisation per-repo copies
+# with no recorded rationale (git blame: extraction commit 2f7c843, "full job
+# condition retained"); it made "open as draft, converge, then undraft" a
+# contradiction on this org, since the review that should inform convergence
+# never ran until after undraft. Removed for parity with GitLab, where draft
+# blocks merge, not review.
 #
 # continue-on-error was removed below once the failure surface was hardened
 # (a per-call timeout on every GitHub/model curl call; a retry wrapper on the
@@ -84,7 +94,6 @@ jobs:
     name: AI Code Review
     runs-on: autops-kube-kure
     if: >-
-      github.event.pull_request.draft == false &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       vars.PR_REVIEW_THREADS_MODE != 'off'
     timeout-minutes: 20
