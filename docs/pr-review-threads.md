@@ -156,13 +156,13 @@ reason to stderr (prefixed `  - `) and as capped `::error title=...::` workflow 
 from "the review ran and found nothing" by exit code *and* job-log output, not only by a human
 reading the summary by hand.
 
-The model-review call (`prt_model_review`, `model.sh:181-199`) gets one bounded retry — not
+The model-review call (`prt_model_review`, `model.sh:229-247`) gets one bounded retry — not
 `prt_retry`'s usual 3, each call already costs 40-60s against the job's `timeout-minutes: 20`
 budget — when the response fails the `jq -c '.'` parse
 (`pr-review-threads.sh:214-256`), with a salvage attempt interposed ahead of that retry:
-`prt_extract_json_braces` (`model.sh:31-51`) takes the substring from the first `{` to the last
+`prt_extract_json_braces` (`model.sh:33-53`) takes the substring from the first `{` to the last
 `}` in the raw content and re-parses that, a no-op on already-clean JSON and a fix for a chattier
-generation that wraps the JSON object in prose (`prt_strip_fence`, `model.sh:24-29`, only strips a
+generation that wraps the JSON object in prose (`prt_strip_fence`, `model.sh:26-31`, only strips a
 fenced-code-block marker that is itself the first/last line, not surrounding prose). This closes a
 live incident: launcher#283 run 32175849548 hit `chunk 0: review response was not valid JSON` ->
 `prt_mark_incomplete` -> fail-closed exit, then succeeded on a same-head-SHA retry 39s later.
@@ -170,7 +170,7 @@ Raising `PRT_MAX_TOKENS` or checking for `finish_reason == "length"` cannot fix 
 current model-proxy backend — it hard-codes `maxTokens` server-side and `finish_reason` is
 unconditionally `"stop"` on its non-streaming path. If both the retry and the salvage still fail
 to parse, the `REVIEW_INCOMPLETE` reason for that chunk carries a shape-only diagnostic
-(`prt_response_shape`, `model.sh:53-67`) — content length and a leading-character class
+(`prt_response_shape`, `model.sh:55-69`) — content length and a leading-character class
 (`starts-with-brace` / `starts-with-fence` / `starts-with-prose`) — never the response text
 itself, consistent with the "never logged" list below.
 
@@ -195,6 +195,28 @@ initial diff fetch and the initial PR-metadata fetch — are wrapped in `prt_ret
 budget-exhausted) PR-metadata fetch failure now prints its own `ERROR: failed to fetch PR
 metadata` line before exiting 1, instead of relying solely on `prt_gh_rest`'s generic HTTP-status
 line to explain the exit.
+
+Neither the request payload nor the two strings it wraps ever go through `argv`
+(`_prt_call_proxy`, `model.sh:142-225`): the system and user strings reach `jq` via `--rawfile`
+from a temp dir, and the assembled body reaches curl via `-d @FILE`. Linux caps a *single* argv
+entry at `MAX_ARG_STRLEN` = 32 pages = 131072 bytes, independent of `ARG_MAX` and of any
+`ulimit`, and a chunk can legitimately exceed that: `prt_split_diff`'s hard ceiling is
+`PRT_HARD_CEILING_MULT` (4) x `PRT_MAX_DIFF_CHARS` (50000) = 200000 chars for the chunk diff
+alone (`diff.sh:21,32`), before the system prompt adds the project's `AGENTS.md` on top — so the
+soft 50000 limit is not the bound that matters. Both call sites had to change, and they fail at
+different sizes, which is why the live incident only exposed one: the payload is strictly larger
+than the user string it wraps, so curl's `-d "$payload"` tripped first (`curl: Argument list too
+long`) while jq's `--arg user` still fit. go-kure/launcher run 32224453949 chunk 3 hit exactly
+this and fell into the non-2xx branch with an *empty* status, printing `proxy returned HTTP `
+with no number — naming the proxy for a fault that never left the runner. A curl that fails to
+produce a status at all is now reported separately as `prt_model: curl failed (exit N,
+http_code='')`, ahead of the non-2xx branch, so a transport or exec fault is no longer
+indistinguishable from a proxy response.
+
+The regression test for this (`pr-review-threads-test.sh`, "model.sh: oversized payload") stubs
+`PRT_CURL` with a **real executable on disk**, not a shell function: a function stub is called
+in-process and never `execve`'d, so it cannot reproduce `E2BIG` and would pass against the broken
+form, making the test vacuous.
 
 ## Incident procedure
 

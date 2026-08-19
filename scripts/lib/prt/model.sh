@@ -6,8 +6,10 @@
 # fp-joinable, not just human-readable, once the diff is chunked.
 #
 # PRT_CURL indirection (gh.sh) is reused here too, for consistency — tests
-# stub it the same way, even though model.sh itself is not exercised by the
-# pure-function unit suite.
+# stub it the same way. Most of model.sh is still outside the pure-function
+# unit suite, but _prt_call_proxy is not: its argv/E2BIG regression test stubs
+# PRT_CURL with a real executable on disk, because a shell-function stub is
+# never execve'd and so cannot reproduce the fault it guards.
 : "${PRT_CURL:=curl}"
 
 set -uo pipefail
@@ -139,17 +141,53 @@ PROMPT
 # model content string (expected JSON) on success, empty on failure.
 _prt_call_proxy() {
   local proxy_url="$1" model="$2" max_tokens="$3" system="$4" user="$5"
-  local payload http_code resp content
-  payload="$(jq -n \
+  local http_code resp content
+
+  # NOTHING large goes through argv here — not into jq, not into curl. Linux
+  # caps a SINGLE argv entry at MAX_ARG_STRLEN = 32 pages = 131072 bytes,
+  # independent of ARG_MAX and of any ulimit, so both `--arg user "$user"` and
+  # `-d "$payload"` make execve fail with E2BIG once a chunk gets big enough.
+  # A chunk can legitimately reach ~200 KB — diff.sh's hard ceiling is
+  # PRT_HARD_CEILING_MULT (4) x PRT_MAX_DIFF_CHARS (50000), and only a single
+  # hunk above THAT is truncated — and the system prompt adds the project's
+  # AGENTS.md on top, so the soft 50000 limit was never the bound that
+  # mattered here.
+  #
+  # The two sites fail at different thresholds, which is why the live incident
+  # only showed one of them: the payload is strictly larger than the user
+  # string it wraps, so curl (`-d "$payload"`) tripped first while jq's
+  # `--arg user` still fit (go-kure/launcher run 32224453949, chunk 3 —
+  # reported as `curl: Argument list too long`). A slightly larger chunk fails
+  # in jq instead, one line earlier, with the same cause and a different name.
+  # Both are fixed together; fixing only the reported one moves the fault
+  # rather than removing it.
+  local dir sysf userf req tmp
+  dir="$(mktemp -d)"
+  if [ -z "$dir" ] || [ ! -d "$dir" ]; then
+    echo "prt_model: could not create a temp dir for the request" >&2
+    return 1
+  fi
+  sysf="$dir/system"; userf="$dir/user"; req="$dir/request"; tmp="$dir/response"
+  # Pre-create the response file: curl writes it via -o, but if curl never runs
+  # at all (the E2BIG case this function exists to survive) the `cat "$tmp"`
+  # below would otherwise fail noisily on a missing path. `mktemp` used to
+  # create it as a side effect; naming it inside $dir does not.
+  : > "$tmp"
+  printf '%s' "$system" > "$sysf"
+  printf '%s' "$user" > "$userf"
+
+  # --rawfile reads a file verbatim as a JSON string, so the two unbounded
+  # values never appear on jq's command line. printf '%s' writes them without
+  # a trailing newline, so what jq reads is byte-identical to the arguments.
+  jq -n \
     --arg model "$model" \
-    --arg system "$system" \
-    --arg user "$user" \
+    --rawfile system "$sysf" \
+    --rawfile user "$userf" \
     --argjson max_tokens "$max_tokens" \
     '{model: $model, max_tokens: $max_tokens,
-      messages: [{role: "system", content: $system}, {role: "user", content: $user}]}')"
+      messages: [{role: "system", content: $system}, {role: "user", content: $user}]}' \
+    > "$req" || { echo "prt_model: failed to build request payload" >&2; rm -rf "$dir"; return 1; }
 
-  local tmp
-  tmp="$(mktemp)"
   # --connect-timeout 10 --max-time 300: a per-call ceiling, not a claim the
   # whole run fits the job's 20-minute budget (.github/workflows/pr-review.yml
   # timeout-minutes: 20 = 1200s). Up to 5 diff chunks x 2 calls (review +
@@ -157,13 +195,23 @@ _prt_call_proxy() {
   # exceed it if every call maxes out. 300s bounds any single hung call so it
   # alone can't consume the whole job; the job-level timeout is the backstop
   # for the aggregate, not this per-call value.
+  local curl_rc=0
   http_code="$("$PRT_CURL" -s -o "$tmp" -w '%{http_code}' \
     --connect-timeout 10 --max-time 300 \
     -X POST "${proxy_url}/v1/chat/completions" \
     -H "Content-Type: application/json" \
-    -d "$payload")"
+    -d @"$req")" || curl_rc=$?
   resp="$(cat "$tmp")"
-  rm -f "$tmp"
+  rm -rf "$dir"
+
+  # Separated from the non-2xx branch on purpose: a curl that never produced a
+  # status at all is a transport/exec fault, not a proxy response, and must not
+  # be reported as one. The empty-http_code case previously fell through here.
+  if [ "$curl_rc" -ne 0 ]; then
+    echo "prt_model: curl failed (exit $curl_rc, http_code='$http_code')" >&2
+    echo "$resp" | head -c 500 >&2
+    return 1
+  fi
 
   if [[ ! "$http_code" =~ ^2[0-9]{2}$ ]]; then
     echo "prt_model: proxy returned HTTP $http_code" >&2
