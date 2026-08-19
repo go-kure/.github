@@ -242,9 +242,10 @@ is unaffected by this — it's visible identically everywhere. Full record:
 
 The review runs on draft PRs (2026-08-19), by design — parity with the downstream GitLab CI
 template this workflow was backported from, which reviews every merge-request pipeline with no
-draft condition. Draft blocks merge, not review: a draft PR gets the same 2-pass review,
-findings, and resolvable threads as a ready one, so review feedback is available throughout
-development instead of only after the PR is marked ready.
+draft condition. Draft blocks merge, not review: a draft PR gets the same 2-pass review as a
+ready one — currently one plain issue comment per run under the default `advisory` mode (see
+§ Modes above), or resolvable threads once `enforce` lands — so review feedback is available
+throughout development instead of only after the PR is marked ready.
 
 Consumer callers keep `ready_for_review` in their own `types:` alongside the removed draft gate
 (see `pr-review-caller.yml`), even though it is redundant once every consumer's rollout has
