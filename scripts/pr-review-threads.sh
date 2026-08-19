@@ -223,7 +223,7 @@ for chunk_file in "$CHUNK_DIR"/chunk-*.diff; do
   # — prt_strip_fence only handles a fenced marker on line 1/last line, not
   # surrounding prose), and one retry of the model call itself (not
   # prt_retry's usual 3 — each call already costs 40-60s against the job's
-  # 20-minute budget, model.sh:153-159) if salvage doesn't recover it either.
+  # 20-minute budget, model.sh:191-197) if salvage doesn't recover it either.
   raw_json="$(jq -c '.' <<< "$raw" 2>/dev/null || echo '')"
   retried=false
   salvaged=false

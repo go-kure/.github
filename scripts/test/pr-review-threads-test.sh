@@ -1014,5 +1014,78 @@ rm -f "$PRT_TEST_DIFF_COUNTFILE" "$PRT_TEST_META_COUNTFILE" "$PRT_TEST_MODEL_COU
       "$PRT_TEST_GRAPHQL_COUNTFILE" "$PRT_TEST_PATCH_COUNTFILE" "$PRT_TEST_RESOLVE_COUNTFILE" \
       "$PRT_TEST_STDOUT_FILE" "$PRT_TEST_STDERR_FILE"
 
+# ============================================================ model.sh: oversized payload must not hit argv E2BIG
+# Linux caps a SINGLE argv entry at MAX_ARG_STRLEN = 32 pages = 131072 bytes,
+# independent of ARG_MAX and of any ulimit. _prt_call_proxy used to pass the
+# whole JSON body as `-d "$payload"`, so a large diff chunk made execve fail
+# with E2BIG; curl never ran, http_code came back empty, and the failure was
+# misreported as "proxy returned HTTP " (go-kure/launcher run 32224453949).
+#
+# The stub MUST be a real executable on disk, not a shell function: a function
+# is called in-process and never execve'd, so a function stub passes even
+# against the broken `-d "$payload"` form and would make this test vacuous.
+# shellcheck source=/dev/null
+source "$LIB/model.sh"
+
+prt_e2big_dir="$(mktemp -d)"
+cat > "$prt_e2big_dir/fake-curl" <<'FAKECURL'
+#!/usr/bin/env bash
+# Minimal curl stand-in: honours -o <file> and prints a status like
+# -w '%{http_code}', and records the request body size so the test can prove
+# the whole payload survived the trip.
+set -uo pipefail
+out=""; body=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) out="$2"; shift 2 ;;
+    -d) body="$2"; shift 2 ;;
+    *)  shift ;;
+  esac
+done
+# -d @FILE: read the body from the file, which is the point of the fix.
+case "$body" in
+  @*) body="$(cat "${body#@}")" ;;
+esac
+printf '%s' "${#body}" > "$PRT_TEST_BODYLEN_FILE"
+printf '%s' '{"choices":[{"message":{"content":"{\"findings\":[]}"}}]}' > "$out"
+printf '200'
+FAKECURL
+chmod +x "$prt_e2big_dir/fake-curl"
+
+export PRT_TEST_BODYLEN_FILE="$prt_e2big_dir/bodylen"
+
+# 300000 chars: above MAX_ARG_STRLEN (131072) and inside the range diff.sh can
+# actually emit — its hard ceiling is PRT_HARD_CEILING_MULT (4) x a 50000 soft
+# limit = 200000 for the chunk diff alone, before the system prompt is added.
+prt_big_user="$(head -c 300000 /dev/zero | tr '\0' 'x')"
+prt_e2big_out="$(PRT_CURL="$prt_e2big_dir/fake-curl" \
+  _prt_call_proxy "http://proxy.invalid" "m" 1500 "sys" "$prt_big_user" 2>"$prt_e2big_dir/err")"
+prt_e2big_rc=$?
+
+assert_eq "model: 300KB payload does not fail (argv E2BIG regression)" "0" "$prt_e2big_rc"
+assert_eq "model: 300KB payload returns the parsed content" '{"findings":[]}' "$prt_e2big_out"
+assert_eq "model: 300KB payload emits no stderr diagnostic" "" "$(cat "$prt_e2big_dir/err")"
+# The JSON body wraps the 300000-char user string, so it is strictly larger.
+assert_eq "model: full body reached curl, not a truncated one" "true" \
+  "$([ "$(cat "$PRT_TEST_BODYLEN_FILE")" -gt 300000 ] && echo true || echo false)"
+
+# A curl that cannot run at all must be reported as a local failure, not as a
+# proxy response carrying a blank status.
+cat > "$prt_e2big_dir/broken-curl" <<'BROKENCURL'
+#!/usr/bin/env bash
+exit 7
+BROKENCURL
+chmod +x "$prt_e2big_dir/broken-curl"
+
+prt_brk_err="$(PRT_CURL="$prt_e2big_dir/broken-curl" \
+  _prt_call_proxy "http://proxy.invalid" "m" 1500 "sys" "hi" 2>&1 >/dev/null)"
+assert_eq "model: curl exec failure names curl, not the proxy" "true" \
+  "$(case "$prt_brk_err" in *"curl failed (exit 7"*) echo true ;; *) echo false ;; esac)"
+assert_eq "model: curl exec failure does not claim an HTTP status" "true" \
+  "$(case "$prt_brk_err" in *"proxy returned HTTP"*) echo false ;; *) echo true ;; esac)"
+
+unset PRT_TEST_BODYLEN_FILE
+rm -rf "$prt_e2big_dir"
+
 echo "passed: $pass_count, failed: $failures"
 [ "$failures" -eq 0 ]
