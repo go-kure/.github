@@ -240,11 +240,11 @@ is unaffected by this — it's visible identically everywhere. Full record:
 
 ## Draft PRs
 
-The review runs on draft PRs (2026-08-19), by design — parity with the GitLab original
-(`meta/ci-templates/mr-review.yml` in `autops/wharf`), which reviews every merge-request
-pipeline with no draft condition. Draft blocks merge, not review: a draft PR gets the same
-2-pass review, findings, and resolvable threads as a ready one, so review feedback is available
-throughout development instead of only after the PR is marked ready.
+The review runs on draft PRs (2026-08-19), by design — parity with the downstream GitLab CI
+template this workflow was backported from, which reviews every merge-request pipeline with no
+draft condition. Draft blocks merge, not review: a draft PR gets the same 2-pass review,
+findings, and resolvable threads as a ready one, so review feedback is available throughout
+development instead of only after the PR is marked ready.
 
 ## What this does not cover
 
