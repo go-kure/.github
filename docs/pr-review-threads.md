@@ -246,6 +246,13 @@ draft condition. Draft blocks merge, not review: a draft PR gets the same 2-pass
 findings, and resolvable threads as a ready one, so review feedback is available throughout
 development instead of only after the PR is marked ready.
 
+Consumer callers keep `ready_for_review` in their own `types:` alongside the removed draft gate
+(see `pr-review-caller.yml`), even though it is redundant once every consumer's rollout has
+landed: this workflow is pinned `@main` in each caller, so the no-longer-draft-gated behavior only
+takes effect once *this* PR merges — an async window in which a consumer PR whose own branch
+already dropped the type, then marked ready with no further push, would get no re-trigger at all.
+Keeping it costs one redundant run at ready-time once every consumer has picked up the merge.
+
 ## What this does not cover
 
 Live-PR verification of the specific behaviors this doc describes (the V1-V7 spike questions —
