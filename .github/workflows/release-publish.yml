@@ -69,8 +69,10 @@ jobs:
           # Validate CHANGELOG has section for this tag
           # git-cliff produces format: ## [0.1.0] (without v prefix)
           VERSION_NO_V="${TAG#v}"
-          test -f CHANGELOG.md && grep -q "^## \[${VERSION_NO_V}\]" CHANGELOG.md \
-            || { echo "CHANGELOG.md missing section for ${TAG} (expected: ## [${VERSION_NO_V}])"; exit 1; }
+          if [ ! -f CHANGELOG.md ] || ! grep -q "^## \[${VERSION_NO_V}\]" CHANGELOG.md; then
+            echo "CHANGELOG.md missing section for ${TAG} (expected: ## [${VERSION_NO_V}])"
+            exit 1
+          fi
 
           # Ensure new tag is greater than previous tag
           LAST=$(git tag --list 'v*' --sort=-v:refname | sed -n '2p' || true)
