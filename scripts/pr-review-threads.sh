@@ -39,6 +39,8 @@ set -uo pipefail  # not -e: every stage must run to completion and report,
 PRT_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/lib/prt" && pwd)"
 # shellcheck source=scripts/lib/prt/state.sh
 source "$PRT_LIB_DIR/state.sh"
+# shellcheck source=scripts/lib/prt/json.sh
+source "$PRT_LIB_DIR/json.sh"
 # shellcheck source=scripts/lib/prt/gh.sh
 source "$PRT_LIB_DIR/gh.sh"
 # shellcheck source=scripts/lib/prt/diff.sh
@@ -355,16 +357,51 @@ REPO_NAME="${PRT_REPO##*/}"
 
 THREADS='[]'
 cursor=null
-list_failed=0
+inventory_failed=0
+inventory_failure_stage=''
+prt_inventory_fail() {
+  local stage="$1"
+  if [ "$inventory_failed" != 1 ]; then
+    inventory_failed=1
+    inventory_failure_stage="$stage"
+    echo "ERROR: review thread inventory failed at $stage; aborting before any write." >&2
+  fi
+}
 while :; do
-  vars="$(jq -n --arg owner "$OWNER" --arg repo "$REPO_NAME" --argjson pr "$PRT_PR_NUMBER" --argjson cursor "$cursor" \
-    '{owner:$owner, repo:$repo, pr:$pr, cursor:$cursor}')"
-  data="$(prt_gh_graphql "$list_query" "$vars")" || { list_failed=1; break; }
-  page="$(jq -c '.repository.pullRequest.reviewThreads' <<< "$data")"
-  THREADS="$(jq -c -n --argjson a "$THREADS" --argjson b "$(jq -c '.nodes' <<< "$page")" '$a + $b')"
-  has_next="$(jq -r '.pageInfo.hasNextPage' <<< "$page")"
+  if ! vars="$(jq -n --arg owner "$OWNER" --arg repo "$REPO_NAME" --argjson pr "$PRT_PR_NUMBER" --argjson cursor "$cursor" \
+    '{owner:$owner, repo:$repo, pr:$pr, cursor:$cursor}' 2>/dev/null)"; then
+    prt_inventory_fail "reviewThreads request variables"
+    break
+  fi
+  if ! data="$(prt_gh_graphql "$list_query" "$vars")"; then
+    prt_inventory_fail "reviewThreads request"
+    break
+  fi
+  if ! page="$(prt_json_extract_inventory_page review_threads "$data")"; then
+    prt_inventory_fail "reviewThreads page extraction"
+    break
+  fi
+  if ! page_nodes="$(jq -ce '.nodes | select(type == "array")' <<< "$page" 2>/dev/null)"; then
+    prt_inventory_fail "reviewThreads page nodes"
+    break
+  fi
+  if ! merged_threads="$(prt_json_concat_arrays "$THREADS" "$page_nodes")"; then
+    prt_inventory_fail "reviewThreads page concatenation"
+    break
+  fi
+  THREADS="$merged_threads"
+  if ! has_next="$(jq -r '.pageInfo.hasNextPage' <<< "$page" 2>/dev/null)"; then
+    prt_inventory_fail "reviewThreads pagination flag"
+    break
+  fi
+  case "$has_next" in true|false) : ;; *) prt_inventory_fail "reviewThreads pagination flag"; break ;; esac
+  [ "$inventory_failed" = 1 ] && break
   [ "$has_next" = true ] || break
-  cursor="$(jq -c '.pageInfo.endCursor' <<< "$page")"
+  if ! next_cursor="$(jq -ce '.pageInfo.endCursor | select(type == "string" and length > 0)' <<< "$page" 2>/dev/null)"; then
+    prt_inventory_fail "reviewThreads pagination cursor"
+    break
+  fi
+  cursor="$next_cursor"
 done
 
 # Comment pagination: a thread with more than 50 comments hides any human
@@ -372,32 +409,79 @@ done
 # would then treat an actively-discussed thread as unmatched and eligible
 # for auto-resolve (dot-github#50 gmr finding C4). Fetch the rest, per
 # thread, only for threads that actually need it.
-if [ "$list_failed" != 1 ]; then
-  n_threads_pg="$(jq 'length' <<< "$THREADS")"
+if [ "$inventory_failed" != 1 ]; then
+  if ! n_threads_pg="$(jq -r 'if type == "array" then length else error("not an array") end' <<< "$THREADS" 2>/dev/null)"; then
+    prt_inventory_fail "reviewThreads array validation"
+  fi
+fi
+if [ "$inventory_failed" != 1 ]; then
   for ((tpi = 0; tpi < n_threads_pg; tpi++)); do
-    th_pg="$(jq -c ".[$tpi]" <<< "$THREADS")"
-    has_more="$(jq -r '.comments.pageInfo.hasNextPage // false' <<< "$th_pg")"
+    if ! th_pg="$(jq -ce --argjson i "$tpi" '.[$i] | select(type == "object")' <<< "$THREADS" 2>/dev/null)"; then
+      prt_inventory_fail "thread selection at index $tpi"
+      break
+    fi
+    if ! has_more="$(jq -r '.comments.pageInfo.hasNextPage' <<< "$th_pg" 2>/dev/null)"; then
+      prt_inventory_fail "comment pagination flag at thread index $tpi"
+      break
+    fi
+    case "$has_more" in true|false) : ;; *) prt_inventory_fail "comment pagination flag at thread index $tpi"; break ;; esac
+    [ "$inventory_failed" = 1 ] && break
     [ "$has_more" = true ] || continue
-    tcursor="$(jq -c '.comments.pageInfo.endCursor' <<< "$th_pg")"
-    tid_pg="$(jq -r '.id' <<< "$th_pg")"
+    if ! tcursor="$(jq -ce '.comments.pageInfo.endCursor | select(type == "string" and length > 0)' <<< "$th_pg" 2>/dev/null)"; then
+      prt_inventory_fail "initial comment pagination cursor at thread index $tpi"
+      break
+    fi
+    if ! tid_pg="$(jq -er '.id | select(type == "string" and length > 0)' <<< "$th_pg" 2>/dev/null)"; then
+      prt_inventory_fail "thread id at index $tpi"
+      break
+    fi
     extra_nodes='[]'
     while :; do
-      cvars="$(jq -n --arg id "$tid_pg" --argjson cursor "$tcursor" '{id:$id, cursor:$cursor}')"
-      cdata="$(prt_gh_graphql "$comment_page_query" "$cvars")" || { list_failed=1; break; }
-      cpage="$(jq -c '.node.comments' <<< "$cdata")"
-      extra_nodes="$(jq -c -n --argjson a "$extra_nodes" --argjson b "$(jq -c '.nodes' <<< "$cpage")" '$a + $b')"
-      chas_next="$(jq -r '.pageInfo.hasNextPage' <<< "$cpage")"
+      if ! cvars="$(jq -n --arg id "$tid_pg" --argjson cursor "$tcursor" '{id:$id, cursor:$cursor}' 2>/dev/null)"; then
+        prt_inventory_fail "comment page request variables at thread index $tpi"
+        break
+      fi
+      if ! cdata="$(prt_gh_graphql "$comment_page_query" "$cvars")"; then
+        prt_inventory_fail "comment page request at thread index $tpi"
+        break
+      fi
+      if ! cpage="$(prt_json_extract_inventory_page comments "$cdata")"; then
+        prt_inventory_fail "comment page extraction at thread index $tpi"
+        break
+      fi
+      if ! comment_nodes="$(jq -ce '.nodes | select(type == "array")' <<< "$cpage" 2>/dev/null)"; then
+        prt_inventory_fail "comment page nodes at thread index $tpi"
+        break
+      fi
+      if ! merged_comments="$(prt_json_concat_arrays "$extra_nodes" "$comment_nodes")"; then
+        prt_inventory_fail "comment page concatenation at thread index $tpi"
+        break
+      fi
+      extra_nodes="$merged_comments"
+      if ! chas_next="$(jq -r '.pageInfo.hasNextPage' <<< "$cpage" 2>/dev/null)"; then
+        prt_inventory_fail "comment pagination flag at thread index $tpi"
+        break
+      fi
+      case "$chas_next" in true|false) : ;; *) prt_inventory_fail "comment pagination flag at thread index $tpi"; break ;; esac
+      [ "$inventory_failed" = 1 ] && break
       [ "$chas_next" = true ] || break
-      tcursor="$(jq -c '.pageInfo.endCursor' <<< "$cpage")"
+      if ! next_tcursor="$(jq -ce '.pageInfo.endCursor | select(type == "string" and length > 0)' <<< "$cpage" 2>/dev/null)"; then
+        prt_inventory_fail "comment pagination cursor at thread index $tpi"
+        break
+      fi
+      tcursor="$next_tcursor"
     done
-    [ "$list_failed" = 1 ] && break
-    THREADS="$(jq -c --argjson i "$tpi" --argjson extra "$extra_nodes" '.[$i].comments.nodes += $extra' <<< "$THREADS")"
+    [ "$inventory_failed" = 1 ] && break
+    if ! updated_threads="$(prt_json_append_thread_comments "$THREADS" "$tpi" "$extra_nodes")"; then
+      prt_inventory_fail "nested comment update at thread index $tpi"
+      break
+    fi
+    THREADS="$updated_threads"
   done
 fi
 
-if [ "$list_failed" = 1 ]; then
-  echo "ERROR: failed to list review threads; aborting before any write." >&2
-  prt_mark_incomplete "GraphQL reviewThreads listing failed"
+if [ "$inventory_failed" = 1 ]; then
+  prt_mark_incomplete "review thread inventory failed at $inventory_failure_stage"
   {
     # 0, not $SUPPRESSED_COUNT: this abort happens before loop 1 (which
     # increments it) ever runs, so nothing has been suppressed yet.
@@ -416,53 +500,88 @@ fi
 PRT_BOT_LOGIN_GQL="${PRT_BOT_LOGIN%\[bot\]}"
 
 # Build a lookup: fp -> {thread_id, resolved, resolved_by_bot, first_comment_id, has_human_reply}
-n_threads="$(jq 'length' <<< "$THREADS")"
+n_threads="$n_threads_pg"
 for ((ti = 0; ti < n_threads; ti++)); do
-  th="$(jq -c ".[$ti]" <<< "$THREADS")"
-  first_comment="$(jq -c '.comments.nodes[0] // empty' <<< "$th")"
+  if ! th="$(jq -ce --argjson i "$ti" '.[$i] | select(type == "object")' <<< "$THREADS" 2>/dev/null)"; then
+    prt_inventory_fail "ownership thread selection at index $ti"
+    break
+  fi
+  if ! first_comment="$(jq -c '.comments.nodes[0] // empty' <<< "$th" 2>/dev/null)"; then
+    prt_inventory_fail "first-comment selection at thread index $ti"
+    break
+  fi
   [ -n "$first_comment" ] || continue
-  first_author="$(jq -r '.author.login // empty' <<< "$first_comment")"
-  first_body="$(jq -r '.body' <<< "$first_comment")"
+  if ! first_author="$(jq -r '.author.login // empty' <<< "$first_comment" 2>/dev/null)"; then
+    prt_inventory_fail "first-comment author at thread index $ti"
+    break
+  fi
+  if ! first_body="$(jq -r '.body' <<< "$first_comment" 2>/dev/null)"; then
+    prt_inventory_fail "first-comment body at thread index $ti"
+    break
+  fi
   [ "$first_author" = "$PRT_BOT_LOGIN_GQL" ] || continue
   parsed="$(prt_marker_parse "$first_body")" || continue
   fp="$(cut -f1 <<< "$parsed")"
   collision="$(cut -f2 <<< "$parsed")"
   first_absent_sha="$(cut -f3 <<< "$parsed")"
 
-  is_resolved="$(jq -r '.isResolved' <<< "$th")"
-  resolved_by="$(jq -r '.resolvedBy.login // empty' <<< "$th")"
+  has_human_reply=false
+  if ! n_comments="$(jq -r '.comments.nodes | length' <<< "$th" 2>/dev/null)"; then
+    prt_inventory_fail "comment count at thread index $ti"
+    break
+  fi
+  for ((ci = 1; ci < n_comments; ci++)); do
+    if ! cbody="$(jq -r --argjson i "$ci" '.comments.nodes[$i].body' <<< "$th" 2>/dev/null)"; then
+      prt_inventory_fail "comment body at thread index $ti comment index $ci"
+      break
+    fi
+    if ! prt_marker_has_note "$cbody"; then has_human_reply=true; fi
+  done
+  [ "$inventory_failed" = 1 ] && break
+
   # Fail-closed on the resolvedBy:User vs Actions-token-is-a-Bot ambiguity
   # (V6, unverified until a live spike): a null resolvedBy on a resolved
   # thread is treated as human-resolved, never reopened. Costs a missed
   # reopen, never a wrong one.
-  resolved_by_bot=false
-  [ "$is_resolved" = true ] && [ "$resolved_by" = "$PRT_BOT_LOGIN_GQL" ] && resolved_by_bot=true
-
-  has_human_reply=false
-  n_comments="$(jq -c '.comments.nodes | length' <<< "$th")"
-  for ((ci = 1; ci < n_comments; ci++)); do
-    cbody="$(jq -r ".comments.nodes[$ci].body" <<< "$th")"
-    if ! prt_marker_has_note "$cbody"; then has_human_reply=true; fi
-  done
-
-  first_comment_id="$(jq -r '.id' <<< "$first_comment")"
-  first_comment_db_id="$(jq -r '.databaseId' <<< "$first_comment")"
-  thread_id="$(jq -r '.id' <<< "$th")"
-  viewer_can_resolve="$(jq -r '.viewerCanResolve' <<< "$th")"
-  viewer_can_unresolve="$(jq -r '.viewerCanUnresolve' <<< "$th")"
-
-  OWNED="$(jq -c -n --argjson a "$OWNED" \
-    --arg fp "$fp" --arg collision "$collision" --arg fas "$first_absent_sha" \
-    --arg resolved "$is_resolved" --arg rbb "$resolved_by_bot" --arg hhr "$has_human_reply" \
-    --arg tid "$thread_id" --arg fcid "$first_comment_id" --arg fcdbid "$first_comment_db_id" \
-    --arg vcr "$viewer_can_resolve" --arg vcu "$viewer_can_unresolve" \
-    '$a + [{fp:$fp, collision:($collision=="true"), first_absent_sha:$fas,
-            resolved:($resolved=="true"), resolved_by_bot:($rbb=="true"),
-            has_human_reply:($hhr=="true"), thread_id:$tid,
-            first_comment_id:$fcid, first_comment_db_id:$fcdbid,
-            viewer_can_resolve:($vcr=="true"), viewer_can_unresolve:($vcu=="true")}]')"
+  if ! ownership_row="$(jq -ce --arg fp "$fp" --arg collision "$collision" \
+    --arg fas "$first_absent_sha" --arg bot "$PRT_BOT_LOGIN_GQL" \
+    --argjson hhr "$has_human_reply" '
+      {
+        fp:$fp,
+        collision:($collision == "true"),
+        first_absent_sha:$fas,
+        resolved:.isResolved,
+        resolved_by_bot:(.isResolved and ((.resolvedBy.login // "") == $bot)),
+        has_human_reply:$hhr,
+        thread_id:.id,
+        first_comment_id:.comments.nodes[0].id,
+        first_comment_db_id:.comments.nodes[0].databaseId,
+        viewer_can_resolve:.viewerCanResolve,
+        viewer_can_unresolve:.viewerCanUnresolve
+      }
+    ' <<< "$th" 2>/dev/null)"; then
+    prt_inventory_fail "ownership-row construction at thread index $ti"
+    break
+  fi
+  if ! merged_owned="$(prt_json_concat_arrays "$OWNED" "[$ownership_row]")"; then
+    prt_inventory_fail "ownership-row concatenation at thread index $ti"
+    break
+  fi
+  OWNED="$merged_owned"
 done
-prt_log "threads listed: $n_threads, owned=$(jq 'length' <<< "$OWNED")"
+if [ "$inventory_failed" != 1 ]; then
+  if ! owned_count="$(jq -r 'if type == "array" then length else error("not an array") end' <<< "$OWNED" 2>/dev/null)"; then
+    prt_inventory_fail "owned-thread array validation"
+  fi
+fi
+if [ "$inventory_failed" = 1 ]; then
+  prt_mark_incomplete "review thread inventory failed at $inventory_failure_stage"
+  {
+    prt_render_summary "$PRT_MODE" "$PRT_HEAD_SHA" "$chunk_idx" "$ALL_FINDINGS" 0 "$(prt_incomplete_reasons)"
+  } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+  exit 1
+fi
+prt_log "threads listed: $n_threads, owned=$owned_count"
 fi # PRT_MODE = enforce
 
 # --- PR-wide severity cap: bound the number of gating (currently open, or
@@ -472,7 +591,15 @@ fi # PRT_MODE = enforce
 # now lives in scripts/lib/prt/reconcile.sh above prt_thread_stays_gating —
 # it is the specification for the functions this line calls; not duplicated
 # here.
-ALL_FINDINGS="$(prt_apply_cap "$PRT_MAX_FINDINGS_TOTAL" "$OWNED" "$ALL_FINDINGS")"
+if ! capped_findings="$(prt_apply_cap "$PRT_MAX_FINDINGS_TOTAL" "$OWNED" "$ALL_FINDINGS" 2>/dev/null)"; then
+  echo "ERROR: review inventory cap evaluation failed; aborting before any write." >&2
+  prt_mark_incomplete "review inventory cap evaluation failed"
+  {
+    prt_render_summary "$PRT_MODE" "$PRT_HEAD_SHA" "$chunk_idx" "$ALL_FINDINGS" 0 "$(prt_incomplete_reasons)"
+  } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+  exit 1
+fi
+ALL_FINDINGS="$capped_findings"
 
 # ============================= LOOP 1: findings =============================
 # Evaluates every finding this run produced to completion (successes and
@@ -692,7 +819,6 @@ if [ "$PRT_MODE" = enforce ]; then
     thread_resolved="$(jq -r '.resolved' <<< "$th")"
     first_absent_sha="$(jq -r '.first_absent_sha' <<< "$th")"
     thread_id="$(jq -r '.thread_id' <<< "$th")"
-    first_comment_id="$(jq -r '.first_comment_id' <<< "$th")"
     first_comment_db_id="$(jq -r '.first_comment_db_id' <<< "$th")"
 
     # Simplified from the design's full "unanswered MAINT_FAILURE reply"
@@ -720,9 +846,9 @@ if [ "$PRT_MODE" = enforce ]; then
       SET_FIRST_ABSENT)
         prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA" || { prt_mark_incomplete "fp=$fp: stale head SHA, skipped setting first_absent_sha"; continue; }
         new_marker="$(prt_marker_build "$fp" "$collision" "$PRT_HEAD_SHA")"
-        # first_comment_id currently unused here (body comes from a fresh
-        # GET so prt_marker_replace preserves the finding text exactly).
-        # The GET's own success/non-empty-body is checked before ever
+        # The body comes from a fresh GET so prt_marker_replace preserves the
+        # finding text exactly. The GET's own success/non-empty-body is checked
+        # before ever
         # calling prt_marker_replace: an unchecked failure fed an empty
         # cur_body into prt_marker_replace's no-marker fallback, which
         # returns just the marker, and the PATCH that follows then

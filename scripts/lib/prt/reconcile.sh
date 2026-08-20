@@ -224,33 +224,37 @@ prt_thread_stays_gating() {
 # per-branch mapping to prt_decide_finding's rows.
 prt_reserved_count() {
   local owned="$1" findings="$2"
-  local count=0 row
+  local count=0 row rows
+
+  jq -e 'type == "array"' <<< "$owned" >/dev/null 2>&1 || return 1
+  jq -e 'type == "array"' <<< "$findings" >/dev/null 2>&1 || return 1
+  rows="$(jq -c '.[]' <<< "$owned" 2>/dev/null)" || return 1
 
   while IFS= read -r row; do
     [ -z "$row" ] && continue
     local fp match gating=false
-    fp="$(jq -r '.fp' <<< "$row")"
-    match="$(jq -c --arg fp "$fp" '[.[] | select(.fp == $fp)] | .[0] // null' <<< "$findings")"
+    fp="$(jq -er '.fp | select(type == "string")' <<< "$row" 2>/dev/null)" || return 1
+    match="$(jq -c --arg fp "$fp" '[.[] | select(.fp == $fp)] | .[0] // null' <<< "$findings" 2>/dev/null)" || return 1
 
     if [ "$match" = null ]; then
       # Absent this run (loop-2 territory) — counted directly, mirroring the
       # original inline jq's `$f == null` branch exactly. Does NOT call
       # prt_decide_finding; see the rationale block above.
       local resolved
-      resolved="$(jq -r '.resolved' <<< "$row")"
+      resolved="$(jq -r '.resolved' <<< "$row" 2>/dev/null)" || return 1
       [ "$resolved" != true ] && gating=true
     else
       local o_collision f_collision eff_collision verdict resolved rbb action
-      o_collision="$(jq -r '.collision' <<< "$row")"
-      f_collision="$(jq -r '.collision // false' <<< "$match")"
+      o_collision="$(jq -r '.collision' <<< "$row" 2>/dev/null)" || return 1
+      f_collision="$(jq -r '.collision // false' <<< "$match" 2>/dev/null)" || return 1
       eff_collision=false
       { [ "$o_collision" = true ] || [ "$f_collision" = true ]; } && eff_collision=true
       # verdict defaults to NONE when the matched finding's own .verdict is
       # absent/null — mirrors pr-review-threads.sh's assessment join, where
       # an unmatched-by-assessment finding stays verdict null.
-      verdict="$(jq -r '.verdict // "NONE"' <<< "$match")"
-      resolved="$(jq -r '.resolved' <<< "$row")"
-      rbb="$(jq -r '.resolved_by_bot' <<< "$row")"
+      verdict="$(jq -r '.verdict // "NONE"' <<< "$match" 2>/dev/null)" || return 1
+      resolved="$(jq -r '.resolved' <<< "$row" 2>/dev/null)" || return 1
+      rbb="$(jq -r '.resolved_by_bot' <<< "$row" 2>/dev/null)" || return 1
       # within_cap=false: never read on this path (thread_exists=true, rows
       # 1/5/6/7 all ignore it) — see prt_decide_finding's own comment.
       action="$(prt_decide_finding "$eff_collision" "$verdict" true "$resolved" "$rbb" false)"
@@ -258,7 +262,7 @@ prt_reserved_count() {
     fi
 
     [ "$gating" = true ] && count=$((count + 1))
-  done < <(jq -c '.[]' <<< "$owned")
+  done <<< "$rows"
 
   echo "$count"
 }
@@ -271,14 +275,22 @@ prt_gating_eligible() {
   # ascii_downcase first, so a model returning off-canonical casing
   # ("critical", "HIGH") still ranks correctly instead of falling to // 99
   # and sorting below a correctly-cased Medium (dot-github#50 gmr finding N-h).
-  jq -c --argjson rank "$sev_rank" --argjson owned "$owned" '
-    [ .[] | select((.verdict == "VALID" or .verdict == "PARTIALLY_VALID" or .verdict == null)
-                   and (.collision != true))
-      | . as $f
-      | select(($owned | map(select(.fp == $f.fp)) | length) == 0)
-    ]
-    | sort_by($rank[.severity | ascii_downcase] // 99)
-  ' <<< "$findings"
+  printf '%s\n%s\n' "$findings" "$owned" |
+    jq -ces --argjson rank "$sev_rank" '
+      if length == 2 and all(.[]; type == "array") then
+        .[0] as $findings
+        | .[1] as $owned
+        | [ $findings[]
+            | select((.verdict == "VALID" or .verdict == "PARTIALLY_VALID" or .verdict == null)
+                     and (.collision != true))
+            | . as $f
+            | select(($owned | map(select(.fp == $f.fp)) | length) == 0)
+          ]
+        | sort_by($rank[.severity | ascii_downcase] // 99)
+      else
+        error("findings and owned must be arrays")
+      end
+    ' 2>/dev/null
 }
 
 # prt_apply_cap CAP OWNED_JSON FINDINGS_JSON [SEV_RANK_JSON] -> findings JSON
@@ -289,16 +301,23 @@ prt_apply_cap() {
   [ -z "$sev_rank" ] && sev_rank='{"critical":0,"high":1,"medium":2}'
 
   local reserved remaining eligible capped_fps
-  reserved="$(prt_reserved_count "$owned" "$findings")"
-  remaining="$(jq -n --argjson n "$cap" --argjson r "$reserved" '[($n - $r), 0] | max')"
-  eligible="$(prt_gating_eligible "$findings" "$owned" "$sev_rank")"
-  capped_fps="$(jq -c --argjson n "$remaining" '[limit($n; .[])] | map(.fp)' <<< "$eligible")"
+  reserved="$(prt_reserved_count "$owned" "$findings")" || return 1
+  remaining="$(jq -n --argjson n "$cap" --argjson r "$reserved" '[($n - $r), 0] | max' 2>/dev/null)" || return 1
+  eligible="$(prt_gating_eligible "$findings" "$owned" "$sev_rank")" || return 1
+  capped_fps="$(jq -c --argjson n "$remaining" '[limit($n; .[])] | map(.fp)' <<< "$eligible" 2>/dev/null)" || return 1
 
-  jq -c --argjson capped "$capped_fps" '
-    # IN(), not [x] | inside(y) — jq inside() on strings is substring
-    # containment, not array-element equality: `["fp"] | inside(["fp-2"])` is
-    # true. A base fingerprint would then read as "within cap" whenever an
-    # unrelated ordinal-suffixed sibling fp happened to be capped.
-    map(. + {within_cap: (.fp | IN($capped[]))})
-  ' <<< "$findings"
+  printf '%s\n%s\n' "$findings" "$capped_fps" |
+    jq -ces '
+      if length == 2 and all(.[]; type == "array") then
+        .[0] as $findings
+        | .[1] as $capped
+        # IN(), not [x] | inside(y) — jq inside() on strings is substring
+        # containment, not array-element equality: `["fp"] | inside(["fp-2"])` is
+        # true. A base fingerprint would then read as "within cap" whenever an
+        # unrelated ordinal-suffixed sibling fp happened to be capped.
+        | $findings | map(. + {within_cap: (.fp | IN($capped[]))})
+      else
+        error("findings and capped fingerprints must be arrays")
+      end
+    ' 2>/dev/null
 }
