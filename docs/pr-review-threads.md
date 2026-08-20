@@ -24,7 +24,8 @@ This is the design/operations reference the code cites but didn't yet have:
   run's findings, one over existing threads no longer matched by any finding (an "absence"
   pass that handles auto-resolve when an issue is fixed).
 - `scripts/lib/prt/*.sh` — the modules it sources: `state.sh` (REVIEW_INCOMPLETE tracking),
-  `gh.sh` (all GitHub I/O — REST, GraphQL, retry, freshness), `diff.sh` (chunking, the
+  `json.sh` (stdin-only transforms for unbounded reconciliation collections), `gh.sh` (all
+  GitHub I/O — REST, GraphQL, retry, freshness), `diff.sh` (chunking, the
   commentable-line index), `finding.sh` (fingerprinting, ordinal/collision assignment),
   `marker.sh` (the HTML-comment marker embedded in each thread's first comment, carrying the
   fingerprint across runs), `render.sh` (job summary and comment bodies), `model.sh` (the two
@@ -185,6 +186,25 @@ mode line but not the full stage sequence or the closing `prt: done` line; those
 unambiguous on their own (a non-zero exit code plus one explicit `ERROR:` line), so the tracing
 gap there doesn't reintroduce the silent-hang shape #61 exists to close. Never logged:
 `PRT_GH_TOKEN`, raw model responses, comment bodies — only fingerprints, actions, and outcomes.
+
+All unbounded reconciliation collections obey one additional invariant: thread pages, paginated
+comment nodes, the combined `THREADS` and `OWNED` inventories, and the findings/ownership inputs to
+cap eligibility reach `jq` through stdin, never through `--argjson` on external-process argv.
+`json.sh` validates both array inputs and prints a replacement accumulator only on success; callers
+keep the previous accumulator until that succeeds. Page extraction, array shape, concatenation,
+pagination flags/cursors, nested comment updates, ownership-row construction, and cap evaluation
+are all checked explicitly despite the orchestrator's deliberate lack of `set -e`. Any failure
+prints a stage-only diagnostic (never the payload), records `REVIEW_INCOMPLETE`, renders the
+summary, and exits 1. Inventory failures stop before cap evaluation; cap failures stop before any
+GitHub write.
+
+This closes go-kure/launcher run 32254563691: PR #284 returned review threads in 50/50/20 pages;
+after the first 100 threads, the accumulator exceeded Linux's 131072-byte single-argument limit,
+the next `jq --argjson` failed with `Argument list too long`, and the unchecked assignment replaced
+the inventory with empty output, leaving the logged thread count blank. The regression suite now
+replays that page shape, a comment inventory above the same limit with a late human reply, and an
+oversized `OWNED` cap input. This removes argv-size failures; it does not bound total memory or
+runtime for pathological PR histories.
 
 GitHub curl calls carry `--connect-timeout 10 --max-time 120`; the model proxy call carries
 `--connect-timeout 10 --max-time 300` — a per-call ceiling so one hung call can't alone consume

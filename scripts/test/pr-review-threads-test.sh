@@ -16,6 +16,8 @@ LIB="$ROOT/scripts/lib/prt"
 # shellcheck source=/dev/null
 source "$LIB/state.sh"
 # shellcheck source=/dev/null
+source "$LIB/json.sh"
+# shellcheck source=/dev/null
 source "$LIB/marker.sh"
 # shellcheck source=/dev/null
 source "$LIB/finding.sh"
@@ -58,6 +60,45 @@ assert_true() {
     failures=$((failures + 1))
   fi
 }
+
+# ============================================================ stdin JSON collection helpers
+json_left='[{"id":1}]'
+json_right='[{"id":2},{"id":3}]'
+json_merged="$(prt_json_concat_arrays "$json_left" "$json_right")"
+assert_eq "json concat: merges two arrays" "1 2 3" "$(jq -r '[.[].id] | join(" ")' <<< "$json_merged")"
+
+json_accumulator="$json_left"
+if json_candidate="$(prt_json_concat_arrays "$json_accumulator" '{"not":"an-array"}')"; then
+  json_accumulator="$json_candidate"
+fi
+assert_eq "json concat: malformed input fails and caller preserves the prior accumulator" \
+  "$json_left" "$json_accumulator"
+
+prt_json_concat_arrays '[]' '{}' >/dev/null 2>&1
+json_bad_rc=$?
+assert_eq "json concat: rejects a non-array input" "true" \
+  "$([ "$json_bad_rc" -ne 0 ] && echo true || echo false)"
+
+json_threads='[{"comments":{"nodes":[{"id":"first"}]}}]'
+json_comments='[{"id":"second"},{"id":"third"}]'
+json_updated="$(prt_json_append_thread_comments "$json_threads" 0 "$json_comments")"
+assert_eq "json comments: appends to the selected thread" "first second third" \
+  "$(jq -r '.[0].comments.nodes | map(.id) | join(" ")' <<< "$json_updated")"
+prt_json_append_thread_comments "$json_threads" 1 "$json_comments" >/dev/null 2>&1
+json_bad_rc=$?
+assert_eq "json comments: rejects an out-of-range thread index" "true" \
+  "$([ "$json_bad_rc" -ne 0 ] && echo true || echo false)"
+
+# Each individual JSON value is above Linux's 131072-byte MAX_ARG_STRLEN.
+# A real jq subprocess can consume them only if the helper keeps both off argv.
+printf -v json_big_payload '%*s' 180000 ''
+json_big_payload="${json_big_payload// /x}"
+json_big_left="[\"$json_big_payload\"]"
+json_big_right="[\"$json_big_payload\"]"
+json_big_merged="$(prt_json_concat_arrays "$json_big_left" "$json_big_right")"
+assert_eq "json concat: merges payloads above the kernel single-argument limit" "2 180000 180000" \
+  "$(jq -r 'length as $n | [$n, (.[0]|length), (.[1]|length)] | join(" ")' <<< "$json_big_merged")"
+unset json_big_payload json_big_left json_big_right json_big_merged
 
 # ============================================================ fingerprint
 assert_eq "fp_base is deterministic across calls" \
@@ -556,6 +597,27 @@ assert_eq "apply_cap: fp-substring trap — base fp stays within_cap:false when 
 assert_eq "apply_cap: fp-substring trap — the sibling itself is within_cap:true" \
   "true" "$(jq -r '.[] | select(.fp == "abc123-2") | .within_cap' <<< "$trap_out")"
 
+# OWNED itself can exceed MAX_ARG_STRLEN even when every individual row is
+# modest. Cap eligibility must consume the whole collection from stdin and
+# still reserve/rank exactly as it does for a small inventory.
+printf -v owned_large_filler '%*s' 8000 ''
+owned_large_filler="${owned_large_filler// /x}"
+owned_large='['
+for ((owned_i = 0; owned_i < 20; owned_i++)); do
+  [ "$owned_i" -eq 0 ] || owned_large+=','
+  owned_large+="{\"fp\":\"owned-$owned_i\",\"resolved\":true,\"thread_id\":\"$owned_large_filler\"}"
+done
+owned_large+=']'
+large_cap_findings='[{"fp":"new-critical","collision":false,"verdict":"VALID","severity":"Critical"},
+                     {"fp":"new-high","collision":false,"verdict":"VALID","severity":"High"},
+                     {"fp":"new-medium","collision":false,"verdict":"VALID","severity":"Medium"}]'
+large_cap_out="$(prt_apply_cap 2 "$owned_large" "$large_cap_findings")"
+assert_eq "apply_cap: OWNED collection exceeds the kernel single-argument limit" "true" \
+  "$([ "${#owned_large}" -gt 131072 ] && echo true || echo false)"
+assert_eq "apply_cap: oversized OWNED collection still yields the correct cap result" "2" \
+  "$(jq '[.[] | select(.within_cap == true)] | length' <<< "$large_cap_out")"
+unset owned_large_filler owned_large large_cap_findings large_cap_out
+
 # ============================================================ mode resolution (mirrors pr-review-threads.sh's own case statement)
 resolve_mode() {
   local mode="$1"
@@ -678,6 +740,90 @@ _prt_test_owned_thread_body() {
 }
 export -f _prt_test_owned_thread_body
 
+_prt_test_paged_threads_response() {
+  local out="$1" request="$2" cursor start count has_next end_cursor filler
+  cursor="$(jq -r '.variables.cursor // "null"' <<< "$request")"
+  case "$cursor" in
+    null) start=0; count=50; has_next=true; end_cursor=page-2 ;;
+    page-2) start=50; count=50; has_next=true; end_cursor=page-3 ;;
+    page-3) start=100; count=20; has_next=false; end_cursor='' ;;
+    *) return 1 ;;
+  esac
+  printf -v filler '%*s' 2200 ''
+  filler="${filler// /x}"
+  jq -n --argjson start "$start" --argjson count "$count" \
+    --argjson has_next "$has_next" --arg end_cursor "$end_cursor" --arg filler "$filler" '
+      {data:{repository:{pullRequest:{reviewThreads:{
+        pageInfo:{hasNextPage:$has_next,endCursor:(if $has_next then $end_cursor else null end)},
+        nodes:[range($start; $start + $count) as $i | {
+          id:("THREAD-" + ($i|tostring)), isResolved:false, isOutdated:false,
+          resolvedBy:null, viewerCanResolve:true, viewerCanUnresolve:true,
+          comments:{pageInfo:{hasNextPage:false,endCursor:null},
+            nodes:[{id:("C-" + ($i|tostring)), databaseId:$i, body:$filler,
+                    author:{login:"human-reviewer"}}]}
+        }]
+      }}}}}' > "$out"
+}
+
+_prt_test_paginated_comments_response() {
+  local out="$1" request="$2" cursor filler first_body
+  cursor="$(jq -r '.variables.cursor // "initial"' <<< "$request")"
+  printf -v filler '%*s' 2200 ''
+  filler="${filler// /x}"
+  case "$cursor" in
+    initial)
+      first_body="$(_prt_test_owned_thread_body)"
+      jq -n --arg first_body "$first_body" --arg filler "$filler" '
+        {data:{repository:{pullRequest:{reviewThreads:{
+          pageInfo:{hasNextPage:false,endCursor:null},
+          nodes:[{
+            id:"THREAD-COMMENTS", isResolved:false, isOutdated:false,
+            resolvedBy:null, viewerCanResolve:true, viewerCanUnresolve:true,
+            comments:{pageInfo:{hasNextPage:true,endCursor:"comments-2"},
+              nodes:[range(0; 50) as $i | {
+                id:("COMMENT-" + ($i|tostring)), databaseId:($i + 1),
+                body:(if $i == 0 then $first_body
+                      else "<!-- gokure-pr-review:v1-note -->\n" + $filler end),
+                author:{login:"test-bot"}
+              }]}
+          }]
+        }}}}}' > "$out"
+      ;;
+    comments-2)
+      jq -n --arg filler "$filler" '
+        {data:{node:{comments:{
+          pageInfo:{hasNextPage:true,endCursor:"comments-3"},
+          nodes:[range(50; 100) as $i | {
+            id:("COMMENT-" + ($i|tostring)), databaseId:($i + 1),
+            body:("<!-- gokure-pr-review:v1-note -->\n" + $filler),
+            author:{login:"test-bot"}
+          }]
+        }}}}' > "$out"
+      ;;
+    comments-3)
+      jq -n --arg filler "$filler" '
+        {data:{node:{comments:{
+          pageInfo:{hasNextPage:false,endCursor:null},
+          nodes:[range(100; 120) as $i | {
+            id:("COMMENT-" + ($i|tostring)), databaseId:($i + 1),
+            body:(if $i == 119 then "late human reply\n" + $filler
+                  else "<!-- gokure-pr-review:v1-note -->\n" + $filler end),
+            author:{login:(if $i == 119 then "human-reviewer" else "test-bot" end)}
+          }]
+        }}}}' > "$out"
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+_prt_test_malformed_threads_response() {
+  local out="$1"
+  printf '%s' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":{}}}}}}' > "$out"
+}
+
+export -f _prt_test_paged_threads_response _prt_test_paginated_comments_response \
+  _prt_test_malformed_threads_response
+
 fake_curl_orchestrator() {
   local args=("$@") out="" accept="" url="" method="" data="" h
   local i n=${#args[@]}
@@ -744,6 +890,7 @@ fake_curl_orchestrator() {
       echo 200
       ;;
     */issues/*/comments)
+      _prt_test_bump "${PRT_TEST_ISSUE_COMMENT_COUNTFILE:?}" >/dev/null
       printf '%s' '{"id":1}' > "$out"
       echo 200
       ;;
@@ -751,17 +898,44 @@ fake_curl_orchestrator() {
       _prt_test_bump "${PRT_TEST_GRAPHQL_COUNTFILE:?}" >/dev/null
       case "$data" in
         *reviewThreads*)
-          resp="$(jq -n --arg body "$(_prt_test_owned_thread_body)" '
-            {data:{repository:{pullRequest:{reviewThreads:{
-              pageInfo:{hasNextPage:false,endCursor:null},
-              nodes:[{
-                id:"THREAD1", isResolved:false, isOutdated:false,
-                resolvedBy:null, viewerCanResolve:true, viewerCanUnresolve:true,
-                comments:{pageInfo:{hasNextPage:false,endCursor:null},
-                  nodes:[{id:"C1", databaseId:1, body:$body, author:{login:"test-bot"}}]}
-              }]
-            }}}}}')"
-          printf '%s' "$resp" > "$out"
+          case "${PRT_TEST_INVENTORY_MODE:-single}" in
+            paged_threads)
+              _prt_test_paged_threads_response "$out" "$data" || return 1
+              ;;
+            paginated_comments)
+              _prt_test_paginated_comments_response "$out" "$data" || return 1
+              ;;
+            malformed_threads)
+              _prt_test_malformed_threads_response "$out" || return 1
+              ;;
+            *)
+            resp="$(jq -n --arg body "$(_prt_test_owned_thread_body)" '
+              {data:{repository:{pullRequest:{reviewThreads:{
+                pageInfo:{hasNextPage:false,endCursor:null},
+                nodes:[{
+                  id:"THREAD1", isResolved:false, isOutdated:false,
+                  resolvedBy:null, viewerCanResolve:true, viewerCanUnresolve:true,
+                  comments:{pageInfo:{hasNextPage:false,endCursor:null},
+                    nodes:[{id:"C1", databaseId:1, body:$body, author:{login:"test-bot"}}]}
+                }]
+              }}}}}')"
+            printf '%s' "$resp" > "$out"
+              ;;
+          esac
+          echo 200
+          ;;
+        *PullRequestReviewThread*)
+          if [ "${PRT_TEST_INVENTORY_MODE:-single}" = paginated_comments ]; then
+            _prt_test_paginated_comments_response "$out" "$data" || return 1
+            echo 200
+          else
+            printf '%s' '{"data":{"node":null}}' > "$out"
+            echo 200
+          fi
+          ;;
+        *unresolveReviewThread*)
+          _prt_test_bump "${PRT_TEST_UNRESOLVE_COUNTFILE:?}" >/dev/null
+          printf '%s' '{"data":{"unresolveReviewThread":{"thread":{"id":"THREAD1"}}}}' > "$out"
           echo 200
           ;;
         *resolveReviewThread*)
@@ -789,6 +963,16 @@ fake_curl_orchestrator() {
       esac
       ;;
     *)
+      if [ "$method" = POST ]; then
+        case "$url" in
+          */pulls/*/comments)
+            case "$data" in
+              *in_reply_to*) _prt_test_bump "${PRT_TEST_REPLY_COUNTFILE:?}" >/dev/null ;;
+              *commit_id*) _prt_test_bump "${PRT_TEST_CREATE_COUNTFILE:?}" >/dev/null ;;
+            esac
+            ;;
+        esac
+      fi
       case "$accept" in
         *vnd.github.diff*)
           if [ "${PRT_TEST_EMPTY_DIFF:-0}" = 1 ]; then
@@ -846,6 +1030,10 @@ run_orchestrator() {
   echo 0 > "$PRT_TEST_GRAPHQL_COUNTFILE"
   echo 0 > "$PRT_TEST_PATCH_COUNTFILE"
   echo 0 > "$PRT_TEST_RESOLVE_COUNTFILE"
+  echo 0 > "$PRT_TEST_UNRESOLVE_COUNTFILE"
+  echo 0 > "$PRT_TEST_CREATE_COUNTFILE"
+  echo 0 > "$PRT_TEST_REPLY_COUNTFILE"
+  echo 0 > "$PRT_TEST_ISSUE_COMMENT_COUNTFILE"
   : > "$PRT_TEST_STDOUT_FILE"
   : > "$PRT_TEST_STDERR_FILE"
   (
@@ -857,6 +1045,10 @@ run_orchestrator() {
     PRT_TEST_GRAPHQL_COUNTFILE="$PRT_TEST_GRAPHQL_COUNTFILE" \
     PRT_TEST_PATCH_COUNTFILE="$PRT_TEST_PATCH_COUNTFILE" \
     PRT_TEST_RESOLVE_COUNTFILE="$PRT_TEST_RESOLVE_COUNTFILE" \
+    PRT_TEST_UNRESOLVE_COUNTFILE="$PRT_TEST_UNRESOLVE_COUNTFILE" \
+    PRT_TEST_CREATE_COUNTFILE="$PRT_TEST_CREATE_COUNTFILE" \
+    PRT_TEST_REPLY_COUNTFILE="$PRT_TEST_REPLY_COUNTFILE" \
+    PRT_TEST_ISSUE_COMMENT_COUNTFILE="$PRT_TEST_ISSUE_COMMENT_COUNTFILE" \
     PRT_TEST_DIFF_FAIL_TIMES="$diff_fail" \
     PRT_TEST_META_FAIL_TIMES="$meta_fail" \
     PRT_TEST_MODEL_ALWAYS_FAIL="$model_fail" \
@@ -864,6 +1056,7 @@ run_orchestrator() {
     PRT_TEST_FIRST_ABSENT_SHA="${PRT_TEST_FIRST_ABSENT_SHA:-}" \
     PRT_TEST_OWNED_FP="${PRT_TEST_OWNED_FP:-deadbeefcafebabe}" \
     PRT_TEST_MODEL_RESPONSE_MODE="${PRT_TEST_MODEL_RESPONSE_MODE:-clean}" \
+    PRT_TEST_INVENTORY_MODE="${PRT_TEST_INVENTORY_MODE:-single}" \
     PRT_GH_TOKEN=x PRT_REPO=owner/repo PRT_PR_NUMBER=1 \
     PRT_HEAD_SHA=1111111111111111111111111111111111111111 \
     PRT_BOT_LOGIN="test-bot[bot]" PRT_PROXY_URL="http://proxy.invalid" \
@@ -881,6 +1074,10 @@ PRT_TEST_MODEL_COUNTFILE="$(mktemp)"
 PRT_TEST_GRAPHQL_COUNTFILE="$(mktemp)"
 PRT_TEST_PATCH_COUNTFILE="$(mktemp)"
 PRT_TEST_RESOLVE_COUNTFILE="$(mktemp)"
+PRT_TEST_UNRESOLVE_COUNTFILE="$(mktemp)"
+PRT_TEST_CREATE_COUNTFILE="$(mktemp)"
+PRT_TEST_REPLY_COUNTFILE="$(mktemp)"
+PRT_TEST_ISSUE_COMMENT_COUNTFILE="$(mktemp)"
 PRT_TEST_STDOUT_FILE="$(mktemp)"
 PRT_TEST_STDERR_FILE="$(mktemp)"
 
@@ -1010,8 +1207,54 @@ assert_eq "orchestrator: advisory + empty diff -> GraphQL count 0 (cheap exit ne
 PRT_TEST_EMPTY_DIFF=0
 PRT_TEST_FIRST_ABSENT_SHA=""
 
+# PR #284 shape: GitHub returns review threads in 50/50/20 pages. Each page
+# stays below Linux's 131072-byte single-argument ceiling, but the 100-thread
+# accumulator does not. The orchestrator must retain all 120 without ever
+# passing that accumulator through execve argv.
+PRT_TEST_INVENTORY_MODE=paged_threads
+PRT_TEST_EMPTY_DIFF=1
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator: 50/50/20 thread inventory exits 0" "0" "$rc"
+assert_eq "orchestrator: 50/50/20 thread inventory retains and logs all 120 threads" \
+  "true" "$(grep -q 'threads listed: 120, owned=0' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator: 50/50/20 thread inventory never hits argv E2BIG" \
+  "false" "$(grep -q 'Argument list too long' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+
+# The first 50 comments plus 50/20 follow-up pages leave the combined extra
+# comment accumulator above 131072 bytes. The final reply is human-authored;
+# losing it would make the second-absence path incorrectly auto-resolve.
+PRT_TEST_INVENTORY_MODE=paginated_comments
+PRT_TEST_FIRST_ABSENT_SHA=2222222222222222222222222222222222222222
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator: oversized paginated comments exit 0" "0" "$rc"
+assert_eq "orchestrator: oversized paginated comments retain the owned thread" \
+  "true" "$(grep -q 'threads listed: 1, owned=1' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator: late human reply prevents incorrect auto-resolution" \
+  "0" "$(cat "$PRT_TEST_RESOLVE_COUNTFILE")"
+assert_eq "orchestrator: oversized paginated comments never hit argv E2BIG" \
+  "false" "$(grep -q 'Argument list too long' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+
+# A malformed page is an unknown inventory, never an empty inventory. It must
+# render REVIEW_INCOMPLETE and stop before cap evaluation or any write path.
+PRT_TEST_INVENTORY_MODE=malformed_threads
+PRT_TEST_FIRST_ABSENT_SHA=''
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator: malformed inventory page exits 1" "1" "$rc"
+assert_eq "orchestrator: malformed inventory page records REVIEW_INCOMPLETE" \
+  "true" "$(grep -q 'REVIEW_INCOMPLETE: review thread inventory failed at reviewThreads page extraction' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator: malformed inventory diagnostic does not dump the payload" \
+  "false" "$(grep -qF '\"nodes\":{}' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator: malformed inventory page makes zero PATCH/create/reply/resolve/unresolve/comment writes" \
+  "0 0 0 0 0 0" "$(cat "$PRT_TEST_PATCH_COUNTFILE") $(cat "$PRT_TEST_CREATE_COUNTFILE") $(cat "$PRT_TEST_REPLY_COUNTFILE") $(cat "$PRT_TEST_RESOLVE_COUNTFILE") $(cat "$PRT_TEST_UNRESOLVE_COUNTFILE") $(cat "$PRT_TEST_ISSUE_COMMENT_COUNTFILE")"
+
+PRT_TEST_INVENTORY_MODE=single
+PRT_TEST_EMPTY_DIFF=0
+PRT_TEST_FIRST_ABSENT_SHA=''
+
 rm -f "$PRT_TEST_DIFF_COUNTFILE" "$PRT_TEST_META_COUNTFILE" "$PRT_TEST_MODEL_COUNTFILE" \
       "$PRT_TEST_GRAPHQL_COUNTFILE" "$PRT_TEST_PATCH_COUNTFILE" "$PRT_TEST_RESOLVE_COUNTFILE" \
+      "$PRT_TEST_UNRESOLVE_COUNTFILE" "$PRT_TEST_CREATE_COUNTFILE" "$PRT_TEST_REPLY_COUNTFILE" \
+      "$PRT_TEST_ISSUE_COMMENT_COUNTFILE" \
       "$PRT_TEST_STDOUT_FILE" "$PRT_TEST_STDERR_FILE"
 
 # ============================================================ model.sh: oversized payload must not hit argv E2BIG

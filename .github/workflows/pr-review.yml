@@ -131,7 +131,7 @@ jobs:
           done
 
       - name: Run PR review threads
-        uses: go-kure/.github/.github/actions/pr-review-threads@487d4f0edaa67d1b8f258a6d1965d44c7b51d1f9 # go-kure/.github#73 (prt argv/E2BIG fix) pin-bump PR2 — see docs/standards.md "GitHub Actions pinning"
+        uses: go-kure/.github/.github/actions/pr-review-threads@0000000000000000000000000000000000000000 # inventory argv/E2BIG fix placeholder pending pin-bump PR2 — see docs/standards.md "GitHub Actions pinning"
         with:
           # github-token / bot-login: GITHUB_TOKEN always gets viewerCanResolve:false
           # on threads it authors (GitHub rejects bot/App actors for
