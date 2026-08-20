@@ -373,7 +373,7 @@ while :; do
     prt_inventory_fail "reviewThreads request variables"
     break
   fi
-  if ! data="$(prt_gh_graphql "$list_query" "$vars")"; then
+  if ! data="$(prt_gh_graphql "$list_query" "$vars" 2>/dev/null)"; then
     prt_inventory_fail "reviewThreads request"
     break
   fi
@@ -441,7 +441,7 @@ if [ "$inventory_failed" != 1 ]; then
         prt_inventory_fail "comment page request variables at thread index $tpi"
         break
       fi
-      if ! cdata="$(prt_gh_graphql "$comment_page_query" "$cvars")"; then
+      if ! cdata="$(prt_gh_graphql "$comment_page_query" "$cvars" 2>/dev/null)"; then
         prt_inventory_fail "comment page request at thread index $tpi"
         break
       fi

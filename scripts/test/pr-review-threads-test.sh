@@ -896,6 +896,11 @@ fake_curl_orchestrator() {
       ;;
     */graphql)
       _prt_test_bump "${PRT_TEST_GRAPHQL_COUNTFILE:?}" >/dev/null
+      if [ "${PRT_TEST_INVENTORY_MODE:-single}" = inventory_http_error ]; then
+        printf '%s' '{"hostile_inventory_payload":"must-not-reach-logs"}' > "$out"
+        echo 500
+        return 0
+      fi
       case "$data" in
         *reviewThreads*)
           case "${PRT_TEST_INVENTORY_MODE:-single}" in
@@ -1243,8 +1248,21 @@ assert_eq "orchestrator: malformed inventory page exits 1" "1" "$rc"
 assert_eq "orchestrator: malformed inventory page records REVIEW_INCOMPLETE" \
   "true" "$(grep -q 'REVIEW_INCOMPLETE: review thread inventory failed at reviewThreads page extraction' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 assert_eq "orchestrator: malformed inventory diagnostic does not dump the payload" \
-  "false" "$(grep -qF '\"nodes\":{}' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+  "false" "$(grep -qF '"nodes":{}' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 assert_eq "orchestrator: malformed inventory page makes zero PATCH/create/reply/resolve/unresolve/comment writes" \
+  "0 0 0 0 0 0" "$(cat "$PRT_TEST_PATCH_COUNTFILE") $(cat "$PRT_TEST_CREATE_COUNTFILE") $(cat "$PRT_TEST_REPLY_COUNTFILE") $(cat "$PRT_TEST_RESOLVE_COUNTFILE") $(cat "$PRT_TEST_UNRESOLVE_COUNTFILE") $(cat "$PRT_TEST_ISSUE_COMMENT_COUNTFILE")"
+
+# prt_gh_graphql normally diagnoses HTTP/GraphQL errors with response content.
+# Inventory callers suppress that untrusted body and replace it with the
+# stage-only fail-closed diagnostic before any write path.
+PRT_TEST_INVENTORY_MODE=inventory_http_error
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator: inventory HTTP failure exits 1" "1" "$rc"
+assert_eq "orchestrator: inventory HTTP failure emits the stage-only diagnostic" \
+  "true" "$(grep -q 'review thread inventory failed at reviewThreads request' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator: inventory HTTP failure does not dump the hostile payload" \
+  "false" "$(grep -qF 'hostile_inventory_payload' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator: inventory HTTP failure makes zero PATCH/create/reply/resolve/unresolve/comment writes" \
   "0 0 0 0 0 0" "$(cat "$PRT_TEST_PATCH_COUNTFILE") $(cat "$PRT_TEST_CREATE_COUNTFILE") $(cat "$PRT_TEST_REPLY_COUNTFILE") $(cat "$PRT_TEST_RESOLVE_COUNTFILE") $(cat "$PRT_TEST_UNRESOLVE_COUNTFILE") $(cat "$PRT_TEST_ISSUE_COMMENT_COUNTFILE")"
 
 PRT_TEST_INVENTORY_MODE=single
