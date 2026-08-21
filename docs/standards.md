@@ -84,9 +84,29 @@ Repos add repo-specific rules (e.g. `postUpgradeTasks` running the repo's own
 `scripts/sync-versions.sh generate` so generated docs move in the same commit as the
 version bump) in their own `renovate.json` on top of the preset.
 
-The preset is maintained in lockstep with the workspace-default preset that GitLab
-repos consume; the two are asserted equivalent (modulo the GitLab-CI ↔
-GitHub-Actions manager swap) by an automated parity check on the workspace side.
+This preset and the workspace-default preset that GitLab repos consume are **siblings, not
+copies.** They share a structure and most rules, and a change worth making in one is usually
+worth making in the other — but they are not asserted equivalent, and this one is deliberately
+the narrower of the two: it is public and upstream-only, so it carries no matcher naming any
+downstream module (see § No Downstream References). A downstream consumer adds its own
+first-party matchers, including any automerge exclusion for them, in its own config.
+
+This paragraph previously claimed the two were "maintained in lockstep" and "asserted
+equivalent (modulo the GitLab-CI ↔ GitHub-Actions manager swap) by an automated parity check on
+the workspace side." That was wrong on both counts, and worth recording so it is not
+reintroduced:
+
+- **No such check exists.** The workspace-side script with the closest name,
+  `scripts/check-renovate-parity.sh`, asserts set equality between `go-deps.env` and
+  `templates/renovate-godeps-managed.json` — a different pair of files, for a different purpose.
+  Nothing compares the two shared presets.
+- **The equivalence had already lapsed** before the upstream-only change above, and by more than
+  a manager swap: the two differ in package rules, in an `allowedVersions` pin, in a
+  dockerfile-manager rule, and in several rule descriptions.
+
+Keeping a documented invariant that nothing enforces and that no longer holds is worse than
+having none: it invites a future change to be rejected for violating a contract that was already
+broken.
 
 `.github` itself stays on Dependabot: it has no Go code and no `renovate.json`, and
 the Renovate runner skips repos without one.
@@ -504,8 +524,16 @@ and the merge queue see identical results. A diff-scoped (`--diff`) check MUST N
 a PR on pre-existing hits that the merge queue's `--full-tree` scan then rejects, diverging the two.
 `--diff` remains a local/dev convenience only.
 
-Scope: `docs/`, `site/content/`, `pkg/**`, `cmd/**`, `scripts/**`, `**/*.md`,
-`.github/workflows/**` (the guard script excludes itself).
+Scope, by path prefix: `docs/`, `site/content/`, `pkg/**`, `cmd/**`, `scripts/**`,
+`.github/workflows/**`, `.github/actions/**`. Plus, by extension anywhere in the tree:
+`**/*.md` and **every tracked `**/*.{json,yml,yaml,toml}`**. The guard script excludes itself.
+
+The extension arm matters more than it looks. The scope used to be a path allowlist alone, and
+`renovate/shared.json` — a root-level config file naming the downstream platform in six places —
+matched none of its prefixes. The `forbidden-terms` job therefore ran, reported OK, and never
+opened it, six times, in a public repository (go-kure/.github#79, fixed in #82). Matching by
+extension means a new config file is in scope the moment it is added, rather than the next time
+someone remembers to extend a prefix list.
 
 The step-by-step remediation runbook — usable for a first sweep of any upstream repo — is in
 [`docs/no-downstream-references.md`](no-downstream-references.md).

@@ -12,12 +12,21 @@ rely on the CI guard for regressions.
 Run the guard in full-tree mode (it reports `file:line` for every hit), or grep directly:
 
 ```bash
-# From the repo root — same scope the guard uses:
+# From the repo root — the guard is authoritative; prefer it:
 bash scripts/check-forbidden-terms.sh --full-tree
-# or, ad hoc (allow-term:wharf allow-term:crane allow-term:barge allow-term:harbor allow-term:rudder):
-rg -niE '\b(wharf|crane|barge|harbor|rudder)\b' \
-   docs/ site/content/ pkg/ cmd/ scripts/ .github/workflows/ ./**/*.md
+# Ad hoc, for a repo that does not have the script yet. Mirrors the guard's scope,
+# INCLUDING tracked config files:
+git ls-files \
+  | grep -E '^(docs/|site/content/|pkg/|cmd/|scripts/|\.github/(workflows|actions)/)|\.(md|json|ya?ml|toml)$' \
+  | xargs rg -ni '\b(wharf|crane|barge|harbor|rudder)\b'  # allow-term:wharf allow-term:crane allow-term:barge allow-term:harbor allow-term:rudder
 ```
+
+**Do not narrow that file list to directories.** The earlier form of this command listed
+prefixes only (`docs/ site/content/ pkg/ cmd/ scripts/ .github/workflows/ ./**/*.md`) and so
+skipped every root-level config file. A repo whose only downstream reference lived in
+`renovate/shared.json` swept clean by hand and green in CI at the same time, for six runs, in a
+public repository — see go-kure/.github#79 and #82. Config carries downstream names as readily
+as prose does: package matchers, group names, image references, repository lists.
 
 ## 2. Classify each hit
 
