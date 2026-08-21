@@ -1,8 +1,13 @@
 # Automated PR review — reusable workflow.
 # Caller must provide: on: pull_request trigger and pr_review_context input.
 #
-# Backend: claude-max-proxy (wende/claude-max-api-proxy) sidecar of the
-# openclaw StatefulSet, at http://openclaw-claude-proxy.openclaw.svc:3456.
+# Backend: claude-max-proxy (wende/claude-max-api-proxy), running as the
+# standalone `claude-proxy` Deployment at
+# http://claude-proxy.claude-proxy.svc:3456 — 2 replicas spread across nodes,
+# liveness/readiness probes, prebuilt image, and a wrapper that bounds
+# in-flight requests. It replaced a single-replica sidecar in the openclaw
+# StatefulSet on 2026-08-21, where any openclaw restart dropped the only pod
+# out of the Service and failed every CI review in the fleet with curl exit 7.
 # The proxy exposes an OpenAI-compatible /v1/chat/completions endpoint.
 # PR_REVIEW_MODEL / PR_REVIEW_ASSESS_MODEL are cosmetic labels only.
 #
@@ -102,7 +107,9 @@ jobs:
       pull-requests: write
 
     env:
-      CCPROXY_URL: "http://openclaw-claude-proxy.openclaw.svc:3456"
+      # Variable name is historical — it has not pointed at ccproxy for a long
+      # time, and renaming it would break every caller that overrides it.
+      CCPROXY_URL: "http://claude-proxy.claude-proxy.svc:3456"
       PR_REVIEW_MODEL: "claude-opus-4"
       PR_REVIEW_MAX_DIFF_CHARS: "50000"
       PR_REVIEW_MAX_TOKENS: "1500"
