@@ -28,7 +28,7 @@ The go-kure repos are:
 | golangci-lint       | Modified | Yes      | N/A      | kure relaxes two linters during migration; launcher uses the full set |
 | Container builds    | No       | No       | N/A      | kure is a library; launcher ships binaries via GoReleaser, no container |
 | CI/CD               | Modified | Modified | Modified | GitHub Actions; kure + launcher call shared workflows hosted here |
-| Dependency updates  | Modified | Modified | Modified | Dependabot (GitHub native), not Renovate |
+| Dependency updates  | Same | Same | Modified | Renovate (shared preset hosted here); `.github` itself stays on Dependabot |
 | Repository settings | Modified | Modified | Modified | Applied by this repo's `settings.yml` workflow |
 
 ## CI Platform
@@ -46,8 +46,48 @@ workflows here.
 
 | Aspect | Workspace Default  | kure                     | launcher                 | .github            |
 |--------|----------------|--------------------------|--------------------------|--------------------|
-| Tool   | Renovate       | Dependabot               | Dependabot               | Dependabot         |
-| Config | `renovate.json`| `.github/dependabot.yml` | `.github/dependabot.yml` | `.github/dependabot.yml` (github-actions only — no Go deps) |
+| Tool   | Renovate       | Renovate                 | Renovate                 | Dependabot         |
+| Config | `renovate.json`| `renovate.json`          | `renovate.json`          | `.github/dependabot.yml` (github-actions only — no Go deps) |
+
+### Shared Renovate preset
+
+`renovate/shared.json` in this repo is the org-wide Renovate preset. Consumer repos
+extend it with:
+
+```json
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["github>go-kure/.github//renovate/shared"]
+}
+```
+
+What it encodes:
+
+- **Grouping** — mise toolchain, Go minors and patches split (so patch groups stay
+  automerge-eligible), and ecosystem groups (kubernetes, sigs.k8s.io, fluxcd,
+  cloudnative-pg) that follow upstream release cadence.
+- **Every major update requires dependency-dashboard approval**, across all managers.
+  Majors routinely need coordinated changes (import paths, config migration) that an
+  auto-created PR cannot carry.
+- **The Go toolchain is pinned and gated**: the `go` dep (mise + gomod) and the
+  `golang` container image require dashboard approval and carry an `allowedVersions`
+  ceiling that tracks Go's two-release support window. The ceiling is lifted
+  deliberately when the next Go major ships, never by a bot.
+- **Automerge** only for mise minor/patch/digest and gomod patch/digest, and never
+  for `github.com/go-kure/**` — cross-repo bumps carry release-ordering constraints
+  (launcher must not lead the kure release it imports; see launcher's
+  `check-kure-dep-sync` guard).
+
+Repos add repo-specific rules (e.g. `postUpgradeTasks` running the repo's own
+`scripts/sync-versions.sh generate` so generated docs move in the same commit as the
+version bump) in their own `renovate.json` on top of the preset.
+
+The preset is maintained in lockstep with the workspace-default preset that GitLab
+repos consume; the two are asserted equivalent (modulo the GitLab-CI ↔
+GitHub-Actions manager swap) by an automated parity check on the workspace side.
+
+`.github` itself stays on Dependabot: it has no Go code and no `renovate.json`, and
+the Renovate runner skips repos without one.
 
 ### GitHub Actions pinning
 
