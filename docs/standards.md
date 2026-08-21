@@ -84,29 +84,31 @@ Repos add repo-specific rules (e.g. `postUpgradeTasks` running the repo's own
 `scripts/sync-versions.sh generate` so generated docs move in the same commit as the
 version bump) in their own `renovate.json` on top of the preset.
 
-This preset and the workspace-default preset that GitLab repos consume are **siblings, not
-copies.** They share a structure and most rules, and a change worth making in one is usually
-worth making in the other — but they are not asserted equivalent, and this one is deliberately
-the narrower of the two: it is public and upstream-only, so it carries no matcher naming any
-downstream module (see § No Downstream References). A downstream consumer adds its own
-first-party matchers, including any automerge exclusion for them, in its own config.
+This preset and the workspace-default preset that GitLab repos consume are **asserted
+equivalent** by an automated parity check on the workspace side, which runs on every pipeline
+there and goes red on drift. Equivalence is asserted after normalizing the differences the two
+platforms force: the GitLab-CI ↔ GitHub-Actions manager swap, the matching `groupName` rename,
+and the downstream first-party matcher entries this public copy cannot carry. Everything that is
+policy — which rules exist, in what order, with which `automerge`, `allowedVersions` and
+`dependencyDashboardApproval` flags — must match.
 
-This paragraph previously claimed the two were "maintained in lockstep" and "asserted
-equivalent (modulo the GitLab-CI ↔ GitHub-Actions manager swap) by an automated parity check on
-the workspace side." That was wrong on both counts, and worth recording so it is not
-reintroduced:
+This copy is deliberately the narrower of the two: it is public and upstream-only, so it carries
+no matcher naming any downstream module (see § No Downstream References). A downstream consumer
+adds its own first-party matchers, including any automerge exclusion for them, on top. The parity
+check strips exactly those entries before comparing, and no others — so any divergence beyond the
+platform-imposed ones still fails.
 
-- **No such check exists.** The workspace-side script with the closest name,
-  `scripts/check-renovate-parity.sh`, asserts set equality between `go-deps.env` and
-  `templates/renovate-godeps-managed.json` — a different pair of files, for a different purpose.
-  Nothing compares the two shared presets.
-- **The equivalence had already lapsed** before the upstream-only change above, and by more than
-  a manager swap: the two differ in package rules, in an `allowedVersions` pin, in a
-  dockerfile-manager rule, and in several rule descriptions.
+**Practical consequence:** a change to `renovate/shared.json` very likely needs a matching change
+on the workspace side, or that side's pipeline breaks. Landing one without the other is not a
+silent no-op.
 
-Keeping a documented invariant that nothing enforces and that no longer holds is worse than
-having none: it invites a future change to be rejected for violating a contract that was already
-broken.
+Correction, recorded so it is not reintroduced: a previous revision of this paragraph claimed
+that no such parity check existed, and that equivalence had already lapsed by more than a manager
+swap. **Both claims were wrong.** The check does exist, and it was green immediately before the
+upstream-only change above — that change is what broke it, and the resulting red pipeline is what
+surfaced the error. The earlier claim was made after searching for the check by a similar name,
+finding a different script that compares a different pair of files, and concluding from its
+absence that nothing compared the presets.
 
 `.github` itself stays on Dependabot: it has no Go code and no `renovate.json`, and
 the Renovate runner skips repos without one.
