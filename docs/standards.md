@@ -8,7 +8,9 @@ go-kure repos are configured and where they diverge from the workspace defaults.
 The go-kure repos are:
 
 1. **Public open-source projects** — must accommodate external contributors
-2. **Hosted on GitHub** — use GitHub Actions and Dependabot (not GitLab CI and Renovate)
+2. **Hosted on GitHub** — use GitHub Actions, not GitLab CI. Dependency updates are Renovate
+   in `kure` and `launcher` (via the shared preset hosted here); only this repo is on
+   Dependabot, and only for `github-actions`. See [Dependency Management](#dependency-management).
 3. **Released independently** — separate cadence from the downstream platform
 
 ## Organization Members
