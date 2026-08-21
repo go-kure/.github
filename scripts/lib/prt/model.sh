@@ -52,20 +52,95 @@ prt_extract_json_braces() {
   printf '%s' "$middle"
 }
 
+# PRT_RESPONSE_CLASSES — the closed enum prt_response_class clamps to, in the
+# same spirit as PRT_CATEGORIES in finding.sh. Listed here so the complete set
+# of strings the diagnostic can ever print is readable in one place.
+PRT_RESPONSE_CLASSES="backend-limit backend-billing backend-overloaded backend-auth backend-model backend-context model-refusal unrecognized"
+
+# prt_response_class CONTENT — classify an unparseable response against a
+# FIXED, in-repo phrase list. Prints exactly one member of
+# PRT_RESPONSE_CLASSES.
+#
+# THIS IS NOT A BACK DOOR FOR LOGGING THE RESPONSE, and the distinction is
+# the whole reason it is written this way. Every string this function can
+# emit is a literal in the case arms below — none of it comes from the
+# response. A response matching nothing prints `unrecognized`, so an
+# unanticipated message cannot leak a single byte through this path. That
+# keeps docs/pr-review-threads.md's "Failure surface" invariant ("never
+# logged: PRT_GH_TOKEN, raw model responses, comment bodies — only
+# fingerprints, actions, and outcomes") intact.
+#
+# go-kure/.github#81 is why it exists: every PR in this repo went red with
+# `len=57 leading=starts-with-prose`, which says a fixed prose string came
+# back but not whether the cause was quota, auth, an overloaded backend or a
+# genuine model refusal — four problems with four different owners and four
+# different fixes. The issue's suggested first step was to log the raw body;
+# that would settle it and also break the invariant above, so the class is
+# the part of that answer which can be published in a job log.
+#
+# The backend is a claude-max-proxy sidecar running on the host's Claude Max
+# credentials (.github/workflows/pr-review.yml:4-10), which has 5-hour and
+# weekly usage limits and returns HTTP 200 with the limit notice as the
+# message content — so it arrives here as "model output", not as the non-2xx
+# branch below that already logs a bounded body. `backend-limit` is the
+# first class for that reason.
+prt_response_class() {
+  local lc c candidate
+  lc="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  case "$lc" in
+    *"usage limit"*|*"rate limit"*|*"too many requests"*|*"quota"*|*"limit reached"*) candidate='backend-limit' ;;
+    *"credit balance"*|*"billing"*|*"insufficient funds"*|*"payment"*)               candidate='backend-billing' ;;
+    *"overloaded"*|*"capacity"*|*"temporarily unavailable"*|*"try again later"*)     candidate='backend-overloaded' ;;
+    *"authentication"*|*"unauthorized"*|*"api key"*|*"forbidden"*|*"credentials"*)   candidate='backend-auth' ;;
+    *"unknown model"*|*"invalid model"*|*"model not found"*)                         candidate='backend-model' ;;
+    *"context length"*|*"maximum context"*|*"too many tokens"*)                      candidate='backend-context' ;;
+    *"i can't"*|*"i cannot"*|*"i'm sorry"*|*"i am sorry"*|*"i'm unable"*)            candidate='model-refusal' ;;
+    *)                                                                               candidate='unrecognized' ;;
+  esac
+  # Clamp to the closed enum, exactly as prt_normalize_category does
+  # (finding.sh:38-45). Belt-and-braces against a future edit that adds a
+  # case arm printing something not in PRT_RESPONSE_CLASSES: this function's
+  # contract with the "never log the response" invariant is that its output
+  # is drawn from a fixed set, so the set is enforced here rather than left
+  # as a property of the case arms that a later edit could quietly break.
+  for c in $PRT_RESPONSE_CLASSES; do
+    if [ "$c" = "$candidate" ]; then printf '%s' "$c"; return 0; fi
+  done
+  printf 'unrecognized'
+}
+
+# prt_response_fingerprint CONTENT — 16 hex chars of the content's sha256,
+# the same idiom and width as prt_fp_base (finding.sh:31-36).
+#
+# A hash is explicitly on the permitted side of the "Failure surface" list
+# ("only fingerprints, actions, and outcomes") and it answers the one
+# question length alone cannot: whether the backend is returning the SAME
+# fixed string on every call. #81 had to infer that from `len=57` recurring
+# across four runs — suggestive, but two different 57-byte responses are
+# entirely possible, so the inference was never proof. Equal fingerprints
+# across runs settle it; differing ones redirect the investigation to
+# something diff-dependent.
+prt_response_fingerprint() {
+  printf '%s' "$1" | sha256sum | cut -c1-16
+}
+
 # prt_response_shape CONTENT — shape-only diagnostic for a response that
-# stayed unparseable after retry and salvage: length and a leading-character
-# class, never the response text itself. Never logging raw model responses
-# or comment bodies is a standing rule for this whole action (see
-# docs/pr-review-threads.md "Failure surface"); a shape summary is not the
-# content. Leading whitespace is trimmed before classifying.
+# stayed unparseable after retry and salvage: length, a leading-character
+# class, the closed-enum class above, and a fingerprint — never the response
+# text itself. Never logging raw model responses or comment bodies is a
+# standing rule for this whole action (see docs/pr-review-threads.md
+# "Failure surface"); a shape summary is not the content. Leading whitespace
+# is trimmed before classifying.
 prt_response_shape() {
-  local content="$1" trimmed
+  local content="$1" trimmed lead
   trimmed="${content#"${content%%[![:space:]]*}"}"
   case "$trimmed" in
-    '{'*) printf 'len=%d leading=starts-with-brace' "${#content}" ;;
-    '```'*) printf 'len=%d leading=starts-with-fence' "${#content}" ;;
-    *) printf 'len=%d leading=starts-with-prose' "${#content}" ;;
+    '{'*)   lead='starts-with-brace' ;;
+    '```'*) lead='starts-with-fence' ;;
+    *)      lead='starts-with-prose' ;;
   esac
+  printf 'len=%d leading=%s class=%s sha16=%s' \
+    "${#content}" "$lead" "$(prt_response_class "$content")" "$(prt_response_fingerprint "$content")"
 }
 
 _prt_review_system_prompt() {
