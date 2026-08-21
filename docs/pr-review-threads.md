@@ -171,9 +171,37 @@ Raising `PRT_MAX_TOKENS` or checking for `finish_reason == "length"` cannot fix 
 current model-proxy backend — it hard-codes `maxTokens` server-side and `finish_reason` is
 unconditionally `"stop"` on its non-streaming path. If both the retry and the salvage still fail
 to parse, the `REVIEW_INCOMPLETE` reason for that chunk carries a shape-only diagnostic
-(`prt_response_shape`, `model.sh:55-69`) — content length and a leading-character class
-(`starts-with-brace` / `starts-with-fence` / `starts-with-prose`) — never the response text
-itself, consistent with the "never logged" list below.
+(`prt_response_shape`) — never the response text itself, consistent with the "never logged" list
+below. It has four fields:
+
+| Field | Meaning |
+|---|---|
+| `len=` | content length in bytes, untrimmed |
+| `leading=` | `starts-with-brace` / `starts-with-fence` / `starts-with-prose`, after trimming leading whitespace |
+| `class=` | one member of `PRT_RESPONSE_CLASSES` (`prt_response_class`) |
+| `sha16=` | 16 hex chars of the content's sha256 (`prt_response_fingerprint`), the same idiom and width as `prt_fp_base` |
+
+`class=` and `sha16=` were added for go-kure/.github#81, where every PR in this repo went red with
+`len=57 leading=starts-with-prose` and nothing more. That is enough to know a fixed prose string
+came back, and not enough to tell a quota stop from an auth failure from an overloaded backend
+from a genuine model refusal — four problems with four different owners. The backend is a
+claude-max-proxy sidecar running on the host's Claude Max credentials, which has 5-hour and weekly
+usage limits and returns **HTTP 200** with the limit notice as the message content, so it arrives
+as "model output" rather than through the non-2xx branch that already logs a bounded body.
+
+`class=` is a **closed enum**, not a substring of the response: every value it can print is a
+literal in `prt_response_class`'s case arms, and anything unmatched prints `unrecognized`, so an
+unanticipated message cannot leak a byte through it. The issue's own suggested first step — log
+the raw body — would have answered the question and broken the invariant below; the class is the
+part of that answer publishable in a job log. `sha16=` settles the other half: whether the backend
+returns the *same* fixed string every time. #81 had to infer that from `len=57` recurring across
+four runs, which is suggestive but not proof, since two distinct 57-byte responses are entirely
+possible. Equal fingerprints across runs prove it; differing ones redirect the investigation to
+something diff-dependent.
+
+Both are covered by the unit suite, including an explicit assertion that neither `prt_response_class`
+nor `prt_response_shape` ever echoes any part of the response, and that every emitted class is a
+member of the declared enum.
 
 Every run that reaches the main body also emits `prt_log` stage tracing to stderr (`prt:
 mode=...`, `prt: diff: <n> bytes, chunks=<n>`, per-chunk review/assess outcome, `prt: threads
@@ -186,6 +214,10 @@ mode line but not the full stage sequence or the closing `prt: done` line; those
 unambiguous on their own (a non-zero exit code plus one explicit `ERROR:` line), so the tracing
 gap there doesn't reintroduce the silent-hang shape #61 exists to close. Never logged:
 `PRT_GH_TOKEN`, raw model responses, comment bodies — only fingerprints, actions, and outcomes.
+The unparseable-response diagnostic above stays on the permitted side of that line by
+construction: `len=`/`leading=` are shape, `sha16=` is a fingerprint, and `class=` is drawn from a
+closed in-repo enum rather than from the response. Adding a field that prints response bytes —
+even a truncated prefix — is the change this list forbids.
 
 All unbounded reconciliation collections obey one additional invariant: thread pages, paginated
 comment nodes, the combined `THREADS` and `OWNED` inventories, and the findings/ownership inputs to

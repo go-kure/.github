@@ -1133,8 +1133,13 @@ rc="$(run_orchestrator advisory 0 0 0)"
 assert_eq "orchestrator: garbage on original + retry -> exits 1" "1" "$rc"
 assert_eq "orchestrator: garbage on original + retry -> model called exactly twice (original + 1 bounded retry)" \
   "2" "$(cat "$PRT_TEST_MODEL_COUNTFILE")"
-assert_eq "orchestrator: garbage on original + retry -> REVIEW_INCOMPLETE carries retry=true, salvage_attempted=true, and a leading-char shape class" \
-  "true" "$(grep -qE 'REVIEW_INCOMPLETE:.*retry=true, salvage_attempted=true \(len=[0-9]+ leading=starts-with-prose\)' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator: garbage on original + retry -> REVIEW_INCOMPLETE carries retry=true, salvage_attempted=true, and the full four-field shape diagnostic" \
+  "true" "$(grep -qE 'REVIEW_INCOMPLETE:.*retry=true, salvage_attempted=true \(len=[0-9]+ leading=starts-with-prose class=[a-z-]+ sha16=[0-9a-f]{16}\)' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+# The fixture response ("not json at all, sorry") matches no known backend
+# failure phrase, so it must land in `unrecognized` — the arm that guarantees
+# an unanticipated message contributes nothing to the log but its shape.
+assert_eq "orchestrator: an unanticipated garbage response classifies as unrecognized" \
+  "true" "$(grep -q 'class=unrecognized' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 assert_eq "orchestrator: garbage on original + retry -> REVIEW_INCOMPLETE does NOT leak the raw response text" \
   "false" "$(grep -qF 'not json at all' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 
@@ -1347,6 +1352,87 @@ assert_eq "model: curl exec failure does not claim an HTTP status" "true" \
 
 unset PRT_TEST_BODYLEN_FILE
 rm -rf "$prt_e2big_dir"
+
+# ============================================================ model.sh: unparseable-response diagnostic (go-kure/.github#81)
+# Every PR in this repo went red with `len=57 leading=starts-with-prose` and
+# nothing else — enough to know a fixed prose string came back, not enough to
+# tell quota from auth from an overloaded backend from a real model refusal.
+# These cover the two fields added to close that gap, and the invariant that
+# neither may echo the response.
+
+# --- prt_response_class: each arm reaches its class ---
+assert_eq "response class: usage-limit prose is backend-limit" "backend-limit" \
+  "$(prt_response_class "You've reached your usage limit. Please try again later.")"
+assert_eq "response class: 'limit reached' variant is backend-limit" "backend-limit" \
+  "$(prt_response_class "Claude AI usage limit reached|1755808200")"
+assert_eq "response class: credit balance is backend-billing" "backend-billing" \
+  "$(prt_response_class "Your credit balance is too low to access the Anthropic API")"
+assert_eq "response class: overloaded is backend-overloaded" "backend-overloaded" \
+  "$(prt_response_class "Overloaded")"
+assert_eq "response class: auth failure is backend-auth" "backend-auth" \
+  "$(prt_response_class "Could not resolve credentials for the upstream account")"
+assert_eq "response class: unknown model is backend-model" "backend-model" \
+  "$(prt_response_class "invalid model: claude-opus-4")"
+assert_eq "response class: context overflow is backend-context" "backend-context" \
+  "$(prt_response_class "prompt is too long: maximum context is 200000 tokens")"
+assert_eq "response class: a genuine refusal is model-refusal, not a backend fault" "model-refusal" \
+  "$(prt_response_class "I am sorry, I will not review that content.")"
+
+# Classification is case-insensitive: the backend does not promise a casing.
+assert_eq "response class: matching is case-insensitive" "backend-limit" \
+  "$(prt_response_class "USAGE LIMIT EXCEEDED")"
+
+# --- the invariant: an unanticipated message leaks nothing ---
+# The whole reason this is a closed enum rather than a substring dump. If this
+# ever fails, the "never log raw model responses" rule in
+# docs/pr-review-threads.md "Failure surface" has been broken.
+prt_secret_response="SECRETTOKEN-abc123 leaked internal detail nobody should see"
+assert_eq "response class: an unmatched response classifies as unrecognized" "unrecognized" \
+  "$(prt_response_class "$prt_secret_response")"
+assert_eq "response class: output never contains any of the response text" "true" \
+  "$(case "$(prt_response_class "$prt_secret_response")" in *SECRETTOKEN*|*leaked*) echo false ;; *) echo true ;; esac)"
+assert_eq "response shape: full diagnostic never contains the response text" "true" \
+  "$(case "$(prt_response_shape "$prt_secret_response")" in *SECRETTOKEN*|*leaked*) echo false ;; *) echo true ;; esac)"
+
+# Every class the function can emit is a member of the declared enum.
+prt_class_leak=false
+for prt_probe in "usage limit" "credit balance" "overloaded" "api key" "unknown model" \
+                 "context length" "i cannot" "nothing matches this at all"; do
+  prt_got="$(prt_response_class "$prt_probe")"
+  case " $PRT_RESPONSE_CLASSES " in
+    *" $prt_got "*) ;;
+    *) prt_class_leak=true ;;
+  esac
+done
+assert_eq "response class: every emitted class is a member of PRT_RESPONSE_CLASSES" "false" "$prt_class_leak"
+
+# --- prt_response_fingerprint: stable, content-sensitive, fixed width ---
+assert_eq "response fingerprint: identical content gives an identical hash" \
+  "$(prt_response_fingerprint "same body")" "$(prt_response_fingerprint "same body")"
+assert_ne "response fingerprint: different content gives a different hash" \
+  "$(prt_response_fingerprint "body a")" "$(prt_response_fingerprint "body b")"
+assert_eq "response fingerprint: 16 hex chars, matching prt_fp_base's width" "16" \
+  "$(printf '%s' "$(prt_response_fingerprint "anything")" | wc -c | tr -d ' ')"
+# Two DIFFERENT responses of the SAME length — the exact ambiguity #81 could
+# not resolve from len= alone, and the reason a fingerprint was added.
+assert_ne "response fingerprint: distinguishes equal-length distinct responses" \
+  "$(prt_response_fingerprint "aaaaaaaaaa")" "$(prt_response_fingerprint "bbbbbbbbbb")"
+
+# --- prt_response_shape: the pre-existing fields still behave ---
+assert_eq "response shape: brace-leading content still reports starts-with-brace" "true" \
+  "$(case "$(prt_response_shape '{"findings":[]}')" in *"leading=starts-with-brace"*) echo true ;; *) echo false ;; esac)"
+assert_eq "response shape: fence-leading content still reports starts-with-fence" "true" \
+  "$(case "$(prt_response_shape '```json')" in *"leading=starts-with-fence"*) echo true ;; *) echo false ;; esac)"
+assert_eq "response shape: leading whitespace is trimmed before classifying" "true" \
+  "$(case "$(prt_response_shape '   {"a":1}')" in *"leading=starts-with-brace"*) echo true ;; *) echo false ;; esac)"
+assert_eq "response shape: len counts the untrimmed content" "true" \
+  "$(case "$(prt_response_shape '  {}')" in *"len=4 "*) echo true ;; *) echo false ;; esac)"
+# The #81 signature end to end: what that job log would print today.
+assert_eq "response shape: emits all four fields" "true" \
+  "$(case "$(prt_response_shape "You've reached your usage limit. Please try again.")" in
+       *"len="*"leading=starts-with-prose"*"class=backend-limit"*"sha16="*) echo true ;;
+       *) echo false ;;
+     esac)"
 
 echo "passed: $pass_count, failed: $failures"
 [ "$failures" -eq 0 ]
