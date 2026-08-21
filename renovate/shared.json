@@ -1,0 +1,113 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":dependencyDashboard",
+    ":semanticCommitTypeAll(build)"
+  ],
+  "labels": ["dependencies"],
+  "timezone": "Europe/Brussels",
+  "prConcurrentLimit": 8,
+  "prHourlyLimit": 4,
+  "branchConcurrentLimit": 8,
+  "postUpdateOptions": ["gomodTidy"],
+  "rebaseWhen": "behind-base-branch",
+  "packageRules": [
+    {
+      "description": "mise-managed toolchain tools, minor/patch/digest only — majors (e.g. node 24) need human review and must not join this group. Excludes go: also gomod-relevant, must stay standalone.",
+      "groupName": "toolchain",
+      "matchManagers": ["mise"],
+      "matchUpdateTypes": ["minor", "patch", "digest"],
+      "matchDepNames": ["!go"]
+    },
+    {
+      "description": "Go module minor bumps not already claimed by a package-name group below. Split from patch/digest (see go-patch below) because Renovate ANDs automerge across every member of one grouped branch — a single minor bump riding along with patch/digest deps on one branch was blocking that branch's automerge entirely. MUST stay before the package-name rules: Renovate applies packageRules in order and a later match overwrites an earlier scalar groupName, so this generic rule would silently absorb kubernetes/sigs.k8s.io/fluxcd/cloudnative-pg/wharf updates if it came after them. Excludes go: keep standalone so a Go bump can't red the whole group.",
+      "groupName": "go-minor",
+      "matchManagers": ["gomod"],
+      "matchUpdateTypes": ["minor"],
+      "matchDepNames": ["!go"]
+    },
+    {
+      "description": "Go module patch/digest bumps not already claimed by a package-name group below. Split from minor (see go-minor above) so this group never carries a minor member and stays automerge-eligible on its own via the automerge rule near the end of this array. MUST stay before the package-name rules, same reason as go-minor. Excludes go: keep standalone.",
+      "groupName": "go-patch",
+      "matchManagers": ["gomod"],
+      "matchUpdateTypes": ["patch", "digest"],
+      "matchDepNames": ["!go"]
+    },
+    {
+      "description": "Kubernetes core. Grouping follows upstream release cadence.",
+      "groupName": "kubernetes",
+      "matchPackageNames": ["k8s.io/**"]
+    },
+    {
+      "description": "sigs.k8s.io. Grouping follows upstream release cadence.",
+      "groupName": "sigs.k8s.io",
+      "matchPackageNames": ["sigs.k8s.io/**"]
+    },
+    {
+      "description": "Flux controller APIs are released together and imported as one surface — never bump piecemeal.",
+      "groupName": "fluxcd",
+      "matchPackageNames": [
+        "github.com/fluxcd/**",
+        "github.com/controlplaneio-fluxcd/**"
+      ]
+    },
+    {
+      "description": "CloudNativePG — the operator, machinery, barman-cloud and the plugin move together upstream.",
+      "groupName": "cloudnative-pg",
+      "matchPackageNames": ["github.com/cloudnative-pg/**"]
+    },
+    {
+      "description": "Wharf-internal libraries. Never automerged: a go-kure/kure bump in a consumer repo carries release-ordering constraints (see the consumer's own guards).",
+      "groupName": "wharf",
+      "matchPackageNames": [
+        "github.com/go-kure/**",
+        "gitlab.com/autops/wharf/**"
+      ],
+      "automerge": false
+    },
+    {
+      "description": "GitHub Actions bumps land as chore(ci), matching the commit convention the previous Dependabot config used.",
+      "matchManagers": ["github-actions"],
+      "groupName": "github-actions",
+      "semanticCommitType": "chore",
+      "semanticCommitScope": "ci"
+    },
+    {
+      "description": "Go itself is excluded from the groups above but must not land unreviewed — a bare Go bump fails each repo's version-consistency checks unless the repo's own sync tooling (scripts/sync-versions.sh) runs alongside it. Dashboard-gate rather than disable, so a security-relevant Go patch stays visible; ticking it still requires the manual sync. allowedVersions keeps the whole 1.27 line unproposed while 1.26 still receives security backports — lift when Go 1.28 ships.",
+      "matchManagers": ["mise", "gomod"],
+      "matchDepNames": ["go"],
+      "dependencyDashboardApproval": true,
+      "allowedVersions": "<1.27"
+    },
+    {
+      "description": "The golang base image is the same Go toolchain as the rule above wearing its dockerfile hat — a 1.26→1.27 tag bump is classified minor, so the all-managers major gate below never catches it. Same gate, same pin, same expiry as the mise/gomod go rule; matchDepNames golang scopes it to the toolchain image, not every dockerfile dep.",
+      "matchManagers": ["dockerfile"],
+      "matchDepNames": ["golang"],
+      "dependencyDashboardApproval": true,
+      "allowedVersions": "<1.27"
+    },
+    {
+      "description": "Majors across every manager in use need human review — gomod majors cross the /vN import-path boundary (import rewriting is a human job; +incompatible pre-SIV modules are the exception, gated uniformly anyway), and toolchain/image/npm majors otherwise arrive as ordinary auto-created PRs. Dashboard-gate rather than disable so security-relevant majors stay visible. Excludes go: the two rules above own the Go toolchain with their stricter allowedVersions pin. MUST stay before the automerge rules below.",
+      "matchManagers": ["gomod", "mise", "dockerfile", "github-actions", "npm"],
+      "matchUpdateTypes": ["major"],
+      "matchDepNames": ["!go"],
+      "dependencyDashboardApproval": true
+    },
+    {
+      "description": "Automerge: mise toolchain minor/patch/digest, excl. go. Kept as its own rule, not bolted onto the go-version gate rule, because automerge follows the same later-overwrites-earlier merge order as groupName — bolting it on would leak onto every matchPackageNames group above.",
+      "matchManagers": ["mise"],
+      "matchUpdateTypes": ["minor", "patch", "digest"],
+      "matchDepNames": ["!go"],
+      "automerge": true
+    },
+    {
+      "description": "Automerge: gomod patch/digest, excl. go and wharf — matches only the go-patch group above (never go-minor, since that group never contains a patch/digest member). Must be the array's last rule — nothing after it can re-enable automerge for a group meant to stay manual.",
+      "matchManagers": ["gomod"],
+      "matchUpdateTypes": ["patch", "digest"],
+      "matchDepNames": ["!go"],
+      "matchPackageNames": ["!github.com/go-kure/**", "!gitlab.com/autops/wharf/**"],
+      "automerge": true
+    }
+  ]
+}
