@@ -309,12 +309,12 @@ Keeping it costs one redundant run at ready-time once every consumer has picked 
 
 ## GitLab (mr-review) parity
 
-This workflow was backported from `autops/wharf/meta`'s `ci-templates/mr-review.yml`. Checked
+This workflow was backported from the downstream platform's `meta/ci-templates/mr-review.yml`. Checked
 against that original on 2026-08-22 (investigating go-kure/kure#684, which surfaced no findings
 on either side and prompted the comparison):
 
 - **Standards injection — fixed.** GitLab's reviewer gets `standards/cross-repo.md` and
-  `standards/golangci-lint.md` fetched from `autops/wharf/meta` (`MR_REVIEW_STANDARDS_FILES`).
+  `standards/golangci-lint.md` fetched from the downstream platform's `meta` repo (`MR_REVIEW_STANDARDS_FILES`).
   This workflow had no equivalent — `PROJECT_AGENTS`/`PROJECT_CLAUDE_MD` only, both repo-local.
   Worse: `model.sh`'s assess system prompt already instructed the model to verify a
   `standards-violation` finding against a "PROJECT STANDARDS" section, and nothing ever populated
