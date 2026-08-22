@@ -127,8 +127,15 @@ prt_render_overflow_comment() {
     printf 'but are worth a look:\n\n'
     printf '| Severity | Category | File | Issue |\n'
     printf '|----------|----------|------|-------|\n'
+    # gsub("<!-- gokure-pr-review"; ...) neutralizes marker syntax in
+    # model-generated prose, matching prt_marker_neutralize (marker.sh) —
+    # this comment is posted by the same bot login prt_find_marked_comment
+    # scans, so a finding whose issue text happens to quote the exact clean
+    # marker (e.g. a self-review of marker.sh itself) must not make this
+    # comment eligible to be matched and later overwritten by a clean-verdict
+    # upsert (gmr dot-github#88 round 1).
     jq -r '
-      def esc: tostring | gsub("\r\n"; " ") | gsub("[\n\r]"; " ") | gsub("\\|"; "\\|");
+      def esc: tostring | gsub("\r\n"; " ") | gsub("[\n\r]"; " ") | gsub("\\|"; "\\|") | gsub("<!-- gokure-pr-review"; "&lt;!-- gokure-pr-review");
       .[] | "| \(.severity|esc) | \(.category|esc) | \(.file|esc) | \(.issue|esc) |"
     ' <<< "$findings"
     printf '\n---\n*Automated review — advisory only, not merge-gating.*\n'
@@ -164,13 +171,63 @@ prt_render_advisory_comment() {
       # table structure — a bare `|` adds a phantom column, and a `\n` ends
       # the row outright, dropping every finding after it into loose prose
       # (dot-github#50 gmr findings C7/R4, folded into one shared escape
-      # here since both defects live in the exact same interpolation).
+      # here since both defects live in the exact same interpolation). The
+      # marker gsub neutralizes any literal quote of the clean-verdict
+      # marker in issue/fix text, matching prt_marker_neutralize — this
+      # comment is posted by the same bot login prt_find_marked_comment
+      # scans (gmr dot-github#88 round 1).
       jq -r '
-        def esc: tostring | gsub("\r\n"; " ") | gsub("[\n\r]"; " ") | gsub("\\|"; "\\|");
+        def esc: tostring | gsub("\r\n"; " ") | gsub("[\n\r]"; " ") | gsub("\\|"; "\\|") | gsub("<!-- gokure-pr-review"; "&lt;!-- gokure-pr-review");
         .[] | "| \(.severity|esc) | \(.category|esc) | \(.file|esc) | \(.issue|esc) | \(.fix|esc) |"
       ' <<< "$findings"
     fi
     printf '\n---\n*Automated review — advisory only (PR_REVIEW_THREADS_MODE=advisory). '
     printf 'No threads were created or resolved.*\n'
   }
+}
+
+# prt_render_clean_comment SHA MODEL CHUNK_COUNT — `enforce` mode's zero-
+# findings verdict. Without this, a zero-finding enforce run posts nothing
+# (no threads to create), which is indistinguishable on the PR page from the
+# job never having run, a model response that parsed to zero findings
+# without being a real review, or a stale queued run that self-suppressed —
+# the same ambiguity GitLab's mr-review.yml closed 2026-08-22 ("say so when
+# a review finds nothing"). Upserted (edited in place) via
+# prt_find_marked_comment/prt_upsert_issue_comment — see the PRT_MODE=enforce
+# call site in pr-review-threads.sh for the gating conditions (this run's
+# own findings count is zero AND the run is not REVIEW_INCOMPLETE).
+prt_render_clean_comment() {
+  local sha="$1" model="$2" chunk_count="$3"
+  cat <<EOF
+## AI Code Review — Reviewed, no findings
+
+| | |
+|---|---|
+| commit | \`${sha}\` |
+| model | \`${model}\` |
+| chunks | ${chunk_count} |
+
+The review ran to completion and reported nothing.
+
+---
+*This comment is edited in place on every push, never appended.*
+
+${PRT_MARKER_CLEAN}
+EOF
+}
+
+# prt_render_clean_comment_superseded SHA FINDING_COUNT — rewrites (never
+# deletes) a prior clean-verdict comment once a later run on the same PR
+# finds something. Deleting would destroy the audit trail that SHA really
+# was reviewed clean; the review threads now carry the PR's current state.
+prt_render_clean_comment_superseded() {
+  local sha="$1" count="$2"
+  cat <<EOF
+## ~~AI Code Review — Reviewed, no findings~~ (superseded)
+
+A later review of \`${sha}\` reported **${count} finding(s)**. The review
+threads on this PR carry the current state.
+
+${PRT_MARKER_CLEAN}
+EOF
 }

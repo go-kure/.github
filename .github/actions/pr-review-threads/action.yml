@@ -69,6 +69,13 @@ inputs:
     description: Path to a project context file (relative to the caller's checkout).
     required: false
     default: "AGENTS.md"
+  standards-file:
+    description: >-
+      Path to the org standards doc, relative to THIS action's own checkout
+      (go-kure/.github at the pinned ref) — not the caller's, unlike
+      agents-file above. Set to empty string to disable.
+    required: false
+    default: "docs/standards.md"
 
 runs:
   using: composite
@@ -97,5 +104,6 @@ runs:
         PRT_MAX_FINDINGS_TOTAL: ${{ inputs.max-findings-total }}
         PRT_PROJECT_CONTEXT: ${{ inputs.project-context }}
         PRT_AGENTS_FILE: ${{ inputs.agents-file }}
+        PRT_STANDARDS_FILE: ${{ inputs.standards-file }}
       run: |
         bash "$GITHUB_ACTION_PATH/../../../scripts/pr-review-threads.sh"

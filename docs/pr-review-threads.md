@@ -77,10 +77,10 @@ to an org repo, with no repo picker even offered for org repos.
 `PRT_MODE` (env `PR_REVIEW_THREADS_MODE`, org/repo variable `vars.PR_REVIEW_THREADS_MODE`
 overrides the workflow's own default) is one of three values. An unrecognized value degrades to
 `advisory`, never to `enforce` — a typo must fail toward the safe side of a gate
-(`pr-review-threads.sh:80-88`).
+(`pr-review-threads.sh:103-111`).
 
 - **`off`** — the incident escape hatch. Short-circuits to `exit 0` immediately after state
-  init, before any network call (`pr-review-threads.sh:100-107`). See "Incident procedure" below.
+  init, before any network call (`pr-review-threads.sh:123-130`). See "Incident procedure" below.
 - **`advisory`** (default) — zero thread creates or mutations. One plain (non-resolvable) issue
   comment per run with the merged findings table. This is the staged-rollout mechanism itself:
   advisory mode proves the pipeline works against real PRs without ever blocking a merge.
@@ -133,7 +133,7 @@ It is always a two-PR sequence:
    merged SHA of PR1's commit on `main`.
 
 Full procedure, the bootstrap special case, and the interim-outage-window caveat between PR1 and
-PR2, including the V2 caller/callee resolution: `docs/standards.md:91-158` ("GitHub Actions
+PR2, including the V2 caller/callee resolution: `docs/standards.md:116-221` ("GitHub Actions
 pinning" → "Same-repo composite actions and the pin-bump procedure").
 
 ## Failure surface
@@ -153,14 +153,14 @@ reasons are also rendered as their own section in the job summary (`render.sh:10
 checked at exit: a non-empty `REVIEW_INCOMPLETE` state makes the top-level script print every
 reason to stderr (prefixed `  - `) and as capped `::error title=...::` workflow annotations
 (escaped via `prt_annotation_escape`, `state.sh`), then exit 1 instead of 0
-(`pr-review-threads.sh:826-835`) — "the review could not run to completion" is now distinguishable
+(`pr-review-threads.sh:1050-1059`) — "the review could not run to completion" is now distinguishable
 from "the review ran and found nothing" by exit code *and* job-log output, not only by a human
 reading the summary by hand.
 
-The model-review call (`prt_model_review`, `model.sh:229-247`) gets one bounded retry — not
+The model-review call (`prt_model_review`, `model.sh:305-325`) gets one bounded retry — not
 `prt_retry`'s usual 3, each call already costs 40-60s against the job's `timeout-minutes: 20`
 budget — when the response fails the `jq -c '.'` parse
-(`pr-review-threads.sh:214-256`), with a salvage attempt interposed ahead of that retry:
+(`pr-review-threads.sh:246-279`), with a salvage attempt interposed ahead of that retry:
 `prt_extract_json_braces` (`model.sh:33-53`) takes the substring from the first `{` to the last
 `}` in the raw content and re-parses that, a no-op on already-clean JSON and a fix for a chattier
 generation that wraps the JSON object in prose (`prt_strip_fence`, `model.sh:26-31`, only strips a
@@ -249,7 +249,7 @@ metadata` line before exiting 1, instead of relying solely on `prt_gh_rest`'s ge
 line to explain the exit.
 
 Neither the request payload nor the two strings it wraps ever go through `argv`
-(`_prt_call_proxy`, `model.sh:142-225`): the system and user strings reach `jq` via `--rawfile`
+(`_prt_call_proxy`, `model.sh:218-300`): the system and user strings reach `jq` via `--rawfile`
 from a temp dir, and the assembled body reaches curl via `-d @FILE`. Linux caps a *single* argv
 entry at `MAX_ARG_STRLEN` = 32 pages = 131072 bytes, independent of `ARG_MAX` and of any
 `ulimit`, and a chunk can legitimately exceed that: `prt_split_diff`'s hard ceiling is
@@ -295,9 +295,10 @@ is unaffected by this — it's visible identically everywhere. Full record:
 The review runs on draft PRs (2026-08-19), by design — parity with the downstream GitLab CI
 template this workflow was backported from, which reviews every merge-request pipeline with no
 draft condition. Draft blocks merge, not review: a draft PR gets the same 2-pass review as a
-ready one — currently one plain issue comment per run under the default `advisory` mode (see
-§ Modes above), or resolvable threads once `enforce` lands — so review feedback is available
-throughout development instead of only after the PR is marked ready.
+ready one — resolvable threads under `enforce` (live via the `PR_REVIEW_THREADS_MODE` org
+variable as of 2026-08-22, ahead of `pr-review.yml`'s own header comment — see the STALE note
+there) or one plain issue comment per run under `advisory` (see § Modes above) — so review
+feedback is available throughout development instead of only after the PR is marked ready.
 
 Consumer callers keep `ready_for_review` in their own `types:` alongside the removed draft gate
 (see `pr-review-caller.yml`), even though it is redundant once every consumer's rollout has
@@ -305,6 +306,38 @@ landed: this workflow is pinned `@main` in each caller, so the no-longer-draft-g
 takes effect once *this* PR merges — an async window in which a consumer PR whose own branch
 already dropped the type, then marked ready with no further push, would get no re-trigger at all.
 Keeping it costs one redundant run at ready-time once every consumer has picked up the merge.
+
+## GitLab (mr-review) parity
+
+This workflow was backported from the downstream platform's `meta/ci-templates/mr-review.yml`. Checked
+against that original on 2026-08-22 (investigating go-kure/kure#684, which surfaced no findings
+on either side and prompted the comparison):
+
+- **Standards injection — fixed.** GitLab's reviewer gets `standards/cross-repo.md` and
+  `standards/golangci-lint.md` fetched from the downstream platform's `meta` repo (`MR_REVIEW_STANDARDS_FILES`).
+  This workflow had no equivalent — `PROJECT_AGENTS`/`PROJECT_CLAUDE_MD` only, both repo-local.
+  Worse: `model.sh`'s assess system prompt already instructed the model to verify a
+  `standards-violation` finding against a "PROJECT STANDARDS" section, and nothing ever populated
+  one — every such finding failed that check unconditionally and was silently downgraded to
+  `FALSE_POSITIVE`. Fixed by `PRT_STANDARDS_FILE` (default `docs/standards.md`, this repo's own
+  go-kure-org standards doc — the direct counterpart to GitLab's two files), resolved against
+  *this* checkout via `PRT_SCRIPT_DIR`, not the caller's, since the doc lives here, not in
+  kure/launcher. See `pr-review-threads.sh`'s `PRT_SCRIPT_DIR` comment and `model.sh`'s
+  `project_standards` parameter.
+- **Review token budget — investigated, NOT bumped; the doc's own claim wins.** GitLab bumped
+  `MR_REVIEW_MAX_TOKENS` 1500→2000 "to fit structured JSON findings with fix prose"; this
+  workflow's `PR_REVIEW_MAX_TOKENS` is still 1500. Left alone: § Failure surface above already
+  documents that the shared claude-max-proxy backend hard-codes `maxTokens` server-side and
+  ignores the request value entirely, so raising it here would be a no-op against the live
+  backend, identical to GitLab's presumed-but-unverified rationale for its own bump against the
+  same backend. Neither side's token knob does anything today; not a divergence worth closing.
+- **Deliberate, not gaps** — chunk size (`PR_REVIEW_MAX_DIFF_CHARS` 50000 vs GitLab's 400000) and
+  the PR-wide findings cap (`PR_REVIEW_MAX_FINDINGS_TOTAL`, 5, GitLab has none): thread-noise and
+  per-call-latency controls this workflow's `enforce` mode needed that GitLab's older note-only
+  history never did. §9's `backend_unavailable()` denylist has no GitHub-side counterpart, but
+  §9b (`REVIEW_NO_STRUCTURED_OUTPUT`, unconditional fail-closed on unparseable output regardless
+  of cause) covers the same purpose without GitLab's lagging phrase-list. No Mattermost webhook
+  equivalent exists on this org.
 
 ## What this does not cover
 

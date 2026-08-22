@@ -16,6 +16,16 @@ set -uo pipefail
 
 PRT_MARKER_NOTE='<!-- gokure-pr-review:v1-note -->'
 PRT_MARKER_RE='^<!-- gokure-pr-review:v1 fp=([0-9a-f]{16}(-[0-9]+)?)( collision=true)?( first_absent_sha=([0-9a-f]{40}))? -->$'
+# The enforce-mode clean-verdict comment's identity marker (a plain issue
+# comment, not a thread — see prt_find_marked_comment/prt_upsert_issue_comment
+# in gh.sh). `-clean` is suffixed onto `v1`, not inserted before it
+# (`v1-clean`, not `clean-v1`) for the same reason the downstream GitLab
+# template's own equivalent marker picked its ordering: PRT_MARKER_RE above
+# is anchored with a required space after
+# `v1`, so this would not actually collide as a prefix match either way —
+# kept anyway as the same defensive habit, not because it's load-bearing here.
+# shellcheck disable=SC2034 # read by render.sh/pr-review-threads.sh, not within this file
+PRT_MARKER_CLEAN='<!-- gokure-pr-review:v1-clean -->'
 
 # prt_marker_build FP [COLLISION] [FIRST_ABSENT_SHA]
 # COLLISION: "true" or "" . Prints the marker line to stdout.

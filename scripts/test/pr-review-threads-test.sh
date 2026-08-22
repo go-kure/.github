@@ -27,6 +27,8 @@ source "$LIB/diff.sh"
 source "$LIB/reconcile.sh"
 # shellcheck source=/dev/null
 source "$LIB/gh.sh"
+# shellcheck source=/dev/null
+source "$LIB/render.sh"
 
 failures=0
 pass_count=0
@@ -327,7 +329,7 @@ rm -rf "$chunk_dir" "$empty_diff"
 
 # ============================================================ diff chunking: write-failure hardening (dot-github#61, L7/L9/F1/F2)
 # prt_split_diff is source`d directly into this test script's own shell
-# (:23 above), so these two cases call it as a plain shell function with a
+# (:25 above), so these two cases call it as a plain shell function with a
 # controlled out_dir and assert on its own stdout/$? directly — no
 # subprocess, no stubbing (new_chunk/_prt_chunk_write are nested function
 # definitions redefined on every call, so no external stub could survive
@@ -678,6 +680,148 @@ assert_eq "prt_freshness_check: read failure still returns 1 (fail-closed unchan
 assert_eq "prt_freshness_check: read failure gets its own diagnostic, distinct from the moved-head one" \
   "true" "$(grep -qF 'failed to read PR' <<< "$fresh_err" && echo true || echo false)"
 
+# ============================================================ gh.sh: prt_find_marked_comment (mocked curl, clean-verdict comment, 2026-08-22)
+fake_curl_find_marked_single_page() {
+  local out="" url=""
+  local args=("$@")
+  for ((ai = 0; ai < ${#args[@]}; ai++)); do
+    case "${args[$ai]}" in
+      -o) out="${args[$((ai + 1))]}" ;;
+      http://*|https://*) url="${args[$ai]}" ;;
+    esac
+  done
+  case "$url" in
+    # "&page=1", not "page=1" — "per_page=100" is itself always present in
+    # every request this function makes and contains "page=1" as a bare
+    # substring, so an unanchored "page=1" match would fire on every page
+    # forever and this fake would never terminate the caller's pagination
+    # loop (caught by a hang in this exact test during development).
+    *'&page=1'*)
+      cat > "$out" <<'JSON'
+[
+  {"id":111,"user":{"login":"other-bot"},"body":"hello <!-- gokure-pr-review:v1-clean --> world"},
+  {"id":222,"user":{"login":"gokure-pr-review[bot]"},"body":"unrelated comment, no marker"},
+  {"id":333,"user":{"login":"gokure-pr-review[bot]"},"body":"pre <!-- gokure-pr-review:v1-clean --> post"}
+]
+JSON
+      ;;
+    *) printf '[]' > "$out" ;;
+  esac
+  echo 200
+}
+found_id="$(PRT_CURL=fake_curl_find_marked_single_page PRT_GH_TOKEN=x \
+  prt_find_marked_comment owner/repo 9 '<!-- gokure-pr-review:v1-clean -->' 'gokure-pr-review[bot]')"
+assert_eq "prt_find_marked_comment: matches on marker AND bot login, skipping a same-marker comment from a different login" \
+  "333" "$found_id"
+
+fake_curl_find_marked_none() {
+  local out=""
+  local args=("$@")
+  for ((ai = 0; ai < ${#args[@]}; ai++)); do
+    [ "${args[$ai]}" = "-o" ] && out="${args[$((ai + 1))]}"
+  done
+  printf '[]' > "$out"
+  echo 200
+}
+found_id="$(PRT_CURL=fake_curl_find_marked_none PRT_GH_TOKEN=x \
+  prt_find_marked_comment owner/repo 9 '<!-- gokure-pr-review:v1-clean -->' 'gokure-pr-review[bot]')"
+find_none_rc=$?
+assert_eq "prt_find_marked_comment: an empty comment list returns success (\"no comment yet\", not a failure)" \
+  "0" "$find_none_rc"
+assert_eq "prt_find_marked_comment: an empty comment list yields an empty id" "" "$found_id"
+
+# Pagination: a full 100-row first page with no match must not stop the scan —
+# the match lands on page 2.
+fake_curl_find_marked_paginated() {
+  local out="" url=""
+  local args=("$@")
+  for ((ai = 0; ai < ${#args[@]}; ai++)); do
+    case "${args[$ai]}" in
+      -o) out="${args[$((ai + 1))]}" ;;
+      http://*|https://*) url="${args[$ai]}" ;;
+    esac
+  done
+  # "&page=N", not "page=N" — see the comment on the single-page fake above;
+  # the same collision with "per_page=100" applies here.
+  if [[ "$url" == *'&page=1'* ]]; then
+    { printf '['
+      for ((pi = 0; pi < 100; pi++)); do
+        [ "$pi" -eq 0 ] || printf ','
+        printf '{"id":%d,"user":{"login":"gokure-pr-review[bot]"},"body":"no marker here"}' "$pi"
+      done
+      printf ']'
+    } > "$out"
+  elif [[ "$url" == *'&page=2'* ]]; then
+    printf '[{"id":999,"user":{"login":"gokure-pr-review[bot]"},"body":"<!-- gokure-pr-review:v1-clean -->"}]' > "$out"
+  else
+    printf '[]' > "$out"
+  fi
+  echo 200
+}
+found_id="$(PRT_CURL=fake_curl_find_marked_paginated PRT_GH_TOKEN=x \
+  prt_find_marked_comment owner/repo 9 '<!-- gokure-pr-review:v1-clean -->' 'gokure-pr-review[bot]')"
+assert_eq "prt_find_marked_comment: a full 100-row non-matching first page advances to page 2 instead of stopping early" \
+  "999" "$found_id"
+
+fake_curl_find_marked_fail() {
+  local out=""
+  local args=("$@")
+  for ((ai = 0; ai < ${#args[@]}; ai++)); do
+    [ "${args[$ai]}" = "-o" ] && out="${args[$((ai + 1))]}"
+  done
+  : > "$out"
+  echo 500
+}
+PRT_CURL=fake_curl_find_marked_fail PRT_GH_TOKEN=x \
+  prt_find_marked_comment owner/repo 9 '<!-- gokure-pr-review:v1-clean -->' 'gokure-pr-review[bot]' >/dev/null 2>&1
+assert_eq "prt_find_marked_comment: a failed paginated GET returns 1, distinct from the empty-list \"no comment yet\" case (0)" \
+  "1" "$?"
+
+# ============================================================ gh.sh: prt_upsert_issue_comment (mocked curl, clean-verdict comment, 2026-08-22)
+upsert_log="$(mktemp)"
+fake_curl_upsert() {
+  local out="" method="" url=""
+  local args=("$@")
+  for ((ai = 0; ai < ${#args[@]}; ai++)); do
+    case "${args[$ai]}" in
+      -o) out="${args[$((ai + 1))]}" ;;
+      -X) method="${args[$((ai + 1))]}" ;;
+      http://*|https://*) url="${args[$ai]}" ;;
+    esac
+  done
+  printf '%s %s\n' "$method" "$url" >> "$upsert_log"
+  printf '{}' > "$out"
+  echo 200
+}
+PRT_CURL=fake_curl_upsert PRT_GH_TOKEN=x prt_upsert_issue_comment owner/repo 9 'body text' 555 >/dev/null
+PRT_CURL=fake_curl_upsert PRT_GH_TOKEN=x prt_upsert_issue_comment owner/repo 9 'body text' >/dev/null
+assert_eq "prt_upsert_issue_comment: an existing id PATCHes .../issues/comments/<id>, editing in place" \
+  "true" "$(grep -qF 'PATCH https://api.github.com/repos/owner/repo/issues/comments/555' "$upsert_log" && echo true || echo false)"
+assert_eq "prt_upsert_issue_comment: no existing id POSTs .../issues/<pr>/comments, creating a new comment" \
+  "true" "$(grep -qF 'POST https://api.github.com/repos/owner/repo/issues/9/comments' "$upsert_log" && echo true || echo false)"
+rm -f "$upsert_log"
+
+# ============================================================ render.sh: clean-verdict comment bodies (GitLab mr-review.yml parity, 2026-08-22)
+clean_body="$(prt_render_clean_comment 'abc1234567890abc1234567890abc1234567890' 'claude-max' 3)"
+assert_eq "prt_render_clean_comment: carries the reviewed SHA" \
+  "true" "$(grep -qF 'abc1234567890abc1234567890abc1234567890' <<< "$clean_body" && echo true || echo false)"
+assert_eq "prt_render_clean_comment: carries the model name" \
+  "true" "$(grep -qF 'claude-max' <<< "$clean_body" && echo true || echo false)"
+assert_eq "prt_render_clean_comment: carries the chunk count" \
+  "true" "$(grep -qF '| chunks | 3 |' <<< "$clean_body" && echo true || echo false)"
+assert_eq "prt_render_clean_comment: ends with the clean-verdict marker, so prt_find_marked_comment can find it again on the next push" \
+  "$PRT_MARKER_CLEAN" "$(tail -1 <<< "$clean_body")"
+
+superseded_body="$(prt_render_clean_comment_superseded 'def4567890def4567890def4567890def4567890' 2)"
+assert_eq "prt_render_clean_comment_superseded: names the superseding SHA" \
+  "true" "$(grep -qF 'def4567890def4567890def4567890def4567890' <<< "$superseded_body" && echo true || echo false)"
+assert_eq "prt_render_clean_comment_superseded: states the finding count that superseded it" \
+  "true" "$(grep -qF '2 finding(s)' <<< "$superseded_body" && echo true || echo false)"
+assert_eq "prt_render_clean_comment_superseded: keeps the SAME marker as the original clean comment, so it is found and edited in place, not appended as a new comment" \
+  "$PRT_MARKER_CLEAN" "$(tail -1 <<< "$superseded_body")"
+assert_ne "prt_render_clean_comment_superseded: the superseded body is visibly distinct from a fresh clean-verdict body" \
+  "$superseded_body" "$clean_body"
+
 # ============================================================ state.sh: prt_annotation_escape (dot-github#61 Step 1)
 assert_eq "annotation_escape: percent escaped first" "a%25b" "$(prt_annotation_escape 'a%b')"
 assert_eq "annotation_escape: CR becomes %0D" "a%0Db" "$(prt_annotation_escape "$(printf 'a\rb')")"
@@ -692,7 +836,7 @@ assert_eq "annotation_escape: percent-then-LF does not double-escape (order: % f
 # report clean success with its own incomplete-state bookkeeping silently
 # never established. prt_state_init calls `exit 1` directly (same
 # exit-not-return contract as prt_mark_incomplete, documented at state.sh:37-53
-# — this is a bare top-level call at pr-review-threads.sh:92, not inside a
+# — this is a bare top-level call at pr-review-threads.sh:115, not inside a
 # $(...) or subshell), so it must be invoked inside an explicit subshell here
 # to observe its exit status without killing the test runner.
 si_dir="$(mktemp -d)"
@@ -707,7 +851,7 @@ rm -rf "$si_dir"
 # ============================================================ orchestrator: exit-code contract (subprocess, mocked curl)
 # pr-review-threads.sh itself is not exercised by the rest of this suite (its
 # own header comment says so — it's wiring, not a pure function) but its
-# top-level exit code IS a contract worth pinning down directly: :787's
+# top-level exit code IS a contract worth pinning down directly: :1050's
 # REVIEW_INCOMPLETE -> exit 1, PRT_MODE=off's exit 0 staying ahead of that
 # check, and the two prt_retry-wrapped reads actually retrying. Run as a real
 # subprocess (not sourced) so $? reflects the same exit path CI observes,
@@ -991,7 +1135,7 @@ fake_curl_orchestrator() {
           echo 200
           ;;
         *)
-          # meta fetch (:125) and every later freshness re-check (gh.sh:114)
+          # meta fetch (:190) and every later freshness re-check (gh.sh:115)
           # share this same GET pulls/<N> shape — deliberately: a freshness
           # check after the meta fetch has already consumed the fail budget
           # must succeed immediately, matching how the real one-run head-SHA
@@ -1162,8 +1306,8 @@ assert_eq "orchestrator: PR-metadata fetch failing all 3 attempts exits 1" "1" "
 assert_eq "orchestrator: permanent metadata-fetch failure — stderr carries the Step 3a ERROR line" \
   "true" "$(grep -qF 'ERROR: failed to fetch PR metadata' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 
-# PRT_MODE=off must short-circuit before any curl call at all (:93-99, ahead
-# of the diff fetch at :103) — proven here by wiring in settings that would
+# PRT_MODE=off must short-circuit before any curl call at all (:123-130, ahead
+# of the diff fetch at :149) — proven here by wiring in settings that would
 # fail the run if the off-mode gate were ever bypassed (an always-failing
 # model call, on top of a diff-fetch failure budget deliberately larger than
 # the retry cap, so a non-off run would exit 1 either way).

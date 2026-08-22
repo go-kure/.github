@@ -28,6 +28,11 @@
 #   PRT_MAX_FINDINGS_TOTAL       PR-wide gating cap, default: 5
 #   PRT_PROJECT_CONTEXT           default: ""
 #   PRT_AGENTS_FILE               default: AGENTS.md
+#   PRT_STANDARDS_FILE             org standards doc injected as PROJECT
+#                                   STANDARDS, resolved against THIS repo's own
+#                                   checkout (the pinned action's, not the
+#                                   caller's — see the PRT_SCRIPT_DIR note
+#                                   below), default: docs/standards.md
 
 set -uo pipefail  # not -e: every stage must run to completion and report,
                    # a single failed write must not abort the whole run —
@@ -36,6 +41,14 @@ set -uo pipefail  # not -e: every stage must run to completion and report,
                    # a soft per-finding failure here must still not cascade
                    # into skipping every other finding before that check runs.
 
+# PRT_SCRIPT_DIR is THIS script's own directory — go-kure/.github's own
+# checkout at the pinned action SHA (GitHub Actions checks out the `uses:`
+# repo itself to resolve action.yml/this script, separate from and alongside
+# the caller's checkout, which is what `pwd`/PRT_AGENTS_FILE below resolve
+# against). PROJECT STANDARDS below reads docs/standards.md from THIS
+# location deliberately — that doc lives in go-kure/.github, not in the
+# calling repo (kure/launcher), so a caller-relative read would always miss.
+PRT_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PRT_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/lib/prt" && pwd)"
 # shellcheck source=scripts/lib/prt/state.sh
 source "$PRT_LIB_DIR/state.sh"
@@ -65,14 +78,22 @@ source "$PRT_LIB_DIR/reconcile.sh"
 : "${PRT_MAX_FINDINGS_TOTAL:=5}"
 : "${PRT_PROJECT_CONTEXT:=}"
 : "${PRT_AGENTS_FILE:=AGENTS.md}"
+# Not `:=` like every other default above: action.yml's standards-file input
+# documents "set to empty string to disable" (:76), so an explicitly-empty
+# value must stay empty, not fall back to the default the way `:=` would —
+# `:=` treats set-but-empty the same as unset. `+set` distinguishes them.
+if [ -z "${PRT_STANDARDS_FILE+set}" ]; then
+  PRT_STANDARDS_FILE="docs/standards.md"
+fi
 
 for req in PRT_GH_TOKEN PRT_REPO PRT_PR_NUMBER PRT_HEAD_SHA PRT_BOT_LOGIN PRT_PROXY_URL; do
   [ -n "${!req:-}" ] || { echo "ERROR: $req is required" >&2; exit 1; }
 done
 
-# These three feed --argjson calls downstream (e.g. line 246, 436) — a
-# non-numeric value fails jq with an unclear error deep in the run instead
-# of a clear one here.
+# These three feed --argjson calls downstream (PRT_PR_NUMBER at :401 below;
+# PRT_MAX_TOKENS via model.sh's _prt_call_proxy; PRT_MAX_FINDINGS_TOTAL via
+# reconcile.sh's cap arithmetic) — a non-numeric value fails jq with an
+# unclear error deep in the run instead of a clear one here.
 for numeric in PRT_PR_NUMBER PRT_MAX_TOKENS PRT_MAX_FINDINGS_TOTAL; do
   case "${!numeric}" in
     ''|*[!0-9]*) echo "ERROR: $numeric must be a non-negative integer, got '${!numeric}'" >&2; exit 1 ;;
@@ -93,9 +114,9 @@ WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT
 prt_state_init "$WORKDIR"
 
-# prt_log cannot be called before state.sh is sourced (:40-41 area); the
+# prt_log cannot be called before state.sh is sourced (:53-54); the
 # earliest safe site with something worth reporting is here, right after
-# prt_state_init — mode resolution above (:80-88) has already run, so this
+# prt_state_init — mode resolution above (:103-111) has already run, so this
 # one line covers both.
 prt_log "mode=$PRT_MODE repo=$PRT_REPO pr=$PRT_PR_NUMBER head=${PRT_HEAD_SHA:0:7}"
 
@@ -110,7 +131,7 @@ fi
 
 # --- Fetch PR diff + metadata ---
 DIFF_FILE="$WORKDIR/full.diff"
-# Wrapped in prt_retry (gh.sh:145-172): a transient 5xx/timeout here used to
+# Wrapped in prt_retry (gh.sh:156-183): a transient 5xx/timeout here used to
 # fail the whole run with no retry, unlike every write path below. 406 (diff
 # too large) is treated as a terminal, non-retryable outcome — retrying it
 # would only burn the retry budget on a condition that can't change between
@@ -163,7 +184,7 @@ ALL_FINDINGS='[]'
 chunk_idx=0
 chunk_count=0
 LINE_INDEX='{}'
-PR_TITLE=""; PR_DESC=""; PROJECT_AGENTS=""; PROJECT_CLAUDE_MD=""
+PR_TITLE=""; PR_DESC=""; PROJECT_AGENTS=""; PROJECT_CLAUDE_MD=""; PROJECT_STANDARDS=""
 
 if [ "$EMPTY_DIFF" != 1 ]; then
 meta_json="$(prt_retry 3 prt_gh_rest GET "/repos/${PRT_REPO}/pulls/${PRT_PR_NUMBER}")" || {
@@ -177,6 +198,15 @@ PROJECT_AGENTS=""
 [ -n "$PRT_AGENTS_FILE" ] && [ -f "$PRT_AGENTS_FILE" ] && PROJECT_AGENTS="$(cat "$PRT_AGENTS_FILE")"
 PROJECT_CLAUDE_MD=""
 [ -f ".claude/CLAUDE.md" ] && PROJECT_CLAUDE_MD="$(cat ".claude/CLAUDE.md")"
+# Deliberately PRT_SCRIPT_DIR-relative, not cwd-relative like the two reads
+# above — docs/standards.md lives in go-kure/.github's own tree, not the
+# calling repo's checkout that PROJECT_AGENTS/PROJECT_CLAUDE_MD read from.
+PROJECT_STANDARDS=""
+if [ -n "$PRT_STANDARDS_FILE" ]; then
+  _prt_standards_path="$PRT_SCRIPT_DIR/../$PRT_STANDARDS_FILE"
+  [ -f "$_prt_standards_path" ] && PROJECT_STANDARDS="$(cat "$_prt_standards_path")"
+  unset _prt_standards_path
+fi
 
 # --- Commentable-line index (full diff, not per chunk) ---
 LINE_INDEX="$(prt_build_line_index "$DIFF_FILE")"
@@ -205,7 +235,7 @@ for chunk_file in "$CHUNK_DIR"/chunk-*.diff; do
   chunk_diff="$(cat "$chunk_file")"
 
   raw="$(prt_model_review "$PRT_PROXY_URL" "$PRT_MODEL" "$PRT_MAX_TOKENS" "$chunk_diff" \
-    "$PR_TITLE" "$PR_DESC" "$PRT_PROJECT_CONTEXT" "$PROJECT_AGENTS" "$PROJECT_CLAUDE_MD")"
+    "$PR_TITLE" "$PR_DESC" "$PRT_PROJECT_CONTEXT" "$PROJECT_AGENTS" "$PROJECT_CLAUDE_MD" "$PROJECT_STANDARDS")"
   if [ -z "$raw" ]; then
     prt_mark_incomplete "chunk $chunk_idx: empty/failed review response"
     prt_log "chunk $chunk_idx: review FAILED (empty response)"
@@ -225,7 +255,7 @@ for chunk_file in "$CHUNK_DIR"/chunk-*.diff; do
   # — prt_strip_fence only handles a fenced marker on line 1/last line, not
   # surrounding prose), and one retry of the model call itself (not
   # prt_retry's usual 3 — each call already costs 40-60s against the job's
-  # 20-minute budget, model.sh:191-197) if salvage doesn't recover it either.
+  # 20-minute budget, model.sh:267-279) if salvage doesn't recover it either.
   raw_json="$(jq -c '.' <<< "$raw" 2>/dev/null || echo '')"
   retried=false
   salvaged=false
@@ -237,7 +267,7 @@ for chunk_file in "$CHUNK_DIR"/chunk-*.diff; do
   if [ -z "$raw_json" ]; then
     retried=true
     raw="$(prt_model_review "$PRT_PROXY_URL" "$PRT_MODEL" "$PRT_MAX_TOKENS" "$chunk_diff" \
-      "$PR_TITLE" "$PR_DESC" "$PRT_PROJECT_CONTEXT" "$PROJECT_AGENTS" "$PROJECT_CLAUDE_MD")"
+      "$PR_TITLE" "$PR_DESC" "$PRT_PROJECT_CONTEXT" "$PROJECT_AGENTS" "$PROJECT_CLAUDE_MD" "$PROJECT_STANDARDS")"
     if [ -n "$raw" ]; then
       raw_json="$(jq -c '.' <<< "$raw" 2>/dev/null || echo '')"
       if [ -z "$raw_json" ]; then
@@ -291,7 +321,7 @@ for ((i = 0; i < chunk_idx; i++)); do
   chunk_diff="$(cat "$chunk_file")"
 
   assess_raw="$(prt_model_assess "$PRT_PROXY_URL" "$PRT_ASSESS_MODEL" "$PRT_ASSESS_MAX_TOKENS" \
-    "$chunk_diff" "$chunk_findings" "$PR_TITLE" "$PRT_PROJECT_CONTEXT" "$PROJECT_AGENTS" "$PROJECT_CLAUDE_MD")"
+    "$chunk_diff" "$chunk_findings" "$PR_TITLE" "$PRT_PROJECT_CONTEXT" "$PROJECT_AGENTS" "$PROJECT_CLAUDE_MD" "$PROJECT_STANDARDS")"
   assess_json="$(jq -c '.' <<< "$assess_raw" 2>/dev/null || echo '')"
   if [ -z "$assess_json" ]; then
     prt_mark_incomplete "chunk $i: assessment response was empty/not valid JSON; findings stay unverdicted"
@@ -931,6 +961,74 @@ if [ "$PRT_MODE" = enforce ] && [ "$(jq 'length' <<< "$OVERFLOW")" -gt 0 ]; then
   fi
 fi
 
+# --- Clean-verdict comment (enforce mode only; GitLab mr-review.yml parity,
+# "say so when a review finds nothing", 2026-08-22) ---
+#
+# A zero-finding enforce run creates no threads, so without this it posts
+# NOTHING to the PR — indistinguishable on the PR page from: the job never
+# running at all, a model response that parsed to zero findings without
+# being a real review, or a stale queued run that self-suppressed. Gated on
+# this run's own raw finding count (ALL_FINDINGS, pre-cap, pre-verdict-
+# filter — matching GitLab's TOTAL_FINDINGS, which is likewise assigned
+# before assessment ever runs) being zero AND the run not being
+# REVIEW_INCOMPLETE — an incomplete run's silence must not read as "clean."
+# advisory mode needs no equivalent: prt_render_advisory_comment already
+# posts unconditionally, including an explicit "No issues found." line.
+if [ "$PRT_MODE" = enforce ]; then
+  total_findings_this_run="$(jq 'length' <<< "$ALL_FINDINGS")"
+  if [ "$total_findings_this_run" -eq 0 ] && ! prt_is_incomplete; then
+    if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
+      if clean_id="$(prt_find_marked_comment "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_MARKER_CLEAN" "$PRT_BOT_LOGIN")"; then
+        # Re-check immediately before the write, not just before the
+        # (possibly multi-page) lookup above — matching prt_gh_rest_fresh's
+        # own rationale (scripts/lib/prt/gh.sh:134-141): the run's real
+        # wall-clock spans the pagination, so a check taken before it started
+        # does not cover a write landing after the head has since moved.
+        if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
+          clean_body="$(prt_render_clean_comment "$PRT_HEAD_SHA" "$PRT_MODEL" "$chunk_idx")"
+          prt_upsert_issue_comment "$PRT_REPO" "$PRT_PR_NUMBER" "$clean_body" "$clean_id" || \
+            prt_mark_incomplete "failed to upsert clean-verdict comment (HTTP ${PRT_LAST_HTTP_STATUS:-unknown})"
+        else
+          prt_mark_incomplete "stale head SHA, skipped clean-verdict comment upsert"
+        fi
+      else
+        prt_mark_incomplete "failed to list issue comments while looking for a prior clean-verdict comment"
+      fi
+    else
+      prt_mark_incomplete "stale head SHA, skipped clean-verdict comment"
+    fi
+  elif [ "$total_findings_this_run" -gt 0 ]; then
+    # Supersede, don't delete — matching prt_render_clean_comment_superseded's
+    # own reasoning: the prior comment is the audit trail that SHA really was
+    # clean, and that stays true of that SHA. Only rewrites an EXISTING clean
+    # comment; a PR that never had one gets no new "superseded" noise.
+    if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
+      # A listing failure here is deliberately NOT prt_mark_incomplete —
+      # matching GitLab's own asymmetry: this is best-effort tidy-up of a
+      # PAST run's comment, not this run's primary output. Worst case a
+      # stale clean note lingers next to this run's own (correctly posted)
+      # open threads, which is a lesser, self-evident harm.
+      if clean_id="$(prt_find_marked_comment "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_MARKER_CLEAN" "$PRT_BOT_LOGIN")"; then
+        if [ -n "$clean_id" ]; then
+          # Re-check immediately before the write — see the identical
+          # rationale on the zero-findings branch above.
+          if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
+            superseded_body="$(prt_render_clean_comment_superseded "$PRT_HEAD_SHA" "$total_findings_this_run")"
+            prt_upsert_issue_comment "$PRT_REPO" "$PRT_PR_NUMBER" "$superseded_body" "$clean_id" || \
+              prt_mark_incomplete "failed to supersede the clean-verdict comment (HTTP ${PRT_LAST_HTTP_STATUS:-unknown})"
+          else
+            prt_mark_incomplete "stale head SHA, skipped clean-verdict supersede upsert"
+          fi
+        fi
+      else
+        echo "WARNING: could not list issue comments — any prior clean-verdict comment is left as it stands." >&2
+      fi
+    else
+      prt_mark_incomplete "stale head SHA, skipped clean-verdict supersede check"
+    fi
+  fi
+fi
+
 {
   prt_render_summary "$PRT_MODE" "$PRT_HEAD_SHA" "$chunk_idx" "$ALL_FINDINGS" "$SUPPRESSED_COUNT" "$(prt_incomplete_reasons)"
 } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
@@ -946,7 +1044,7 @@ prt_log "done: findings=$(jq 'length' <<< "$ALL_FINDINGS") gating=$(jq '[.[] | s
 # only reads the job's own exit code (e.g. a future required status check) —
 # only the job summary's REVIEW_INCOMPLETE section told the difference, and
 # nothing consumed that but a human reading the summary by hand. The
-# PRT_MODE=off short-circuit at :100 stays ahead of this check (an unconditional
+# PRT_MODE=off short-circuit at :123-130 stays ahead of this check (an unconditional
 # exit 0, run before prt_mark_incomplete can ever be called) — the incident
 # escape hatch must keep working even if something else here is broken.
 if prt_is_incomplete; then
