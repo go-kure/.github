@@ -78,15 +78,22 @@ source "$PRT_LIB_DIR/reconcile.sh"
 : "${PRT_MAX_FINDINGS_TOTAL:=5}"
 : "${PRT_PROJECT_CONTEXT:=}"
 : "${PRT_AGENTS_FILE:=AGENTS.md}"
-: "${PRT_STANDARDS_FILE:=docs/standards.md}"
+# Not `:=` like every other default above: action.yml's standards-file input
+# documents "set to empty string to disable" (:76), so an explicitly-empty
+# value must stay empty, not fall back to the default the way `:=` would —
+# `:=` treats set-but-empty the same as unset. `+set` distinguishes them.
+if [ -z "${PRT_STANDARDS_FILE+set}" ]; then
+  PRT_STANDARDS_FILE="docs/standards.md"
+fi
 
 for req in PRT_GH_TOKEN PRT_REPO PRT_PR_NUMBER PRT_HEAD_SHA PRT_BOT_LOGIN PRT_PROXY_URL; do
   [ -n "${!req:-}" ] || { echo "ERROR: $req is required" >&2; exit 1; }
 done
 
-# These three feed --argjson calls downstream (e.g. line 246, 436) — a
-# non-numeric value fails jq with an unclear error deep in the run instead
-# of a clear one here.
+# These three feed --argjson calls downstream (PRT_PR_NUMBER at :401 below;
+# PRT_MAX_TOKENS via model.sh's _prt_call_proxy; PRT_MAX_FINDINGS_TOTAL via
+# reconcile.sh's cap arithmetic) — a non-numeric value fails jq with an
+# unclear error deep in the run instead of a clear one here.
 for numeric in PRT_PR_NUMBER PRT_MAX_TOKENS PRT_MAX_FINDINGS_TOTAL; do
   case "${!numeric}" in
     ''|*[!0-9]*) echo "ERROR: $numeric must be a non-negative integer, got '${!numeric}'" >&2; exit 1 ;;
@@ -107,9 +114,9 @@ WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT
 prt_state_init "$WORKDIR"
 
-# prt_log cannot be called before state.sh is sourced (:40-41 area); the
+# prt_log cannot be called before state.sh is sourced (:53-54); the
 # earliest safe site with something worth reporting is here, right after
-# prt_state_init — mode resolution above (:96-104) has already run, so this
+# prt_state_init — mode resolution above (:103-111) has already run, so this
 # one line covers both.
 prt_log "mode=$PRT_MODE repo=$PRT_REPO pr=$PRT_PR_NUMBER head=${PRT_HEAD_SHA:0:7}"
 
@@ -124,7 +131,7 @@ fi
 
 # --- Fetch PR diff + metadata ---
 DIFF_FILE="$WORKDIR/full.diff"
-# Wrapped in prt_retry (gh.sh:145-172): a transient 5xx/timeout here used to
+# Wrapped in prt_retry (gh.sh:156-183): a transient 5xx/timeout here used to
 # fail the whole run with no retry, unlike every write path below. 406 (diff
 # too large) is treated as a terminal, non-retryable outcome — retrying it
 # would only burn the retry budget on a condition that can't change between
@@ -248,7 +255,7 @@ for chunk_file in "$CHUNK_DIR"/chunk-*.diff; do
   # — prt_strip_fence only handles a fenced marker on line 1/last line, not
   # surrounding prose), and one retry of the model call itself (not
   # prt_retry's usual 3 — each call already costs 40-60s against the job's
-  # 20-minute budget, model.sh:191-197) if salvage doesn't recover it either.
+  # 20-minute budget, model.sh:267-279) if salvage doesn't recover it either.
   raw_json="$(jq -c '.' <<< "$raw" 2>/dev/null || echo '')"
   retried=false
   salvaged=false
@@ -1037,7 +1044,7 @@ prt_log "done: findings=$(jq 'length' <<< "$ALL_FINDINGS") gating=$(jq '[.[] | s
 # only reads the job's own exit code (e.g. a future required status check) —
 # only the job summary's REVIEW_INCOMPLETE section told the difference, and
 # nothing consumed that but a human reading the summary by hand. The
-# PRT_MODE=off short-circuit at :116-123 stays ahead of this check (an unconditional
+# PRT_MODE=off short-circuit at :123-130 stays ahead of this check (an unconditional
 # exit 0, run before prt_mark_incomplete can ever be called) — the incident
 # escape hatch must keep working even if something else here is broken.
 if prt_is_incomplete; then

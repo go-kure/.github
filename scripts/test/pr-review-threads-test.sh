@@ -329,7 +329,7 @@ rm -rf "$chunk_dir" "$empty_diff"
 
 # ============================================================ diff chunking: write-failure hardening (dot-github#61, L7/L9/F1/F2)
 # prt_split_diff is source`d directly into this test script's own shell
-# (:23 above), so these two cases call it as a plain shell function with a
+# (:25 above), so these two cases call it as a plain shell function with a
 # controlled out_dir and assert on its own stdout/$? directly — no
 # subprocess, no stubbing (new_chunk/_prt_chunk_write are nested function
 # definitions redefined on every call, so no external stub could survive
@@ -836,7 +836,7 @@ assert_eq "annotation_escape: percent-then-LF does not double-escape (order: % f
 # report clean success with its own incomplete-state bookkeeping silently
 # never established. prt_state_init calls `exit 1` directly (same
 # exit-not-return contract as prt_mark_incomplete, documented at state.sh:37-53
-# — this is a bare top-level call at pr-review-threads.sh:92, not inside a
+# — this is a bare top-level call at pr-review-threads.sh:115, not inside a
 # $(...) or subshell), so it must be invoked inside an explicit subshell here
 # to observe its exit status without killing the test runner.
 si_dir="$(mktemp -d)"
@@ -851,7 +851,7 @@ rm -rf "$si_dir"
 # ============================================================ orchestrator: exit-code contract (subprocess, mocked curl)
 # pr-review-threads.sh itself is not exercised by the rest of this suite (its
 # own header comment says so — it's wiring, not a pure function) but its
-# top-level exit code IS a contract worth pinning down directly: :787's
+# top-level exit code IS a contract worth pinning down directly: :1050's
 # REVIEW_INCOMPLETE -> exit 1, PRT_MODE=off's exit 0 staying ahead of that
 # check, and the two prt_retry-wrapped reads actually retrying. Run as a real
 # subprocess (not sourced) so $? reflects the same exit path CI observes,
@@ -1135,7 +1135,7 @@ fake_curl_orchestrator() {
           echo 200
           ;;
         *)
-          # meta fetch (:125) and every later freshness re-check (gh.sh:114)
+          # meta fetch (:190) and every later freshness re-check (gh.sh:115)
           # share this same GET pulls/<N> shape — deliberately: a freshness
           # check after the meta fetch has already consumed the fail budget
           # must succeed immediately, matching how the real one-run head-SHA
@@ -1306,8 +1306,8 @@ assert_eq "orchestrator: PR-metadata fetch failing all 3 attempts exits 1" "1" "
 assert_eq "orchestrator: permanent metadata-fetch failure — stderr carries the Step 3a ERROR line" \
   "true" "$(grep -qF 'ERROR: failed to fetch PR metadata' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 
-# PRT_MODE=off must short-circuit before any curl call at all (:93-99, ahead
-# of the diff fetch at :103) — proven here by wiring in settings that would
+# PRT_MODE=off must short-circuit before any curl call at all (:123-130, ahead
+# of the diff fetch at :149) — proven here by wiring in settings that would
 # fail the run if the off-mode gate were ever bypassed (an always-failing
 # model call, on top of a diff-fetch failure budget deliberately larger than
 # the retry cap, so a non-off run would exit 1 either way).

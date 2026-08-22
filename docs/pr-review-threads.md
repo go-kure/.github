@@ -77,10 +77,10 @@ to an org repo, with no repo picker even offered for org repos.
 `PRT_MODE` (env `PR_REVIEW_THREADS_MODE`, org/repo variable `vars.PR_REVIEW_THREADS_MODE`
 overrides the workflow's own default) is one of three values. An unrecognized value degrades to
 `advisory`, never to `enforce` — a typo must fail toward the safe side of a gate
-(`pr-review-threads.sh:96-104`).
+(`pr-review-threads.sh:103-111`).
 
 - **`off`** — the incident escape hatch. Short-circuits to `exit 0` immediately after state
-  init, before any network call (`pr-review-threads.sh:116-123`). See "Incident procedure" below.
+  init, before any network call (`pr-review-threads.sh:123-130`). See "Incident procedure" below.
 - **`advisory`** (default) — zero thread creates or mutations. One plain (non-resolvable) issue
   comment per run with the merged findings table. This is the staged-rollout mechanism itself:
   advisory mode proves the pipeline works against real PRs without ever blocking a merge.
@@ -133,7 +133,7 @@ It is always a two-PR sequence:
    merged SHA of PR1's commit on `main`.
 
 Full procedure, the bootstrap special case, and the interim-outage-window caveat between PR1 and
-PR2, including the V2 caller/callee resolution: `docs/standards.md:91-158` ("GitHub Actions
+PR2, including the V2 caller/callee resolution: `docs/standards.md:116-221` ("GitHub Actions
 pinning" → "Same-repo composite actions and the pin-bump procedure").
 
 ## Failure surface
@@ -153,14 +153,14 @@ reasons are also rendered as their own section in the job summary (`render.sh:10
 checked at exit: a non-empty `REVIEW_INCOMPLETE` state makes the top-level script print every
 reason to stderr (prefixed `  - `) and as capped `::error title=...::` workflow annotations
 (escaped via `prt_annotation_escape`, `state.sh`), then exit 1 instead of 0
-(`pr-review-threads.sh:826-835`) — "the review could not run to completion" is now distinguishable
+(`pr-review-threads.sh:1050-1059`) — "the review could not run to completion" is now distinguishable
 from "the review ran and found nothing" by exit code *and* job-log output, not only by a human
 reading the summary by hand.
 
-The model-review call (`prt_model_review`, `model.sh:229-247`) gets one bounded retry — not
+The model-review call (`prt_model_review`, `model.sh:305-325`) gets one bounded retry — not
 `prt_retry`'s usual 3, each call already costs 40-60s against the job's `timeout-minutes: 20`
 budget — when the response fails the `jq -c '.'` parse
-(`pr-review-threads.sh:214-256`), with a salvage attempt interposed ahead of that retry:
+(`pr-review-threads.sh:246-279`), with a salvage attempt interposed ahead of that retry:
 `prt_extract_json_braces` (`model.sh:33-53`) takes the substring from the first `{` to the last
 `}` in the raw content and re-parses that, a no-op on already-clean JSON and a fix for a chattier
 generation that wraps the JSON object in prose (`prt_strip_fence`, `model.sh:26-31`, only strips a
@@ -249,7 +249,7 @@ metadata` line before exiting 1, instead of relying solely on `prt_gh_rest`'s ge
 line to explain the exit.
 
 Neither the request payload nor the two strings it wraps ever go through `argv`
-(`_prt_call_proxy`, `model.sh:142-225`): the system and user strings reach `jq` via `--rawfile`
+(`_prt_call_proxy`, `model.sh:218-300`): the system and user strings reach `jq` via `--rawfile`
 from a temp dir, and the assembled body reaches curl via `-d @FILE`. Linux caps a *single* argv
 entry at `MAX_ARG_STRLEN` = 32 pages = 131072 bytes, independent of `ARG_MAX` and of any
 `ulimit`, and a chunk can legitimately exceed that: `prt_split_diff`'s hard ceiling is
