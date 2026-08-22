@@ -77,10 +77,10 @@ to an org repo, with no repo picker even offered for org repos.
 `PRT_MODE` (env `PR_REVIEW_THREADS_MODE`, org/repo variable `vars.PR_REVIEW_THREADS_MODE`
 overrides the workflow's own default) is one of three values. An unrecognized value degrades to
 `advisory`, never to `enforce` — a typo must fail toward the safe side of a gate
-(`pr-review-threads.sh:80-88`).
+(`pr-review-threads.sh:96-104`).
 
 - **`off`** — the incident escape hatch. Short-circuits to `exit 0` immediately after state
-  init, before any network call (`pr-review-threads.sh:100-107`). See "Incident procedure" below.
+  init, before any network call (`pr-review-threads.sh:116-123`). See "Incident procedure" below.
 - **`advisory`** (default) — zero thread creates or mutations. One plain (non-resolvable) issue
   comment per run with the merged findings table. This is the staged-rollout mechanism itself:
   advisory mode proves the pipeline works against real PRs without ever blocking a merge.
