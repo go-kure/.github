@@ -181,3 +181,49 @@ prt_retry() {
   done
   return "$rc"
 }
+
+# prt_find_marked_comment REPO PR_NUMBER MARKER BOT_LOGIN — paginates
+# /issues/{pr}/comments (REST — same endpoint the advisory/overflow comments
+# already POST to) looking for a comment authored by BOT_LOGIN whose body
+# contains MARKER anywhere. This is a plain top-level issue comment, not a
+# thread's first-comment marker (marker.sh), so there is no "first line"
+# convention to key off — `contains`, not an anchored line match. BOT_LOGIN
+# is compared against REST's `.user.login`, which — unlike GraphQL's
+# author.login — keeps the "[bot]" suffix, so pass PRT_BOT_LOGIN here
+# unstripped (contrast the PRT_BOT_LOGIN_GQL variant used against GraphQL
+# thread authors elsewhere in this script). Prints the comment's numeric id
+# on stdout if found, prints nothing (exit 0) if none — that is "no comment
+# yet," not a failure. Returns 1 only when a paginated GET itself fails, so
+# callers can tell "no comment yet" from "could not check."
+prt_find_marked_comment() {
+  local repo="$1" pr_number="$2" marker="$3" bot_login="$4"
+  local page=1 body count id
+  while :; do
+    body="$(prt_gh_rest GET "/repos/${repo}/issues/${pr_number}/comments?per_page=100&page=${page}")" || return 1
+    count="$(jq 'length' <<< "$body" 2>/dev/null || echo 0)"
+    [ "$count" -eq 0 ] && break
+    id="$(jq -r --arg m "$marker" --arg bot "$bot_login" '
+      [.[] | select(.user.login == $bot) | select((.body // "") | contains($m))] | .[0].id // empty
+    ' <<< "$body" 2>/dev/null || true)"
+    [ -n "$id" ] && { printf '%s' "$id"; return 0; }
+    [ "$count" -lt 100 ] && break
+    page=$((page + 1))
+  done
+  return 0
+}
+
+# prt_upsert_issue_comment REPO PR_NUMBER BODY [EXISTING_ID] — PATCHes
+# EXISTING_ID (edit in place) if given/non-empty, else POSTs a new comment.
+# Single attempt, not prt_retry-wrapped — matching every other comment POST
+# in this codebase (advisory, overflow): a genuine failure here becomes
+# REVIEW_INCOMPLETE at the call site, not a silent retry loop.
+prt_upsert_issue_comment() {
+  local repo="$1" pr_number="$2" body="$3" existing_id="${4:-}"
+  local payload
+  payload="$(jq -n --arg b "$body" '{body:$b}')"
+  if [ -n "$existing_id" ]; then
+    prt_gh_rest PATCH "/repos/${repo}/issues/comments/${existing_id}" "$payload" >/dev/null
+  else
+    prt_gh_rest POST "/repos/${repo}/issues/${pr_number}/comments" "$payload" >/dev/null
+  fi
+}

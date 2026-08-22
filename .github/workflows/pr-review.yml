@@ -38,6 +38,16 @@
 # one plain issue comment with the merged findings table, matching
 # pre-existing behavior).
 #
+# STALE as of 2026-08-22 (found investigating go-kure/kure#684): live runs on
+# kure log `prt: mode=enforce`, so `vars.PR_REVIEW_THREADS_MODE` is already
+# set to `enforce` at the org level today, overriding the `advisory` default
+# below via the `mode:` line further down — ahead of condition (3) above,
+# which has NOT landed: `governance/repository-settings-policy.yaml`'s
+# `required_status_checks.contexts` for kure/launcher lists only
+# `lint, test, build` (kure/launcher override) / `+rebase-check` (org
+# default), no `pr-review` entry. Whoever flipped the org variable and why
+# is not recorded here — left as found rather than guessed at.
+#
 # The job's `if:` no longer excludes drafts (2026-08-19) — this workflow was
 # backported from GitLab's `meta/ci-templates/mr-review.yml`, which reviews
 # every merge_request_event pipeline with no draft condition. The GitHub port
@@ -76,6 +86,15 @@
 #   PR_REVIEW_ASSESS_MODEL      (default: claude-sonnet-4-6)
 #   PR_REVIEW_ASSESS_MAX_TOKENS (default: 4096)
 #   PR_REVIEW_AGENTS_FILE       (default: AGENTS.md)
+#   PR_REVIEW_STANDARDS_FILE    (default: docs/standards.md; resolved against
+#                                 go-kure/.github's own checkout at the pinned
+#                                 action SHA, not the caller's — see
+#                                 pr-review-threads.sh's PRT_SCRIPT_DIR note.
+#                                 GitLab parity: mirrors
+#                                 MR_REVIEW_STANDARDS_FILES in
+#                                 ci-templates/mr-review.yml, which this port
+#                                 lacked until now. Inert until PR2 below
+#                                 replaces the placeholder pin.)
 #   PR_REVIEW_THREADS_MODE      (default: advisory; vars.PR_REVIEW_THREADS_MODE overrides — see note above)
 #   PR_REVIEW_MAX_FINDINGS_TOTAL (default: 5)
 
@@ -117,6 +136,7 @@ jobs:
       PR_REVIEW_ASSESS_MODEL: "claude-sonnet-4-6"
       PR_REVIEW_ASSESS_MAX_TOKENS: "4096"
       PR_REVIEW_AGENTS_FILE: "AGENTS.md"
+      PR_REVIEW_STANDARDS_FILE: "docs/standards.md"
       PR_REVIEW_THREADS_MODE: "advisory"
       PR_REVIEW_MAX_FINDINGS_TOTAL: "5"
 
@@ -138,7 +158,7 @@ jobs:
           done
 
       - name: Run PR review threads
-        uses: go-kure/.github/.github/actions/pr-review-threads@c549e61627498d0308cd743d15d75fed8f9386f4 # go-kure/.github#83 (unparseable-response diagnostic) pin-bump PR2 — see docs/standards.md "GitHub Actions pinning"
+        uses: go-kure/.github/.github/actions/pr-review-threads@0000000000000000000000000000000000000000 # PLACEHOLDER pending PR2 (standards-file input, GitLab standards-injection parity) — see docs/standards.md "GitHub Actions pinning"
         with:
           # github-token / bot-login: GITHUB_TOKEN always gets viewerCanResolve:false
           # on threads it authors (GitHub rejects bot/App actors for
@@ -164,3 +184,4 @@ jobs:
           max-findings-total: ${{ env.PR_REVIEW_MAX_FINDINGS_TOTAL }}
           project-context: ${{ env.PR_REVIEW_CONTEXT }}
           agents-file: ${{ env.PR_REVIEW_AGENTS_FILE }}
+          standards-file: ${{ env.PR_REVIEW_STANDARDS_FILE }}
