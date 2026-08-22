@@ -150,7 +150,8 @@ You review GitHub pull requests.
 ANTI-HALLUCINATION RULES:
 - Only flag issues you can point to with a specific file and line from the diff.
 - Do NOT flag standards violations unless the standard text appears in one of the ADDITIONAL
-  PROJECT CONTEXT / PROJECT DOCUMENTATION (AGENTS.md) / PROJECT NOTES sections below.
+  PROJECT CONTEXT / PROJECT DOCUMENTATION (AGENTS.md) / PROJECT NOTES / PROJECT STANDARDS sections
+  below.
 - Do NOT invent or assume coding standards — only cite rules explicitly provided.
   If none of those sections is present, do not flag any standards violations.
 - If unsure whether something is a real issue, skip it. Precision matters more than recall.
@@ -300,15 +301,17 @@ _prt_call_proxy() {
 }
 
 # prt_model_review PROXY_URL MODEL MAX_TOKENS CHUNK_DIFF PR_TITLE PR_DESC \
-#                   PROJECT_CONTEXT PROJECT_AGENTS PROJECT_CLAUDE_MD
+#                   PROJECT_CONTEXT PROJECT_AGENTS PROJECT_CLAUDE_MD PROJECT_STANDARDS
 prt_model_review() {
   local proxy_url="$1" model="$2" max_tokens="$3" chunk_diff="$4" \
-        pr_title="$5" pr_desc="$6" project_context="$7" project_agents="$8" project_claude_md="$9"
+        pr_title="$5" pr_desc="$6" project_context="$7" project_agents="$8" \
+        project_claude_md="$9" project_standards="${10}"
   local system user
   system="$(_prt_review_system_prompt)"
   [ -n "$project_context" ] && system="${system}"$'\n\nADDITIONAL PROJECT CONTEXT:\n'"${project_context}"
   [ -n "$project_agents" ] && system="${system}"$'\n\nPROJECT DOCUMENTATION (AGENTS.md):\n'"${project_agents}"
   [ -n "$project_claude_md" ] && system="${system}"$'\n\nPROJECT NOTES (.claude/CLAUDE.md):\n'"${project_claude_md}"
+  [ -n "$project_standards" ] && system="${system}"$'\n\nPROJECT STANDARDS:\n'"${project_standards}"
   user="Review this diff chunk.
 
 Title: ${pr_title}
@@ -322,15 +325,23 @@ ${chunk_diff}
 }
 
 # prt_model_assess PROXY_URL MODEL MAX_TOKENS CHUNK_DIFF FINDINGS_WITH_FP_JSON \
-#                   PR_TITLE PROJECT_CONTEXT PROJECT_AGENTS PROJECT_CLAUDE_MD
+#                   PR_TITLE PROJECT_CONTEXT PROJECT_AGENTS PROJECT_CLAUDE_MD PROJECT_STANDARDS
 prt_model_assess() {
   local proxy_url="$1" model="$2" max_tokens="$3" chunk_diff="$4" findings_json="$5" \
-        pr_title="$6" project_context="$7" project_agents="$8" project_claude_md="$9"
+        pr_title="$6" project_context="$7" project_agents="$8" project_claude_md="$9" \
+        project_standards="${10}"
   local system user
   system="$(_prt_assess_system_prompt)"
   [ -n "$project_context" ] && system="${system}"$'\n\nPROJECT CONTEXT:\n'"${project_context}"
   [ -n "$project_agents" ] && system="${system}"$'\n\nPROJECT CONTEXT:\n'"${project_agents}"
   [ -n "$project_claude_md" ] && system="${system}"$'\n\nPROJECT NOTES (.claude/CLAUDE.md):\n'"${project_claude_md}"
+  # This is the ONLY place PROJECT STANDARDS is ever populated on GitHub
+  # (go-kure/.github); the assess system prompt's own "STANDARDS
+  # VERIFICATION" clause already told the model to check a section by this
+  # exact name before this change existed to fill it — with no populator,
+  # every standards-violation finding failed that check unconditionally and
+  # was always marked FALSE_POSITIVE. See docs/pr-review-threads.md.
+  [ -n "$project_standards" ] && system="${system}"$'\n\nPROJECT STANDARDS:\n'"${project_standards}"
   user="Assess these findings against the actual diff chunk and project context.
 
 PR Title: ${pr_title}

@@ -174,3 +174,49 @@ prt_render_advisory_comment() {
     printf 'No threads were created or resolved.*\n'
   }
 }
+
+# prt_render_clean_comment SHA MODEL CHUNK_COUNT — `enforce` mode's zero-
+# findings verdict. Without this, a zero-finding enforce run posts nothing
+# (no threads to create), which is indistinguishable on the PR page from the
+# job never having run, a model response that parsed to zero findings
+# without being a real review, or a stale queued run that self-suppressed —
+# the same ambiguity GitLab's mr-review.yml closed 2026-08-22 ("say so when
+# a review finds nothing"). Upserted (edited in place) via
+# prt_find_marked_comment/prt_upsert_issue_comment — see the PRT_MODE=enforce
+# call site in pr-review-threads.sh for the gating conditions (this run's
+# own findings count is zero AND the run is not REVIEW_INCOMPLETE).
+prt_render_clean_comment() {
+  local sha="$1" model="$2" chunk_count="$3"
+  cat <<EOF
+## AI Code Review — Reviewed, no findings
+
+| | |
+|---|---|
+| commit | \`${sha}\` |
+| model | \`${model}\` |
+| chunks | ${chunk_count} |
+
+The review ran to completion and reported nothing.
+
+---
+*This comment is edited in place on every push, never appended.*
+
+${PRT_MARKER_CLEAN}
+EOF
+}
+
+# prt_render_clean_comment_superseded SHA FINDING_COUNT — rewrites (never
+# deletes) a prior clean-verdict comment once a later run on the same PR
+# finds something. Deleting would destroy the audit trail that SHA really
+# was reviewed clean; the review threads now carry the PR's current state.
+prt_render_clean_comment_superseded() {
+  local sha="$1" count="$2"
+  cat <<EOF
+## ~~AI Code Review — Reviewed, no findings~~ (superseded)
+
+A later review of \`${sha}\` reported **${count} finding(s)**. The review
+threads on this PR carry the current state.
+
+${PRT_MARKER_CLEAN}
+EOF
+}
