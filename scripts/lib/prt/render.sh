@@ -127,8 +127,15 @@ prt_render_overflow_comment() {
     printf 'but are worth a look:\n\n'
     printf '| Severity | Category | File | Issue |\n'
     printf '|----------|----------|------|-------|\n'
+    # gsub("<!-- gokure-pr-review"; ...) neutralizes marker syntax in
+    # model-generated prose, matching prt_marker_neutralize (marker.sh) —
+    # this comment is posted by the same bot login prt_find_marked_comment
+    # scans, so a finding whose issue text happens to quote the exact clean
+    # marker (e.g. a self-review of marker.sh itself) must not make this
+    # comment eligible to be matched and later overwritten by a clean-verdict
+    # upsert (gmr dot-github#88 round 1).
     jq -r '
-      def esc: tostring | gsub("\r\n"; " ") | gsub("[\n\r]"; " ") | gsub("\\|"; "\\|");
+      def esc: tostring | gsub("\r\n"; " ") | gsub("[\n\r]"; " ") | gsub("\\|"; "\\|") | gsub("<!-- gokure-pr-review"; "&lt;!-- gokure-pr-review");
       .[] | "| \(.severity|esc) | \(.category|esc) | \(.file|esc) | \(.issue|esc) |"
     ' <<< "$findings"
     printf '\n---\n*Automated review — advisory only, not merge-gating.*\n'
@@ -164,9 +171,13 @@ prt_render_advisory_comment() {
       # table structure — a bare `|` adds a phantom column, and a `\n` ends
       # the row outright, dropping every finding after it into loose prose
       # (dot-github#50 gmr findings C7/R4, folded into one shared escape
-      # here since both defects live in the exact same interpolation).
+      # here since both defects live in the exact same interpolation). The
+      # marker gsub neutralizes any literal quote of the clean-verdict
+      # marker in issue/fix text, matching prt_marker_neutralize — this
+      # comment is posted by the same bot login prt_find_marked_comment
+      # scans (gmr dot-github#88 round 1).
       jq -r '
-        def esc: tostring | gsub("\r\n"; " ") | gsub("[\n\r]"; " ") | gsub("\\|"; "\\|");
+        def esc: tostring | gsub("\r\n"; " ") | gsub("[\n\r]"; " ") | gsub("\\|"; "\\|") | gsub("<!-- gokure-pr-review"; "&lt;!-- gokure-pr-review");
         .[] | "| \(.severity|esc) | \(.category|esc) | \(.file|esc) | \(.issue|esc) | \(.fix|esc) |"
       ' <<< "$findings"
     fi
