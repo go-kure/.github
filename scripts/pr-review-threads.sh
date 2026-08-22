@@ -972,9 +972,18 @@ if [ "$PRT_MODE" = enforce ]; then
   if [ "$total_findings_this_run" -eq 0 ] && ! prt_is_incomplete; then
     if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
       if clean_id="$(prt_find_marked_comment "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_MARKER_CLEAN" "$PRT_BOT_LOGIN")"; then
-        clean_body="$(prt_render_clean_comment "$PRT_HEAD_SHA" "$PRT_MODEL" "$chunk_idx")"
-        prt_upsert_issue_comment "$PRT_REPO" "$PRT_PR_NUMBER" "$clean_body" "$clean_id" || \
-          prt_mark_incomplete "failed to upsert clean-verdict comment (HTTP ${PRT_LAST_HTTP_STATUS:-unknown})"
+        # Re-check immediately before the write, not just before the
+        # (possibly multi-page) lookup above — matching prt_gh_rest_fresh's
+        # own rationale (scripts/lib/prt/gh.sh:134-141): the run's real
+        # wall-clock spans the pagination, so a check taken before it started
+        # does not cover a write landing after the head has since moved.
+        if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
+          clean_body="$(prt_render_clean_comment "$PRT_HEAD_SHA" "$PRT_MODEL" "$chunk_idx")"
+          prt_upsert_issue_comment "$PRT_REPO" "$PRT_PR_NUMBER" "$clean_body" "$clean_id" || \
+            prt_mark_incomplete "failed to upsert clean-verdict comment (HTTP ${PRT_LAST_HTTP_STATUS:-unknown})"
+        else
+          prt_mark_incomplete "stale head SHA, skipped clean-verdict comment upsert"
+        fi
       else
         prt_mark_incomplete "failed to list issue comments while looking for a prior clean-verdict comment"
       fi
@@ -994,9 +1003,15 @@ if [ "$PRT_MODE" = enforce ]; then
       # open threads, which is a lesser, self-evident harm.
       if clean_id="$(prt_find_marked_comment "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_MARKER_CLEAN" "$PRT_BOT_LOGIN")"; then
         if [ -n "$clean_id" ]; then
-          superseded_body="$(prt_render_clean_comment_superseded "$PRT_HEAD_SHA" "$total_findings_this_run")"
-          prt_upsert_issue_comment "$PRT_REPO" "$PRT_PR_NUMBER" "$superseded_body" "$clean_id" || \
-            prt_mark_incomplete "failed to supersede the clean-verdict comment (HTTP ${PRT_LAST_HTTP_STATUS:-unknown})"
+          # Re-check immediately before the write — see the identical
+          # rationale on the zero-findings branch above.
+          if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
+            superseded_body="$(prt_render_clean_comment_superseded "$PRT_HEAD_SHA" "$total_findings_this_run")"
+            prt_upsert_issue_comment "$PRT_REPO" "$PRT_PR_NUMBER" "$superseded_body" "$clean_id" || \
+              prt_mark_incomplete "failed to supersede the clean-verdict comment (HTTP ${PRT_LAST_HTTP_STATUS:-unknown})"
+          else
+            prt_mark_incomplete "stale head SHA, skipped clean-verdict supersede upsert"
+          fi
         fi
       else
         echo "WARNING: could not list issue comments — any prior clean-verdict comment is left as it stands." >&2
