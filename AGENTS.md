@@ -289,6 +289,22 @@ workflows, which are job-level). Consumer repos reference one as a step:
 - **Required CI**: `lint`, `test`, `build`, `rebase-check`
 - Use `gh pr create` to open pull requests
 
+## Agent gates (A1–A7)
+
+Process rules for AI agents (Claude Code, Codex, and any other). They constrain *how* work is
+done and are independent of any particular tool, harness or machine — everything below is
+checkable from a clone of this repository.
+
+| Gate | Rule |
+|---|---|
+| **A1** | Every factual claim in a plan or review carries a `file:line` actually read this session; anything uncitable goes in an explicit `ASSUMPTIONS` list. Recompute every number from source. Never cite your own uncommitted change as evidence of existing convention — check the base branch. |
+| **A2** | Destructive operations require a *proven* dry-run, not an asserted one: print the exact command, then show the dry-run ran and what it output. A tool *accepting* `--dry-run` is not proof it honoured it. If it cannot be proven, say so and stop. Applies to `github-settings.sh --apply` and any org-settings mutation. |
+| **A3** | "Stop" / "wait" means make no further edits and no further tool calls. One-line acknowledgement only. |
+| **A4** | No merge-ready claim without per-item evidence. For this repo: `mise run verify` (everything CI runs — lint, checks, tests, forbidden-terms, links), plus code-and-docs in the same PR per `docs/standards.md`. |
+| **A5** | Re-read your own diff for the recurring defect classes: a composite action's pin bumped without the drift-check ref that must move with it (both must reference the same commit — a stale drift-check ref reddens every consuming repo's CI independently of any single PR), `docs-map.yaml` left stale after a doc moves, and a settings-policy change applied without first previewing the drift (`github-settings.sh` dry-run output actually read, not just accepted). |
+| **A6** | Any time you touch a changeset with an open PR, check for new comments or reviews since you last looked, before calling a round done. Enumerate every review thread, not just the top-level review list — a forge can carry several independent reviews over time, and an inline thread carries separate resolved/unresolved state from the review it belongs to. Per comment: push a fix commit, or state why not — silence is not a response. Mark the thread resolved once addressed. |
+| **A7** | No bare internal identifier (gate ID, plan step, finding, round, run ID) in a plan, review, or comment without a short subject on first use. Every issue/PR reference is the full project path plus its sigil (`owner/repo#123`), never a bare number — except inside a comment posted on that same forge project, where the surrounding page already supplies the repo. **In this repo**, per the No Downstream References standard (`docs/standards.md`), a reference to any of the forbidden downstream repo names is never qualified even to resolve ambiguity — the qualified form is still a forbidden term. Reword to a generic functional reason and drop the number instead. |
+
 ## Questions?
 
 Refer to:
