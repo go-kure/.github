@@ -5,7 +5,7 @@
     ":dependencyDashboard",
     ":semanticCommitTypeAll(build)"
   ],
-  "labels": ["dependencies"],
+  "labels": ["dependencies", "needs-human"],
   "timezone": "Europe/Brussels",
   "prConcurrentLimit": 8,
   "prHourlyLimit": 4,
@@ -63,7 +63,8 @@
       "matchPackageNames": [
         "github.com/go-kure/**"
       ],
-      "automerge": false
+      "automerge": false,
+      "labels": ["dependencies", "needs-human"]
     },
     {
       "description": "GitHub Actions bumps land as chore(ci), matching the commit convention the previous Dependabot config used.",
@@ -98,7 +99,8 @@
       "matchManagers": ["mise"],
       "matchUpdateTypes": ["minor", "patch", "digest"],
       "matchDepNames": ["!go"],
-      "automerge": true
+      "automerge": true,
+      "labels": ["dependencies", "unattended"]
     },
     {
       "description": "Automerge: gomod patch/digest, excl. go and the first-party group — matches only the go-patch group above (never go-minor, since that group never contains a patch/digest member). Must be the array's last rule in THIS preset — nothing after it can re-enable automerge for a group meant to stay manual. A downstream consumer that adds its own first-party matchers must exclude them here too, by appending a rule that sets automerge false for them (later rules overwrite earlier scalars).",
@@ -106,7 +108,8 @@
       "matchUpdateTypes": ["patch", "digest"],
       "matchDepNames": ["!go"],
       "matchPackageNames": ["!github.com/go-kure/**"],
-      "automerge": true
+      "automerge": true,
+      "labels": ["dependencies", "unattended"]
     }
   ]
 }
