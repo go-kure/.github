@@ -79,6 +79,15 @@ What it encodes:
   for `github.com/go-kure/**` — cross-repo bumps carry release-ordering constraints
   (launcher must not lead the kure release it imports; see launcher's
   `check-kure-dep-sync` guard).
+- **Vulnerability alerts** — `vulnerabilityAlerts.enabled: true` raises a PR for a known-CVE
+  dependency immediately, bypassing `minimumReleaseAge`/schedule/`dependencyDashboardApproval`
+  gates (Renovate's own default for the block already does this; nothing here restates it).
+  `addLabels: ["security"]` marks the PR without disturbing whichever automerge lane it lands
+  in. `osvVulnerabilityAlerts: true` additionally consults the offline osv.dev database — the
+  only alert source for GitLab-hosted consumer repos, since GitHub's own Dependabot-alert
+  integration this preset also benefits from is platform-specific to repos hosted here. OSV
+  covers gomod/npm/pypi/maven/… datasources; it does not cover `docker`, `dockerfile`,
+  `github-actions`, `mise` or other non-package-manager pins.
 
 Repos add repo-specific rules (e.g. `postUpgradeTasks` running the repo's own
 `scripts/sync-versions.sh generate` so generated docs move in the same commit as the

@@ -12,6 +12,11 @@
   "branchConcurrentLimit": 8,
   "postUpdateOptions": ["gomodTidy"],
   "rebaseWhen": "behind-base-branch",
+  "osvVulnerabilityAlerts": true,
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "addLabels": ["security"]
+  },
   "packageRules": [
     {
       "description": "mise-managed toolchain tools, minor/patch/digest only — majors (e.g. node 24) need human review and must not join this group. Excludes go: also gomod-relevant, must stay standalone.",
