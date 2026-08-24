@@ -44,6 +44,12 @@ Two separator styles are used, depending on label semantics:
 the listed repos, and flags it as extra if it appears on any other repo. Labels without a
 `repos` field apply to every repo.
 
+**Renovate labels** (no category prefix): `needs-human`, `unattended` — applied by the
+shared Renovate preset ([`renovate/shared.json`](../renovate/shared.json)) to flag whether an
+update needs human review or is eligible for automerge. Scoped to `["kure", "launcher"]`,
+the two repos that extend the shared preset — do not add them without `repos` scoping, since
+`.github` and `go-kure.github.io` carry no `renovate.json`.
+
 ### `type/roadmap` vs `type/epic`
 
 - `type/roadmap` — program-level master tracking issue spanning multiple phases or repos (gold `#D4AF37`)

@@ -1432,7 +1432,7 @@ build_ruleset_import_jq() {
 import_repo() {
     local repo="$1"
 
-    echo "# ---- drift from policy: $GITHUB_ORG/$repo ($(date -u +%Y-%m-%dT%H:%M:%SZ)) ----"
+    echo "# ---- drift from policy (settings/security/rulesets): $GITHUB_ORG/$repo ($(date -u +%Y-%m-%dT%H:%M:%SZ)) ----"
 
     local settings
     settings=$(gh api "repos/$GITHUB_ORG/$repo")
@@ -1527,7 +1527,8 @@ import_repo() {
     fi
 
     if [ "$rulesets_fetch_ok" = "true" ] && [ "$settings_json" = "{}" ] && [ "$security_json" = "{}" ] && [ "$rulesets_json" = "{}" ] && [ "$missing_rulesets_json" = "[]" ]; then
-        echo "# $repo: matches policy — nothing to import"
+        echo "# $repo: settings/security/rulesets match policy — nothing to import"
+        echo "# (labels are governed by standards/labels.json and are not importable — run without --import to audit them)"
         echo ""
         return 0
     fi
@@ -1545,7 +1546,7 @@ import_repo() {
 # contract as import_repo (diff by hand against
 # governance/repository-settings-policy.yaml). Only reached via --org --import.
 import_org() {
-    echo "# ---- drift from policy: org $GITHUB_ORG ($(date -u +%Y-%m-%dT%H:%M:%SZ)) ----"
+    echo "# ---- drift from policy (settings/actions): org $GITHUB_ORG ($(date -u +%Y-%m-%dT%H:%M:%SZ)) ----"
 
     local settings actions_perms actions_workflow
     settings=$(gh api "orgs/$GITHUB_ORG")
@@ -1582,7 +1583,7 @@ import_org() {
     done
 
     if [ "$settings_json" = "{}" ] && [ "$actions_json" = "{}" ]; then
-        echo "# org: matches policy — nothing to import"
+        echo "# org: settings/actions match policy — nothing to import"
         echo ""
         return 0
     fi

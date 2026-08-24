@@ -182,6 +182,18 @@
       "color": "#5319E7",
       "description": "Maintainer-only: bypass the documentation-sync CI gate",
       "repos": ["launcher"]
+    },
+    {
+      "name": "needs-human",
+      "color": "#D93F0B",
+      "description": "Renovate: update needs human review before merge",
+      "repos": ["kure", "launcher"]
+    },
+    {
+      "name": "unattended",
+      "color": "#0E8A16",
+      "description": "Renovate: update eligible for automerge without review",
+      "repos": ["kure", "launcher"]
     }
   ]
 }
