@@ -116,7 +116,13 @@ The `settings.yml` workflow runs this automatically in audit mode on push to mai
 ./scripts/github-settings.sh --all --import
 ```
 
-A repo with nothing to fold in prints `# <repo>: matches policy — nothing to import`. A live
+`--import` covers repo settings, the security trio, and rulesets only — it never touches
+labels, since those are governed by `standards/labels.json`, not
+`governance/repository-settings-policy.yaml`. Label drift is reported by audit mode (running
+the script without `--import`) instead.
+
+A repo with nothing to fold in prints
+`# <repo>: settings/security/rulesets match policy — nothing to import`. A live
 ruleset rule type the script doesn't model yet (not in the `RULE_KIND` registry) is omitted
 from the printed YAML and flagged with an `unmapped_rule_types` warning on stderr instead of
 being silently dropped. A policy-applicable ruleset that no longer exists on the repo (deleted
