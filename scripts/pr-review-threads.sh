@@ -320,14 +320,71 @@ for ((i = 0; i < chunk_idx; i++)); do
   [ "$(jq 'length' <<< "$chunk_findings")" -gt 0 ] || continue
   chunk_diff="$(cat "$chunk_file")"
 
+  assess_rc=0
   assess_raw="$(prt_model_assess "$PRT_PROXY_URL" "$PRT_ASSESS_MODEL" "$PRT_ASSESS_MAX_TOKENS" \
-    "$chunk_diff" "$chunk_findings" "$PR_TITLE" "$PRT_PROJECT_CONTEXT" "$PROJECT_AGENTS" "$PROJECT_CLAUDE_MD" "$PROJECT_STANDARDS")"
-  assess_json="$(jq -c '.' <<< "$assess_raw" 2>/dev/null || echo '')"
-  if [ -z "$assess_json" ]; then
-    prt_mark_incomplete "chunk $i: assessment response was empty/not valid JSON; findings stay unverdicted"
-    prt_log "chunk $i: review ok, assess FAILED (empty/invalid JSON)"
+    "$chunk_diff" "$chunk_findings" "$PR_TITLE" "$PRT_PROJECT_CONTEXT" "$PROJECT_AGENTS" "$PROJECT_CLAUDE_MD" "$PROJECT_STANDARDS")" || assess_rc=$?
+  if [ "$assess_rc" -ne 0 ]; then
+    # A non-zero return here is a transport/proxy fault (prt_model_assess's
+    # own stderr already named it — curl failure, non-2xx, or empty response
+    # content, model.sh:286-299) and is a different problem than a 2xx
+    # response that isn't parseable JSON below. Reported distinctly so the
+    # two don't collapse into one ambiguous message (root cause 2).
+    prt_mark_incomplete "chunk $i: assessment call failed (transport/proxy error, exit $assess_rc); findings stay unverdicted"
+    prt_log "chunk $i: review ok, assess FAILED (transport error, exit $assess_rc)"
     ASSESSED="$(jq -c -n --argjson a "$ASSESSED" --argjson b "$chunk_findings" '$a + ($b | map(. + {verdict: null, reasoning: null}))')"
     continue
+  fi
+
+  # Parse, with a salvage pass ahead of the (bounded-to-1) retry — mirrors the
+  # review call's recovery path above (go-kure/.github#60/#61 round 2
+  # fold-in): the assessment call shares the same backend and the same
+  # prose-wrapping failure mode, so it gets the same recovery, not a lesser
+  # one.
+  assess_json="$(jq -c '.' <<< "$assess_raw" 2>/dev/null || echo '')"
+  assess_retried=false
+  assess_salvaged=false
+  if [ -z "$assess_json" ]; then
+    assess_salvage="$(prt_extract_json_braces "$assess_raw")" && \
+      assess_json="$(jq -c '.' <<< "$assess_salvage" 2>/dev/null || echo '')"
+    [ -n "$assess_json" ] && assess_salvaged=true
+  fi
+  if [ -z "$assess_json" ]; then
+    assess_retried=true
+    assess_rc=0
+    assess_raw="$(prt_model_assess "$PRT_PROXY_URL" "$PRT_ASSESS_MODEL" "$PRT_ASSESS_MAX_TOKENS" \
+      "$chunk_diff" "$chunk_findings" "$PR_TITLE" "$PRT_PROJECT_CONTEXT" "$PROJECT_AGENTS" "$PROJECT_CLAUDE_MD" "$PROJECT_STANDARDS")" || assess_rc=$?
+    if [ "$assess_rc" -ne 0 ]; then
+      # The retry call can ALSO hit a transport fault, distinct from the
+      # retry producing another unparseable body — collapsing this into the
+      # parse-failure branch below would both mislabel it and compute
+      # prt_response_shape over an empty string (codex round-1 finding: a
+      # transport failure on the retry was being reported as "not valid
+      # JSON").
+      prt_mark_incomplete "chunk $i: assessment call failed on retry (transport/proxy error, exit $assess_rc); findings stay unverdicted"
+      prt_log "chunk $i: review ok, assess FAILED (transport error on retry, exit $assess_rc)"
+      ASSESSED="$(jq -c -n --argjson a "$ASSESSED" --argjson b "$chunk_findings" '$a + ($b | map(. + {verdict: null, reasoning: null}))')"
+      continue
+    fi
+    if [ -n "$assess_raw" ]; then
+      assess_json="$(jq -c '.' <<< "$assess_raw" 2>/dev/null || echo '')"
+      if [ -z "$assess_json" ]; then
+        assess_salvage="$(prt_extract_json_braces "$assess_raw")" && \
+          assess_json="$(jq -c '.' <<< "$assess_salvage" 2>/dev/null || echo '')"
+        [ -n "$assess_json" ] && assess_salvaged=true
+      fi
+    fi
+  fi
+  if [ -z "$assess_json" ]; then
+    # Shape-only diagnostic, same rule as the review path above and
+    # docs/pr-review-threads.md's "Failure surface" — never the response text.
+    shape="$(prt_response_shape "${assess_raw:-}")"
+    prt_mark_incomplete "chunk $i: assessment response was not valid JSON after retry=$assess_retried, salvage_attempted=true ($shape); findings stay unverdicted"
+    prt_log "chunk $i: review ok, assess FAILED (invalid JSON, retried=$assess_retried)"
+    ASSESSED="$(jq -c -n --argjson a "$ASSESSED" --argjson b "$chunk_findings" '$a + ($b | map(. + {verdict: null, reasoning: null}))')"
+    continue
+  fi
+  if [ "$assess_retried" = true ] || [ "$assess_salvaged" = true ]; then
+    prt_log "chunk $i: assess recovered (retried=$assess_retried salvaged=$assess_salvaged)"
   fi
   joined="$(prt_join_assessment "$chunk_findings" "$assess_json")" || \
     prt_mark_incomplete "chunk $i: .assessments missing/null/non-array"
