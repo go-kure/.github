@@ -969,7 +969,7 @@ export -f _prt_test_paged_threads_response _prt_test_paginated_comments_response
   _prt_test_malformed_threads_response
 
 fake_curl_orchestrator() {
-  local args=("$@") out="" accept="" url="" method="" data="" h
+  local args=("$@") out="" accept="" url="" method="" data="" h req_body=""
   local i n=${#args[@]}
   for ((i = 0; i < n; i++)); do
     case "${args[$i]}" in
@@ -993,45 +993,114 @@ fake_curl_orchestrator() {
 
   case "$url" in
     */chat/completions)
-      # _prt_test_bump's return value (not discarded here, unlike the other
-      # call sites below) is the running per-run model-call count, used by
-      # the garbage_then_clean mode to tell the original attempt from the
-      # round-2 fold-in's bounded retry apart.
-      mc="$(_prt_test_bump "${PRT_TEST_MODEL_COUNTFILE:?}")"
-      if [ "${PRT_TEST_MODEL_ALWAYS_FAIL:-0}" = 1 ]; then
-        : > "$out"; echo 500; return 0
-      fi
-      # PRT_TEST_MODEL_RESPONSE_MODE (go-kure/.github#60/#61 round 2
-      # fold-in): exercises the salvage pass and the bounded retry added
-      # around the jq -c '.' parse in pr-review-threads.sh's chunk-review
-      # loop. clean (default) is the pre-existing well-formed response.
-      # prose wraps well-formed JSON in commentary on both sides — no braces
-      # missing, salvageable without ever needing the retry (fact 3 in the
-      # incident record: launcher#283 run 32175849548, a chattier generation
-      # wraps the JSON object in prose). garbage has no '{'/'}' at all —
-      # unsalvageable, and stays garbage on the retry too, every call.
-      # garbage_then_clean is garbage only on call 1 (mc<=1); the retry
-      # (call 2) gets clean JSON, proving the retry path actually runs and
-      # not just that it's accepted in principle.
-      case "${PRT_TEST_MODEL_RESPONSE_MODE:-clean}" in
-        prose)
-          printf '%s' '{"choices":[{"message":{"content":"Here you go:\n{\"findings\":[]}\nHope that helps!"}}]}' > "$out"
-          ;;
-        garbage)
-          printf '%s' '{"choices":[{"message":{"content":"not json at all, sorry"}}]}' > "$out"
-          ;;
-        garbage_then_clean)
-          if [ "$mc" -le 1 ]; then
-            printf '%s' '{"choices":[{"message":{"content":"not json at all, sorry"}}]}' > "$out"
-          else
-            printf '%s' '{"choices":[{"message":{"content":"{\"findings\":[]}"}}]}' > "$out"
+      # The review and assess calls share this one URL — distinguish them by
+      # reading the request body model.sh writes to disk and passes as
+      # `-d @FILE` (the E2BIG fix, model.sh:255-265: never inline on argv),
+      # so `$data` here is a `@`-prefixed path, not literal JSON. The assess
+      # call's user message always contains the literal
+      # "--- FINDINGS (JSON) ---" marker (model.sh:349); the review call's
+      # never does.
+      req_body=""
+      case "$data" in
+        @*) req_body="$(cat "${data#@}" 2>/dev/null || true)" ;;
+      esac
+      case "$req_body" in
+        *'FINDINGS (JSON)'*)
+          # PRT_TEST_ASSESS_* (go-kure/.github assess-resilience workstream):
+          # exercises prt_model_assess's exit-status check, salvage pass and
+          # bounded retry — the assessment call's mirror of the review call's
+          # own resilience below. Only reachable when the review call above
+          # actually produced >=1 finding (PRT_TEST_MODEL_RESPONSE_MODE=
+          # clean_with_finding), since the orchestrator skips assessment for
+          # an empty-findings chunk (pr-review-threads.sh:320).
+          mc="$(_prt_test_bump "${PRT_TEST_ASSESS_COUNTFILE:?}")"
+          if [ "${PRT_TEST_ASSESS_ALWAYS_FAIL:-0}" = 1 ]; then
+            : > "$out"; echo 500; return 0
           fi
+          case "${PRT_TEST_ASSESS_RESPONSE_MODE:-clean}" in
+            prose)
+              printf '%s' '{"choices":[{"message":{"content":"Here is the assessment:\n{\"assessments\":[{\"fp\":\"deadbeefcafebabe\",\"verdict\":\"VALID\",\"reasoning\":\"ok\"}]}\nDone."}}]}' > "$out"
+              ;;
+            garbage)
+              printf '%s' '{"choices":[{"message":{"content":"not json at all, sorry"}}]}' > "$out"
+              ;;
+            garbage_then_clean)
+              if [ "$mc" -le 1 ]; then
+                printf '%s' '{"choices":[{"message":{"content":"not json at all, sorry"}}]}' > "$out"
+              else
+                printf '%s' '{"choices":[{"message":{"content":"{\"assessments\":[{\"fp\":\"deadbeefcafebabe\",\"verdict\":\"VALID\",\"reasoning\":\"ok\"}]}"}}]}' > "$out"
+              fi
+              ;;
+            garbage_then_fail)
+              # Mixed failure mode: parse failure on the original attempt,
+              # transport failure on the retry — codex round-1 finding on
+              # go-kure/.github fix/prt-assess-resilience (never pushed, no
+              # PR number to qualify): a transport fault on the retry call
+              # was being collapsed into the "not valid JSON" branch instead
+              # of being reported as its own distinct transport failure.
+              if [ "$mc" -le 1 ]; then
+                printf '%s' '{"choices":[{"message":{"content":"not json at all, sorry"}}]}' > "$out"
+                echo 200
+                return 0
+              else
+                : > "$out"; echo 500; return 0
+              fi
+              ;;
+            *)
+              printf '%s' '{"choices":[{"message":{"content":"{\"assessments\":[{\"fp\":\"deadbeefcafebabe\",\"verdict\":\"VALID\",\"reasoning\":\"ok\"}]}"}}]}' > "$out"
+              ;;
+          esac
+          echo 200
           ;;
         *)
-          printf '%s' '{"choices":[{"message":{"content":"{\"findings\":[]}"}}]}' > "$out"
+          # _prt_test_bump's return value (not discarded here, unlike the
+          # other call sites below) is the running per-run model-call count,
+          # used by the garbage_then_clean mode to tell the original attempt
+          # from the round-2 fold-in's bounded retry apart.
+          mc="$(_prt_test_bump "${PRT_TEST_MODEL_COUNTFILE:?}")"
+          if [ "${PRT_TEST_MODEL_ALWAYS_FAIL:-0}" = 1 ]; then
+            : > "$out"; echo 500; return 0
+          fi
+          # PRT_TEST_MODEL_RESPONSE_MODE (go-kure/.github#60/#61 round 2
+          # fold-in): exercises the salvage pass and the bounded retry added
+          # around the jq -c '.' parse in pr-review-threads.sh's chunk-review
+          # loop. clean (default) is the pre-existing well-formed response
+          # with no findings. clean_with_finding is the same but with one
+          # well-formed finding, so a caller can drive the assess call above
+          # (which the orchestrator skips entirely for an empty-findings
+          # chunk). prose wraps well-formed JSON in commentary on both
+          # sides — no braces missing, salvageable without ever needing the
+          # retry (fact 3 in the incident record: launcher#283 run
+          # 32175849548, a chattier generation wraps the JSON object in
+          # prose). garbage has no '{'/'}' at all — unsalvageable, and stays
+          # garbage on the retry too, every call. garbage_then_clean is
+          # garbage only on call 1 (mc<=1); the retry (call 2) gets clean
+          # JSON, proving the retry path actually runs and not just that
+          # it's accepted in principle.
+          case "${PRT_TEST_MODEL_RESPONSE_MODE:-clean}" in
+            clean_with_finding)
+              printf '%s' '{"choices":[{"message":{"content":"{\"findings\":[{\"file\":\"x.go\",\"line\":1,\"category\":\"other\",\"severity\":\"Medium\",\"issue\":\"i\",\"fix\":\"f\"}]}"}}]}' > "$out"
+              ;;
+            prose)
+              printf '%s' '{"choices":[{"message":{"content":"Here you go:\n{\"findings\":[]}\nHope that helps!"}}]}' > "$out"
+              ;;
+            garbage)
+              printf '%s' '{"choices":[{"message":{"content":"not json at all, sorry"}}]}' > "$out"
+              ;;
+            garbage_then_clean)
+              if [ "$mc" -le 1 ]; then
+                printf '%s' '{"choices":[{"message":{"content":"not json at all, sorry"}}]}' > "$out"
+              else
+                printf '%s' '{"choices":[{"message":{"content":"{\"findings\":[]}"}}]}' > "$out"
+              fi
+              ;;
+            *)
+              printf '%s' '{"choices":[{"message":{"content":"{\"findings\":[]}"}}]}' > "$out"
+              ;;
+          esac
+          echo 200
           ;;
       esac
-      echo 200
       ;;
     */issues/*/comments)
       _prt_test_bump "${PRT_TEST_ISSUE_COMMENT_COUNTFILE:?}" >/dev/null
@@ -1176,6 +1245,7 @@ run_orchestrator() {
   echo 0 > "$PRT_TEST_DIFF_COUNTFILE"
   echo 0 > "$PRT_TEST_META_COUNTFILE"
   echo 0 > "$PRT_TEST_MODEL_COUNTFILE"
+  echo 0 > "$PRT_TEST_ASSESS_COUNTFILE"
   echo 0 > "$PRT_TEST_GRAPHQL_COUNTFILE"
   echo 0 > "$PRT_TEST_PATCH_COUNTFILE"
   echo 0 > "$PRT_TEST_RESOLVE_COUNTFILE"
@@ -1191,6 +1261,7 @@ run_orchestrator() {
     PRT_TEST_DIFF_COUNTFILE="$PRT_TEST_DIFF_COUNTFILE" \
     PRT_TEST_META_COUNTFILE="$PRT_TEST_META_COUNTFILE" \
     PRT_TEST_MODEL_COUNTFILE="$PRT_TEST_MODEL_COUNTFILE" \
+    PRT_TEST_ASSESS_COUNTFILE="$PRT_TEST_ASSESS_COUNTFILE" \
     PRT_TEST_GRAPHQL_COUNTFILE="$PRT_TEST_GRAPHQL_COUNTFILE" \
     PRT_TEST_PATCH_COUNTFILE="$PRT_TEST_PATCH_COUNTFILE" \
     PRT_TEST_RESOLVE_COUNTFILE="$PRT_TEST_RESOLVE_COUNTFILE" \
@@ -1205,6 +1276,8 @@ run_orchestrator() {
     PRT_TEST_FIRST_ABSENT_SHA="${PRT_TEST_FIRST_ABSENT_SHA:-}" \
     PRT_TEST_OWNED_FP="${PRT_TEST_OWNED_FP:-deadbeefcafebabe}" \
     PRT_TEST_MODEL_RESPONSE_MODE="${PRT_TEST_MODEL_RESPONSE_MODE:-clean}" \
+    PRT_TEST_ASSESS_RESPONSE_MODE="${PRT_TEST_ASSESS_RESPONSE_MODE:-clean}" \
+    PRT_TEST_ASSESS_ALWAYS_FAIL="${PRT_TEST_ASSESS_ALWAYS_FAIL:-0}" \
     PRT_TEST_INVENTORY_MODE="${PRT_TEST_INVENTORY_MODE:-single}" \
     PRT_GH_TOKEN=x PRT_REPO=owner/repo PRT_PR_NUMBER=1 \
     PRT_HEAD_SHA=1111111111111111111111111111111111111111 \
@@ -1220,6 +1293,7 @@ run_orchestrator() {
 PRT_TEST_DIFF_COUNTFILE="$(mktemp)"
 PRT_TEST_META_COUNTFILE="$(mktemp)"
 PRT_TEST_MODEL_COUNTFILE="$(mktemp)"
+PRT_TEST_ASSESS_COUNTFILE="$(mktemp)"
 PRT_TEST_GRAPHQL_COUNTFILE="$(mktemp)"
 PRT_TEST_PATCH_COUNTFILE="$(mktemp)"
 PRT_TEST_RESOLVE_COUNTFILE="$(mktemp)"
@@ -1296,6 +1370,84 @@ assert_eq "orchestrator: garbage then clean on retry -> model called exactly twi
   "2" "$(cat "$PRT_TEST_MODEL_COUNTFILE")"
 assert_eq "orchestrator: garbage then clean on retry -> stderr carries the recovered line with retried=true" \
   "true" "$(grep -q 'review recovered (retried=true salvaged=false)' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_MODEL_RESPONSE_MODE=clean
+
+# ---- Cases iv-vii: assessment-call resilience (assess-resilience
+# workstream) — prt_model_assess's exit-status check, and the identical
+# salvage-then-retry treatment given to the review call above (Cases i-iii),
+# now mirrored for the assess call. The review call is forced to
+# clean_with_finding for all four cases below so the assess call actually
+# fires at all (pr-review-threads.sh:320 skips assessment for an
+# empty-findings chunk, and every other scenario in this file leaves review
+# findings empty on purpose).
+PRT_TEST_MODEL_RESPONSE_MODE=clean_with_finding
+
+# Case iv — assess call itself fails at the transport layer (non-2xx/curl/
+# empty-content — model.sh:286-299), on both the only attempt and would-be
+# retry alike: prt_model_assess's own exit status is checked explicitly and
+# reported as a transport fault, never silently parsed as empty JSON (root
+# cause 2). No salvage/retry is attempted for a transport fault — there is no
+# response body to salvage.
+PRT_TEST_ASSESS_ALWAYS_FAIL=1
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "orchestrator: assess call transport failure -> exits 1" "1" "$rc"
+assert_eq "orchestrator: assess call transport failure -> assess model called exactly once (no salvage/retry on a transport fault)" \
+  "1" "$(cat "$PRT_TEST_ASSESS_COUNTFILE")"
+assert_eq "orchestrator: assess call transport failure -> REVIEW_INCOMPLETE reports it as a transport/proxy error, not a parse failure" \
+  "true" "$(grep -qE 'REVIEW_INCOMPLETE:.*assessment call failed \(transport/proxy error, exit [0-9]+\)' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_ASSESS_ALWAYS_FAIL=0
+
+# Case v — assess response is prose-wrapped JSON on the (only) attempt:
+# salvaged without ever needing the retry, exits 0.
+PRT_TEST_ASSESS_RESPONSE_MODE=prose
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "orchestrator: assess prose-wrapped JSON salvaged -> exits 0" "0" "$rc"
+assert_eq "orchestrator: assess prose-wrapped JSON salvaged -> assess model called exactly once (no retry needed)" \
+  "1" "$(cat "$PRT_TEST_ASSESS_COUNTFILE")"
+assert_eq "orchestrator: assess prose-wrapped JSON salvaged -> stderr carries the recovered line with salvaged=true" \
+  "true" "$(grep -q 'assess recovered (retried=false salvaged=true)' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+
+# Case vi — assess response is garbage on the original attempt AND the
+# bounded retry: exits 1, residual failure still calls prt_mark_incomplete
+# (unchanged — degrading this to non-fatal is out of scope here), with the
+# shape-only diagnostic present and the raw response text never leaked.
+PRT_TEST_ASSESS_RESPONSE_MODE=garbage
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "orchestrator: assess garbage on original + retry -> exits 1" "1" "$rc"
+assert_eq "orchestrator: assess garbage on original + retry -> assess model called exactly twice (original + 1 bounded retry)" \
+  "2" "$(cat "$PRT_TEST_ASSESS_COUNTFILE")"
+assert_eq "orchestrator: assess garbage on original + retry -> REVIEW_INCOMPLETE carries retry=true, salvage_attempted=true, and the full four-field shape diagnostic" \
+  "true" "$(grep -qE 'REVIEW_INCOMPLETE:.*assessment response was not valid JSON after retry=true, salvage_attempted=true \(len=[0-9]+ leading=starts-with-prose class=[a-z-]+ sha16=[0-9a-f]{16}\)' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator: assess garbage on original + retry -> REVIEW_INCOMPLETE does NOT leak the raw response text" \
+  "false" "$(grep -qF 'not json at all' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+
+# Case vii — assess response is garbage on the first attempt, clean JSON on
+# the retry: proves the assess retry path actually runs, not just accepted
+# in principle — exits 0.
+PRT_TEST_ASSESS_RESPONSE_MODE=garbage_then_clean
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "orchestrator: assess garbage then clean on retry -> exits 0" "0" "$rc"
+assert_eq "orchestrator: assess garbage then clean on retry -> assess model called exactly twice (retry fired)" \
+  "2" "$(cat "$PRT_TEST_ASSESS_COUNTFILE")"
+assert_eq "orchestrator: assess garbage then clean on retry -> stderr carries the recovered line with retried=true" \
+  "true" "$(grep -q 'assess recovered (retried=true salvaged=false)' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+
+# Case viii — mixed failure: garbage (parse failure) on the original attempt,
+# a transport fault on the retry. Guards the exact bug a codex round-1 review
+# found on this branch: the retry's own exit status must be checked
+# independently, or a transport fault there gets mislabeled as "not valid
+# JSON" (and prt_response_shape gets computed over an empty string instead
+# of not being reached at all).
+PRT_TEST_ASSESS_RESPONSE_MODE=garbage_then_fail
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "orchestrator: assess garbage then transport-fail on retry -> exits 1" "1" "$rc"
+assert_eq "orchestrator: assess garbage then transport-fail on retry -> assess model called exactly twice (original + 1 bounded retry)" \
+  "2" "$(cat "$PRT_TEST_ASSESS_COUNTFILE")"
+assert_eq "orchestrator: assess garbage then transport-fail on retry -> REVIEW_INCOMPLETE reports the RETRY as a transport/proxy error, not a parse failure" \
+  "true" "$(grep -qE 'REVIEW_INCOMPLETE:.*assessment call failed on retry \(transport/proxy error, exit [0-9]+\)' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator: assess garbage then transport-fail on retry -> does NOT also report it as an invalid-JSON failure" \
+  "false" "$(grep -qF 'assessment response was not valid JSON' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_ASSESS_RESPONSE_MODE=clean
 PRT_TEST_MODEL_RESPONSE_MODE=clean
 
 # Case 3a — permanent metadata-fetch failure (F3): every attempt (matching
@@ -1419,6 +1571,7 @@ PRT_TEST_EMPTY_DIFF=0
 PRT_TEST_FIRST_ABSENT_SHA=''
 
 rm -f "$PRT_TEST_DIFF_COUNTFILE" "$PRT_TEST_META_COUNTFILE" "$PRT_TEST_MODEL_COUNTFILE" \
+      "$PRT_TEST_ASSESS_COUNTFILE" \
       "$PRT_TEST_GRAPHQL_COUNTFILE" "$PRT_TEST_PATCH_COUNTFILE" "$PRT_TEST_RESOLVE_COUNTFILE" \
       "$PRT_TEST_UNRESOLVE_COUNTFILE" "$PRT_TEST_CREATE_COUNTFILE" "$PRT_TEST_REPLY_COUNTFILE" \
       "$PRT_TEST_ISSUE_COMMENT_COUNTFILE" \

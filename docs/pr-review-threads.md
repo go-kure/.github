@@ -199,6 +199,26 @@ four runs, which is suggestive but not proof, since two distinct 57-byte respons
 possible. Equal fingerprints across runs prove it; differing ones redirect the investigation to
 something diff-dependent.
 
+The model-assess call (`prt_model_assess`, `model.sh:329-357`) gets the identical salvage-then-retry
+treatment (`pr-review-threads.sh:314-381`), for the same reason: it shares the backend and the
+same prose-wrapping failure mode, so it gets the same recovery, not a lesser one. Before this, a
+non-2xx/curl/empty-content failure from `prt_model_assess` was indistinguishable from a 2xx response
+that simply wasn't parseable JSON — both fell through into an empty `assess_raw` and the same
+`REVIEW_INCOMPLETE` wording. The two are now reported separately, on **either** call — the original
+attempt and the one bounded retry alike, checked independently: a non-zero return from
+`prt_model_assess` (transport/proxy fault — curl failure, non-2xx, or empty response content,
+`model.sh:286-299`) is recorded as `assessment call failed (transport/proxy error, exit N)` (`...
+failed on retry (...)` if it's the retry attempt that faulted), with no parse attempted at all for
+that call. A 2xx response that still fails
+`jq -c '.'` after both the salvage pass and the one bounded retry is recorded as `assessment
+response was not valid JSON after retry=.../salvage_attempted=true (<shape>)`, using the same
+`prt_response_shape` diagnostic as the review call above — never the response text itself. Either
+way, the chunk's findings stay unverdicted (`verdict: null, reasoning: null`) rather than being
+dropped, and a residual failure after salvage+retry still calls `prt_mark_incomplete` and fails the
+run closed (`exit 1`) exactly as before — making that failure non-fatal (`REVIEW_DEGRADED`,
+verdict-less findings surfaced instead of a hard stop) is separate, later work, not part of this
+resilience pass.
+
 Both are covered by the unit suite, including an explicit assertion that neither `prt_response_class`
 nor `prt_response_shape` ever echoes any part of the response, and that every emitted class is a
 member of the declared enum.
