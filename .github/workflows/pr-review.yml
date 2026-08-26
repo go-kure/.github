@@ -158,7 +158,7 @@ jobs:
           done
 
       - name: Run PR review threads
-        uses: go-kure/.github/.github/actions/pr-review-threads@68c44e385666928471582b1fbb8823c09a2a8ea5 # go-kure/.github#101
+        uses: go-kure/.github/.github/actions/pr-review-threads@1111111111111111111111111111111111111111 # PLACEHOLDER pending PR2 (go-kure/.github#99) — see docs/standards.md pin-bump procedure
         with:
           # github-token / bot-login: GITHUB_TOKEN always gets viewerCanResolve:false
           # on threads it authors (GitHub rejects bot/App actors for

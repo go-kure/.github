@@ -770,7 +770,7 @@ if [ "$PRT_MODE" = advisory ]; then
     prt_gh_rest POST "/repos/${PRT_REPO}/issues/${PRT_PR_NUMBER}/comments" "$payload" >/dev/null || \
       prt_mark_incomplete "failed to post advisory comment (HTTP ${PRT_LAST_HTTP_STATUS:-unknown})"
   else
-    prt_mark_incomplete "stale head SHA, skipped advisory comment"
+    prt_handle_freshness_rc "$?" "advisory comment"
   fi
 else
   n_findings="$(jq 'length' <<< "$ALL_FINDINGS")"
@@ -812,13 +812,15 @@ else
               new_body="$(prt_marker_replace "$cur_body" "$new_marker")"
               prt_retry 3 prt_gh_rest_fresh PATCH "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA" \
                 "/repos/${PRT_REPO}/pulls/comments/${db_id}" \
-                "$(jq -n --arg b "$new_body" '{body:$b}')" >/dev/null || \
-                prt_mark_incomplete "fp=$fp: persisting collision=true onto existing thread failed after 3 retries (or went stale mid-retry)"
+                "$(jq -n --arg b "$new_body" '{body:$b}')" >/dev/null
+              retry_rc=$?
+              [ "$retry_rc" -eq 0 ] || \
+                prt_handle_freshness_rc "$retry_rc" "fp=$fp: persisting collision=true onto existing thread (after up to 3 retries)"
             else
               prt_mark_incomplete "fp=$fp: GET before collision-marker persist failed or returned empty body, skipped"
             fi
           else
-            prt_mark_incomplete "fp=$fp: stale head SHA, skipped collision-marker persist"
+            prt_handle_freshness_rc "$?" "fp=$fp: collision-marker persist"
           fi
         fi
       fi
@@ -846,7 +848,7 @@ else
       SUPPRESS) SUPPRESSED_COUNT=$((SUPPRESSED_COUNT + 1)) ;;
       OVERFLOW) OVERFLOW="$(jq -c --argjson f "$f" '. + [$f]' <<< "$OVERFLOW")" ;;
       REPLY_RESOLVE)
-        prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA" || { prt_mark_incomplete "fp=$fp: stale head SHA, skipped reply+resolve"; continue; }
+        prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA" || { prt_handle_freshness_rc "$?" "fp=$fp: reply+resolve"; continue; }
         can_resolve="$(jq -r '.viewer_can_resolve' <<< "$owned_match")"
         if [ "$can_resolve" != true ]; then
           prt_mark_incomplete "fp=$fp: viewerCanResolve=false, skipping resolve"
@@ -873,14 +875,14 @@ else
             prt_gh_rest POST "/repos/${PRT_REPO}/pulls/${PRT_PR_NUMBER}/comments" "$reply_payload" >/dev/null || \
               prt_mark_incomplete "fp=$fp: resolveReviewThread succeeded but the explanatory reply failed"
           else
-            prt_mark_incomplete "fp=$fp: resolveReviewThread succeeded but head SHA went stale before the reply"
+            prt_handle_freshness_rc "$?" "fp=$fp: resolveReviewThread succeeded but reply"
           fi
         else
           prt_mark_incomplete "fp=$fp: resolveReviewThread (FALSE POSITIVE) failed, reply skipped to avoid a duplicate on retry"
         fi
         ;;
       REPLY_UNRESOLVE)
-        prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA" || { prt_mark_incomplete "fp=$fp: stale head SHA, skipped reply+unresolve"; continue; }
+        prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA" || { prt_handle_freshness_rc "$?" "fp=$fp: reply+unresolve"; continue; }
         can_unresolve="$(jq -r '.viewer_can_unresolve' <<< "$owned_match")"
         if [ "$can_unresolve" != true ]; then
           prt_mark_incomplete "fp=$fp: viewerCanUnresolve=false, skipping unresolve"
@@ -896,14 +898,14 @@ else
             prt_gh_rest POST "/repos/${PRT_REPO}/pulls/${PRT_PR_NUMBER}/comments" "$reply_payload" >/dev/null || \
               prt_mark_incomplete "fp=$fp: unresolveReviewThread succeeded but the explanatory reply failed"
           else
-            prt_mark_incomplete "fp=$fp: unresolveReviewThread succeeded but head SHA went stale before the reply"
+            prt_handle_freshness_rc "$?" "fp=$fp: unresolveReviewThread succeeded but reply"
           fi
         else
           prt_mark_incomplete "fp=$fp: unresolveReviewThread failed, reply skipped to avoid a duplicate on retry"
         fi
         ;;
       CREATE)
-        prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA" || { prt_mark_incomplete "fp=$fp: stale head SHA, skipped create"; continue; }
+        prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA" || { prt_handle_freshness_rc "$?" "fp=$fp: create"; continue; }
         marker="$(prt_marker_build "$fp" "$collision" "")"
         body="$(prt_render_finding_body "$f" "$marker")"
         file="$(jq -r '.file' <<< "$f")"
@@ -938,7 +940,7 @@ else
               prt_gh_rest POST "/repos/${PRT_REPO}/pulls/${PRT_PR_NUMBER}/comments" "$fallback_payload" >/dev/null || \
                 prt_mark_incomplete "fp=$fp: create failed (line-anchored 422 and file-level fallback both rejected)"
             else
-              prt_mark_incomplete "fp=$fp: create failed with 422, stale head SHA before file-level fallback"
+              prt_handle_freshness_rc "$?" "fp=$fp: create failed with 422, file-level fallback"
             fi
           else
             prt_mark_incomplete "fp=$fp: create failed (HTTP ${PRT_LAST_HTTP_STATUS:-unknown}$([ "$anchored" = true ] && echo ", not 422 — no fallback attempted"))"
@@ -1005,7 +1007,7 @@ if [ "$PRT_MODE" = enforce ]; then
     case "$action" in
       NONE) : ;;
       SET_FIRST_ABSENT)
-        prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA" || { prt_mark_incomplete "fp=$fp: stale head SHA, skipped setting first_absent_sha"; continue; }
+        prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA" || { prt_handle_freshness_rc "$?" "fp=$fp: setting first_absent_sha"; continue; }
         new_marker="$(prt_marker_build "$fp" "$collision" "$PRT_HEAD_SHA")"
         # The body comes from a fresh GET so prt_marker_replace preserves the
         # finding text exactly. The GET's own success/non-empty-body is checked
@@ -1023,14 +1025,14 @@ if [ "$PRT_MODE" = enforce ]; then
           continue
         fi
         new_body="$(prt_marker_replace "$cur_body" "$new_marker")"
-        if ! prt_retry 3 prt_gh_rest_fresh PATCH "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA" \
-             "/repos/${PRT_REPO}/pulls/comments/${first_comment_db_id}" \
-             "$(jq -n --arg b "$new_body" '{body:$b}')" >/dev/null; then
-          prt_mark_incomplete "fp=$fp: setting first_absent_sha failed after 3 retries (or went stale mid-retry)"
-        fi
+        prt_retry 3 prt_gh_rest_fresh PATCH "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA" \
+          "/repos/${PRT_REPO}/pulls/comments/${first_comment_db_id}" \
+          "$(jq -n --arg b "$new_body" '{body:$b}')" >/dev/null
+        retry_rc=$?
+        [ "$retry_rc" -eq 0 ] || prt_handle_freshness_rc "$retry_rc" "fp=$fp: setting first_absent_sha (after up to 3 retries)"
         ;;
       CLEAR_MARKER)
-        prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA" || { prt_mark_incomplete "fp=$fp: stale head SHA, skipped marker clear"; continue; }
+        prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA" || { prt_handle_freshness_rc "$?" "fp=$fp: marker clear"; continue; }
         new_marker="$(prt_marker_build "$fp" "$collision" "")"
         cur_resp="$(prt_gh_rest GET "/repos/${PRT_REPO}/pulls/comments/${first_comment_db_id}")"
         cur_body="$(jq -r '.body // empty' <<< "${cur_resp:-}" 2>/dev/null || true)"
@@ -1039,10 +1041,12 @@ if [ "$PRT_MODE" = enforce ]; then
           continue
         fi
         new_body="$(prt_marker_replace "$cur_body" "$new_marker")"
-        if ! prt_retry 3 prt_gh_rest_fresh PATCH "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA" \
-             "/repos/${PRT_REPO}/pulls/comments/${first_comment_db_id}" \
-             "$(jq -n --arg b "$new_body" '{body:$b}')" >/dev/null; then
-          prt_mark_incomplete "fp=$fp: clearing the absence marker failed after 3 retries (or went stale mid-retry)"
+        prt_retry 3 prt_gh_rest_fresh PATCH "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA" \
+          "/repos/${PRT_REPO}/pulls/comments/${first_comment_db_id}" \
+          "$(jq -n --arg b "$new_body" '{body:$b}')" >/dev/null
+        retry_rc=$?
+        if [ "$retry_rc" -ne 0 ]; then
+          prt_handle_freshness_rc "$retry_rc" "fp=$fp: clearing the absence marker (after up to 3 retries)"
           # No freshness gate on this reply itself: it documents a failure
           # that already happened and is structurally independent of the
           # marker (render.sh's prt_render_reply_maint_failure docstring) —
@@ -1053,7 +1057,7 @@ if [ "$PRT_MODE" = enforce ]; then
         fi
         ;;
       REPLY_RESOLVE)
-        prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA" || { prt_mark_incomplete "fp=$fp: stale head SHA, skipped absence auto-close"; continue; }
+        prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA" || { prt_handle_freshness_rc "$?" "fp=$fp: absence auto-close"; continue; }
         if [ "$viewer_can_resolve" != true ]; then
           prt_mark_incomplete "fp=$fp: viewerCanResolve=false, skipping absence auto-close"
           continue
@@ -1070,7 +1074,7 @@ if [ "$PRT_MODE" = enforce ]; then
               "$(jq -n --arg b "$reply" --argjson r "$first_comment_db_id" '{body:$b, in_reply_to:$r}')" >/dev/null || \
               prt_mark_incomplete "fp=$fp: absence resolveReviewThread succeeded but the explanatory reply failed"
           else
-            prt_mark_incomplete "fp=$fp: absence resolveReviewThread succeeded but head SHA went stale before the reply"
+            prt_handle_freshness_rc "$?" "fp=$fp: absence resolveReviewThread succeeded but reply"
           fi
         else
           prt_mark_incomplete "fp=$fp: absence resolveReviewThread failed, reply skipped to avoid a duplicate on retry"
@@ -1088,7 +1092,7 @@ if [ "$PRT_MODE" = enforce ] && [ "$(jq 'length' <<< "$OVERFLOW")" -gt 0 ]; then
       "$(jq -n --arg b "$overflow_body" '{body:$b}')" >/dev/null || \
       prt_mark_incomplete "failed to post overflow comment (HTTP ${PRT_LAST_HTTP_STATUS:-unknown})"
   else
-    prt_mark_incomplete "stale head SHA, skipped overflow comment"
+    prt_handle_freshness_rc "$?" "overflow comment"
   fi
 fi
 
@@ -1120,13 +1124,13 @@ if [ "$PRT_MODE" = enforce ]; then
           prt_upsert_issue_comment "$PRT_REPO" "$PRT_PR_NUMBER" "$clean_body" "$clean_id" || \
             prt_mark_incomplete "failed to upsert clean-verdict comment (HTTP ${PRT_LAST_HTTP_STATUS:-unknown})"
         else
-          prt_mark_incomplete "stale head SHA, skipped clean-verdict comment upsert"
+          prt_handle_freshness_rc "$?" "clean-verdict comment upsert"
         fi
       else
         prt_mark_incomplete "failed to list issue comments while looking for a prior clean-verdict comment"
       fi
     else
-      prt_mark_incomplete "stale head SHA, skipped clean-verdict comment"
+      prt_handle_freshness_rc "$?" "clean-verdict comment"
     fi
   elif [ "$total_findings_this_run" -gt 0 ]; then
     # Supersede, don't delete — matching prt_render_clean_comment_superseded's
@@ -1153,14 +1157,14 @@ if [ "$PRT_MODE" = enforce ]; then
             prt_upsert_issue_comment "$PRT_REPO" "$PRT_PR_NUMBER" "$superseded_body" "$clean_id" || \
               prt_mark_degraded "failed to supersede the clean-verdict comment (HTTP ${PRT_LAST_HTTP_STATUS:-unknown}); this run's own findings/threads are unaffected, but the prior comment may still read as a clean verdict for an older SHA"
           else
-            prt_mark_incomplete "stale head SHA, skipped clean-verdict supersede upsert"
+            prt_handle_freshness_rc "$?" "clean-verdict supersede upsert"
           fi
         fi
       else
         echo "WARNING: could not list issue comments — any prior clean-verdict comment is left as it stands." >&2
       fi
     else
-      prt_mark_incomplete "stale head SHA, skipped clean-verdict supersede check"
+      prt_handle_freshness_rc "$?" "clean-verdict supersede check"
     fi
   fi
 fi
@@ -1199,6 +1203,19 @@ if prt_is_incomplete; then
   # (go-kure/.github#101 F8).
   prt_report_degraded_annotations
   exit 1
+fi
+
+# Stale-only run (go-kure/.github#99): every REVIEW_DEGRADED reason this run
+# recorded came from prt_handle_freshness_rc's genuinely-stale-head routing —
+# nothing else went wrong. This is the normal shape of "pushed twice inside
+# one run", not a fault, so it gets its own quiet log line instead of the
+# generic REVIEW_DEGRADED warning recap below (matching
+# meta/ci-templates/mr-review.yml's existing GitLab behavior). Safe because
+# `.github/workflows/pr-review.yml`'s `cancel-in-progress: false` guarantees
+# the superseding run — queued for the new head SHA — is going to run.
+if prt_all_degraded_are_stale; then
+  prt_log "Stale run: head moved; a newer run is already queued"
+  exit 0
 fi
 
 # REVIEW_DEGRADED (go-kure/.github#98): unlike REVIEW_INCOMPLETE above, this

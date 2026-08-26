@@ -110,19 +110,36 @@ prt_gh_graphql() {
 # pull_request event github.sha is a temporary merge commit). Called
 # immediately before every single write (create/reply/resolve/unresolve/
 # marker edit), not once per run, since the run's real wall-clock spans
-# multiple model calls. Returns 1 (stale or read-error, fail-closed) unless
-# the live head SHA matches exactly.
+# multiple model calls.
+#
+# Three-way exit status (go-kure/.github#99 — the caller distinguishes
+# these; see pr-review-threads.sh's prt_handle_freshness_rc call sites),
+# mirroring finding.sh's own 0/1/2 prt_normalize_findings convention of
+# giving each distinguishable outcome its own return code rather than
+# collapsing them behind one bit of information:
+#   0 — fresh: the live head SHA matches EXPECTED_SHA exactly. Proceed.
+#   1 — genuinely stale: the PR was read successfully and its live head SHA
+#       is a real, different value. This is the ONLY case a caller may treat
+#       as non-fatal (prt_mark_degraded) and let the run exit 0 — it is only
+#       safe because a superseding run for the new head SHA is guaranteed to
+#       be queued (`.github/workflows/pr-review.yml`'s
+#       `cancel-in-progress: false`).
+#   2 — could not determine freshness at all: the PR read itself failed
+#       (prt_gh_rest error), or it returned a response with no usable
+#       `.head.sha`. Neither means "a newer run will redo this" — no run is
+#       guaranteed to be queued for an unreadable PR — so this stays fatal
+#       (prt_mark_incomplete) at every call site.
 prt_freshness_check() {
   local repo="$1" pr_number="$2" expected_sha="$3"
   local body live_sha
   body="$(prt_gh_rest GET "/repos/${repo}/pulls/${pr_number}")" || {
     echo "prt_freshness_check: failed to read PR ${repo}#${pr_number} (see prt_gh_rest error above)" >&2
-    return 1
+    return 2
   }
   live_sha="$(jq -r '.head.sha // empty' <<< "$body" 2>/dev/null || true)"
   if [ -z "$live_sha" ]; then
     echo "prt_freshness_check: PR ${repo}#${pr_number} response had no .head.sha" >&2
-    return 1
+    return 2
   fi
   if [ "$live_sha" != "$expected_sha" ]; then
     echo "prt_freshness_check: head moved: $expected_sha -> $live_sha" >&2
@@ -139,10 +156,29 @@ prt_freshness_check() {
 # a single check before the loop began does not cover a write that actually
 # lands a minute or two later, after the PR head may have moved
 # (dot-github#50 gmr finding C9).
+#
+# Four-way exit status (go-kure/.github#99), extending prt_freshness_check's
+# own 0/1/2 with one more: this wraps a write, so a fresh-but-failed write
+# needs a status distinct from either freshness outcome — collapsing it into
+# 1 previously made a genuine HTTP failure on the write itself indistinguishable
+# from a stale head at every call site (both forced through prt_mark_incomplete
+# either way, so no caller could tell "stale" from "write failed" apart even
+# after prt_freshness_check itself started distinguishing them).
+#   0 — the freshness check passed AND the write succeeded.
+#   1 — passed straight through from prt_freshness_check: genuinely stale.
+#   2 — passed straight through from prt_freshness_check: read failure or
+#       malformed response.
+#   3 — the freshness check passed (head was fresh at that instant) but the
+#       wrapped prt_gh_rest write itself failed (an unrelated HTTP error) —
+#       always fatal, matching status 2 above: no queued run will retry this
+#       specific write for you.
 prt_gh_rest_fresh() {
   local method="$1" repo="$2" pr_number="$3" expected_sha="$4" path="$5" data="${6:-}"
-  prt_freshness_check "$repo" "$pr_number" "$expected_sha" || return 1
-  prt_gh_rest "$method" "$path" "$data"
+  local fresh_rc
+  prt_freshness_check "$repo" "$pr_number" "$expected_sha"
+  fresh_rc=$?
+  [ "$fresh_rc" -eq 0 ] || return "$fresh_rc"
+  prt_gh_rest "$method" "$path" "$data" || return 3
 }
 
 # prt_retry N CMD... — retries CMD up to N times. Between attempts, honors
