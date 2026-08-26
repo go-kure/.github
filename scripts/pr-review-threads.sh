@@ -313,12 +313,16 @@ for chunk_file in "$CHUNK_DIR"/chunk-*.diff; do
   normalized="$(prt_normalize_findings "$raw_json")"
   norm_rc=$?
   if [ "$norm_rc" -eq 1 ]; then
-    # Nothing in this chunk was reviewed at all — stays fatal.
-    prt_mark_incomplete "chunk $chunk_idx: .findings missing/null/non-array"
+    # Nothing usable came out of this chunk — either .findings itself was
+    # missing/null/non-array, or every row in an array-shaped .findings was
+    # malformed and dropped (total loss, go-kure/.github#98 round 1 codex
+    # finding P1). Either way it stays fatal.
+    prt_mark_incomplete "chunk $chunk_idx: .findings missing/null/non-array, or all rows malformed and dropped"
   elif [ "$norm_rc" -eq 2 ]; then
     # go-kure/.github#98: a shape-valid .findings array with one or more
     # individually malformed rows dropped is degraded, not fatal — most of
-    # the chunk was still reviewed (finding.sh:97-121's rc contract). The
+    # the chunk was still reviewed (finding.sh:49-68's rc contract, enforced
+    # at finding.sh:140-150). The
     # "partial-drop" substring in this reason is load-bearing: the absence
     # loop's incomplete_now check below (:914ish) greps prt_degraded_reasons
     # for it specifically, so a dropped row's existing thread still isn't

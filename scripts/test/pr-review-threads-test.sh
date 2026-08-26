@@ -1579,7 +1579,7 @@ assert_eq "orchestrator: review garbage then transport-fail on retry -> does NOT
 PRT_TEST_MODEL_RESPONSE_MODE=clean
 
 # ---- Cases xi-xii: the degraded/incomplete split at prt_normalize_findings
-# itself (finding.sh:97-121, go-kure/.github#98) — a shape-valid `.findings`
+# itself (finding.sh:79-151, go-kure/.github#98) — a shape-valid `.findings`
 # array with a malformed row dropped (rc=2) is degraded; `.findings` missing
 # entirely (rc=1) stays fatal. Both share the same review-call response path
 # (unlike Cases iv-viii above, which are all assess-call failures), so they

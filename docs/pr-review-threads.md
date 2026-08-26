@@ -148,7 +148,7 @@ rather than returning 1 silently for all three alike (go-kure/.github#61).
 Two independent, additive severities track a run's problems, both file-backed for the same reason
 (a shell variable set inside a `$(...)` subshell never reaches the parent shell, and every write
 path in this action runs inside one): `REVIEW_INCOMPLETE` (`prt_mark_incomplete`,
-`state.sh:47-73`) and `REVIEW_DEGRADED` (`prt_mark_degraded`, `state.sh`, go-kure/.github#98).
+`state.sh:83-92`) and `REVIEW_DEGRADED` (`prt_mark_degraded`, `state.sh:111-120`, go-kure/.github#98).
 Both share the same contract — the reason is echoed to stderr immediately (`REVIEW_INCOMPLETE:
 <reason>` / `REVIEW_DEGRADED: <reason>`, not only written to the state file), and if the state
 file itself can't be appended to, the marking call fails closed with `exit 1` on the spot rather
@@ -248,15 +248,17 @@ Both are covered by the unit suite, including an explicit assertion that neither
 nor `prt_response_shape` ever echoes any part of the response, and that every emitted class is a
 member of the declared enum.
 
-`prt_normalize_findings` (`finding.sh:63-122`) draws the same fatal/degraded line one level up, on
+`prt_normalize_findings` (`finding.sh:79-151`) draws the same fatal/degraded line one level up, on
 the review call's own `.findings` field, via a three-way exit status (go-kure/.github#98): `0`
-clean, `1` when `.findings` itself is missing/null/non-array (nothing in the chunk was reviewed —
-`REVIEW_INCOMPLETE`, unchanged from before), `2` when `.findings` was array-shaped and one or more
+clean, `1` when `.findings` itself is missing/null/non-array, OR it was array-shaped but every
+element was malformed and dropped (a non-empty `.findings` array whose normalized result is empty
+is total loss, not partial degradation — go-kure/.github#98 round 1 codex finding P1) — either way
+nothing usable came out of the chunk (`REVIEW_INCOMPLETE`), `2` when `.findings` was array-shaped and one or more
 individual rows were malformed and dropped while the rest survived (`REVIEW_DEGRADED`, reason text
 `chunk N: partial-drop — ...`). The two used to share one exit code and one message; splitting them
 needed a second change beyond the exit code, because `prt_normalize_findings` returning nonzero
 also exists so a dropped row's *existing* review thread isn't read as absent this run
-(`finding.sh:118-121`) — the absence loop's `incomplete_now` (`pr-review-threads.sh`, immediately
+(`finding.sh:134-139`) — the absence loop's `incomplete_now` (`pr-review-threads.sh`, immediately
 before its owned-thread loop) derives from `prt_is_incomplete` alone, so a partial-drop chunk that
 now only calls `prt_mark_degraded` would stop setting it. The fix folds the `partial-drop` reason
 directly into that check (`prt_degraded_reasons | grep -q 'partial-drop'`) rather than dual-marking:
