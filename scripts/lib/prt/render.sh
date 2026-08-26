@@ -149,16 +149,24 @@ prt_render_overflow_comment() {
   }
 }
 
-# prt_render_advisory_comment FINDINGS_JSON [INCOMPLETE_REASONS] — used in
-# `advisory` mode, where NO thread is ever created; this single comment
-# carries the merged review+assessment table, matching today's plain-comment
-# behavior exactly. INCOMPLETE_REASONS, when non-empty, is rendered as a
-# visible warning banner — advisory is the only live-wired mode, so if every
-# chunk's model call failed the empty findings list must not read as a clean
-# "No issues found." on the review's own output surface, with the failure
-# visible only in $GITHUB_STEP_SUMMARY (dot-github#50 gmr finding B4).
+# prt_render_advisory_comment FINDINGS_JSON [INCOMPLETE_REASONS] [DEGRADED_REASONS]
+# — used in `advisory` mode, where NO thread is ever created; this single
+# comment carries the merged review+assessment table, matching today's
+# plain-comment behavior exactly. INCOMPLETE_REASONS, when non-empty, is
+# rendered as a visible warning banner — advisory is the only live-wired
+# mode, so if every chunk's model call failed the empty findings list must
+# not read as a clean "No issues found." on the review's own output surface,
+# with the failure visible only in $GITHUB_STEP_SUMMARY (dot-github#50 gmr
+# finding B4). DEGRADED_REASONS (go-kure/.github#98) mirrors that same
+# disclosure requirement for the non-fatal partial-drop case: a chunk can be
+# degraded (some finding rows malformed and dropped) without being
+# incomplete, and if the surviving findings are then all assessed
+# FALSE_POSITIVE, count drops to 0 — the "No issues found." branch must not
+# fire then either, or the one row that was silently dropped never surfaces
+# anywhere on this live comment (chatgpt-codex-connector[bot] review,
+# github.com/go-kure/.github/pull/101#pullrequestreview-5028172237).
 prt_render_advisory_comment() {
-  local findings="$1" incomplete_reasons="${2:-}"
+  local findings="$1" incomplete_reasons="${2:-}" degraded_reasons="${3:-}"
   local count
   count="$(jq 'length' <<< "$findings")"
   {
@@ -169,7 +177,15 @@ prt_render_advisory_comment() {
       printf '%s\n' "$incomplete_reasons" | sed 's/^/> - /'
       printf '\n'
     fi
-    if [ "$count" -eq 0 ]; then
+    if [ -n "$degraded_reasons" ]; then
+      printf '> **⚠ This review run was degraded** — some rows were dropped but the rest'
+      printf ' completed. The finding count/table below reflects only the surviving rows.\n'
+      printf '%s\n' "$degraded_reasons" | sed 's/^/> - /'
+      printf '\n'
+    fi
+    if [ "$count" -eq 0 ] && [ -n "$degraded_reasons" ]; then
+      printf 'No surviving findings to report — see the degraded-run warning above.\n'
+    elif [ "$count" -eq 0 ]; then
       printf 'No issues found.\n'
     else
       printf '| Severity | Category | File | Issue | Fix |\n'
