@@ -128,3 +128,23 @@ prt_degraded_reasons() {
   [ -n "${PRT_DEGRADED_FILE:-}" ] || return 0
   cat "$PRT_DEGRADED_FILE" 2>/dev/null || true
 }
+
+# prt_report_degraded_annotations — emits the stderr recap and GitHub
+# ::warning annotations for every recorded degraded reason; a no-op when none
+# are recorded. Factored out (go-kure/.github#101 F8) so every exit path
+# surfaces degraded reasons identically: before this, the three early fatal
+# `exit 1` sites in pr-review-threads.sh (inventory failure, cap-evaluation
+# failure) and the tail's own REVIEW_INCOMPLETE exit only wrote degraded
+# reasons into the job summary via prt_render_summary — they returned before
+# ever reaching the tail's degraded block, so a run that recorded both an
+# incomplete AND a degraded reason silently dropped the degraded stderr
+# recap and ::warning annotations, even though the same run's job summary
+# still carried them.
+prt_report_degraded_annotations() {
+  prt_is_degraded || return 0
+  echo "WARNING: review degraded — some non-fatal issues occurred. Reasons:" >&2
+  prt_degraded_reasons | sed 's/^/  - /' >&2
+  prt_degraded_reasons | head -10 | while IFS= read -r r; do
+    printf '::warning title=PR review threads degraded::%s\n' "$(prt_annotation_escape "$r")"
+  done
+}

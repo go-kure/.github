@@ -312,6 +312,18 @@ still reaches `prt_decide_finding`'s `NONE` branch (`reconcile.sh:57-62`) and st
 `CREATE`d, merge-gating thread needing manual resolution. Only this run's own exit code/severity
 changes; a `null`-verdict finding is exactly as gating after this change as before it.
 
+A run can record both a `REVIEW_DEGRADED` reason and a later, unrelated `REVIEW_INCOMPLETE` reason
+in the same execution (e.g. an assessment degradation mid-review, then an inventory-listing failure
+afterward). Three early fatal `exit 1` sites (the two inventory-listing-failure sites and the
+severity-cap-evaluation-failure site) and the tail's own `REVIEW_INCOMPLETE` exit all wrote degraded
+reasons into the job summary via `prt_render_summary`, but returned before ever reaching the tail's
+degraded-reporting block — so a mixed run silently dropped the degraded stderr recap and
+`::warning` annotations, even though the job summary still carried them (chatgpt-codex-connector on
+go-kure/.github#101 at `86c8581`, round 6). `prt_report_degraded_annotations` (`state.sh`) factors
+the stderr-recap-plus-annotations logic out of the tail's degraded block and is now called from all
+four exit sites, so every path that can terminate the run emits the degraded recap identically
+whether or not the run is also fatal.
+
 Every run that reaches the main body also emits `prt_log` stage tracing to stderr (`prt:
 mode=...`, `prt: diff: <n> bytes, chunks=<n>`, per-chunk review/assess outcome, `prt: threads
 listed: N, owned=M`, a `prt: fp=<fp> -> <action>` line per reconciliation decision, and a closing

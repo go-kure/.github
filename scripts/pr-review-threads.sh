@@ -632,6 +632,7 @@ if [ "$inventory_failed" = 1 ]; then
     # increments it) ever runs, so nothing has been suppressed yet.
     prt_render_summary "$PRT_MODE" "$PRT_HEAD_SHA" "$chunk_idx" "$ALL_FINDINGS" 0 "$(prt_incomplete_reasons)" "$(prt_degraded_reasons)"
   } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+  prt_report_degraded_annotations
   exit 1
 fi
 
@@ -724,6 +725,7 @@ if [ "$inventory_failed" = 1 ]; then
   {
     prt_render_summary "$PRT_MODE" "$PRT_HEAD_SHA" "$chunk_idx" "$ALL_FINDINGS" 0 "$(prt_incomplete_reasons)" "$(prt_degraded_reasons)"
   } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+  prt_report_degraded_annotations
   exit 1
 fi
 prt_log "threads listed: $n_threads, owned=$owned_count"
@@ -742,6 +744,7 @@ if ! capped_findings="$(prt_apply_cap "$PRT_MAX_FINDINGS_TOTAL" "$OWNED" "$ALL_F
   {
     prt_render_summary "$PRT_MODE" "$PRT_HEAD_SHA" "$chunk_idx" "$ALL_FINDINGS" 0 "$(prt_incomplete_reasons)" "$(prt_degraded_reasons)"
   } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+  prt_report_degraded_annotations
   exit 1
 fi
 ALL_FINDINGS="$capped_findings"
@@ -1190,6 +1193,11 @@ if prt_is_incomplete; then
   prt_incomplete_reasons | head -10 | while IFS= read -r r; do
     printf '::error title=PR review threads incomplete::%s\n' "$(prt_annotation_escape "$r")"
   done
+  # A run can be BOTH incomplete and degraded (e.g. an assessment
+  # degradation earlier, then an unrelated inventory failure later) — this
+  # exit must not drop the degraded recap just because it's also fatal
+  # (go-kure/.github#101 F8).
+  prt_report_degraded_annotations
   exit 1
 fi
 
@@ -1198,12 +1206,6 @@ fi
 # fully clean one. Rendered as a warning (::warning, not ::error) so it's
 # visible on the PR without gating merge on it; fatal-vs-degraded is exactly
 # the distinction this whole mechanism exists to draw.
-if prt_is_degraded; then
-  echo "WARNING: review degraded — some non-fatal issues occurred. Reasons:" >&2
-  prt_degraded_reasons | sed 's/^/  - /' >&2
-  prt_degraded_reasons | head -10 | while IFS= read -r r; do
-    printf '::warning title=PR review threads degraded::%s\n' "$(prt_annotation_escape "$r")"
-  done
-fi
+prt_report_degraded_annotations
 
 exit 0

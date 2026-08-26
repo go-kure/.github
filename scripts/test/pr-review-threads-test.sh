@@ -966,6 +966,33 @@ assert_eq "prt_mark_degraded: does not also mark prt_is_incomplete (independent 
 rm -rf "$deg_dir"
 unset PRT_INCOMPLETE_FILE PRT_DEGRADED_FILE
 
+# ============================================================ state.sh: prt_report_degraded_annotations (go-kure/.github#101 F8)
+# Factored out of pr-review-threads.sh's tail so every fatal exit site can
+# call it too — must emit identically regardless of prt_is_incomplete, since
+# its whole purpose is to surface degraded reasons on a run that is ALSO
+# fatal, not only on a clean-but-degraded one.
+rda_dir="$(mktemp -d)"
+prt_state_init "$rda_dir"
+rda_out="$(prt_report_degraded_annotations 2>"$rda_dir/err")"
+assert_eq "prt_report_degraded_annotations: no-op stdout when not degraded" "" "$rda_out"
+assert_eq "prt_report_degraded_annotations: no-op stderr when not degraded" "" "$(cat "$rda_dir/err")"
+
+prt_mark_degraded "assess transport fault" 2>/dev/null
+rda_out="$(prt_report_degraded_annotations 2>"$rda_dir/err")"
+assert_eq "prt_report_degraded_annotations: emits the ::warning annotation" \
+  "true" "$(grep -qF '::warning title=PR review threads degraded::assess transport fault' <<< "$rda_out" && echo true || echo false)"
+assert_eq "prt_report_degraded_annotations: emits the WARNING stderr recap" \
+  "true" "$(grep -qF 'WARNING: review degraded' "$rda_dir/err" && grep -qF '  - assess transport fault' "$rda_dir/err" && echo true || echo false)"
+
+# The regression this fixes: called from a path where prt_mark_incomplete was
+# ALSO already recorded (a mixed fatal+degraded run) — must still emit.
+prt_mark_incomplete "unrelated fatal reason" 2>/dev/null
+rda_out="$(prt_report_degraded_annotations 2>/dev/null)"
+assert_eq "prt_report_degraded_annotations: still emits when the run is also incomplete" \
+  "true" "$(grep -qF '::warning title=PR review threads degraded::assess transport fault' <<< "$rda_out" && echo true || echo false)"
+rm -rf "$rda_dir"
+unset PRT_INCOMPLETE_FILE PRT_DEGRADED_FILE
+
 # ============================================================ orchestrator: exit-code contract (subprocess, mocked curl)
 # pr-review-threads.sh itself is not exercised by the rest of this suite (its
 # own header comment says so — it's wiring, not a pure function) but its
