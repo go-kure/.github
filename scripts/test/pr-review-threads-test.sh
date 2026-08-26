@@ -844,20 +844,24 @@ assert_eq "prt_render_clean_comment_superseded: keeps the SAME marker as the ori
 assert_ne "prt_render_clean_comment_superseded: the superseded body is visibly distinct from a fresh clean-verdict body" \
   "$superseded_body" "$clean_body"
 
-# ============================================================ render.sh: prt_render_advisory_comment degraded disclosure (go-kure/.github#98 round 3, chatgpt-codex-connector[bot] review go-kure/.github#101#pullrequestreview-5028172237)
+# ============================================================ render.sh: prt_render_advisory_comment degraded/incomplete disclosure (go-kure/.github#98 round 3, chatgpt-codex-connector[bot] review go-kure/.github#101#pullrequestreview-5028172237; round 5, kure-bot pr-review AI Code Review on go-kure/.github#101 at 9b2fe22 — the zero-count suppression round 3 added for `degraded_reasons` alone left the strictly-more-severe `incomplete_reasons`-only zero-count case still printing plain "No issues found.")
 adv_clean_zero="$(prt_render_advisory_comment '[]')"
 assert_eq "prt_render_advisory_comment: zero findings, no incomplete/degraded reasons -> plain 'No issues found.'" \
   "true" "$(grep -qF 'No issues found.' <<< "$adv_clean_zero" && echo true || echo false)"
 
 adv_incomplete_zero="$(prt_render_advisory_comment '[]' 'chunk 0: something fatal')"
-assert_eq "prt_render_advisory_comment: zero findings + incomplete reasons -> banner renders ABOVE the (unchanged) 'No issues found.' among what succeeded — pre-existing B4 behavior, not touched by this fix" \
-  "true" "$(grep -qF 'No issues found.' <<< "$adv_incomplete_zero" && echo true || echo false)"
+assert_eq "prt_render_advisory_comment: zero findings + incomplete reasons -> 'No issues found.' does NOT fire (round 5: incomplete is strictly MORE severe than degraded, which already suppressed it — a fatal run must not be the one case that still reads as clean)" \
+  "false" "$(grep -qF 'No issues found.' <<< "$adv_incomplete_zero" && echo true || echo false)"
+assert_eq "prt_render_advisory_comment: zero findings + incomplete reasons -> reason-neutral zero-count line instead" \
+  "true" "$(grep -qF 'No findings to report this run — see the incomplete-run warning above.' <<< "$adv_incomplete_zero" && echo true || echo false)"
 assert_eq "prt_render_advisory_comment: incomplete banner wording" \
   "true" "$(grep -qF 'This review run was incomplete' <<< "$adv_incomplete_zero" && echo true || echo false)"
 
 adv_degraded_zero="$(prt_render_advisory_comment '[]' '' 'chunk 0: partial-drop — one row dropped')"
 assert_eq "prt_render_advisory_comment: zero surviving findings + degraded reasons -> 'No issues found.' does NOT fire" \
   "false" "$(grep -qF 'No issues found.' <<< "$adv_degraded_zero" && echo true || echo false)"
+assert_eq "prt_render_advisory_comment: zero surviving findings + degraded-only reasons -> degraded-specific zero-count line" \
+  "true" "$(grep -qF 'No findings to report this run — see the degraded-run warning above.' <<< "$adv_degraded_zero" && echo true || echo false)"
 assert_eq "prt_render_advisory_comment: degraded banner uses distinct wording from incomplete's" \
   "true" "$(grep -qF 'This review run was degraded' <<< "$adv_degraded_zero" && echo true || echo false)"
 assert_eq "prt_render_advisory_comment: degraded banner carries the actual reason text" \
@@ -872,6 +876,10 @@ assert_eq "prt_render_advisory_comment: degraded + nonzero -> banner still prese
 adv_both="$(prt_render_advisory_comment '[]' 'chunk 1: fatal' 'chunk 0: partial-drop')"
 assert_eq "prt_render_advisory_comment: both incomplete AND degraded reasons present -> both banners render" \
   "true" "$([ "$(grep -c 'This review run was' <<< "$adv_both")" -eq 2 ] && echo true || echo false)"
+assert_eq "prt_render_advisory_comment: both reasons present + zero findings -> 'No issues found.' does NOT fire" \
+  "false" "$(grep -qF 'No issues found.' <<< "$adv_both" && echo true || echo false)"
+assert_eq "prt_render_advisory_comment: both reasons present + zero findings -> combined reason-neutral zero-count line naming both banners" \
+  "true" "$(grep -qF 'No findings to report this run — see the incomplete-run and degraded-run warnings above.' <<< "$adv_both" && echo true || echo false)"
 
 # round 4 (go-kure/.github#101 second review pass, chatgpt-codex-connector[bot]):
 # the round-3 banner unconditionally said "some rows were dropped ... reflects
