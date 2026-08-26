@@ -22,4 +22,6 @@ jobs:
           token: ${{ secrets.AUTO_REBASE_PAT }}
           base: main
           exclude-labels: dependencies
-          exclude-drafts: true
+          # Drafts are rebased too (GitLab auto-rebase.yml parity — that template ranks
+          # non-drafts ahead of drafts but never excludes them; exclude-drafts: true here had
+          # no recorded rationale, just the 2026-04-21 initial-workflow default).
