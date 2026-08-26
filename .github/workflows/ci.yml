@@ -54,13 +54,26 @@ jobs:
   test:
     name: test
     runs-on: autops-kube-kure
-    timeout-minutes: 5
+    timeout-minutes: 10
     needs: lint
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: No-op
-        run: echo "No tests for a workflow library — actionlint in lint covers syntax validation."
+      - name: Install node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: '24'
+      - name: Install renovate
+        run: |
+          RENOVATE_VERSION="$(cat scripts/test/renovate-version)"
+          echo "RENOVATE_VERSION=${RENOVATE_VERSION}" >> "$GITHUB_ENV"
+          npm install --no-save --prefix .renovate-lane-test "renovate@${RENOVATE_VERSION}"
+      - name: Validate renovate/shared.json against renovate's own schema
+        run: npx --prefix .renovate-lane-test renovate-config-validator --no-global renovate/shared.json
+      - name: renovate-lane-policy-test.mjs — every dependency-update path resolves to exactly one lane
+        run: |
+          node scripts/test/renovate-lane-policy-test.mjs renovate/shared.json \
+            .renovate-lane-test/node_modules/renovate/dist/util/package-rules/index.js
 
   link-check:
     name: link-check
