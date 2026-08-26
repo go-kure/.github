@@ -317,7 +317,16 @@ just above: the absence loop's `incomplete_now` check greps `prt_degraded_reason
 (`pr-review-threads.sh`, alongside the existing `partial-drop` grep), so a chunk that never parsed
 at all doesn't let its findings' existing threads be read as absent this run and wrongly
 auto-resolved — the same reconciliation hazard `go-kure/.github#98` named for `partial-drop`,
-applied one failure mode earlier in the pipeline. What this does not fix: a chunk that fails still
+applied one failure mode earlier in the pipeline. `enforce` mode's own clean-verdict comment
+(`prt_render_clean_comment`, gated in `pr-review-threads.sh`) is filtered by the identical grep: the
+gate used to check only `prt_is_incomplete`, so a `review-parse-failed` degraded run whose *other*
+chunks came back with zero findings still posted "Reviewed, no findings" over a PR with an
+unreviewed chunk — the exact false-clean-bill-of-health shape `go-kure/.github#101` had already
+closed for the advisory comment above, left open here because this gate predates that fix and lives
+in a separate branch of the same script (chatgpt-codex-connector[bot] review, go-kure/.github#109
+round 3). Every other degraded reason (a superseded stale-head run, a clean-verdict supersede
+failure two paragraphs below) is unrelated to whether the surviving findings are trustworthy and
+stays eligible for the clean comment. What this does not fix: a chunk that fails still
 contributes zero findings, so a real defect confined to that chunk's files goes unreviewed this
 run — the run reports degraded rather than red, it does not recover the review.
 

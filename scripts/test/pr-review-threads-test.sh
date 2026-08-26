@@ -1143,6 +1143,30 @@ assert_eq "prt_resolve_review_parse_failures: all-failed reasons are NOT also ta
 rm -rf "$rpf_dir"
 unset PRT_INCOMPLETE_FILE PRT_DEGRADED_FILE
 
+# A partial review-parse failure (degraded, not incomplete) with zero findings
+# from the chunks that DID parse must not be eligible for the clean-verdict
+# "Reviewed, no findings" comment (codex round-3 finding on go-kure/.github#109:
+# pr-review-threads.sh's clean-verdict gate at the time only excluded
+# prt_is_incomplete, so it still fired here and published a false-clean
+# verdict over a PR with an unreviewed chunk). This mirrors the exact
+# review-parse-failed grep already used for the absence-loop's incomplete_now
+# fold-in (pr-review-threads.sh:1003) rather than re-deriving a new check.
+rpf_dir="$(mktemp -d)"
+prt_state_init "$rpf_dir"
+prt_resolve_review_parse_failures 3 "chunk 2: review response was not valid JSON after retry=true, salvage_attempted=true (object)" 2>/dev/null
+assert_eq "clean-verdict gate: a review-parse-failed degraded reason is detected by the same grep the gate uses" \
+  "true" "$(prt_degraded_reasons | grep -q 'review-parse-failed' && echo true || echo false)"
+rm -rf "$rpf_dir"
+unset PRT_INCOMPLETE_FILE PRT_DEGRADED_FILE
+
+rpf_dir="$(mktemp -d)"
+prt_state_init "$rpf_dir"
+prt_handle_freshness_rc 1 "fp=abc: create"  2>/dev/null
+assert_eq "clean-verdict gate: an unrelated degraded reason (stale-superseded) does NOT match the review-parse-failed grep" \
+  "false" "$(prt_degraded_reasons | grep -q 'review-parse-failed' && echo true || echo false)"
+rm -rf "$rpf_dir"
+unset PRT_INCOMPLETE_FILE PRT_DEGRADED_FILE
+
 # ============================================================ orchestrator: exit-code contract (subprocess, mocked curl)
 # pr-review-threads.sh itself is not exercised by the rest of this suite (its
 # own header comment says so — it's wiring, not a pure function) but its
