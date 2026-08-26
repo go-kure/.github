@@ -1,10 +1,22 @@
 #!/usr/bin/env bash
-# state.sh — REVIEW_INCOMPLETE persistence for pr-review-threads.sh.
+# state.sh — REVIEW_INCOMPLETE / REVIEW_DEGRADED persistence for
+# pr-review-threads.sh.
 #
 # A shell variable set inside a `$(...)` subshell (e.g. the output of a curl
 # helper) never reaches the parent shell. Every write path in this action runs
-# inside such subshells, so REVIEW_INCOMPLETE is tracked as a file instead —
+# inside such subshells, so both severities are tracked as files instead —
 # the only thing that reliably crosses subshell boundaries in bash.
+#
+# Two severities, both additive (go-kure/.github#98): REVIEW_INCOMPLETE keeps
+# its pre-existing meaning and stays fatal by default (the exit gate at
+# pr-review-threads.sh's tail fails closed on it) — only call sites explicitly
+# moved to prt_mark_degraded below become non-fatal. REVIEW_DEGRADED means
+# something in the run didn't fully succeed but the rest of the review still
+# produced a usable result; the run still exits 0, with the reasons rendered
+# into $GITHUB_STEP_SUMMARY as a warning rather than an error. Never
+# dual-mark the same event with both — see pr-review-threads.sh's absence-loop
+# reconciliation comment (around its `incomplete_now` check) for why that
+# would defeat the point of moving an event to degraded.
 #
 # Source after setting PRT_STATE_DIR (a mktemp -d, one per run) and calling
 # prt_state_init.
@@ -31,6 +43,7 @@ prt_annotation_escape() {
 prt_state_init() {
   local dir="$1"
   PRT_INCOMPLETE_FILE="$dir/review_incomplete"
+  PRT_DEGRADED_FILE="$dir/review_degraded"
   if ! : > "$PRT_INCOMPLETE_FILE"; then
     # Fail loud here rather than leaving PRT_INCOMPLETE_FILE pointed at a file
     # that doesn't exist yet: prt_mark_incomplete's own append later would
@@ -40,6 +53,12 @@ prt_state_init() {
     # state bookkeeping silently never established (codex round 1 finding,
     # go-kure/.github#60/#61).
     echo "FATAL: prt_state_init: could not create $PRT_INCOMPLETE_FILE (disk full? permissions?) — REVIEW_INCOMPLETE tracking cannot start" >&2
+    exit 1
+  fi
+  if ! : > "$PRT_DEGRADED_FILE"; then
+    # Same fail-loud reasoning as PRT_INCOMPLETE_FILE above, mirrored for the
+    # degraded-severity file (go-kure/.github#98).
+    echo "FATAL: prt_state_init: could not create $PRT_DEGRADED_FILE (disk full? permissions?) — REVIEW_DEGRADED tracking cannot start" >&2
     exit 1
   fi
 }
@@ -80,4 +99,32 @@ prt_is_incomplete() {
 prt_incomplete_reasons() {
   [ -n "${PRT_INCOMPLETE_FILE:-}" ] || return 0
   cat "$PRT_INCOMPLETE_FILE" 2>/dev/null || true
+}
+
+# prt_mark_degraded REASON — mirrors prt_mark_incomplete exactly (same
+# idempotent-append, same fail-closed-on-append-failure contract) but for the
+# non-fatal severity (go-kure/.github#98): the exit gate at the tail of
+# pr-review-threads.sh checks prt_is_incomplete only, so a degraded-only run
+# still exits 0. prt_mark_incomplete keeps its own current meaning and stays
+# fatal by default — only call sites explicitly moved to this function
+# become non-fatal; everything else in this file is unchanged.
+prt_mark_degraded() {
+  local reason="$1"
+  [ -n "${PRT_DEGRADED_FILE:-}" ] || { echo "ERROR: prt_state_init not called" >&2; return 1; }
+  if printf '%s\n' "$reason" >> "$PRT_DEGRADED_FILE"; then
+    printf 'REVIEW_DEGRADED: %s\n' "$reason" >&2
+  else
+    echo "FATAL: failed to record REVIEW_DEGRADED reason (state tracking itself is broken): $reason" >&2
+    exit 1
+  fi
+}
+
+prt_is_degraded() {
+  [ -n "${PRT_DEGRADED_FILE:-}" ] || return 1
+  [ -s "$PRT_DEGRADED_FILE" ]
+}
+
+prt_degraded_reasons() {
+  [ -n "${PRT_DEGRADED_FILE:-}" ] || return 0
+  cat "$PRT_DEGRADED_FILE" 2>/dev/null || true
 }

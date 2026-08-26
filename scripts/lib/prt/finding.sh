@@ -46,9 +46,26 @@ prt_normalize_category() {
 # prt_normalize_findings RAW_JSON — validates and filters a model's raw
 # findings payload. Prints a normalized JSON array to stdout (each element:
 # file, category, line (number|null), severity, issue, fix — all strings
-# except line). Prints diagnostics to stderr. Returns 1 (with an empty `[]`
-# on stdout) if RAW_JSON's `.findings` is missing/null/not-an-array — the
-# caller must treat that as REVIEW_INCOMPLETE, not as "zero findings".
+# except line). Prints diagnostics to stderr. Three-way exit status
+# (go-kure/.github#98 — the caller distinguishes these; see
+# pr-review-threads.sh's call site):
+#   0 — clean: .findings was array-shaped and every row survived.
+#   1 — RAW_JSON's `.findings` is missing/null/not-an-array, OR it was
+#       array-shaped but EVERY element was malformed and dropped (empty `[]`
+#       on stdout either way): nothing usable came out of this chunk. The
+#       caller must treat this as REVIEW_INCOMPLETE (fatal) — there is no
+#       partial result to fall back to. A non-empty `.findings` array whose
+#       normalized result is empty is total loss, not partial degradation
+#       (go-kure/.github#98 round 1 codex finding P1 — `{"findings":
+#       ["oops"]}` must not exit 0 and read as a clean review): only a
+#       genuinely empty `.findings: []` on input is the rc=0 clean-empty
+#       case, and only a MIX of surviving and dropped rows is rc=2 below.
+#   2 — `.findings` WAS array-shaped and parsed, and at least one row
+#       survived AND at least one row was malformed and dropped (normalized
+#       array on stdout is non-empty). Most of the chunk was still reviewed,
+#       so the caller treats this as REVIEW_DEGRADED (non-fatal), not
+#       REVIEW_INCOMPLETE — distinct from rc=1 above, which covers both "no
+#       rows at all" and "rows present but none survived".
 #
 # Guards, each independently necessary (an array of scalars passes a bare
 # "is array" check; a `.file != ""` check passes a non-string `.file`,
@@ -56,10 +73,9 @@ prt_normalize_category() {
 #   - .findings must be an array
 #   - each element must be an object (map(select(type=="object")))
 #   - .file must be a non-empty string
-#   - a mismatch between raw and filtered counts is reported (caller decides
-#     whether to mark REVIEW_INCOMPLETE; dropping a malformed element is not
-#     itself fatal, silently losing an unknown number of them is worth a
-#     warning either way)
+#   - a mismatch between raw and filtered counts is reported (rc=2 above;
+#     dropping a malformed element is not itself fatal, silently losing an
+#     unknown number of them is worth a warning either way)
 prt_normalize_findings() {
   local raw_json="$1"
   local kind
@@ -115,10 +131,23 @@ prt_normalize_findings() {
   done
 
   printf '%s' "$clamped"
-  # A dropped row must not read as a clean run — the caller only marks
-  # REVIEW_INCOMPLETE on nonzero return, and a silently-dropped finding's
-  # existing thread would otherwise read as absent this run.
-  [ "$dropped" -eq 0 ]
+  # A dropped row must not read as a clean run — the caller marks
+  # REVIEW_DEGRADED on this rc, and a silently-dropped finding's existing
+  # thread would otherwise read as absent this run (see finding.sh's own
+  # docstring above and pr-review-threads.sh's absence-loop reconciliation
+  # for how the caller keeps that thread from being wrongly resolved even
+  # though this is no longer REVIEW_INCOMPLETE — go-kure/.github#98).
+  [ "$dropped" -eq 0 ] && return 0
+  if [ "$filtered_count" -eq 0 ]; then
+    # Every row in a non-empty .findings was malformed — total loss, not
+    # partial degradation. Falling through to rc=2 here would let a fully
+    # garbage payload (e.g. {"findings":["oops"]}) exit 0 and, in enforce
+    # mode with zero accumulated findings, post a clean-verdict comment
+    # (go-kure/.github#98 round 1 codex finding P1).
+    echo "prt_normalize_findings: all $raw_count row(s) malformed — nothing usable, treating as fatal" >&2
+    return 1
+  fi
+  return 2
 }
 
 # prt_assign_ordinals FINDINGS_JSON — input: normalized findings array

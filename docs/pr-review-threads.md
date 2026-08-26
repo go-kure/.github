@@ -143,19 +143,32 @@ Every write (create/reply/resolve/unresolve/marker edit) is preceded by a freshn
 write against a stale one — the run's real wall-clock spans multiple model calls, so the PR can
 move underneath it. `prt_freshness_check` names which of its three failure paths fired (read
 failure, empty `.head.sha`, or a genuinely moved head printed as `expected -> live`) on stderr,
-rather than returning 1 silently for all three alike (go-kure/.github#61). A write that can't
-complete (a failed create, a stale-head skip, a malformed model response, a listing failure) is
-recorded via `prt_mark_incomplete` (`state.sh:64-73`) into the `REVIEW_INCOMPLETE` state: the
-reason is echoed to stderr as `REVIEW_INCOMPLETE: <reason>` immediately (not only written to the
-state file), and if the state file itself can't be appended to, `prt_mark_incomplete` fails
-closed with `exit 1` on the spot rather than silently tracking nothing. `REVIEW_INCOMPLETE`
-reasons are also rendered as their own section in the job summary (`render.sh:109-112`) and
-checked at exit: a non-empty `REVIEW_INCOMPLETE` state makes the top-level script print every
-reason to stderr (prefixed `  - `) and as capped `::error title=...::` workflow annotations
-(escaped via `prt_annotation_escape`, `state.sh`), then exit 1 instead of 0
-(`pr-review-threads.sh:1127-1138`) — "the review could not run to completion" is now distinguishable
-from "the review ran and found nothing" by exit code *and* job-log output, not only by a human
-reading the summary by hand.
+rather than returning 1 silently for all three alike (go-kure/.github#61).
+
+Two independent, additive severities track a run's problems, both file-backed for the same reason
+(a shell variable set inside a `$(...)` subshell never reaches the parent shell, and every write
+path in this action runs inside one): `REVIEW_INCOMPLETE` (`prt_mark_incomplete`,
+`state.sh:47-73`) and `REVIEW_DEGRADED` (`prt_mark_degraded`, `state.sh`, go-kure/.github#98).
+Both share the same contract — the reason is echoed to stderr immediately (`REVIEW_INCOMPLETE:
+<reason>` / `REVIEW_DEGRADED: <reason>`, not only written to the state file), and if the state
+file itself can't be appended to, the marking call fails closed with `exit 1` on the spot rather
+than silently tracking nothing. They differ only in what the run does with them: a write that
+can't complete at all (a failed create, a stale-head skip, a listing failure, or a model response
+so broken nothing in that chunk was reviewed) is `REVIEW_INCOMPLETE` and fails the run closed;
+something that didn't fully succeed but still left a usable result (see the assessment-call and
+partial-finding-drop cases below) is `REVIEW_DEGRADED` and lets the run exit 0. **Never
+dual-mark the same event with both** — `prt_mark_incomplete`'s file is read unconditionally by the
+exit gate below, so dual-marking a degraded event would force `exit 1` regardless, defeating the
+point of moving it to degraded.
+
+Both are rendered as their own section in the job summary (`render.sh:87-121`) and checked at
+exit (`pr-review-threads.sh`'s tail): a non-empty `REVIEW_INCOMPLETE` state makes the top-level
+script print every reason to stderr (prefixed `  - `) and as capped `::error title=...::` workflow
+annotations (escaped via `prt_annotation_escape`, `state.sh`), then exit 1 instead of 0 — "the
+review could not run to completion" is distinguishable from "the review ran and found nothing" by
+exit code *and* job-log output, not only by a human reading the summary by hand. A non-empty
+`REVIEW_DEGRADED` state (checked independently, never gating the exit code) prints the same way but
+as `::warning title=...::` annotations and a `WARNING:` stderr line, since the run is not failing.
 
 The model-review call (`prt_model_review`, `model.sh:305-325`) has its exit status checked
 independently on **either** call — the original attempt and the one bounded retry alike: a
@@ -222,19 +235,52 @@ that call. A 2xx response that still fails
 response was not valid JSON after retry=.../salvage_attempted=true (<shape>)`, using the same
 `prt_response_shape` diagnostic as the review call above — never the response text itself. Either
 way, the chunk's findings stay unverdicted (`verdict: null, reasoning: null`) rather than being
-dropped, and a residual failure after salvage+retry still calls `prt_mark_incomplete` and fails the
-run closed (`exit 1`) exactly as before — making that failure non-fatal (`REVIEW_DEGRADED`,
-verdict-less findings surfaced instead of a hard stop) is separate, later work, not part of this
-resilience pass.
+dropped. Unlike a review-call failure (which means the chunk wasn't reviewed at all and stays
+`REVIEW_INCOMPLETE`), every one of these four assess-call failure shapes — the original attempt's
+transport fault, the retry's transport fault, a residual parse failure surviving salvage+retry, and
+`prt_join_assessment` rejecting a shape-valid-but-wrong-shaped `.assessments` field (distinct code
+path, same outcome) — means the chunk's review itself succeeded; only the verdicts are missing. All
+four are `REVIEW_DEGRADED` (go-kure/.github#98), not `REVIEW_INCOMPLETE`: the run exits 0, with the
+verdict-less findings still surfaced rather than the whole run failing closed over a problem that
+didn't cost the review itself.
 
 Both are covered by the unit suite, including an explicit assertion that neither `prt_response_class`
 nor `prt_response_shape` ever echoes any part of the response, and that every emitted class is a
 member of the declared enum.
 
+`prt_normalize_findings` (`finding.sh:63-122`) draws the same fatal/degraded line one level up, on
+the review call's own `.findings` field, via a three-way exit status (go-kure/.github#98): `0`
+clean, `1` when `.findings` itself is missing/null/non-array (nothing in the chunk was reviewed —
+`REVIEW_INCOMPLETE`, unchanged from before), `2` when `.findings` was array-shaped and one or more
+individual rows were malformed and dropped while the rest survived (`REVIEW_DEGRADED`, reason text
+`chunk N: partial-drop — ...`). The two used to share one exit code and one message; splitting them
+needed a second change beyond the exit code, because `prt_normalize_findings` returning nonzero
+also exists so a dropped row's *existing* review thread isn't read as absent this run
+(`finding.sh:118-121`) — the absence loop's `incomplete_now` (`pr-review-threads.sh`, immediately
+before its owned-thread loop) derives from `prt_is_incomplete` alone, so a partial-drop chunk that
+now only calls `prt_mark_degraded` would stop setting it. The fix folds the `partial-drop` reason
+directly into that check (`prt_degraded_reasons | grep -q 'partial-drop'`) rather than dual-marking:
+`prt_decide_absent`'s `review_incomplete=true` branch (`reconcile.sh:111-114`) then still forces
+`CLEAR_MARKER`/`NONE` instead of `SET_FIRST_ABSENT`/`REPLY_RESOLVE` for that thread, exactly as it
+would for a true `REVIEW_INCOMPLETE` run, without the run itself failing closed.
+
+The clean-verdict-comment supersede failure (`pr-review-threads.sh`, the `total_findings_this_run
+-gt 0` branch) is also `REVIEW_DEGRADED` rather than `REVIEW_INCOMPLETE`, matching the asymmetry
+already established two branches above it in the same `if` (a listing failure there was
+deliberately never `prt_mark_incomplete` either): both are best-effort tidy-up of a *past* run's
+comment, not this run's primary output. The freshness-gated skips immediately around it stay
+`REVIEW_INCOMPLETE` — out of scope here, tracked separately (go-kure/.github#99).
+
+**What this does not fix:** a finding whose verdict stays `null` — whether from an assess-call
+failure above, an unmatched `fp`, or a duplicate-verdict contradiction (`finding.sh:174-235`) —
+still reaches `prt_decide_finding`'s `NONE` branch (`reconcile.sh:57-62`) and still becomes a
+`CREATE`d, merge-gating thread needing manual resolution. Only this run's own exit code/severity
+changes; a `null`-verdict finding is exactly as gating after this change as before it.
+
 Every run that reaches the main body also emits `prt_log` stage tracing to stderr (`prt:
 mode=...`, `prt: diff: <n> bytes, chunks=<n>`, per-chunk review/assess outcome, `prt: threads
 listed: N, owned=M`, a `prt: fp=<fp> -> <action>` line per reconciliation decision, and a closing
-`prt: done: findings=N gating=N suppressed=N incomplete=N` line) — a successful run used to print
+`prt: done: findings=N gating=N suppressed=N incomplete=N degraded=N` line) — a successful run used to print
 nothing at all between the workflow's own log markers, indistinguishable at a glance from a job
 that hung (go-kure/.github#61). An early exit ahead of the first `prt_log` call — the `off`-mode
 short-circuit, a non-2xx diff fetch, or a PR-metadata fetch failure — still prints its own `ERROR`/
