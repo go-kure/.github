@@ -269,8 +269,9 @@ that call. A 2xx response that still fails
 response was not valid JSON after retry=.../salvage_attempted=true (<shape>)`, using the same
 `prt_response_shape` diagnostic as the review call above — never the response text itself. Either
 way, the chunk's findings stay unverdicted (`verdict: null, reasoning: null`) rather than being
-dropped. Unlike a review-call failure (which means the chunk wasn't reviewed at all and stays
-`REVIEW_INCOMPLETE`), every one of these four assess-call failure shapes — the original attempt's
+dropped. Unlike a review-call failure (which means nothing from that chunk was reviewed at all,
+and is `REVIEW_INCOMPLETE` only when it happened to every chunk in the run — see above), every one
+of these four assess-call failure shapes — the original attempt's
 transport fault, the retry's transport fault, a residual parse failure surviving salvage+retry, and
 `prt_join_assessment` rejecting a shape-valid-but-wrong-shaped `.assessments` field (distinct code
 path, same outcome) — means the chunk's review itself succeeded; only the verdicts are missing. All
