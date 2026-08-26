@@ -11,7 +11,11 @@
 //     dependencyDashboardApproval directly (opt-in on key presence, not on
 //     the value — see the comparison below for why). Also asserts every
 //     packageRules index is exercised, so a new rule with no matrix case
-//     fails loudly instead of going unexercised.
+//     fails loudly instead of going unexercised — and, separately, that
+//     every hand-declared ruleIndices entry actually matches that case's
+//     input (via renovate's own per-rule matcher pipeline), so inserting a
+//     rule mid-array and silently shifting every later index fails loudly
+//     too instead of passing coverage vacuously.
 //  2. Structural — no rule may set a lane via addLabels (renovate unions
 //     addLabels across every matching rule and a later rule can never remove
 //     it, so a rule could advertise "this will automerge" and a later
@@ -84,6 +88,29 @@ const resolvedVulnerabilityAlerts = {
   ...preset.vulnerabilityAlerts,
 };
 
+// Same sibling-path trick as optionsModuleSpecifier above: matchers.js sits next to
+// package-rules/index.js under dist/. Used below to prove each matrix case's hand-declared
+// ruleIndices actually match that case's input, not merely that the index falls inside
+// [0, packageRules.length) — see the coverage loop's own comment for why membership alone
+// doesn't catch a mid-array insert shifting every later index.
+const matchersModuleSpecifier = moduleSpecifier.replace(
+  /util\/package-rules\/index\.js$/,
+  "util/package-rules/matchers.js",
+);
+const { default: matchers } = await import(matchersModuleSpecifier);
+
+// Mirrors renovate's own (unexported) matchesRule from package-rules/index.js: run every
+// matcher in declaration order, treating an explicit falsy result as "no match" and
+// null/undefined as "this matcher doesn't apply to this rule, keep checking the rest".
+async function matchesRule(inputConfig, packageRule) {
+  for (const matcher of matchers) {
+    const isMatch = await matcher.matches(inputConfig, packageRule);
+    if (isMatch === null || isMatch === undefined) continue;
+    if (!isMatch) return false;
+  }
+  return true;
+}
+
 const LANES = ["unattended", "needs-human"];
 
 // Each case exercises one or more packageRules indices (0-based, matching
@@ -107,7 +134,11 @@ const MATRIX = [
   { name: "gomod digest, sigs.k8s.io (automerges)", ruleIndices: [2, 4, 13], input: { manager: "gomod", updateType: "digest", depName: "sigs.k8s.io/controller-runtime", packageName: "sigs.k8s.io/controller-runtime" }, expect: "unattended" },
   { name: "gomod patch, fluxcd (automerges)", ruleIndices: [2, 5, 13], input: { manager: "gomod", updateType: "patch", depName: "github.com/fluxcd/pkg/oci", packageName: "github.com/fluxcd/pkg/oci" }, expect: "unattended" },
   { name: "gomod patch, cloudnative-pg (automerges)", ruleIndices: [2, 6, 13], input: { manager: "gomod", updateType: "patch", depName: "github.com/cloudnative-pg/machinery", packageName: "github.com/cloudnative-pg/machinery" }, expect: "unattended" },
-  { name: "gomod patch, first-party go-kure (never automerged)", ruleIndices: [2, 7, 13], input: { manager: "gomod", updateType: "patch", depName: "github.com/go-kure/kure", packageName: "github.com/go-kure/kure" }, expect: "needs-human" },
+  // Deliberately does NOT declare 13 here: rule 13's own matchPackageNames excludes
+  // github.com/go-kure/**, so it never matches this case — that exclusion is the point being
+  // proven (needs-human survives despite sitting right next to the automerge rule). Rule 13's
+  // coverage comes from the four automerge cases below that it actually matches.
+  { name: "gomod patch, first-party go-kure (never automerged)", ruleIndices: [2, 7], input: { manager: "gomod", updateType: "patch", depName: "github.com/go-kure/kure", packageName: "github.com/go-kure/kure" }, expect: "needs-human" },
   { name: "gomod major, any dep (dashboard-gated, never automerged)", ruleIndices: [11], input: { manager: "gomod", updateType: "major", depName: "github.com/some/other", packageName: "github.com/some/other" }, expect: "needs-human", expectDashboardApproval: true },
   { name: "github-actions bump (never automerged)", ruleIndices: [8], input: { manager: "github-actions", updateType: "minor", depName: "actions/checkout", packageName: "actions/checkout" }, expect: "needs-human" },
   { name: "npm major (dashboard-gated, never automerged)", ruleIndices: [11], input: { manager: "npm", updateType: "major", depName: "some-pkg", packageName: "some-pkg" }, expect: "needs-human" },
@@ -149,6 +180,12 @@ for (const c of MATRIX) {
   c.ruleIndices.forEach((i) => touchedIndices.add(i));
   const input = { packageRules: preset.packageRules, labels: preset.labels, ...c.input };
   if (input.packageName === undefined) input.packageName = input.depName;
+  for (const i of c.ruleIndices) {
+    if (!(await matchesRule(input, preset.packageRules[i]))) {
+      console.error(`FAIL [declared-index] ${c.name}: ruleIndices declares ${i}, but packageRules[${i}] does not actually match this case's input — the index is stale (has renovate/shared.json been reordered?) or the case is wrong`);
+      failures++;
+    }
+  }
   const result = await applyPackageRules(input);
   const labelSet = new Set([...(result.labels ?? []), ...(result.addLabels ?? [])]);
   const lanes = LANES.filter((l) => labelSet.has(l));
@@ -186,6 +223,12 @@ for (const c of VULN_MATRIX) {
     labels: preset.labels,
     ...c.input,
   };
+  for (const i of c.ruleIndices) {
+    if (!(await matchesRule(input, preset.packageRules[i]))) {
+      console.error(`FAIL [declared-index] ${c.name}: ruleIndices declares ${i}, but packageRules[${i}] does not actually match this case's input — the index is stale (has renovate/shared.json been reordered?) or the case is wrong`);
+      failures++;
+    }
+  }
   const result = await applyPackageRules(input);
   const labelSet = new Set([...(result.labels ?? []), ...(result.addLabels ?? [])]);
   const lanes = LANES.filter((l) => labelSet.has(l));
