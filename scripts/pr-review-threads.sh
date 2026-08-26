@@ -868,6 +868,14 @@ else
         # spam loop on a thread that never closes.
         mut="mutation(\$id:ID!){resolveReviewThread(input:{threadId:\$id}){thread{id}}}"
         if prt_gh_graphql "$mut" "$(jq -n --arg id "$thread_id" '{id:$id}')" >/dev/null; then
+          # This freshness check only gates the reply, not the mutation
+          # above — which already committed. prt_handle_freshness_rc's rc=1
+          # ("safe to treat as non-fatal") relies on a superseding run
+          # redoing the SAME skipped write; here nothing would be redone,
+          # since the successor's decision table sees the thread already
+          # resolved and computes NONE, so the explanatory reply is lost
+          # for good (codex round-2 confirm finding, go-kure/.github#99).
+          # Stay fatal via prt_mark_incomplete regardless of rc.
           if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
             reasoning="$(jq -r '.reasoning // "no reasoning provided"' <<< "$f")"
             reply="$(prt_render_reply_false_positive "$reasoning")"
@@ -875,7 +883,7 @@ else
             prt_gh_rest POST "/repos/${PRT_REPO}/pulls/${PRT_PR_NUMBER}/comments" "$reply_payload" >/dev/null || \
               prt_mark_incomplete "fp=$fp: resolveReviewThread succeeded but the explanatory reply failed"
           else
-            prt_handle_freshness_rc "$?" "fp=$fp: resolveReviewThread succeeded but reply"
+            prt_mark_incomplete "fp=$fp: resolveReviewThread succeeded but the head SHA changed before the reply could be posted — mutation already applied and will not be redone by a superseding run, reply permanently skipped"
           fi
         else
           prt_mark_incomplete "fp=$fp: resolveReviewThread (FALSE POSITIVE) failed, reply skipped to avoid a duplicate on retry"
@@ -892,13 +900,17 @@ else
         db_id="$(jq -r '.first_comment_db_id' <<< "$owned_match")"
         mut="mutation(\$id:ID!){unresolveReviewThread(input:{threadId:\$id}){thread{id}}}"
         if prt_gh_graphql "$mut" "$(jq -n --arg id "$thread_id" '{id:$id}')" >/dev/null; then
+          # Same reasoning as REPLY_RESOLVE above: this check only gates the
+          # reply, the mutation already committed, so a superseding run will
+          # not redo it — stay fatal via prt_mark_incomplete regardless of rc
+          # (codex round-2 confirm finding, go-kure/.github#99).
           if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
             reply="$(prt_render_reply_recurrence)"
             reply_payload="$(jq -n --arg b "$reply" --argjson r "$db_id" '{body:$b, in_reply_to:$r}')"
             prt_gh_rest POST "/repos/${PRT_REPO}/pulls/${PRT_PR_NUMBER}/comments" "$reply_payload" >/dev/null || \
               prt_mark_incomplete "fp=$fp: unresolveReviewThread succeeded but the explanatory reply failed"
           else
-            prt_handle_freshness_rc "$?" "fp=$fp: unresolveReviewThread succeeded but reply"
+            prt_mark_incomplete "fp=$fp: unresolveReviewThread succeeded but the head SHA changed before the reply could be posted — mutation already applied and will not be redone by a superseding run, reply permanently skipped"
           fi
         else
           prt_mark_incomplete "fp=$fp: unresolveReviewThread failed, reply skipped to avoid a duplicate on retry"
@@ -1068,13 +1080,17 @@ if [ "$PRT_MODE" = enforce ]; then
         # thread that stays open, or every later run repeats the reply.
         mut="mutation(\$id:ID!){resolveReviewThread(input:{threadId:\$id}){thread{id}}}"
         if prt_gh_graphql "$mut" "$(jq -n --arg id "$thread_id" '{id:$id}')" >/dev/null; then
+          # Same reasoning as loop 1's REPLY_RESOLVE: this check only gates
+          # the reply, the mutation already committed, so a superseding run
+          # will not redo it — stay fatal via prt_mark_incomplete regardless
+          # of rc (codex round-2 confirm finding, go-kure/.github#99).
           if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
             reply="$(prt_render_reply_absent_resolved)"
             prt_gh_rest POST "/repos/${PRT_REPO}/pulls/${PRT_PR_NUMBER}/comments" \
               "$(jq -n --arg b "$reply" --argjson r "$first_comment_db_id" '{body:$b, in_reply_to:$r}')" >/dev/null || \
               prt_mark_incomplete "fp=$fp: absence resolveReviewThread succeeded but the explanatory reply failed"
           else
-            prt_handle_freshness_rc "$?" "fp=$fp: absence resolveReviewThread succeeded but reply"
+            prt_mark_incomplete "fp=$fp: absence resolveReviewThread succeeded but the head SHA changed before the reply could be posted — mutation already applied and will not be redone by a superseding run, reply permanently skipped"
           fi
         else
           prt_mark_incomplete "fp=$fp: absence resolveReviewThread failed, reply skipped to avoid a duplicate on retry"

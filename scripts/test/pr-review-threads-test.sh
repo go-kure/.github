@@ -2006,6 +2006,39 @@ rc="$(run_orchestrator enforce 0 0 0)"
 assert_eq "orchestrator: enforce + empty diff + second absence on a new SHA -> exits 0" "0" "$rc"
 assert_eq "orchestrator: enforce + empty diff + second absence on a new SHA -> resolve count >= 1" \
   "true" "$([ "$(cat "$PRT_TEST_RESOLVE_COUNTFILE")" -ge 1 ] && echo true || echo false)"
+PRT_TEST_EMPTY_DIFF=0
+PRT_TEST_FIRST_ABSENT_SHA=""
+
+# go-kure/.github#99 codex round-2 confirm finding: REPLY_RESOLVE's
+# resolveReviewThread mutation succeeds, then the head SHA moves before the
+# post-mutation freshness re-check that gates the explanatory reply. A
+# superseding run will NOT redo this: the thread is already resolved, so its
+# own decision table computes NONE on that fp — the reply is lost for good
+# if this is allowed to exit 0 as "stale, safe, superseded" like a
+# not-yet-attempted write would be. Must stay REVIEW_INCOMPLETE (exit 1),
+# not REVIEW_DEGRADED.
+#   call #1 = the real meta fetch (must report the true head SHA)
+#   call #2 = the pre-mutate freshness check (line ~851) -> stays fresh
+#   call #3 = the post-mutate freshness check (line ~871) -> goes stale
+PRT_TEST_MODEL_RESPONSE_MODE=clean_with_finding
+PRT_TEST_ASSESS_RESPONSE_MODE=false_positive_survivor
+PRT_TEST_OWNED_FP="$(prt_fp_base x.go other)"
+PRT_TEST_STALE_AFTER_CALL=2
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator: head moves between resolve mutation and reply freshness re-check -> exits 1 (stays fatal, NOT superseded-safe)" \
+  "1" "$rc"
+assert_eq "orchestrator: head moves after resolve mutation -> resolveReviewThread still fired (mutation already committed)" \
+  "1" "$(cat "$PRT_TEST_RESOLVE_COUNTFILE" 2>/dev/null || echo 0)"
+assert_eq "orchestrator: head moves after resolve mutation -> the explanatory reply is skipped, not posted" \
+  "0" "$(cat "$PRT_TEST_REPLY_COUNTFILE" 2>/dev/null || echo 0)"
+assert_eq "orchestrator: head moves after resolve mutation -> REVIEW_INCOMPLETE names the lost-reply reason, not a generic stale-superseded one" \
+  "true" "$(grep -qF 'REVIEW_INCOMPLETE: fp=' "$PRT_TEST_STDERR_FILE" && grep -qF 'will not be redone by a superseding run' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator: head moves after resolve mutation -> does NOT log the quiet 'Stale run' line (this is not the safe-superseded case)" \
+  "false" "$(grep -qF 'Stale run: head moved; a newer run is already queued' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_MODEL_RESPONSE_MODE=clean
+PRT_TEST_ASSESS_RESPONSE_MODE=clean
+PRT_TEST_OWNED_FP="deadbeefcafebabe"
+PRT_TEST_STALE_AFTER_CALL=0
 
 # advisory + empty diff -> the cheap exit (Step 3b's non-enforce branch)
 # must stay ahead of the thread-listing GraphQL call entirely.
