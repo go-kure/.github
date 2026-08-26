@@ -1145,9 +1145,20 @@ fi
 # REVIEW_INCOMPLETE — an incomplete run's silence must not read as "clean."
 # advisory mode needs no equivalent: prt_render_advisory_comment already
 # posts unconditionally, including an explicit "No issues found." line.
+#
+# Also excludes a review-parse-failed DEGRADED run (go-kure/.github#107,
+# codex round-3 finding): that reason means one or more chunks never
+# produced a usable review, same as the `incomplete_now` fold-in a few
+# hundred lines below (:1003) — so the OTHER chunks coming back empty must
+# not be allowed to post "Reviewed, no findings" over a PR whose diff was
+# only partially looked at. Every other degraded reason (e.g. a superseded
+# stale-head run, :182) is unrelated to whether findings are trustworthy and
+# stays eligible for the clean comment.
 if [ "$PRT_MODE" = enforce ]; then
   total_findings_this_run="$(jq 'length' <<< "$ALL_FINDINGS")"
-  if [ "$total_findings_this_run" -eq 0 ] && ! prt_is_incomplete; then
+  review_parse_failed_this_run=false
+  prt_degraded_reasons | grep -q 'review-parse-failed' && review_parse_failed_this_run=true
+  if [ "$total_findings_this_run" -eq 0 ] && ! prt_is_incomplete && ! "$review_parse_failed_this_run"; then
     if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
       if clean_id="$(prt_find_marked_comment "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_MARKER_CLEAN" "$PRT_BOT_LOGIN")"; then
         # Re-check immediately before the write, not just before the
