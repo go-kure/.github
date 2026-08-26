@@ -1999,9 +1999,22 @@ assert_eq "orchestrator: enforce + empty diff + first sighting -> resolve count 
 assert_eq "orchestrator: enforce + empty diff + first sighting -> model count 0 (no findings pipeline on empty diff)" \
   "0" "$(cat "$PRT_TEST_MODEL_COUNTFILE" 2>/dev/null || echo 0)"
 
-# go-kure/.github#99: same scenario, but the head genuinely moves between
-# the meta fetch (call #1) and the SET_FIRST_ABSENT freshness re-check
-# (call #2 onward) — the run's ONLY REVIEW_DEGRADED reason is that
+# go-kure/.github#99 kure-bot round-5 finding: this comment previously
+# labeled call #1 "the meta fetch", which is wrong under an empty diff —
+# pr-review-threads.sh:189's `EMPTY_DIFF != 1` guard means no meta fetch
+# ever runs on this path (same reason the absence-resolve block below
+# gives for its own numbering). Verified against the shared META_COUNTFILE
+# (this file's `_prt_bump`d "meta fetch (:190) and every later freshness
+# re-check" counter): call #1 is actually the SET_FIRST_ABSENT loop's own
+# pre-mutate freshness check (pr-review-threads.sh:1022) — the first and
+# only thing to touch that counter before it — and it stays fresh; call #2
+# onward is the SAME check re-invoked by prt_gh_rest_fresh inside the
+# retried PATCH write (gh.sh's prt_retry 3 wrapping), which now observes
+# the moved head. The numeric race this pins (fresh going in, stale before
+# the write commits) was always correct; only the label for call #1 was
+# not — confirmed by reverting go-kure/.github#99's `1f0f28b` fix
+# (prt_handle_freshness_rc's rc=1 case) and observing this block's own
+# assertions go red. The run's ONLY REVIEW_DEGRADED reason is that
 # staleness, so the tail exit gate must take the quiet "Stale run" path
 # (exit 0, distinct log line) rather than the generic REVIEW_DEGRADED
 # warning recap, and must NOT attempt the now-stale PATCH at all.
@@ -2100,6 +2113,10 @@ PRT_TEST_STALE_AFTER_CALL=0
 # differs because this scenario runs against an empty diff, which skips the
 # initial meta fetch entirely (pr-review-threads.sh:189's `EMPTY_DIFF != 1`
 # guard) — the absence loop's own explicit pre-mutate check becomes call #1.
+# This numbering (confirmed against the shared META_COUNTFILE) is what the
+# staleness-only SET_FIRST_ABSENT block above was corrected to match
+# (round-5 kure-bot finding) — its own call #1 is likewise its loop's
+# pre-mutate check, not a meta fetch, for this identical EMPTY_DIFF reason.
 #   call #1 = the pre-mutate freshness check (line ~1072) -> stays fresh
 #   call #2 = the post-mutate freshness check (line ~1087) -> goes stale
 PRT_TEST_EMPTY_DIFF=1
