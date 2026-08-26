@@ -873,6 +873,42 @@ adv_both="$(prt_render_advisory_comment '[]' 'chunk 1: fatal' 'chunk 0: partial-
 assert_eq "prt_render_advisory_comment: both incomplete AND degraded reasons present -> both banners render" \
   "true" "$([ "$(grep -c 'This review run was' <<< "$adv_both")" -eq 2 ] && echo true || echo false)"
 
+# round 4 (go-kure/.github#101 second review pass, chatgpt-codex-connector[bot]):
+# the round-3 banner unconditionally said "some rows were dropped ... reflects
+# only the surviving rows", which is only true of the partial-drop reason
+# (:334) and misdescribes the other five prt_mark_degraded call sites (assess
+# transport/parse/join failures at :379,413,435,448, and the unrelated
+# clean-verdict-comment supersede failure at :1151) — none of which drop any
+# row; four leave findings present but unverdicted, the fifth isn't about
+# current findings at all. Assert the banner text itself is now
+# degradation-neutral and does not assert "dropped"/"surviving" regardless of
+# which reason fired.
+# The suggested banner wording itself enumerates "dropped" as one of three
+# generic possibilities (incomplete/unverdicted/dropped) without asserting
+# any one of them happened — that mention is fine. What must NOT appear is
+# the round-3 banner's specific FALSE claim that rows definitely were
+# dropped and the table reflects only survivors, which was never true for
+# this (assess-transport-fault) reason.
+adv_degraded_nondrop="$(prt_render_advisory_comment '[{"severity":"High","category":"other","file":"x.go","issue":"i","fix":"f"}]' '' 'chunk 0: assessment call failed (transport/proxy error, exit 7); findings stay unverdicted')"
+assert_eq "prt_render_advisory_comment: non-drop degraded reason (assess transport fault) -> banner does NOT assert rows WERE dropped (old wording)" \
+  "false" "$(grep -qiF 'some rows were dropped' <<< "$adv_degraded_nondrop" && echo true || echo false)"
+assert_eq "prt_render_advisory_comment: non-drop degraded reason -> banner does NOT claim the table 'reflects only the surviving rows' (old wording)" \
+  "false" "$(grep -qiF 'reflects only the surviving' <<< "$adv_degraded_nondrop" && echo true || echo false)"
+assert_eq "prt_render_advisory_comment: non-drop degraded reason -> banner does NOT say 'surviving rows'" \
+  "false" "$(grep -qiF 'surviving rows' <<< "$adv_degraded_nondrop" && echo true || echo false)"
+assert_eq "prt_render_advisory_comment: non-drop degraded reason -> still shows the degraded banner" \
+  "true" "$(grep -qF 'This review run was degraded' <<< "$adv_degraded_nondrop" && echo true || echo false)"
+assert_eq "prt_render_advisory_comment: non-drop degraded reason -> the specific reason text is carried verbatim" \
+  "true" "$(grep -qF 'assessment call failed (transport/proxy error, exit 7); findings stay unverdicted' <<< "$adv_degraded_nondrop" && echo true || echo false)"
+assert_eq "prt_render_advisory_comment: non-drop degraded reason -> table still rendered (this finding was never dropped)" \
+  "true" "$(grep -qF '| High | other | x.go | i | f |' <<< "$adv_degraded_nondrop" && echo true || echo false)"
+
+adv_degraded_nondrop_zero="$(prt_render_advisory_comment '[]' '' 'chunk 0: .assessments missing/null/non-array')"
+assert_eq "prt_render_advisory_comment: non-drop degraded reason + zero findings -> reason-neutral zero-count line, not 'No surviving findings'" \
+  "true" "$(grep -qF 'No findings to report this run' <<< "$adv_degraded_nondrop_zero" && echo true || echo false)"
+assert_eq "prt_render_advisory_comment: non-drop degraded reason + zero findings -> does NOT say 'surviving'" \
+  "false" "$(grep -qiF 'surviving' <<< "$adv_degraded_nondrop_zero" && echo true || echo false)"
+
 # ============================================================ state.sh: prt_annotation_escape (dot-github#61 Step 1)
 assert_eq "annotation_escape: percent escaped first" "a%25b" "$(prt_annotation_escape 'a%b')"
 assert_eq "annotation_escape: CR becomes %0D" "a%0Db" "$(prt_annotation_escape "$(printf 'a\rb')")"
@@ -1538,6 +1574,29 @@ assert_eq "orchestrator: assess call transport failure -> REVIEW_DEGRADED report
 assert_eq "orchestrator: assess call transport failure -> does NOT also mark REVIEW_INCOMPLETE (no dual-marking)" \
   "false" "$(grep -qF 'REVIEW_INCOMPLETE:' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 PRT_TEST_ASSESS_ALWAYS_FAIL=0
+
+# Case iv-b — round 4 (go-kure/.github#101 second review pass,
+# chatgpt-codex-connector[bot]): Case iv above (assess transport fault) is
+# REVIEW_DEGRADED without ever dropping a row — the chunk's one finding
+# survives with verdict:null. Capture the actual posted advisory comment body
+# and confirm it does not misdescribe this as a drop: the round-3 banner text
+# said "some rows were dropped ... reflects only the surviving rows"
+# unconditionally, which was never true for this reason.
+PRT_TEST_ISSUE_COMMENT_BODY_FILE="$(mktemp)"
+PRT_TEST_ASSESS_ALWAYS_FAIL=1
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "orchestrator: advisory + assess transport fault -> exits 0 (degraded, not fatal)" "0" "$rc"
+assert_eq "orchestrator: advisory + assess transport fault -> posted comment shows the degraded-warning banner" \
+  "true" "$(grep -qF 'This review run was degraded' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && echo true || echo false)"
+assert_eq "orchestrator: advisory + assess transport fault -> posted comment does NOT assert rows WERE dropped (old wording)" \
+  "false" "$(grep -qiF 'some rows were dropped' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && echo true || echo false)"
+assert_eq "orchestrator: advisory + assess transport fault -> posted comment does NOT say 'surviving rows'" \
+  "false" "$(grep -qiF 'surviving rows' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && echo true || echo false)"
+assert_eq "orchestrator: advisory + assess transport fault -> posted comment still shows the unverdicted finding's row" \
+  "true" "$(grep -qF '| Medium | other | x.go |' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && echo true || echo false)"
+PRT_TEST_ASSESS_ALWAYS_FAIL=0
+rm -f "$PRT_TEST_ISSUE_COMMENT_BODY_FILE"
+unset PRT_TEST_ISSUE_COMMENT_BODY_FILE
 
 # Case v — assess response is prose-wrapped JSON on the (only) attempt:
 # salvaged without ever needing the retry, exits 0.

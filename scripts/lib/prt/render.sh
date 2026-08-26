@@ -158,12 +158,20 @@ prt_render_overflow_comment() {
 # not read as a clean "No issues found." on the review's own output surface,
 # with the failure visible only in $GITHUB_STEP_SUMMARY (dot-github#50 gmr
 # finding B4). DEGRADED_REASONS (go-kure/.github#98) mirrors that same
-# disclosure requirement for the non-fatal partial-drop case: a chunk can be
-# degraded (some finding rows malformed and dropped) without being
-# incomplete, and if the surviving findings are then all assessed
-# FALSE_POSITIVE, count drops to 0 — the "No issues found." branch must not
-# fire then either, or the one row that was silently dropped never surfaces
-# anywhere on this live comment (chatgpt-codex-connector[bot] review,
+# disclosure requirement for the run's non-fatal problems: `prt_mark_degraded`
+# covers several distinct shapes (a chunk's malformed rows dropped, an
+# assess-call transport fault, an assess response unparseable after
+# salvage+retry, an `.assessments` join failure — leaving findings present but
+# unverdicted rather than dropped — and a past run's clean-verdict comment
+# failing to be superseded), so the banner text itself must stay
+# degradation-neutral and defer to the reason bullets below it for the
+# specific shape (round 4, go-kure/.github#101 second review pass — the
+# original banner said "some rows were dropped ... reflects only the
+# surviving rows" unconditionally, which was true only of the first shape and
+# misdescribed the other five). The "No issues found." branch must not fire
+# on a degraded run with zero surviving findings either way — a partial-drop
+# chunk whose lone surviving row is then assessed FALSE_POSITIVE must not
+# read as a clean bill of health (chatgpt-codex-connector[bot] review,
 # github.com/go-kure/.github/pull/101#pullrequestreview-5028172237).
 prt_render_advisory_comment() {
   local findings="$1" incomplete_reasons="${2:-}" degraded_reasons="${3:-}"
@@ -178,13 +186,13 @@ prt_render_advisory_comment() {
       printf '\n'
     fi
     if [ -n "$degraded_reasons" ]; then
-      printf '> **⚠ This review run was degraded** — some rows were dropped but the rest'
-      printf ' completed. The finding count/table below reflects only the surviving rows.\n'
+      printf '> **⚠ This review run was degraded** — see the reason(s) below; this may mean'
+      printf ' part of this run'\''s output is incomplete, unverdicted, or dropped.\n'
       printf '%s\n' "$degraded_reasons" | sed 's/^/> - /'
       printf '\n'
     fi
     if [ "$count" -eq 0 ] && [ -n "$degraded_reasons" ]; then
-      printf 'No surviving findings to report — see the degraded-run warning above.\n'
+      printf 'No findings to report this run — see the degraded-run warning above.\n'
     elif [ "$count" -eq 0 ]; then
       printf 'No issues found.\n'
     else
