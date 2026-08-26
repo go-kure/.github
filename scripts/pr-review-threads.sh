@@ -131,7 +131,7 @@ fi
 
 # --- Fetch PR diff + metadata ---
 DIFF_FILE="$WORKDIR/full.diff"
-# Wrapped in prt_retry (gh.sh:156-183): a transient 5xx/timeout here used to
+# Wrapped in prt_retry (gh.sh:208-235): a transient 5xx/timeout here used to
 # fail the whole run with no retry, unlike every write path below. 406 (diff
 # too large) is treated as a terminal, non-retryable outcome — retrying it
 # would only burn the retry budget on a condition that can't change between
@@ -883,7 +883,7 @@ else
             prt_gh_rest POST "/repos/${PRT_REPO}/pulls/${PRT_PR_NUMBER}/comments" "$reply_payload" >/dev/null || \
               prt_mark_incomplete "fp=$fp: resolveReviewThread succeeded but the explanatory reply failed"
           else
-            prt_mark_incomplete "fp=$fp: resolveReviewThread succeeded but the head SHA changed before the reply could be posted — mutation already applied and will not be redone by a superseding run, reply permanently skipped"
+            prt_mark_incomplete "fp=$fp: resolveReviewThread succeeded but the post-mutation freshness re-check did not pass (head moved, or the check itself failed) — mutation already applied and will not be redone by a superseding run, reply permanently skipped"
           fi
         else
           prt_mark_incomplete "fp=$fp: resolveReviewThread (FALSE POSITIVE) failed, reply skipped to avoid a duplicate on retry"
@@ -910,7 +910,7 @@ else
             prt_gh_rest POST "/repos/${PRT_REPO}/pulls/${PRT_PR_NUMBER}/comments" "$reply_payload" >/dev/null || \
               prt_mark_incomplete "fp=$fp: unresolveReviewThread succeeded but the explanatory reply failed"
           else
-            prt_mark_incomplete "fp=$fp: unresolveReviewThread succeeded but the head SHA changed before the reply could be posted — mutation already applied and will not be redone by a superseding run, reply permanently skipped"
+            prt_mark_incomplete "fp=$fp: unresolveReviewThread succeeded but the post-mutation freshness re-check did not pass (head moved, or the check itself failed) — mutation already applied and will not be redone by a superseding run, reply permanently skipped"
           fi
         else
           prt_mark_incomplete "fp=$fp: unresolveReviewThread failed, reply skipped to avoid a duplicate on retry"
@@ -1090,7 +1090,7 @@ if [ "$PRT_MODE" = enforce ]; then
               "$(jq -n --arg b "$reply" --argjson r "$first_comment_db_id" '{body:$b, in_reply_to:$r}')" >/dev/null || \
               prt_mark_incomplete "fp=$fp: absence resolveReviewThread succeeded but the explanatory reply failed"
           else
-            prt_mark_incomplete "fp=$fp: absence resolveReviewThread succeeded but the head SHA changed before the reply could be posted — mutation already applied and will not be redone by a superseding run, reply permanently skipped"
+            prt_mark_incomplete "fp=$fp: absence resolveReviewThread succeeded but the post-mutation freshness re-check did not pass (head moved, or the check itself failed) — mutation already applied and will not be redone by a superseding run, reply permanently skipped"
           fi
         else
           prt_mark_incomplete "fp=$fp: absence resolveReviewThread failed, reply skipped to avoid a duplicate on retry"
@@ -1132,7 +1132,7 @@ if [ "$PRT_MODE" = enforce ]; then
       if clean_id="$(prt_find_marked_comment "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_MARKER_CLEAN" "$PRT_BOT_LOGIN")"; then
         # Re-check immediately before the write, not just before the
         # (possibly multi-page) lookup above — matching prt_gh_rest_fresh's
-        # own rationale (scripts/lib/prt/gh.sh:134-141): the run's real
+        # own rationale (scripts/lib/prt/gh.sh:167-174): the run's real
         # wall-clock spans the pagination, so a check taken before it started
         # does not cover a write landing after the head has since moved.
         if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then

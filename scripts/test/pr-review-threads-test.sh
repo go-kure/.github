@@ -1117,8 +1117,8 @@ unset PRT_INCOMPLETE_FILE PRT_DEGRADED_FILE
 # ============================================================ orchestrator: exit-code contract (subprocess, mocked curl)
 # pr-review-threads.sh itself is not exercised by the rest of this suite (its
 # own header comment says so — it's wiring, not a pure function) but its
-# top-level exit code IS a contract worth pinning down directly: :1127's
-# REVIEW_INCOMPLETE -> exit 1, PRT_MODE=off's exit 0 staying ahead of that
+# top-level exit code IS a contract worth pinning down directly:
+# pr-review-threads.sh:1208's REVIEW_INCOMPLETE -> exit 1, PRT_MODE=off's exit 0 staying ahead of that
 # check, and the two prt_retry-wrapped reads actually retrying. Run as a real
 # subprocess (not sourced) so $? reflects the same exit path CI observes,
 # against a mocked PRT_CURL exported into that subprocess's environment
@@ -1452,16 +1452,35 @@ fake_curl_orchestrator() {
               _prt_test_malformed_threads_response "$out" || return 1
               ;;
             *)
-            resp="$(jq -n --arg body "$(_prt_test_owned_thread_body)" '
-              {data:{repository:{pullRequest:{reviewThreads:{
-                pageInfo:{hasNextPage:false,endCursor:null},
-                nodes:[{
-                  id:"THREAD1", isResolved:false, isOutdated:false,
-                  resolvedBy:null, viewerCanResolve:true, viewerCanUnresolve:true,
-                  comments:{pageInfo:{hasNextPage:false,endCursor:null},
-                    nodes:[{id:"C1", databaseId:1, body:$body, author:{login:"test-bot"}}]}
-                }]
-              }}}}}')"
+            # PRT_TEST_OWNED_RESOLVED_BY_BOT (go-kure/.github#99 round-4
+            # fold-in): reports THREAD1 already resolved by the bot login
+            # itself, the one owned-thread shape the default single-mode
+            # mock could not previously produce — needed to reach
+            # prt_decide_finding's row 7 (REPLY_UNRESOLVE), which requires
+            # thread_resolved=true AND resolved_by_bot=true.
+            if [ "${PRT_TEST_OWNED_RESOLVED_BY_BOT:-0}" = 1 ]; then
+              resp="$(jq -n --arg body "$(_prt_test_owned_thread_body)" '
+                {data:{repository:{pullRequest:{reviewThreads:{
+                  pageInfo:{hasNextPage:false,endCursor:null},
+                  nodes:[{
+                    id:"THREAD1", isResolved:true, isOutdated:false,
+                    resolvedBy:{login:"test-bot"}, viewerCanResolve:true, viewerCanUnresolve:true,
+                    comments:{pageInfo:{hasNextPage:false,endCursor:null},
+                      nodes:[{id:"C1", databaseId:1, body:$body, author:{login:"test-bot"}}]}
+                  }]
+                }}}}}')"
+            else
+              resp="$(jq -n --arg body "$(_prt_test_owned_thread_body)" '
+                {data:{repository:{pullRequest:{reviewThreads:{
+                  pageInfo:{hasNextPage:false,endCursor:null},
+                  nodes:[{
+                    id:"THREAD1", isResolved:false, isOutdated:false,
+                    resolvedBy:null, viewerCanResolve:true, viewerCanUnresolve:true,
+                    comments:{pageInfo:{hasNextPage:false,endCursor:null},
+                      nodes:[{id:"C1", databaseId:1, body:$body, author:{login:"test-bot"}}]}
+                  }]
+                }}}}}')"
+            fi
             printf '%s' "$resp" > "$out"
               ;;
           esac
@@ -1529,7 +1548,7 @@ fake_curl_orchestrator() {
           echo 200
           ;;
         *)
-          # meta fetch (:190) and every later freshness re-check (gh.sh:115)
+          # meta fetch (:190) and every later freshness re-check (gh.sh:136)
           # share this same GET pulls/<N> shape — deliberately: a freshness
           # check after the meta fetch has already consumed the fail budget
           # must succeed immediately, matching how the real one-run head-SHA
@@ -1611,6 +1630,7 @@ run_orchestrator() {
     PRT_TEST_EMPTY_DIFF="${PRT_TEST_EMPTY_DIFF:-0}" \
     PRT_TEST_FIRST_ABSENT_SHA="${PRT_TEST_FIRST_ABSENT_SHA:-}" \
     PRT_TEST_OWNED_FP="${PRT_TEST_OWNED_FP:-deadbeefcafebabe}" \
+    PRT_TEST_OWNED_RESOLVED_BY_BOT="${PRT_TEST_OWNED_RESOLVED_BY_BOT:-0}" \
     PRT_TEST_MODEL_RESPONSE_MODE="${PRT_TEST_MODEL_RESPONSE_MODE:-clean}" \
     PRT_TEST_ASSESS_RESPONSE_MODE="${PRT_TEST_ASSESS_RESPONSE_MODE:-clean}" \
     PRT_TEST_ASSESS_ALWAYS_FAIL="${PRT_TEST_ASSESS_ALWAYS_FAIL:-0}" \
@@ -2038,6 +2058,66 @@ assert_eq "orchestrator: head moves after resolve mutation -> does NOT log the q
 PRT_TEST_MODEL_RESPONSE_MODE=clean
 PRT_TEST_ASSESS_RESPONSE_MODE=clean
 PRT_TEST_OWNED_FP="deadbeefcafebabe"
+PRT_TEST_STALE_AFTER_CALL=0
+
+# go-kure/.github#99 round-4 fold-in: the same race pinned above for
+# REPLY_RESOLVE, but for its mirror-image action REPLY_UNRESOLVE (row 7 —
+# resolved-by-bot thread, finding recurs). unresolveReviewThread commits,
+# then the head moves before the post-mutation freshness re-check gating the
+# recurrence reply. A successor's decision table now sees the thread already
+# unresolved (row 5, still open — nothing to do) and never redoes this
+# specific reply. Must stay REVIEW_INCOMPLETE (exit 1), not the quiet
+# stale-superseded path, exactly like REPLY_RESOLVE's own pinning test
+# above.
+#   call #1 = the real meta fetch (must report the true head SHA)
+#   call #2 = the pre-mutate freshness check (line ~893) -> stays fresh
+#   call #3 = the post-mutate freshness check (line ~907) -> goes stale
+PRT_TEST_MODEL_RESPONSE_MODE=clean_with_finding
+PRT_TEST_OWNED_FP="$(prt_fp_base x.go other)"
+PRT_TEST_OWNED_RESOLVED_BY_BOT=1
+PRT_TEST_STALE_AFTER_CALL=2
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator: head moves between unresolve mutation and reply freshness re-check -> exits 1 (stays fatal, NOT superseded-safe)" \
+  "1" "$rc"
+assert_eq "orchestrator: head moves after unresolve mutation -> unresolveReviewThread still fired (mutation already committed)" \
+  "1" "$(cat "$PRT_TEST_UNRESOLVE_COUNTFILE" 2>/dev/null || echo 0)"
+assert_eq "orchestrator: head moves after unresolve mutation -> the recurrence reply is skipped, not posted" \
+  "0" "$(cat "$PRT_TEST_REPLY_COUNTFILE" 2>/dev/null || echo 0)"
+assert_eq "orchestrator: head moves after unresolve mutation -> REVIEW_INCOMPLETE names the lost-reply reason, not a generic stale-superseded one" \
+  "true" "$(grep -qF 'REVIEW_INCOMPLETE: fp=' "$PRT_TEST_STDERR_FILE" && grep -qF 'will not be redone by a superseding run' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator: head moves after unresolve mutation -> does NOT log the quiet 'Stale run' line (this is not the safe-superseded case)" \
+  "false" "$(grep -qF 'Stale run: head moved; a newer run is already queued' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_MODEL_RESPONSE_MODE=clean
+PRT_TEST_OWNED_FP="deadbeefcafebabe"
+PRT_TEST_OWNED_RESOLVED_BY_BOT=0
+PRT_TEST_STALE_AFTER_CALL=0
+
+# go-kure/.github#99 round-4 fold-in: same race a third time, this time on
+# the absence loop's own REPLY_RESOLVE (row 10 — two consecutive absences on
+# different SHAs, auto-close). resolveReviewThread commits, then the head
+# moves before the post-mutation freshness re-check gating the auto-close
+# reply. Mirrors the two pinning tests above; only the call numbering
+# differs because this scenario runs against an empty diff, which skips the
+# initial meta fetch entirely (pr-review-threads.sh:189's `EMPTY_DIFF != 1`
+# guard) — the absence loop's own explicit pre-mutate check becomes call #1.
+#   call #1 = the pre-mutate freshness check (line ~1072) -> stays fresh
+#   call #2 = the post-mutate freshness check (line ~1087) -> goes stale
+PRT_TEST_EMPTY_DIFF=1
+PRT_TEST_FIRST_ABSENT_SHA="2222222222222222222222222222222222222222"
+PRT_TEST_STALE_AFTER_CALL=1
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator: head moves between absence-resolve mutation and reply freshness re-check -> exits 1 (stays fatal, NOT superseded-safe)" \
+  "1" "$rc"
+assert_eq "orchestrator: head moves after absence-resolve mutation -> resolveReviewThread still fired (mutation already committed)" \
+  "1" "$(cat "$PRT_TEST_RESOLVE_COUNTFILE" 2>/dev/null || echo 0)"
+assert_eq "orchestrator: head moves after absence-resolve mutation -> the auto-close reply is skipped, not posted" \
+  "0" "$(cat "$PRT_TEST_REPLY_COUNTFILE" 2>/dev/null || echo 0)"
+assert_eq "orchestrator: head moves after absence-resolve mutation -> REVIEW_INCOMPLETE names the lost-reply reason, not a generic stale-superseded one" \
+  "true" "$(grep -qF 'REVIEW_INCOMPLETE: fp=' "$PRT_TEST_STDERR_FILE" && grep -qF 'will not be redone by a superseding run' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator: head moves after absence-resolve mutation -> does NOT log the quiet 'Stale run' line (this is not the safe-superseded case)" \
+  "false" "$(grep -qF 'Stale run: head moved; a newer run is already queued' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_EMPTY_DIFF=0
+PRT_TEST_FIRST_ABSENT_SHA=""
 PRT_TEST_STALE_AFTER_CALL=0
 
 # advisory + empty diff -> the cheap exit (Step 3b's non-enforce branch)

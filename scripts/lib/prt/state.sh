@@ -139,7 +139,12 @@ prt_degraded_reasons() {
 # ever reaching the tail's degraded block, so a run that recorded both an
 # incomplete AND a degraded reason silently dropped the degraded stderr
 # recap and ::warning annotations, even though the same run's job summary
-# still carried them.
+# still carried them. prt_report_degraded_annotations itself is defined
+# below, after prt_handle_freshness_rc/prt_all_degraded_are_stale — those two
+# were inserted between this docstring and its function by a later round
+# (go-kure/.github#99); this note exists so the separator above stays visible
+# and the two docstrings are never read as describing the same function.
+
 # prt_handle_freshness_rc RC CONTEXT — routes a non-zero return from
 # gh.sh's prt_freshness_check (1|2) or prt_gh_rest_fresh (1|2|3) to the
 # correct severity (go-kure/.github#99). CONTEXT is a short human-readable
@@ -147,7 +152,7 @@ prt_degraded_reasons() {
 # "advisory comment") — this function appends the routing reason to it, so
 # callers should not also append their own "stale head SHA" text.
 #
-# RC 1 (genuinely-stale head, gh.sh:107-146's docstring): prt_mark_degraded,
+# RC 1 (genuinely-stale head, gh.sh:107-135's docstring): prt_mark_degraded,
 # not prt_mark_incomplete. Safe ONLY because a superseding run for the new
 # head SHA is guaranteed to be queued (`.github/workflows/pr-review.yml`'s
 # `cancel-in-progress: false`) — every reason string used here contains the
