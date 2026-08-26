@@ -728,6 +728,26 @@ assert_eq "prt_freshness_check: a 2xx response with no .head.sha also returns 2,
 assert_eq "prt_freshness_check: malformed-response diagnostic names the missing field" \
   "true" "$(grep -qF 'had no .head.sha' <<< "$fresh_err" && echo true || echo false)"
 
+# go-kure/.github#99 codex round 1 finding: a non-empty .head.sha that is NOT
+# a well-formed 40-hex SHA must not fall through to the mismatch branch and
+# be misread as "genuinely moved" — it carries no guarantee a superseding
+# run is actually queued, so it must return 2 (fatal), same as an empty one.
+fake_curl_freshness_nonhex() {
+  local out=""
+  local args=("$@")
+  for ((ai = 0; ai < ${#args[@]}; ai++)); do
+    if [ "${args[$ai]}" = "-o" ]; then out="${args[$((ai + 1))]}"; fi
+  done
+  printf '{"head":{"sha":"not-a-40-hex-sha"}}' > "$out"
+  echo 200
+}
+fresh_err="$(PRT_CURL=fake_curl_freshness_nonhex PRT_GH_TOKEN=x \
+  prt_freshness_check owner/repo 1 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 2>&1 >/dev/null)"
+rc=$?
+assert_eq "prt_freshness_check: a non-40-hex .head.sha returns 2, NOT 1 (must not read as genuinely-stale)" "2" "$rc"
+assert_eq "prt_freshness_check: non-40-hex diagnostic names the malformed value" \
+  "true" "$(grep -qF "not a well-formed 40-hex SHA: 'not-a-40-hex-sha'" <<< "$fresh_err" && echo true || echo false)"
+
 # ============================================================ gh.sh: prt_gh_rest_fresh propagates a 4-way status (go-kure/.github#99)
 fake_curl_fresh_write_fail() {
   # Freshness check passes (returns the expected SHA), but the wrapped

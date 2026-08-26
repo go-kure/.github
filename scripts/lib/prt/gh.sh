@@ -119,16 +119,20 @@ prt_gh_graphql() {
 # collapsing them behind one bit of information:
 #   0 — fresh: the live head SHA matches EXPECTED_SHA exactly. Proceed.
 #   1 — genuinely stale: the PR was read successfully and its live head SHA
-#       is a real, different value. This is the ONLY case a caller may treat
-#       as non-fatal (prt_mark_degraded) and let the run exit 0 — it is only
-#       safe because a superseding run for the new head SHA is guaranteed to
-#       be queued (`.github/workflows/pr-review.yml`'s
+#       is a real, well-formed (40-hex), different value. This is the ONLY
+#       case a caller may treat as non-fatal (prt_mark_degraded) and let the
+#       run exit 0 — it is only safe because a superseding run for the new
+#       head SHA is guaranteed to be queued (`.github/workflows/pr-review.yml`'s
 #       `cancel-in-progress: false`).
 #   2 — could not determine freshness at all: the PR read itself failed
-#       (prt_gh_rest error), or it returned a response with no usable
-#       `.head.sha`. Neither means "a newer run will redo this" — no run is
-#       guaranteed to be queued for an unreadable PR — so this stays fatal
-#       (prt_mark_incomplete) at every call site.
+#       (prt_gh_rest error), it returned a response with no usable
+#       `.head.sha`, or `.head.sha` was present but not a well-formed 40-hex
+#       SHA (a malformed/unexpected response shape must NOT be treated as
+#       "genuinely moved" just because it happens to differ from
+#       EXPECTED_SHA — go-kure/.github#99 codex round 1 finding). None of
+#       these mean "a newer run will redo this" — no run is guaranteed to be
+#       queued for an unreadable or malformed PR response — so this stays
+#       fatal (prt_mark_incomplete) at every call site.
 prt_freshness_check() {
   local repo="$1" pr_number="$2" expected_sha="$3"
   local body live_sha
@@ -139,6 +143,18 @@ prt_freshness_check() {
   live_sha="$(jq -r '.head.sha // empty' <<< "$body" 2>/dev/null || true)"
   if [ -z "$live_sha" ]; then
     echo "prt_freshness_check: PR ${repo}#${pr_number} response had no .head.sha" >&2
+    return 2
+  fi
+  # A non-empty-but-malformed .head.sha (not a 40-hex commit SHA — e.g. a
+  # stringified error, a truncated value, a schema change upstream) must NOT
+  # fall through to the mismatch branch below: comparing it against
+  # expected_sha would almost always differ and get misread as "genuinely
+  # moved", which the caller is allowed to treat as safe/non-fatal
+  # (go-kure/.github#99 codex round 1 finding) — but a malformed value gives
+  # no such guarantee that a superseding run is actually queued. Fail closed
+  # via the same status as an empty/absent field instead.
+  if ! [[ "$live_sha" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "prt_freshness_check: PR ${repo}#${pr_number} .head.sha was not a well-formed 40-hex SHA: '$live_sha'" >&2
     return 2
   fi
   if [ "$live_sha" != "$expected_sha" ]; then
