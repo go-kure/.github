@@ -142,6 +142,10 @@ assert_eq "different category on same file/line does not collide" \
   "false false" "$(jq -r '[.[].collision] | join(" ")' <<< "$out")"
 
 # ============================================================ normalize_findings
+# rc contract (go-kure/.github#98): 0 clean, 1 .findings missing/non-array
+# (nothing reviewed, stays fatal upstream), 2 shape-valid with row(s) dropped
+# (degraded upstream) — see finding.sh:46-62's docstring for the full
+# rationale.
 good_raw='{"findings":[{"file":"a.go","category":"race","line":1,"severity":"High","issue":"i","fix":"f"}]}'
 n="$(prt_normalize_findings "$good_raw")"
 rc=$?
@@ -151,12 +155,22 @@ assert_eq "normalize: well-formed input keeps 1 element" "1" "$(jq 'length' <<< 
 bad_shape='{"findings":"not-an-array"}'
 n="$(prt_normalize_findings "$bad_shape" 2>/dev/null)"
 rc=$?
-assert_eq "normalize: non-array .findings returns rc 1" "1" "$rc"
+assert_eq "normalize: non-array .findings returns rc 1 (fatal)" "1" "$rc"
 assert_eq "normalize: non-array .findings yields []" "[]" "$n"
 
 scalar_elements='{"findings":["oops", 42, null]}'
 n="$(prt_normalize_findings "$scalar_elements" 2>/dev/null)"
+rc=$?
 assert_eq "normalize: array-of-scalars filters down to zero (not a crash)" "0" "$(jq 'length' <<< "$n")"
+assert_eq "normalize: array-of-scalars (array-shaped but EVERY row dropped) returns rc 1 (fatal total loss), not rc 2 — a non-empty .findings whose normalized result is empty must not read as a clean/degraded run (go-kure/.github#98 round 1 codex finding P1)" \
+  "1" "$rc"
+
+all_malformed_objects='{"findings":[{"file":"","category":"race","severity":"High","issue":"i","fix":"f"},{"file":"","category":"race","severity":"High","issue":"j","fix":"g"}]}'
+n="$(prt_normalize_findings "$all_malformed_objects" 2>/dev/null)"
+rc=$?
+assert_eq "normalize: every object-shaped row malformed (empty file) still yields zero rows" "0" "$(jq 'length' <<< "$n")"
+assert_eq "normalize: total loss via all-malformed objects (not just scalars) also returns rc 1, not rc 2" \
+  "1" "$rc"
 
 missing_field='{"findings":[{"file":"a.go","category":"race"}]}'
 n="$(prt_normalize_findings "$missing_field" 2>/dev/null)"
@@ -169,6 +183,14 @@ assert_eq "normalize: empty-string file is dropped (not == \"\" trap avoided)" "
 object_file='{"findings":[{"file":{"nested":true},"category":"race","severity":"High","issue":"i","fix":"f"}]}'
 n="$(prt_normalize_findings "$object_file" 2>/dev/null)"
 assert_eq "normalize: object .file (not string) is dropped, not misread as truthy" "0" "$(jq 'length' <<< "$n")"
+
+partial_drop_mixed='{"findings":[{"file":"a.go","category":"race","line":1,"severity":"High","issue":"i","fix":"f"},{"file":"","category":"race","severity":"High","issue":"bad","fix":"f"}]}'
+n="$(prt_normalize_findings "$partial_drop_mixed" 2>/dev/null)"
+rc=$?
+assert_eq "normalize: partial drop (1 good row survives, 1 malformed row dropped) keeps the good row" \
+  "1" "$(jq 'length' <<< "$n")"
+assert_eq "normalize: partial drop returns rc 2 (degraded), distinct from rc 1's total loss" \
+  "2" "$rc"
 
 # ============================================================ join_assessment
 findings_with_fp='[{"fp":"aaaa","file":"a.go"},{"fp":"bbbb","file":"b.go"}]'
@@ -848,6 +870,29 @@ assert_true "prt_state_init: exits non-zero when its dir is unwritable" \
 chmod 755 "$si_dir"
 rm -rf "$si_dir"
 
+# ============================================================ state.sh: prt_mark_degraded / prt_is_degraded / prt_degraded_reasons (go-kure/.github#98)
+# Mirrors prt_mark_incomplete's own contract exactly (state.sh:47-73), on a
+# second, non-fatal file — round-tripped directly here since neither this
+# suite nor the orchestrator tests exercise prt_state_init's second file in
+# isolation from a real run.
+deg_dir="$(mktemp -d)"
+prt_state_init "$deg_dir"
+assert_eq "prt_is_degraded: false before any prt_mark_degraded call" \
+  "false" "$(prt_is_degraded && echo true || echo false)"
+prt_mark_degraded "first reason" 2>/dev/null
+prt_mark_degraded "second reason" 2>/dev/null
+assert_eq "prt_is_degraded: true after prt_mark_degraded" \
+  "true" "$(prt_is_degraded && echo true || echo false)"
+assert_eq "prt_degraded_reasons: both reasons recorded, one per line, in call order" \
+  "$(printf 'first reason\nsecond reason')" "$(prt_degraded_reasons)"
+# prt_is_incomplete must stay false — this is the additive/independent-file
+# guarantee the whole mechanism rests on: marking degraded must never also
+# mark incomplete.
+assert_eq "prt_mark_degraded: does not also mark prt_is_incomplete (independent files)" \
+  "false" "$(prt_is_incomplete && echo true || echo false)"
+rm -rf "$deg_dir"
+unset PRT_INCOMPLETE_FILE PRT_DEGRADED_FILE
+
 # ============================================================ orchestrator: exit-code contract (subprocess, mocked curl)
 # pr-review-threads.sh itself is not exercised by the rest of this suite (its
 # own header comment says so — it's wiring, not a pure function) but its
@@ -1024,6 +1069,14 @@ fake_curl_orchestrator() {
             garbage)
               printf '%s' '{"choices":[{"message":{"content":"not json at all, sorry"}}]}' > "$out"
               ;;
+            bad_shape)
+              # Valid JSON, wrong shape — distinct from `garbage` above:
+              # exercises prt_join_assessment's own `.assessments`
+              # non-array rejection (finding.sh:190-195), not the
+              # jq -c '.' parse failure the salvage/retry path handles
+              # (go-kure/.github#98, Case x).
+              printf '%s' '{"choices":[{"message":{"content":"{\"assessments\":\"oops-not-an-array\"}"}}]}' > "$out"
+              ;;
             garbage_then_clean)
               if [ "$mc" -le 1 ]; then
                 printf '%s' '{"choices":[{"message":{"content":"not json at all, sorry"}}]}' > "$out"
@@ -1080,6 +1133,21 @@ fake_curl_orchestrator() {
           case "${PRT_TEST_MODEL_RESPONSE_MODE:-clean}" in
             clean_with_finding)
               printf '%s' '{"choices":[{"message":{"content":"{\"findings\":[{\"file\":\"x.go\",\"line\":1,\"category\":\"other\",\"severity\":\"Medium\",\"issue\":\"i\",\"fix\":\"f\"}]}"}}]}' > "$out"
+              ;;
+            no_findings_key)
+              # Valid JSON, but no `.findings` key at all — the rc=1
+              # ("missing/null/non-array") branch of prt_normalize_findings,
+              # distinct from partial_drop below (rc=2): nothing in this
+              # chunk was reviewed, stays fatal (go-kure/.github#98).
+              printf '%s' '{"choices":[{"message":{"content":"{\"other\":1}"}}]}' > "$out"
+              ;;
+            partial_drop)
+              # Valid JSON, `.findings` array-shaped, but one row is
+              # malformed (empty .file) and gets dropped while the other
+              # survives — the rc=2 ("partial drop") branch of
+              # prt_normalize_findings: degraded, not fatal
+              # (go-kure/.github#98).
+              printf '%s' '{"choices":[{"message":{"content":"{\"findings\":[{\"file\":\"x.go\",\"line\":1,\"category\":\"other\",\"severity\":\"Medium\",\"issue\":\"i\",\"fix\":\"f\"},{\"file\":\"\",\"category\":\"other\",\"severity\":\"Medium\",\"issue\":\"bad\",\"fix\":\"f\"}]}"}}]}' > "$out"
               ;;
             prose)
               printf '%s' '{"choices":[{"message":{"content":"Here you go:\n{\"findings\":[]}\nHope that helps!"}}]}' > "$out"
@@ -1403,14 +1471,19 @@ PRT_TEST_MODEL_RESPONSE_MODE=clean_with_finding
 # retry alike: prt_model_assess's own exit status is checked explicitly and
 # reported as a transport fault, never silently parsed as empty JSON (root
 # cause 2). No salvage/retry is attempted for a transport fault — there is no
-# response body to salvage.
+# response body to salvage. go-kure/.github#98: this chunk's review DID run
+# (it's the assessment that failed), so this is REVIEW_DEGRADED and exits 0,
+# not the REVIEW_INCOMPLETE/exit-1 this used to be — the finding still
+# carries verdict:null via the orchestrator's own fallback (unchanged).
 PRT_TEST_ASSESS_ALWAYS_FAIL=1
 rc="$(run_orchestrator advisory 0 0 0)"
-assert_eq "orchestrator: assess call transport failure -> exits 1" "1" "$rc"
+assert_eq "orchestrator: assess call transport failure -> exits 0 (degraded, not fatal)" "0" "$rc"
 assert_eq "orchestrator: assess call transport failure -> assess model called exactly once (no salvage/retry on a transport fault)" \
   "1" "$(cat "$PRT_TEST_ASSESS_COUNTFILE")"
-assert_eq "orchestrator: assess call transport failure -> REVIEW_INCOMPLETE reports it as a transport/proxy error, not a parse failure" \
-  "true" "$(grep -qE 'REVIEW_INCOMPLETE:.*assessment call failed \(transport/proxy error, exit [0-9]+\)' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator: assess call transport failure -> REVIEW_DEGRADED reports it as a transport/proxy error, not a parse failure" \
+  "true" "$(grep -qE 'REVIEW_DEGRADED:.*assessment call failed \(transport/proxy error, exit [0-9]+\)' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator: assess call transport failure -> does NOT also mark REVIEW_INCOMPLETE (no dual-marking)" \
+  "false" "$(grep -qF 'REVIEW_INCOMPLETE:' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 PRT_TEST_ASSESS_ALWAYS_FAIL=0
 
 # Case v — assess response is prose-wrapped JSON on the (only) attempt:
@@ -1424,17 +1497,19 @@ assert_eq "orchestrator: assess prose-wrapped JSON salvaged -> stderr carries th
   "true" "$(grep -q 'assess recovered (retried=false salvaged=true)' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 
 # Case vi — assess response is garbage on the original attempt AND the
-# bounded retry: exits 1, residual failure still calls prt_mark_incomplete
-# (unchanged — degrading this to non-fatal is out of scope here), with the
-# shape-only diagnostic present and the raw response text never leaked.
+# bounded retry: a residual parse failure after salvage+retry still means
+# the review itself ran, only the verdicts are missing — go-kure/.github#98
+# moves this to REVIEW_DEGRADED, exits 0 (previously REVIEW_INCOMPLETE/exit
+# 1), with the shape-only diagnostic present and the raw response text never
+# leaked.
 PRT_TEST_ASSESS_RESPONSE_MODE=garbage
 rc="$(run_orchestrator advisory 0 0 0)"
-assert_eq "orchestrator: assess garbage on original + retry -> exits 1" "1" "$rc"
+assert_eq "orchestrator: assess garbage on original + retry -> exits 0 (degraded, not fatal)" "0" "$rc"
 assert_eq "orchestrator: assess garbage on original + retry -> assess model called exactly twice (original + 1 bounded retry)" \
   "2" "$(cat "$PRT_TEST_ASSESS_COUNTFILE")"
-assert_eq "orchestrator: assess garbage on original + retry -> REVIEW_INCOMPLETE carries retry=true, salvage_attempted=true, and the full four-field shape diagnostic" \
-  "true" "$(grep -qE 'REVIEW_INCOMPLETE:.*assessment response was not valid JSON after retry=true, salvage_attempted=true \(len=[0-9]+ leading=starts-with-prose class=[a-z-]+ sha16=[0-9a-f]{16}\)' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
-assert_eq "orchestrator: assess garbage on original + retry -> REVIEW_INCOMPLETE does NOT leak the raw response text" \
+assert_eq "orchestrator: assess garbage on original + retry -> REVIEW_DEGRADED carries retry=true, salvage_attempted=true, and the full four-field shape diagnostic" \
+  "true" "$(grep -qE 'REVIEW_DEGRADED:.*assessment response was not valid JSON after retry=true, salvage_attempted=true \(len=[0-9]+ leading=starts-with-prose class=[a-z-]+ sha16=[0-9a-f]{16}\)' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator: assess garbage on original + retry -> REVIEW_DEGRADED does NOT leak the raw response text" \
   "false" "$(grep -qF 'not json at all' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 
 # Case vii — assess response is garbage on the first attempt, clean JSON on
@@ -1455,15 +1530,33 @@ assert_eq "orchestrator: assess garbage then clean on retry -> stderr carries th
 # JSON" (and prt_response_shape gets computed over an empty string instead
 # of not being reached at all). Case ix, immediately below, is the same
 # scenario against the review call instead of the assess call.
+# go-kure/.github#98: moved to REVIEW_DEGRADED, exits 0 (previously
+# REVIEW_INCOMPLETE/exit 1) — same reasoning as Case iv/vi above.
 PRT_TEST_ASSESS_RESPONSE_MODE=garbage_then_fail
 rc="$(run_orchestrator advisory 0 0 0)"
-assert_eq "orchestrator: assess garbage then transport-fail on retry -> exits 1" "1" "$rc"
+assert_eq "orchestrator: assess garbage then transport-fail on retry -> exits 0 (degraded, not fatal)" "0" "$rc"
 assert_eq "orchestrator: assess garbage then transport-fail on retry -> assess model called exactly twice (original + 1 bounded retry)" \
   "2" "$(cat "$PRT_TEST_ASSESS_COUNTFILE")"
-assert_eq "orchestrator: assess garbage then transport-fail on retry -> REVIEW_INCOMPLETE reports the RETRY as a transport/proxy error, not a parse failure" \
-  "true" "$(grep -qE 'REVIEW_INCOMPLETE:.*assessment call failed on retry \(transport/proxy error, exit [0-9]+\)' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator: assess garbage then transport-fail on retry -> REVIEW_DEGRADED reports the RETRY as a transport/proxy error, not a parse failure" \
+  "true" "$(grep -qE 'REVIEW_DEGRADED:.*assessment call failed on retry \(transport/proxy error, exit [0-9]+\)' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 assert_eq "orchestrator: assess garbage then transport-fail on retry -> does NOT also report it as an invalid-JSON failure" \
   "false" "$(grep -qF 'assessment response was not valid JSON' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_ASSESS_RESPONSE_MODE=clean
+PRT_TEST_MODEL_RESPONSE_MODE=clean
+
+# Case viii-b — .assessments shape rejected by prt_join_assessment
+# (:409-410 in pr-review-threads.sh, distinct from Cases iv/vi/viii above:
+# the assessment response here DOES parse as valid JSON, it's the
+# `.assessments` field itself that's the wrong shape) — go-kure/.github#98:
+# REVIEW_DEGRADED, exits 0, every finding in the chunk stays unverdicted.
+PRT_TEST_MODEL_RESPONSE_MODE=clean_with_finding
+PRT_TEST_ASSESS_RESPONSE_MODE=bad_shape
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "orchestrator: .assessments non-array (valid JSON, wrong shape) -> exits 0 (degraded, not fatal)" "0" "$rc"
+assert_eq "orchestrator: .assessments non-array -> REVIEW_DEGRADED names the join failure" \
+  "true" "$(grep -qF 'REVIEW_DEGRADED: chunk 0: .assessments missing/null/non-array' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator: .assessments non-array -> does NOT also mark REVIEW_INCOMPLETE" \
+  "false" "$(grep -qF 'REVIEW_INCOMPLETE:' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 PRT_TEST_ASSESS_RESPONSE_MODE=clean
 PRT_TEST_MODEL_RESPONSE_MODE=clean
 
@@ -1484,6 +1577,59 @@ assert_eq "orchestrator: review garbage then transport-fail on retry -> REVIEW_I
 assert_eq "orchestrator: review garbage then transport-fail on retry -> does NOT also report it as an invalid-JSON failure" \
   "false" "$(grep -qF 'review response was not valid JSON' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 PRT_TEST_MODEL_RESPONSE_MODE=clean
+
+# ---- Cases xi-xii: the degraded/incomplete split at prt_normalize_findings
+# itself (finding.sh:97-121, go-kure/.github#98) — a shape-valid `.findings`
+# array with a malformed row dropped (rc=2) is degraded; `.findings` missing
+# entirely (rc=1) stays fatal. Both share the same review-call response path
+# (unlike Cases iv-viii above, which are all assess-call failures), so they
+# are asserted here rather than folded into the assess-resilience block.
+
+# Case xi — `.findings` key missing entirely: nothing in this chunk was
+# reviewed at all, stays fatal (unchanged fatal behavior — this case proves
+# the fatal/degraded split by contrast with Case xii below).
+PRT_TEST_MODEL_RESPONSE_MODE=no_findings_key
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "orchestrator: .findings missing entirely -> exits 1 (stays fatal)" "1" "$rc"
+assert_eq "orchestrator: .findings missing entirely -> REVIEW_INCOMPLETE names the missing-key case" \
+  "true" "$(grep -qF 'REVIEW_INCOMPLETE: chunk 0: .findings missing/null/non-array' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_MODEL_RESPONSE_MODE=clean
+
+# Case xii — `.findings` array-shaped, one row malformed and dropped, the
+# other survives: partial-drop, degraded not fatal.
+PRT_TEST_MODEL_RESPONSE_MODE=partial_drop
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "orchestrator: partial-drop (one malformed row dropped, rest survives) -> exits 0 (degraded, not fatal)" "0" "$rc"
+assert_eq "orchestrator: partial-drop -> REVIEW_DEGRADED names it with the partial-drop marker" \
+  "true" "$(grep -qF 'REVIEW_DEGRADED: chunk 0: partial-drop' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator: partial-drop -> does NOT also mark REVIEW_INCOMPLETE" \
+  "false" "$(grep -qF 'REVIEW_INCOMPLETE:' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_MODEL_RESPONSE_MODE=clean
+
+# Case xiii — the reconciliation this whole mechanism exists for
+# (go-kure/.github#98): a partial-drop run (Case xii's exact scenario) must
+# still set incomplete_now=true in the absence loop, so an owned thread this
+# run's surviving finding doesn't match (PRT_TEST_OWNED_FP is deliberately
+# NOT the fp the "x.go"/"other" finding above hashes to) is NOT wrongly
+# auto-resolved on what would otherwise be a second-absence sighting
+# (PRT_TEST_FIRST_ABSENT_SHA differs from PRT_HEAD_SHA). Without the fold-in
+# at pr-review-threads.sh's absence loop, prt_decide_absent would return
+# REPLY_RESOLVE here (row 10) — a malformed row's still-open thread wrongly
+# read as fixed. With it, the review_incomplete=true branch
+# (reconcile.sh:111-114) fires first and returns CLEAR_MARKER instead (a
+# non-empty first_absent_sha forces a clean restart rather than a resolve).
+PRT_TEST_MODEL_RESPONSE_MODE=partial_drop
+PRT_TEST_OWNED_FP="0000000000000000"
+PRT_TEST_FIRST_ABSENT_SHA="2222222222222222222222222222222222222222"
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator: partial-drop + owned thread absent this run -> exits 0 (degraded, not fatal)" "0" "$rc"
+assert_eq "orchestrator: partial-drop + owned thread absent this run -> resolve count 0 (NOT wrongly auto-resolved)" \
+  "0" "$(cat "$PRT_TEST_RESOLVE_COUNTFILE" 2>/dev/null || echo 0)"
+assert_eq "orchestrator: partial-drop + owned thread absent this run -> PATCH count >= 1 (CLEAR_MARKER, not REPLY_RESOLVE)" \
+  "true" "$([ "$(cat "$PRT_TEST_PATCH_COUNTFILE")" -ge 1 ] && echo true || echo false)"
+PRT_TEST_MODEL_RESPONSE_MODE=clean
+PRT_TEST_OWNED_FP="deadbeefcafebabe"
+PRT_TEST_FIRST_ABSENT_SHA=""
 
 # Case 3a — permanent metadata-fetch failure (F3): every attempt (matching
 # prt_retry 3's own attempt count) returns 502, unlike meta_fail=1 below

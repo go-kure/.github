@@ -310,8 +310,25 @@ for chunk_file in "$CHUNK_DIR"/chunk-*.diff; do
   if [ "$retried" = true ] || [ "$salvaged" = true ]; then
     prt_log "chunk $chunk_idx: review recovered (retried=$retried salvaged=$salvaged)"
   fi
-  normalized="$(prt_normalize_findings "$raw_json")" || \
-    prt_mark_incomplete "chunk $chunk_idx: .findings missing/null/non-array, or one or more malformed finding rows dropped"
+  normalized="$(prt_normalize_findings "$raw_json")"
+  norm_rc=$?
+  if [ "$norm_rc" -eq 1 ]; then
+    # Nothing in this chunk was reviewed at all — stays fatal.
+    prt_mark_incomplete "chunk $chunk_idx: .findings missing/null/non-array"
+  elif [ "$norm_rc" -eq 2 ]; then
+    # go-kure/.github#98: a shape-valid .findings array with one or more
+    # individually malformed rows dropped is degraded, not fatal — most of
+    # the chunk was still reviewed (finding.sh:97-121's rc contract). The
+    # "partial-drop" substring in this reason is load-bearing: the absence
+    # loop's incomplete_now check below (:914ish) greps prt_degraded_reasons
+    # for it specifically, so a dropped row's existing thread still isn't
+    # read as absent this run even though the run itself no longer fails
+    # closed. Do NOT also call prt_mark_incomplete here — dual-marking would
+    # force exit 1 regardless (the exit gate at this file's tail treats
+    # PRT_INCOMPLETE_FILE as fatal unconditionally), defeating the point of
+    # moving this case to degraded.
+    prt_mark_degraded "chunk $chunk_idx: partial-drop — one or more malformed finding row(s) dropped from .findings, rest of chunk reviewed"
+  fi
 
   tagged="$(jq -c --argjson idx "$chunk_idx" 'map(. + {_chunk: $idx})' <<< "$normalized")"
   ALL_FINDINGS="$(jq -c -n --argjson a "$ALL_FINDINGS" --argjson b "$tagged" '$a + $b')"
@@ -349,7 +366,13 @@ for ((i = 0; i < chunk_idx; i++)); do
     # content, model.sh:286-299) and is a different problem than a 2xx
     # response that isn't parseable JSON below. Reported distinctly so the
     # two don't collapse into one ambiguous message (root cause 2).
-    prt_mark_incomplete "chunk $i: assessment call failed (transport/proxy error, exit $assess_rc); findings stay unverdicted"
+    # go-kure/.github#98: an assessment-call fault means this chunk's review
+    # ran and produced findings, only their VALID/PARTIALLY_VALID/
+    # FALSE_POSITIVE verdicts are missing — degraded, not fatal (unlike a
+    # review-call fault above, which means the chunk wasn't reviewed at
+    # all). The finding stays open with verdict:null via the fallback below,
+    # same as before this change; only the run's severity/exit code differs.
+    prt_mark_degraded "chunk $i: assessment call failed (transport/proxy error, exit $assess_rc); findings stay unverdicted"
     prt_log "chunk $i: review ok, assess FAILED (transport error, exit $assess_rc)"
     ASSESSED="$(jq -c -n --argjson a "$ASSESSED" --argjson b "$chunk_findings" '$a + ($b | map(. + {verdict: null, reasoning: null}))')"
     continue
@@ -380,7 +403,10 @@ for ((i = 0; i < chunk_idx; i++)); do
       # prt_response_shape over an empty string (codex round-1 finding: a
       # transport failure on the retry was being reported as "not valid
       # JSON").
-      prt_mark_incomplete "chunk $i: assessment call failed on retry (transport/proxy error, exit $assess_rc); findings stay unverdicted"
+      # go-kure/.github#98: degraded, not fatal — see the original-attempt
+      # transport-fault comment above; the same reasoning applies to the
+      # retry.
+      prt_mark_degraded "chunk $i: assessment call failed on retry (transport/proxy error, exit $assess_rc); findings stay unverdicted"
       prt_log "chunk $i: review ok, assess FAILED (transport error on retry, exit $assess_rc)"
       ASSESSED="$(jq -c -n --argjson a "$ASSESSED" --argjson b "$chunk_findings" '$a + ($b | map(. + {verdict: null, reasoning: null}))')"
       continue
@@ -398,7 +424,11 @@ for ((i = 0; i < chunk_idx; i++)); do
     # Shape-only diagnostic, same rule as the review path above and
     # docs/pr-review-threads.md's "Failure surface" — never the response text.
     shape="$(prt_response_shape "${assess_raw:-}")"
-    prt_mark_incomplete "chunk $i: assessment response was not valid JSON after retry=$assess_retried, salvage_attempted=true ($shape); findings stay unverdicted"
+    # go-kure/.github#98: degraded, not fatal — a residual parse failure
+    # after salvage+retry still means the review itself ran; only the
+    # verdicts are missing, same reasoning as the transport-fault sites
+    # above.
+    prt_mark_degraded "chunk $i: assessment response was not valid JSON after retry=$assess_retried, salvage_attempted=true ($shape); findings stay unverdicted"
     prt_log "chunk $i: review ok, assess FAILED (invalid JSON, retried=$assess_retried)"
     ASSESSED="$(jq -c -n --argjson a "$ASSESSED" --argjson b "$chunk_findings" '$a + ($b | map(. + {verdict: null, reasoning: null}))')"
     continue
@@ -406,8 +436,12 @@ for ((i = 0; i < chunk_idx; i++)); do
   if [ "$assess_retried" = true ] || [ "$assess_salvaged" = true ]; then
     prt_log "chunk $i: assess recovered (retried=$assess_retried salvaged=$assess_salvaged)"
   fi
+  # go-kure/.github#98: degraded, not fatal — distinct code path from the
+  # three sites above (the assessment response DID parse as JSON here; it's
+  # prt_join_assessment rejecting its `.assessments` shape), same outcome
+  # (every finding in this chunk stays unverdicted, verdict:null).
   joined="$(prt_join_assessment "$chunk_findings" "$assess_json")" || \
-    prt_mark_incomplete "chunk $i: .assessments missing/null/non-array"
+    prt_mark_degraded "chunk $i: .assessments missing/null/non-array"
   prt_log "chunk $i: review ok, assess ok"
   ASSESSED="$(jq -c -n --argjson a "$ASSESSED" --argjson b "$joined" '$a + $b')"
 done
@@ -592,7 +626,7 @@ if [ "$inventory_failed" = 1 ]; then
   {
     # 0, not $SUPPRESSED_COUNT: this abort happens before loop 1 (which
     # increments it) ever runs, so nothing has been suppressed yet.
-    prt_render_summary "$PRT_MODE" "$PRT_HEAD_SHA" "$chunk_idx" "$ALL_FINDINGS" 0 "$(prt_incomplete_reasons)"
+    prt_render_summary "$PRT_MODE" "$PRT_HEAD_SHA" "$chunk_idx" "$ALL_FINDINGS" 0 "$(prt_incomplete_reasons)" "$(prt_degraded_reasons)"
   } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
   exit 1
 fi
@@ -684,7 +718,7 @@ fi
 if [ "$inventory_failed" = 1 ]; then
   prt_mark_incomplete "review thread inventory failed at $inventory_failure_stage"
   {
-    prt_render_summary "$PRT_MODE" "$PRT_HEAD_SHA" "$chunk_idx" "$ALL_FINDINGS" 0 "$(prt_incomplete_reasons)"
+    prt_render_summary "$PRT_MODE" "$PRT_HEAD_SHA" "$chunk_idx" "$ALL_FINDINGS" 0 "$(prt_incomplete_reasons)" "$(prt_degraded_reasons)"
   } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
   exit 1
 fi
@@ -702,7 +736,7 @@ if ! capped_findings="$(prt_apply_cap "$PRT_MAX_FINDINGS_TOTAL" "$OWNED" "$ALL_F
   echo "ERROR: review inventory cap evaluation failed; aborting before any write." >&2
   prt_mark_incomplete "review inventory cap evaluation failed"
   {
-    prt_render_summary "$PRT_MODE" "$PRT_HEAD_SHA" "$chunk_idx" "$ALL_FINDINGS" 0 "$(prt_incomplete_reasons)"
+    prt_render_summary "$PRT_MODE" "$PRT_HEAD_SHA" "$chunk_idx" "$ALL_FINDINGS" 0 "$(prt_incomplete_reasons)" "$(prt_degraded_reasons)"
   } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
   exit 1
 fi
@@ -913,6 +947,17 @@ if [ "$PRT_MODE" = enforce ]; then
   n_owned="$(jq 'length' <<< "$OWNED")"
   incomplete_now=false
   prt_is_incomplete && incomplete_now=true
+  # go-kure/.github#98: a partial-drop chunk (finding.sh:97-121's rc=2) is
+  # REVIEW_DEGRADED, not REVIEW_INCOMPLETE, so prt_is_incomplete above
+  # doesn't see it — but a dropped row's existing thread still must not be
+  # read as absent this run (same reasoning finding.sh's docstring gives for
+  # the fatal case). Fold the degraded-for-partial-drop reason directly into
+  # this check instead: prt_decide_absent's review_incomplete=true branch
+  # (reconcile.sh:111-114) forces CLEAR_MARKER/NONE, never
+  # SET_FIRST_ABSENT/REPLY_RESOLVE, which is exactly the fail-safe behavior
+  # this needs without dual-marking (see the partial-drop call site above,
+  # :313-330ish, for why dual-marking would defeat degraded's whole point).
+  prt_degraded_reasons | grep -q 'partial-drop' && incomplete_now=true
   for ((oi = 0; oi < n_owned; oi++)); do
     th="$(jq -c ".[$oi]" <<< "$OWNED")"
     fp="$(jq -r '.fp' <<< "$th")"
@@ -1091,8 +1136,13 @@ if [ "$PRT_MODE" = enforce ]; then
           # rationale on the zero-findings branch above.
           if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
             superseded_body="$(prt_render_clean_comment_superseded "$PRT_HEAD_SHA" "$total_findings_this_run")"
+            # go-kure/.github#98: degraded, not fatal — matching this
+            # branch's own established asymmetry just above (a listing
+            # failure here is deliberately NOT prt_mark_incomplete either):
+            # this is best-effort tidy-up of a PAST run's comment, not this
+            # run's primary output.
             prt_upsert_issue_comment "$PRT_REPO" "$PRT_PR_NUMBER" "$superseded_body" "$clean_id" || \
-              prt_mark_incomplete "failed to supersede the clean-verdict comment (HTTP ${PRT_LAST_HTTP_STATUS:-unknown})"
+              prt_mark_degraded "failed to supersede the clean-verdict comment (HTTP ${PRT_LAST_HTTP_STATUS:-unknown})"
           else
             prt_mark_incomplete "stale head SHA, skipped clean-verdict supersede upsert"
           fi
@@ -1107,12 +1157,14 @@ if [ "$PRT_MODE" = enforce ]; then
 fi
 
 {
-  prt_render_summary "$PRT_MODE" "$PRT_HEAD_SHA" "$chunk_idx" "$ALL_FINDINGS" "$SUPPRESSED_COUNT" "$(prt_incomplete_reasons)"
+  prt_render_summary "$PRT_MODE" "$PRT_HEAD_SHA" "$chunk_idx" "$ALL_FINDINGS" "$SUPPRESSED_COUNT" "$(prt_incomplete_reasons)" "$(prt_degraded_reasons)"
 } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
 
 incomplete_count=0
 prt_is_incomplete && incomplete_count="$(prt_incomplete_reasons | grep -c . || true)"
-prt_log "done: findings=$(jq 'length' <<< "$ALL_FINDINGS") gating=$(jq '[.[] | select(.within_cap == true)] | length' <<< "$ALL_FINDINGS") suppressed=$SUPPRESSED_COUNT incomplete=$incomplete_count"
+degraded_count=0
+prt_is_degraded && degraded_count="$(prt_degraded_reasons | grep -c . || true)"
+prt_log "done: findings=$(jq 'length' <<< "$ALL_FINDINGS") gating=$(jq '[.[] | select(.within_cap == true)] | length' <<< "$ALL_FINDINGS") suppressed=$SUPPRESSED_COUNT incomplete=$incomplete_count degraded=$degraded_count"
 
 # A non-empty REVIEW_INCOMPLETE state means some part of the review could not
 # be completed (a skipped/failed read or write, a malformed model response,
@@ -1133,6 +1185,19 @@ if prt_is_incomplete; then
     printf '::error title=PR review threads incomplete::%s\n' "$(prt_annotation_escape "$r")"
   done
   exit 1
+fi
+
+# REVIEW_DEGRADED (go-kure/.github#98): unlike REVIEW_INCOMPLETE above, this
+# does NOT fail the job — the run still produced a usable result, just not a
+# fully clean one. Rendered as a warning (::warning, not ::error) so it's
+# visible on the PR without gating merge on it; fatal-vs-degraded is exactly
+# the distinction this whole mechanism exists to draw.
+if prt_is_degraded; then
+  echo "WARNING: review degraded — some non-fatal issues occurred. Reasons:" >&2
+  prt_degraded_reasons | sed 's/^/  - /' >&2
+  prt_degraded_reasons | head -10 | while IFS= read -r r; do
+    printf '::warning title=PR review threads degraded::%s\n' "$(prt_annotation_escape "$r")"
+  done
 fi
 
 exit 0

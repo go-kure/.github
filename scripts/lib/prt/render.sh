@@ -81,11 +81,14 @@ EOF
 }
 
 # prt_render_summary MODE SOURCE_SHA CHUNK_COUNT FINDINGS_JSON \
-#                     SUPPRESSED_COUNT INCOMPLETE_REASONS
+#                     SUPPRESSED_COUNT INCOMPLETE_REASONS [DEGRADED_REASONS]
 # Written to $GITHUB_STEP_SUMMARY — free, no API call, so it survives even
 # when the job itself fails closed on a REVIEW_INCOMPLETE state.
+# DEGRADED_REASONS (go-kure/.github#98) is optional and defaults to empty —
+# a caller that hasn't sourced state.sh's prt_mark_degraded family yet still
+# gets a summary, just without a REVIEW_DEGRADED section.
 prt_render_summary() {
-  local mode="$1" sha="$2" chunk_count="$3" findings="$4" suppressed_count="$5" incomplete_reasons="$6"
+  local mode="$1" sha="$2" chunk_count="$3" findings="$4" suppressed_count="$5" incomplete_reasons="$6" degraded_reasons="${7:-}"
   {
     printf '## PR Review Threads (%s mode)\n\n' "$mode"
     printf -- '- Source SHA: %s\n' "$sha"
@@ -109,6 +112,10 @@ prt_render_summary() {
     if [ -n "$incomplete_reasons" ]; then
       printf '\n### REVIEW_INCOMPLETE\n\n'
       printf '%s\n' "$incomplete_reasons" | sed 's/^/- /'
+    fi
+    if [ -n "$degraded_reasons" ]; then
+      printf '\n### REVIEW_DEGRADED\n\n'
+      printf '%s\n' "$degraded_reasons" | sed 's/^/- /'
     fi
   }
 }
