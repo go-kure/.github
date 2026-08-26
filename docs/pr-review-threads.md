@@ -132,16 +132,22 @@ It is always a two-PR sequence:
 2. **PR2**, opened as soon as possible after PR1 merges, replaces the placeholder with the real
    merged SHA of PR1's commit on `main`.
 
-Full procedure, the bootstrap special case, and the interim-outage-window caveat between PR1 and
-PR2, including the V2 caller/callee resolution: `docs/standards.md:116-221` ("GitHub Actions
-pinning" → "Same-repo composite actions and the pin-bump procedure").
+Full procedure, the bootstrap special case, the interim-outage-window caveat between PR1 and
+PR2 (including the V2 caller/callee resolution), and the non-bootstrap "every later PR" rule this
+PR itself follows: `docs/standards.md:129-234` ("GitHub Actions pinning" → "Same-repo composite
+actions and the pin-bump procedure").
 
 ## Failure surface
 
-Every write (create/reply/resolve/unresolve/marker edit) is preceded by a freshness check
-(`prt_freshness_check`, `gh.sh:107-149`) that re-fetches the PR's live head SHA and compares it
+Every write (create/reply/resolve/unresolve/marker edit) that depends on the head SHA still being
+current is preceded by a freshness check (`prt_freshness_check`, `gh.sh:107-149`) that re-fetches
+the PR's live head SHA and compares it
 against the expected one — the run's real wall-clock spans multiple model calls, so the PR can
-move underneath it. `prt_freshness_check` returns a three-way status (go-kure/.github#99) instead
+move underneath it. The one documented exception is the reply posted after a marker-clearing write
+already failed (`pr-review-threads.sh:1050-1056`): it explains a failure that already happened and
+is deliberately allowed to post even if the head has since moved, rather than being silently
+dropped on top of the write failure it's explaining. `prt_freshness_check` returns a three-way
+status (go-kure/.github#99) instead
 of collapsing every failure mode to one bit: `0` fresh (proceed), `1` genuinely stale (the PR was
 read fine and its live head SHA is a real, different value — printed as `expected -> live` on
 stderr), `2` could not determine freshness at all (the PR read itself failed, or returned no usable
@@ -382,7 +388,7 @@ GitHub curl calls carry `--connect-timeout 10 --max-time 120`; the model proxy c
 the job's `timeout-minutes: 20` budget (see the comment at `scripts/lib/prt/model.sh` next to
 that value for the arithmetic). The two GitHub reads that used to have no retry at all — the
 initial diff fetch and the initial PR-metadata fetch — are wrapped in `prt_retry`
-(`gh.sh:156-183`), the same retry helper every write path already used; a permanent (retry-
+(`gh.sh:184-219`), the same retry helper every write path already used; a permanent (retry-
 budget-exhausted) PR-metadata fetch failure now prints its own `ERROR: failed to fetch PR
 metadata` line before exiting 1, instead of relying solely on `prt_gh_rest`'s generic HTTP-status
 line to explain the exit.
