@@ -421,12 +421,11 @@ variable as of 2026-08-22, ahead of `pr-review.yml`'s own header comment — see
 there) or one plain issue comment per run under `advisory` (see § Modes above) — so review
 feedback is available throughout development instead of only after the PR is marked ready.
 
-Consumer callers keep `ready_for_review` in their own `types:` alongside the removed draft gate
-(see `pr-review-caller.yml`), even though it is redundant once every consumer's rollout has
-landed: this workflow is pinned `@main` in each caller, so the no-longer-draft-gated behavior only
-takes effect once *this* PR merges — an async window in which a consumer PR whose own branch
-already dropped the type, then marked ready with no further push, would get no re-trigger at all.
-Keeping it costs one redundant run at ready-time once every consumer has picked up the merge.
+Consumer callers dropped `ready_for_review` from their own `types:` once the rollout window
+closed (see `pr-review-caller.yml`): it existed only because this workflow is pinned `@main` in
+each caller, so the draft-gate removal took effect asynchronously per caller. Once each consumer
+had picked up the merge, the type became a pure redundant run at ready-time with no remaining
+safety-net value, so it was removed there too.
 
 ## GitLab (mr-review) parity
 
