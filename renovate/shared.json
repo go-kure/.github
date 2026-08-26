@@ -79,8 +79,8 @@
       "semanticCommitScope": "ci"
     },
     {
-      "description": "Go itself is excluded from the groups above but must not land unreviewed — a bare Go bump fails each repo's version-consistency checks unless the repo's own sync tooling (scripts/sync-versions.sh) runs alongside it. Dashboard-gate rather than disable, so a security-relevant Go patch stays visible; ticking it still requires the manual sync. allowedVersions keeps the whole 1.27 line unproposed while 1.26 still receives security backports — lift when Go 1.28 ships.",
-      "matchManagers": ["mise", "gomod"],
+      "description": "Go itself is excluded from the groups above but must not land unreviewed — a bare Go bump fails each repo's version-consistency checks unless the repo's own sync tooling (scripts/sync-versions.sh) runs alongside it. Dashboard-gate rather than disable, so a security-relevant Go patch stays visible; ticking it still requires the manual sync. allowedVersions keeps the whole 1.27 line unproposed while 1.26 still receives security backports — lift when Go 1.28 ships. Includes custom.*: the all-managers major gate below has no depName exclusion any more, so it already dashboard-gates a custom-managed go major too — but only this rule carries the allowedVersions ceiling and gates go's minor/patch bumps, which the major gate never sees. A customManagers entry that ever extracted a dependency literally named go needs this rule for that, not just the two built-in managers that track Go's own version today.",
+      "matchManagers": ["mise", "gomod", "custom.*"],
       "matchDepNames": ["go"],
       "dependencyDashboardApproval": true,
       "allowedVersions": "<1.27"
@@ -93,10 +93,9 @@
       "allowedVersions": "<1.27"
     },
     {
-      "description": "Majors across every manager in use need human review — gomod majors cross the /vN import-path boundary (import rewriting is a human job; +incompatible pre-SIV modules are the exception, gated uniformly anyway), and toolchain/image/npm majors otherwise arrive as ordinary auto-created PRs. Dashboard-gate rather than disable so security-relevant majors stay visible. Excludes go: the two rules above own the Go toolchain with their stricter allowedVersions pin. MUST stay before the automerge rules below.",
-      "matchManagers": ["gomod", "mise", "dockerfile", "github-actions", "npm"],
+      "description": "Majors across every manager in use need human review — gomod majors cross the /vN import-path boundary (import rewriting is a human job; +incompatible pre-SIV modules are the exception, gated uniformly anyway), and toolchain/image/npm majors otherwise arrive as ordinary auto-created PRs. Dashboard-gate rather than disable so security-relevant majors stay visible. No !go exclusion here (dropped, was matchDepNames:[\"!go\"]): the two rules above already gate mise/gomod/custom.* deps named go with a stricter allowedVersions pin, and dependencyDashboardApproval is idempotent across matching rules, so re-covering go here is free — it is what closes the same gap for dockerfile/github-actions/npm, which the dedicated Go rules do not match. A customManagers regex/jsonata entry reports here as \"custom.<customType>\" (e.g. \"custom.regex\"), never its bare type name — matchManagers is glob-matched, so \"custom.*\" is what stops a custom-managed major from skipping this gate the way a gomod/mise/dockerfile major cannot. MUST stay before the automerge rules below.",
+      "matchManagers": ["gomod", "mise", "dockerfile", "github-actions", "npm", "custom.*"],
       "matchUpdateTypes": ["major"],
-      "matchDepNames": ["!go"],
       "dependencyDashboardApproval": true
     },
     {

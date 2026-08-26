@@ -68,13 +68,17 @@ What it encodes:
 - **Grouping** — mise toolchain, Go minors and patches split (so patch groups stay
   automerge-eligible), and ecosystem groups (kubernetes, sigs.k8s.io, fluxcd,
   cloudnative-pg) that follow upstream release cadence.
-- **Every major update requires dependency-dashboard approval**, across all managers.
-  Majors routinely need coordinated changes (import paths, config migration) that an
-  auto-created PR cannot carry.
-- **The Go toolchain is pinned and gated**: the `go` dep (mise + gomod) and the
-  `golang` container image require dashboard approval and carry an `allowedVersions`
-  ceiling that tracks Go's two-release support window. The ceiling is lifted
-  deliberately when the next Go major ships, never by a bot.
+- **Every major update requires dependency-dashboard approval**, across every manager
+  currently in use (`gomod`, `mise`, `dockerfile`, `github-actions`, `npm`) plus
+  `customManagers` regex/jsonata entries (matched via `custom.*`) — not a blanket
+  guarantee for a manager Renovate could enable in the future but this preset does
+  not yet list. Majors routinely need coordinated changes (import paths, config
+  migration) that an auto-created PR cannot carry.
+- **The Go toolchain is pinned and gated**: the `go` dep (mise + gomod + a
+  custom-managed `go`, if any repo ever adds one) and the `golang` container image
+  require dashboard approval and carry an `allowedVersions` ceiling that tracks
+  Go's two-release support window. The ceiling is lifted deliberately when the next
+  Go major ships, never by a bot.
 - **Automerge** only for mise minor/patch/digest and gomod patch/digest, and never
   for `github.com/go-kure/**` — cross-repo bumps carry release-ordering constraints
   (launcher must not lead the kure release it imports; see launcher's
