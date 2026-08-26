@@ -851,7 +851,7 @@ rm -rf "$si_dir"
 # ============================================================ orchestrator: exit-code contract (subprocess, mocked curl)
 # pr-review-threads.sh itself is not exercised by the rest of this suite (its
 # own header comment says so — it's wiring, not a pure function) but its
-# top-level exit code IS a contract worth pinning down directly: :1050's
+# top-level exit code IS a contract worth pinning down directly: :1127's
 # REVIEW_INCOMPLETE -> exit 1, PRT_MODE=off's exit 0 staying ahead of that
 # check, and the two prt_retry-wrapped reads actually retrying. Run as a real
 # subprocess (not sourced) so $? reflects the same exit path CI observes,
@@ -1092,6 +1092,20 @@ fake_curl_orchestrator() {
                 printf '%s' '{"choices":[{"message":{"content":"not json at all, sorry"}}]}' > "$out"
               else
                 printf '%s' '{"choices":[{"message":{"content":"{\"findings\":[]}"}}]}' > "$out"
+              fi
+              ;;
+            garbage_then_fail)
+              # Mixed failure mode: parse failure on the original attempt,
+              # transport failure on the retry — the review-call mirror of
+              # PRT_TEST_ASSESS_RESPONSE_MODE=garbage_then_fail above (Case
+              # viii): confirm-round fold-in closing the identical
+              # mislabeling gap on the review call's own retry.
+              if [ "$mc" -le 1 ]; then
+                printf '%s' '{"choices":[{"message":{"content":"not json at all, sorry"}}]}' > "$out"
+                echo 200
+                return 0
+              else
+                : > "$out"; echo 500; return 0
               fi
               ;;
             *)
@@ -1372,12 +1386,14 @@ assert_eq "orchestrator: garbage then clean on retry -> stderr carries the recov
   "true" "$(grep -q 'review recovered (retried=true salvaged=false)' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 PRT_TEST_MODEL_RESPONSE_MODE=clean
 
-# ---- Cases iv-vii: assessment-call resilience (assess-resilience
+# ---- Cases iv-viii: assessment-call resilience (assess-resilience
 # workstream) — prt_model_assess's exit-status check, and the identical
 # salvage-then-retry treatment given to the review call above (Cases i-iii),
-# now mirrored for the assess call. The review call is forced to
-# clean_with_finding for all four cases below so the assess call actually
-# fires at all (pr-review-threads.sh:320 skips assessment for an
+# now mirrored for the assess call. Case ix, further below, is the review
+# call's own mirror of Case viii. The review call is forced to
+# clean_with_finding once here and stays that way through all five cases
+# below (iv-viii — the mode is never reset in between) so the assess call
+# actually fires at all (pr-review-threads.sh:320 skips assessment for an
 # empty-findings chunk, and every other scenario in this file leaves review
 # findings empty on purpose).
 PRT_TEST_MODEL_RESPONSE_MODE=clean_with_finding
@@ -1437,7 +1453,8 @@ assert_eq "orchestrator: assess garbage then clean on retry -> stderr carries th
 # found on this branch: the retry's own exit status must be checked
 # independently, or a transport fault there gets mislabeled as "not valid
 # JSON" (and prt_response_shape gets computed over an empty string instead
-# of not being reached at all).
+# of not being reached at all). Case ix, immediately below, is the same
+# scenario against the review call instead of the assess call.
 PRT_TEST_ASSESS_RESPONSE_MODE=garbage_then_fail
 rc="$(run_orchestrator advisory 0 0 0)"
 assert_eq "orchestrator: assess garbage then transport-fail on retry -> exits 1" "1" "$rc"
@@ -1448,6 +1465,24 @@ assert_eq "orchestrator: assess garbage then transport-fail on retry -> REVIEW_I
 assert_eq "orchestrator: assess garbage then transport-fail on retry -> does NOT also report it as an invalid-JSON failure" \
   "false" "$(grep -qF 'assessment response was not valid JSON' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 PRT_TEST_ASSESS_RESPONSE_MODE=clean
+PRT_TEST_MODEL_RESPONSE_MODE=clean
+
+# Case ix — review-call mirror of Case viii: garbage (parse failure) on the
+# original review attempt, a transport fault on review's own retry. Round-2
+# confirm-round fold-in: a full-scope codex review found this same
+# mislabeling gap open on the review call's retry (only the assess call's
+# retry had been fixed) — the review call's retry exit status must be
+# checked independently, or a transport fault there gets mislabeled as
+# "review response was not valid JSON".
+PRT_TEST_MODEL_RESPONSE_MODE=garbage_then_fail
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "orchestrator: review garbage then transport-fail on retry -> exits 1" "1" "$rc"
+assert_eq "orchestrator: review garbage then transport-fail on retry -> model called exactly twice (original + 1 bounded retry)" \
+  "2" "$(cat "$PRT_TEST_MODEL_COUNTFILE")"
+assert_eq "orchestrator: review garbage then transport-fail on retry -> REVIEW_INCOMPLETE reports the RETRY as a transport/proxy error, not a parse failure" \
+  "true" "$(grep -qE 'REVIEW_INCOMPLETE:.*review call failed on retry \(transport/proxy error, exit [0-9]+\)' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator: review garbage then transport-fail on retry -> does NOT also report it as an invalid-JSON failure" \
+  "false" "$(grep -qF 'review response was not valid JSON' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 PRT_TEST_MODEL_RESPONSE_MODE=clean
 
 # Case 3a — permanent metadata-fetch failure (F3): every attempt (matching

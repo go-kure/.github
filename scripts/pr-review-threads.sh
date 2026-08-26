@@ -90,7 +90,7 @@ for req in PRT_GH_TOKEN PRT_REPO PRT_PR_NUMBER PRT_HEAD_SHA PRT_BOT_LOGIN PRT_PR
   [ -n "${!req:-}" ] || { echo "ERROR: $req is required" >&2; exit 1; }
 done
 
-# These three feed --argjson calls downstream (PRT_PR_NUMBER at :401 below;
+# These three feed --argjson calls downstream (PRT_PR_NUMBER at :478 below;
 # PRT_MAX_TOKENS via model.sh's _prt_call_proxy; PRT_MAX_FINDINGS_TOTAL via
 # reconcile.sh's cap arithmetic) — a non-numeric value fails jq with an
 # unclear error deep in the run instead of a clear one here.
@@ -234,11 +234,19 @@ for chunk_file in "$CHUNK_DIR"/chunk-*.diff; do
   [ -f "$chunk_file" ] || continue
   chunk_diff="$(cat "$chunk_file")"
 
+  review_rc=0
   raw="$(prt_model_review "$PRT_PROXY_URL" "$PRT_MODEL" "$PRT_MAX_TOKENS" "$chunk_diff" \
-    "$PR_TITLE" "$PR_DESC" "$PRT_PROJECT_CONTEXT" "$PROJECT_AGENTS" "$PROJECT_CLAUDE_MD" "$PROJECT_STANDARDS")"
-  if [ -z "$raw" ]; then
-    prt_mark_incomplete "chunk $chunk_idx: empty/failed review response"
-    prt_log "chunk $chunk_idx: review FAILED (empty response)"
+    "$PR_TITLE" "$PR_DESC" "$PRT_PROJECT_CONTEXT" "$PROJECT_AGENTS" "$PROJECT_CLAUDE_MD" "$PROJECT_STANDARDS")" || review_rc=$?
+  if [ "$review_rc" -ne 0 ]; then
+    # Mirrors the assess call's own exit-status check below: a non-zero
+    # return here is a transport/proxy fault (curl failure, non-2xx, or
+    # empty response content, model.sh:286-299), a different problem than a
+    # 2xx response that isn't parseable JSON below. Closes, on the review
+    # call's own retry, the same mislabeling gap a codex review found and
+    # fixed for the assess call's retry (a transport fault there was being
+    # reported as "not valid JSON").
+    prt_mark_incomplete "chunk $chunk_idx: review call failed (transport/proxy error, exit $review_rc)"
+    prt_log "chunk $chunk_idx: review FAILED (transport error, exit $review_rc)"
     chunk_idx=$((chunk_idx + 1))
     continue
   fi
@@ -266,8 +274,20 @@ for chunk_file in "$CHUNK_DIR"/chunk-*.diff; do
   fi
   if [ -z "$raw_json" ]; then
     retried=true
+    review_rc=0
     raw="$(prt_model_review "$PRT_PROXY_URL" "$PRT_MODEL" "$PRT_MAX_TOKENS" "$chunk_diff" \
-      "$PR_TITLE" "$PR_DESC" "$PRT_PROJECT_CONTEXT" "$PROJECT_AGENTS" "$PROJECT_CLAUDE_MD" "$PROJECT_STANDARDS")"
+      "$PR_TITLE" "$PR_DESC" "$PRT_PROJECT_CONTEXT" "$PROJECT_AGENTS" "$PROJECT_CLAUDE_MD" "$PROJECT_STANDARDS")" || review_rc=$?
+    if [ "$review_rc" -ne 0 ]; then
+      # The retry call can ALSO hit a transport fault, distinct from the
+      # retry producing another unparseable body — collapsing this into the
+      # parse-failure branch below would both mislabel it and compute
+      # prt_response_shape over an empty string, mirroring the assess call's
+      # own retry check above.
+      prt_mark_incomplete "chunk $chunk_idx: review call failed on retry (transport/proxy error, exit $review_rc)"
+      prt_log "chunk $chunk_idx: review FAILED (transport error on retry, exit $review_rc)"
+      chunk_idx=$((chunk_idx + 1))
+      continue
+    fi
     if [ -n "$raw" ]; then
       raw_json="$(jq -c '.' <<< "$raw" 2>/dev/null || echo '')"
       if [ -z "$raw_json" ]; then

@@ -153,14 +153,21 @@ reasons are also rendered as their own section in the job summary (`render.sh:10
 checked at exit: a non-empty `REVIEW_INCOMPLETE` state makes the top-level script print every
 reason to stderr (prefixed `  - `) and as capped `::error title=...::` workflow annotations
 (escaped via `prt_annotation_escape`, `state.sh`), then exit 1 instead of 0
-(`pr-review-threads.sh:1050-1059`) — "the review could not run to completion" is now distinguishable
+(`pr-review-threads.sh:1127-1138`) — "the review could not run to completion" is now distinguishable
 from "the review ran and found nothing" by exit code *and* job-log output, not only by a human
 reading the summary by hand.
 
-The model-review call (`prt_model_review`, `model.sh:305-325`) gets one bounded retry — not
-`prt_retry`'s usual 3, each call already costs 40-60s against the job's `timeout-minutes: 20`
-budget — when the response fails the `jq -c '.'` parse
-(`pr-review-threads.sh:246-279`), with a salvage attempt interposed ahead of that retry:
+The model-review call (`prt_model_review`, `model.sh:305-325`) has its exit status checked
+independently on **either** call — the original attempt and the one bounded retry alike: a
+non-zero return (transport/proxy fault — curl failure, non-2xx, or empty response content,
+`model.sh:286-299`) is recorded as `review call failed (transport/proxy error, exit N)` (`...
+failed on retry (...)` if it's the retry attempt that faulted), with no parse attempted at all for
+that call — this closes, on the review call's own retry, the same mislabeling gap a codex review
+found and fixed for the assess call's retry first (see below): a transport fault there was
+originally being collapsed into the "not valid JSON" branch instead of reported as its own kind of
+failure. It also gets one bounded retry — not `prt_retry`'s usual 3, each call already costs 40-60s
+against the job's `timeout-minutes: 20` budget — when a 2xx response fails the `jq -c '.'` parse
+(`pr-review-threads.sh:237-309`), with a salvage attempt interposed ahead of that retry:
 `prt_extract_json_braces` (`model.sh:33-53`) takes the substring from the first `{` to the last
 `}` in the raw content and re-parses that, a no-op on already-clean JSON and a fix for a chattier
 generation that wraps the JSON object in prose (`prt_strip_fence`, `model.sh:26-31`, only strips a
@@ -200,12 +207,13 @@ possible. Equal fingerprints across runs prove it; differing ones redirect the i
 something diff-dependent.
 
 The model-assess call (`prt_model_assess`, `model.sh:329-357`) gets the identical salvage-then-retry
-treatment (`pr-review-threads.sh:314-381`), for the same reason: it shares the backend and the
+treatment (`pr-review-threads.sh:336-413`), for the same reason: it shares the backend and the
 same prose-wrapping failure mode, so it gets the same recovery, not a lesser one. Before this, a
 non-2xx/curl/empty-content failure from `prt_model_assess` was indistinguishable from a 2xx response
 that simply wasn't parseable JSON — both fell through into an empty `assess_raw` and the same
-`REVIEW_INCOMPLETE` wording. The two are now reported separately, on **either** call — the original
-attempt and the one bounded retry alike, checked independently: a non-zero return from
+`REVIEW_INCOMPLETE` wording (the review call above had this same flaw on its own retry path until a
+later fold-in closed it there too). The two are now reported separately, on **either** call — the
+original attempt and the one bounded retry alike, checked independently: a non-zero return from
 `prt_model_assess` (transport/proxy fault — curl failure, non-2xx, or empty response content,
 `model.sh:286-299`) is recorded as `assessment call failed (transport/proxy error, exit N)` (`...
 failed on retry (...)` if it's the retry attempt that faulted), with no parse attempted at all for
