@@ -266,7 +266,7 @@ directly into that check (`prt_degraded_reasons | grep -q 'partial-drop'`) rathe
 `CLEAR_MARKER`/`NONE` instead of `SET_FIRST_ABSENT`/`REPLY_RESOLVE` for that thread, exactly as it
 would for a true `REVIEW_INCOMPLETE` run, without the run itself failing closed.
 
-`advisory` mode's single issue comment (`prt_render_advisory_comment`, `render.sh:152-218`)
+`advisory` mode's single issue comment (`prt_render_advisory_comment`, `render.sh:186-234`)
 discloses both severities on its own live output surface, not only in `$GITHUB_STEP_SUMMARY`: a
 non-empty `advisory_incomplete_reasons` or `advisory_degraded_reasons`
 (`pr-review-threads.sh:756-767`, gathered via `prt_is_incomplete`/`prt_incomplete_reasons` and
@@ -282,13 +282,22 @@ unrelated to the current run's findings at all (`:1151`, a past run's clean-verd
 to be superseded). The banner intro no longer overrides those per-reason bullets (rendered
 verbatim below it) with a claim that is only true for one of the six (round 4, go-kure/.github#101
 second review pass, `chatgpt-codex-connector[bot]`). Critically, the "No issues found." shortcut
-only fires when the surviving-findings count is zero **and** there is no degraded reason to
-disclose: a partial-drop chunk (`REVIEW_DEGRADED`) whose surviving findings are then all assessed
-`FALSE_POSITIVE` still has `count == 0`, and printing a plain "No issues found." there would read
-as a clean bill of health despite a row having been silently dropped (chatgpt-codex-connector[bot]
-review, go-kure/.github#101, found post-merge-ready in round 3); the zero-count-and-degraded branch
-now prints "No findings to report this run — see the degraded-run warning above." instead of the
-prior "No surviving findings" wording, for the same drop-neutrality reason.
+only fires when the surviving-findings count is zero **and** neither an incomplete nor a degraded
+reason is being disclosed: a partial-drop chunk (`REVIEW_DEGRADED`) whose surviving findings are
+then all assessed `FALSE_POSITIVE` still has `count == 0`, and printing a plain "No issues found."
+there would read as a clean bill of health despite a row having been silently dropped
+(chatgpt-codex-connector[bot] review, go-kure/.github#101, found post-merge-ready in round 3); the
+zero-count-and-degraded branch prints "No findings to report this run — see the degraded-run
+warning above." instead of the prior "No surviving findings" wording, for the same
+drop-neutrality reason. Round 3's fix, however, only extended this suppression to
+`degraded_reasons` and left the pre-existing zero-count-and-incomplete case falling through to the
+plain "No issues found." unchanged — inverting the intended severity ordering, since
+`REVIEW_INCOMPLETE` (nothing usable came out of a chunk at all) is strictly *more* severe than
+`REVIEW_DEGRADED`, yet was the one case still reporting a clean result (kure-bot pr-review AI Code
+Review on go-kure/.github#101 at `9b2fe22`, round 5). The suppression now fires whenever *either*
+reason is present with zero surviving findings, printing "No findings to report this run — see the
+incomplete-run warning above.", "...the degraded-run warning above.", or "...the incomplete-run and
+degraded-run warnings above." depending on which banner(s) were actually rendered.
 
 The clean-verdict-comment supersede failure (`pr-review-threads.sh`, the `total_findings_this_run
 -gt 0` branch) is also `REVIEW_DEGRADED` rather than `REVIEW_INCOMPLETE`, matching the asymmetry

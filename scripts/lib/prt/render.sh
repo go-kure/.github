@@ -169,10 +169,20 @@ prt_render_overflow_comment() {
 # original banner said "some rows were dropped ... reflects only the
 # surviving rows" unconditionally, which was true only of the first shape and
 # misdescribed the other five). The "No issues found." branch must not fire
-# on a degraded run with zero surviving findings either way — a partial-drop
-# chunk whose lone surviving row is then assessed FALSE_POSITIVE must not
-# read as a clean bill of health (chatgpt-codex-connector[bot] review,
-# github.com/go-kure/.github/pull/101#pullrequestreview-5028172237).
+# whenever EITHER banner is disclosed with zero surviving findings — not just
+# the degraded one: a genuinely fatal (incomplete) chunk with nothing usable
+# came out of it is strictly *more* severe than a degraded one, so it must
+# not be the one case that still reports a clean "No issues found." (round 5,
+# kure-bot pr-review AI Code Review on go-kure/.github#101 at 9b2fe22 —
+# round 3's fix only extended the suppression to `degraded_reasons` and left
+# the pre-existing `incomplete_reasons` zero-count case falling through to
+# the plain message, inverting the intended severity ordering). A
+# partial-drop chunk whose lone surviving row is then assessed
+# FALSE_POSITIVE, or a chunk where nothing at all survived normalization,
+# must not read as a clean bill of health either way
+# (chatgpt-codex-connector[bot] review,
+# github.com/go-kure/.github/pull/101#pullrequestreview-5028172237; kure-bot
+# pr-review AI Code Review on go-kure/.github#101 at 9b2fe22).
 prt_render_advisory_comment() {
   local findings="$1" incomplete_reasons="${2:-}" degraded_reasons="${3:-}"
   local count
@@ -191,8 +201,14 @@ prt_render_advisory_comment() {
       printf '%s\n' "$degraded_reasons" | sed 's/^/> - /'
       printf '\n'
     fi
-    if [ "$count" -eq 0 ] && [ -n "$degraded_reasons" ]; then
-      printf 'No findings to report this run — see the degraded-run warning above.\n'
+    if [ "$count" -eq 0 ] && { [ -n "$incomplete_reasons" ] || [ -n "$degraded_reasons" ]; }; then
+      if [ -n "$incomplete_reasons" ] && [ -n "$degraded_reasons" ]; then
+        printf 'No findings to report this run — see the incomplete-run and degraded-run warnings above.\n'
+      elif [ -n "$incomplete_reasons" ]; then
+        printf 'No findings to report this run — see the incomplete-run warning above.\n'
+      else
+        printf 'No findings to report this run — see the degraded-run warning above.\n'
+      fi
     elif [ "$count" -eq 0 ]; then
       printf 'No issues found.\n'
     else
