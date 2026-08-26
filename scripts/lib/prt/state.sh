@@ -198,6 +198,50 @@ prt_all_degraded_are_stale() {
   ! prt_degraded_reasons | grep -qv 'stale head SHA (run superseded)'
 }
 
+# prt_resolve_review_parse_failures TOTAL_CHUNKS [REASON...]
+#
+# go-kure/.github#107: called once after the review loop closes, with every
+# chunk's review-parse failure reason (transport fault on either attempt, or
+# invalid JSON surviving salvage+retry — distinct from a shape-valid
+# response whose .findings itself was rejected, which stays fatal
+# unconditionally at its own call site) collected during the loop rather
+# than marked inline. The decision genuinely can't be made until every
+# chunk has been attempted: a chunk failing early doesn't yet know whether a
+# later chunk will succeed.
+#
+# Fatal (prt_mark_incomplete) only when every chunk that ran failed this
+# way — nothing was reviewed at all, mirroring the downstream platform's
+# equivalent job's own "no chunk produced structured output" fatal exit for
+# the identical condition. Degraded (prt_mark_degraded) when at least one
+# chunk produced parseable review JSON — that same job's tolerance for a
+# partial chunk failure ("a run where most chunks parsed is a partial
+# review, not an absent one").
+#
+# The "review-parse-failed:" prefix on each degraded reason is load-bearing,
+# mirroring go-kure/.github#98's "partial-drop" precedent for the identical
+# dual-marking hazard: pr-review-threads.sh's absence loop greps
+# prt_degraded_reasons for it to force incomplete_now=true, so a chunk that
+# reviewed nothing doesn't let its findings' existing threads be read as
+# absent this run and wrongly auto-resolved.
+#
+# A no-op when called with zero reasons (TOTAL_CHUNKS with no trailing args)
+# — the common case, most runs have nothing to resolve here.
+prt_resolve_review_parse_failures() {
+  local total="$1"
+  shift
+  [ "$#" -eq 0 ] && return 0
+  local reason
+  if [ "$#" -ge "$total" ]; then
+    for reason in "$@"; do
+      prt_mark_incomplete "$reason"
+    done
+  else
+    for reason in "$@"; do
+      prt_mark_degraded "review-parse-failed: $reason"
+    done
+  fi
+}
+
 prt_report_degraded_annotations() {
   prt_is_degraded || return 0
   echo "WARNING: review degraded — some non-fatal issues occurred. Reasons:" >&2
