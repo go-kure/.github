@@ -62,6 +62,7 @@ bash scripts/test/pr-review-threads-test.sh .
 bash scripts/test/check-pin-bump-test.sh .
 RENOVATE_VERSION="$(cat scripts/test/renovate-version)"
 npm install --no-save --prefix .renovate-lane-test "renovate@${RENOVATE_VERSION}"
+npx --prefix .renovate-lane-test renovate-config-validator --no-global renovate/shared.json
 node scripts/test/renovate-lane-policy-test.mjs renovate/shared.json \
   .renovate-lane-test/node_modules/renovate/dist/util/package-rules/index.js
 """

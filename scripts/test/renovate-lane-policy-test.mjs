@@ -6,16 +6,22 @@
 // Three checks:
 //  1. Outcome — run renovate's own package-rules resolver (applyPackageRules)
 //     over a matrix of representative dependency-update paths, one per
-//     packageRules entry, and assert the resolved label set contains exactly
-//     one lane. A case may also set `expectDashboardApproval` to assert
-//     dependencyDashboardApproval directly (opt-in on key presence, not on
-//     the value — see the comparison below for why). Also asserts every
-//     packageRules index is exercised, so a new rule with no matrix case
-//     fails loudly instead of going unexercised — and, separately, that
-//     every hand-declared ruleIndices entry actually matches that case's
-//     input (via renovate's own per-rule matcher pipeline), so inserting a
-//     rule mid-array and silently shifting every later index fails loudly
-//     too instead of passing coverage vacuously.
+//     packageRules entry, over the full preset (so a top-level field the
+//     preset sets, not just packageRules/labels, still reaches the
+//     resolver the way it would in a real run), and assert the resolved
+//     label set contains exactly one lane AND that the resolved automerge
+//     value matches what that lane promises — a rule could otherwise keep
+//     the label while its automerge setting silently drifts, and the label
+//     comparison alone would never catch it. A case may also set
+//     `expectDashboardApproval` to assert dependencyDashboardApproval
+//     directly (opt-in on key presence, not on the value — see the
+//     comparison below for why). Also asserts every packageRules index is
+//     exercised, so a new rule with no matrix case fails loudly instead of
+//     going unexercised — and, separately, that every hand-declared
+//     ruleIndices entry actually matches that case's input (via renovate's
+//     own per-rule matcher pipeline), so inserting a rule mid-array and
+//     silently shifting every later index fails loudly too instead of
+//     passing coverage vacuously.
 //  2. Structural — no rule may set a lane via addLabels (renovate unions
 //     addLabels across every matching rule and a later rule can never remove
 //     it, so a rule could advertise "this will automerge" and a later
@@ -178,7 +184,12 @@ let failures = 0;
 const touchedIndices = new Set();
 for (const c of MATRIX) {
   c.ruleIndices.forEach((i) => touchedIndices.add(i));
-  const input = { packageRules: preset.packageRules, labels: preset.labels, ...c.input };
+  // Spread the whole preset, not just packageRules/labels: a top-level field this preset adds
+  // later (e.g. dependencyDashboardApproval) must reach applyPackageRules the same way it would
+  // in a real run, or a regression there would resolve to `undefined` here and pass every
+  // Boolean(...) comparison below for the wrong reason. c.input still overlays last so each
+  // case's own dependency fields win.
+  const input = { ...preset, ...c.input };
   if (input.packageName === undefined) input.packageName = input.depName;
   for (const i of c.ruleIndices) {
     if (!(await matchesRule(input, preset.packageRules[i]))) {
@@ -208,6 +219,19 @@ for (const c of MATRIX) {
     console.error(`FAIL [outcome] ${c.name}: expected dependencyDashboardApproval=${c.expectDashboardApproval}, got ${result.dependencyDashboardApproval}`);
     failures++;
   }
+  // The lane label alone doesn't prove the behavior it names: a rule could keep the
+  // "unattended" label while its automerge:true is accidentally dropped (or vice versa), and
+  // the outcome check above would still pass since it only compares labels. Assert the
+  // resolved automerge value matches what the lane promises, the same way VULN_MATRIX already
+  // does via expectAutomerge below.
+  if (lanes[0] === "unattended" && result.automerge !== true) {
+    console.error(`FAIL [outcome] ${c.name}: lane is unattended but resolved automerge=${result.automerge}, expected true`);
+    failures++;
+  }
+  if (lanes[0] === "needs-human" && Boolean(result.automerge)) {
+    console.error(`FAIL [outcome] ${c.name}: lane is needs-human but resolved automerge=${result.automerge}, expected falsy`);
+    failures++;
+  }
 }
 
 for (const c of VULN_MATRIX) {
@@ -219,8 +243,8 @@ for (const c of VULN_MATRIX) {
     force: { ...resolvedVulnerabilityAlerts },
   };
   const input = {
+    ...preset,
     packageRules: [...preset.packageRules, vulnRule],
-    labels: preset.labels,
     ...c.input,
   };
   for (const i of c.ruleIndices) {
