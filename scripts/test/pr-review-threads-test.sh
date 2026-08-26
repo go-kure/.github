@@ -1114,6 +1114,35 @@ assert_eq "prt_all_degraded_are_stale: false on a MIX of staleness and other deg
 rm -rf "$hfr_dir"
 unset PRT_INCOMPLETE_FILE PRT_DEGRADED_FILE
 
+# ============================================================ state.sh: prt_resolve_review_parse_failures (go-kure/.github#107)
+rpf_dir="$(mktemp -d)"
+prt_state_init "$rpf_dir"
+prt_resolve_review_parse_failures 3 2>/dev/null
+assert_eq "prt_resolve_review_parse_failures: no-op when called with zero reasons" \
+  "false false" "$(prt_is_degraded && echo true || echo false) $(prt_is_incomplete && echo true || echo false)"
+rm -rf "$rpf_dir"
+unset PRT_INCOMPLETE_FILE PRT_DEGRADED_FILE
+
+rpf_dir="$(mktemp -d)"
+prt_state_init "$rpf_dir"
+prt_resolve_review_parse_failures 3 "chunk 1: review response was not valid JSON after retry=true, salvage_attempted=true (object)" 2>/dev/null
+assert_eq "prt_resolve_review_parse_failures: one of three chunks failed -> degraded, not incomplete" \
+  "true false" "$(prt_is_degraded && echo true || echo false) $(prt_is_incomplete && echo true || echo false)"
+assert_eq "prt_resolve_review_parse_failures: degraded reason carries the load-bearing review-parse-failed tag" \
+  "true" "$(grep -qF 'review-parse-failed: chunk 1:' <<< "$(prt_degraded_reasons)" && echo true || echo false)"
+rm -rf "$rpf_dir"
+unset PRT_INCOMPLETE_FILE PRT_DEGRADED_FILE
+
+rpf_dir="$(mktemp -d)"
+prt_state_init "$rpf_dir"
+prt_resolve_review_parse_failures 2 "chunk 0: review call failed (transport/proxy error, exit 7)" "chunk 1: review call failed on retry (transport/proxy error, exit 7)" 2>/dev/null
+assert_eq "prt_resolve_review_parse_failures: ALL chunks failed -> incomplete (fatal), not degraded" \
+  "false true" "$(prt_is_degraded && echo true || echo false) $(prt_is_incomplete && echo true || echo false)"
+assert_eq "prt_resolve_review_parse_failures: all-failed reasons are NOT also tagged degraded (no dual-marking)" \
+  "false" "$(grep -qF 'review-parse-failed' <<< "$(prt_degraded_reasons)" && echo true || echo false)"
+rm -rf "$rpf_dir"
+unset PRT_INCOMPLETE_FILE PRT_DEGRADED_FILE
+
 # ============================================================ orchestrator: exit-code contract (subprocess, mocked curl)
 # pr-review-threads.sh itself is not exercised by the rest of this suite (its
 # own header comment says so — it's wiring, not a pure function) but its

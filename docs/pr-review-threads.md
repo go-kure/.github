@@ -144,7 +144,7 @@ current is preceded by a freshness check (`prt_freshness_check`, `gh.sh:136-165`
 the PR's live head SHA and compares it
 against the expected one — the run's real wall-clock spans multiple model calls, so the PR can
 move underneath it. The one documented exception is the reply posted after a marker-clearing write
-already failed (`pr-review-threads.sh:1062-1068`): it explains a failure that already happened and
+already failed (`pr-review-threads.sh:1080-1088`): it explains a failure that already happened and
 is deliberately allowed to post even if the head has since moved, rather than being silently
 dropped on top of the write failure it's explaining. `prt_freshness_check` returns a three-way
 status (go-kure/.github#99) instead
@@ -180,11 +180,13 @@ Both share the same contract — the reason is echoed to stderr immediately (`RE
 <reason>` / `REVIEW_DEGRADED: <reason>`, not only written to the state file), and if the state
 file itself can't be appended to, the marking call fails closed with `exit 1` on the spot rather
 than silently tracking nothing. They differ only in what the run does with them: a write that
-can't complete at all (a failed create, a freshness-check read failure, a listing failure, or a
-model response so broken nothing in that chunk was reviewed) is `REVIEW_INCOMPLETE` and fails the
-run closed; something that didn't fully succeed but still left a usable result (a genuinely-stale
-write skip, and the assessment-call and partial-finding-drop cases below) is `REVIEW_DEGRADED` and
-lets the run exit 0. **Never dual-mark the same event with both** — `prt_mark_incomplete`'s file is
+can't complete at all (a failed create, a freshness-check read failure, a listing failure) is
+`REVIEW_INCOMPLETE` and fails the run closed; something that didn't fully succeed but still left a
+usable result (a genuinely-stale write skip, the assessment-call and partial-finding-drop cases
+below, and — since go-kure/.github#107 — a review-call parse/transport failure on some but not all
+chunks, see below) is `REVIEW_DEGRADED` and lets the run exit 0. A model response so broken nothing
+in a given chunk was reviewed is `REVIEW_INCOMPLETE` only when that happened to *every* chunk in the
+run; see the review-call section below for the exact rule. **Never dual-mark the same event with both** — `prt_mark_incomplete`'s file is
 read unconditionally by the exit gate below, so dual-marking a degraded event would force `exit 1`
 regardless, defeating the point of moving it to degraded.
 
@@ -213,7 +215,7 @@ found and fixed for the assess call's retry first (see below): a transport fault
 originally being collapsed into the "not valid JSON" branch instead of reported as its own kind of
 failure. It also gets one bounded retry — not `prt_retry`'s usual 3, each call already costs 40-60s
 against the job's `timeout-minutes: 20` budget — when a 2xx response fails the `jq -c '.'` parse
-(`pr-review-threads.sh:237-309`), with a salvage attempt interposed ahead of that retry:
+(`pr-review-threads.sh:244-316`), with a salvage attempt interposed ahead of that retry:
 `prt_extract_json_braces` (`model.sh:33-53`) takes the substring from the first `{` to the last
 `}` in the raw content and re-parses that, a no-op on already-clean JSON and a fix for a chattier
 generation that wraps the JSON object in prose (`prt_strip_fence`, `model.sh:26-31`, only strips a
@@ -223,9 +225,8 @@ live incident: launcher#283 run 32175849548 hit `chunk 0: review response was no
 Raising `PRT_MAX_TOKENS` or checking for `finish_reason == "length"` cannot fix this against the
 current model-proxy backend — it hard-codes `maxTokens` server-side and `finish_reason` is
 unconditionally `"stop"` on its non-streaming path. If both the retry and the salvage still fail
-to parse, the `REVIEW_INCOMPLETE` reason for that chunk carries a shape-only diagnostic
-(`prt_response_shape`) — never the response text itself, consistent with the "never logged" list
-below. It has four fields:
+to parse, that chunk's failure reason carries a shape-only diagnostic (`prt_response_shape`) —
+never the response text itself, consistent with the "never logged" list below. It has four fields:
 
 | Field | Meaning |
 |---|---|
@@ -253,7 +254,7 @@ possible. Equal fingerprints across runs prove it; differing ones redirect the i
 something diff-dependent.
 
 The model-assess call (`prt_model_assess`, `model.sh:329-357`) gets the identical salvage-then-retry
-treatment (`pr-review-threads.sh:336-413`), for the same reason: it shares the backend and the
+treatment (`pr-review-threads.sh:372-466`), for the same reason: it shares the backend and the
 same prose-wrapping failure mode, so it gets the same recovery, not a lesser one. Before this, a
 non-2xx/curl/empty-content failure from `prt_model_assess` was indistinguishable from a 2xx response
 that simply wasn't parseable JSON — both fell through into an empty `assess_raw` and the same
@@ -299,19 +300,40 @@ directly into that check (`prt_degraded_reasons | grep -q 'partial-drop'`) rathe
 `CLEAR_MARKER`/`NONE` instead of `SET_FIRST_ABSENT`/`REPLY_RESOLVE` for that thread, exactly as it
 would for a true `REVIEW_INCOMPLETE` run, without the run itself failing closed.
 
+A review-call parse or transport failure surviving the salvage-and-retry above (both the failed
+attempts described in the paragraph above, and the equivalent transport-fault case) used to call
+`prt_mark_incomplete` unconditionally, at the point the failure happened — one bad chunk failed
+the whole run closed even when every other chunk reviewed cleanly, unlike the GitLab
+`ci-templates/mr-review.yml` job's own tolerance for a partial chunk failure. `go-kure/.github#107`
+fixes this: each such failure is collected (`review_parse_failures`,
+`pr-review-threads.sh`) as the review loop runs rather than acted on inline, and the decision is
+made once, after every chunk has been attempted, by `prt_resolve_review_parse_failures` (`state.sh`)
+— fatal (`REVIEW_INCOMPLETE`) only when *every* chunk in the run hit this failure (nothing was
+reviewed at all, matching GitLab's own `REVIEW_NO_STRUCTURED_OUTPUT` → `exit 2` for the identical
+all-chunks-failed condition); `REVIEW_DEGRADED`, tagged `review-parse-failed: ...`, when at least
+one other chunk produced usable findings. The tag is load-bearing the same way `partial-drop` is
+just above: the absence loop's `incomplete_now` check greps `prt_degraded_reasons` for it
+(`pr-review-threads.sh`, alongside the existing `partial-drop` grep), so a chunk that never parsed
+at all doesn't let its findings' existing threads be read as absent this run and wrongly
+auto-resolved — the same reconciliation hazard `go-kure/.github#98` named for `partial-drop`,
+applied one failure mode earlier in the pipeline. What this does not fix: a chunk that fails still
+contributes zero findings, so a real defect confined to that chunk's files goes unreviewed this
+run — the run reports degraded rather than red, it does not recover the review.
+
 `advisory` mode's single issue comment (`prt_render_advisory_comment`, `render.sh:186-234`)
 discloses both severities on its own live output surface, not only in `$GITHUB_STEP_SUMMARY`: a
 non-empty `advisory_incomplete_reasons` or `advisory_degraded_reasons`
-(`pr-review-threads.sh:756-767`, gathered via `prt_is_incomplete`/`prt_incomplete_reasons` and
+(`pr-review-threads.sh:778-782`, gathered via `prt_is_incomplete`/`prt_incomplete_reasons` and
 `prt_is_degraded`/`prt_degraded_reasons` respectively) renders its own warning banner ahead of the
 findings table, worded to distinguish the two ("this review run was incomplete" vs "this review
 run was degraded"). The degraded banner is deliberately degradation-neutral prose ("see the
 reason(s) below; this may mean part of this run's output is incomplete, unverdicted, or dropped")
 rather than a blanket "rows were dropped" claim: `prt_mark_degraded` covers six call sites
-(`pr-review-threads.sh:334,379,413,435,448,1151`), only one of which (`:334`, a chunk's malformed
+(`pr-review-threads.sh:341,394,428,450,463,1194`, plus `prt_resolve_review_parse_failures` in
+`state.sh` for the review-parse-failure case above), only one of the direct call sites (`:341`, a chunk's malformed
 finding rows dropped) is actually a drop — the other five leave findings present but unverdicted
 (an assess-call transport fault or unparseable response, an `.assessments` join failure) or are
-unrelated to the current run's findings at all (`:1151`, a past run's clean-verdict comment failing
+unrelated to the current run's findings at all (`:1194`, a past run's clean-verdict comment failing
 to be superseded). The banner intro no longer overrides those per-reason bullets (rendered
 verbatim below it) with a claim that is only true for one of the six (round 4, go-kure/.github#101
 second review pass, `chatgpt-codex-connector[bot]`). Critically, the "No issues found." shortcut

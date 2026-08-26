@@ -230,6 +230,13 @@ prt_log "diff: $(wc -c < "$DIFF_FILE" | tr -d ' ') bytes, chunks=$chunk_count"
 
 ALL_FINDINGS='[]'
 chunk_idx=0
+# go-kure/.github#107: chunks whose review call never produced parseable
+# JSON (transport fault on either attempt, or invalid JSON surviving
+# salvage+retry) are collected here rather than marked incomplete inline —
+# whether that's fatal or merely degraded depends on whether any OTHER
+# chunk in this run succeeded, which isn't known until the whole loop
+# closes. See the decision made right after this loop.
+review_parse_failures=()
 for chunk_file in "$CHUNK_DIR"/chunk-*.diff; do
   [ -f "$chunk_file" ] || continue
   chunk_diff="$(cat "$chunk_file")"
@@ -245,7 +252,7 @@ for chunk_file in "$CHUNK_DIR"/chunk-*.diff; do
     # call's own retry, the same mislabeling gap a codex review found and
     # fixed for the assess call's retry (a transport fault there was being
     # reported as "not valid JSON").
-    prt_mark_incomplete "chunk $chunk_idx: review call failed (transport/proxy error, exit $review_rc)"
+    review_parse_failures+=("chunk $chunk_idx: review call failed (transport/proxy error, exit $review_rc)")
     prt_log "chunk $chunk_idx: review FAILED (transport error, exit $review_rc)"
     chunk_idx=$((chunk_idx + 1))
     continue
@@ -283,7 +290,7 @@ for chunk_file in "$CHUNK_DIR"/chunk-*.diff; do
       # parse-failure branch below would both mislabel it and compute
       # prt_response_shape over an empty string, mirroring the assess call's
       # own retry check above.
-      prt_mark_incomplete "chunk $chunk_idx: review call failed on retry (transport/proxy error, exit $review_rc)"
+      review_parse_failures+=("chunk $chunk_idx: review call failed on retry (transport/proxy error, exit $review_rc)")
       prt_log "chunk $chunk_idx: review FAILED (transport error on retry, exit $review_rc)"
       chunk_idx=$((chunk_idx + 1))
       continue
@@ -302,7 +309,7 @@ for chunk_file in "$CHUNK_DIR"/chunk-*.diff; do
     # was attempted, never the response text itself (Step 3c rule, "Failure
     # surface" in docs/pr-review-threads.md, stays in force).
     shape="$(prt_response_shape "${raw:-}")"
-    prt_mark_incomplete "chunk $chunk_idx: review response was not valid JSON after retry=$retried, salvage_attempted=true ($shape)"
+    review_parse_failures+=("chunk $chunk_idx: review response was not valid JSON after retry=$retried, salvage_attempted=true ($shape)")
     prt_log "chunk $chunk_idx: review FAILED (invalid JSON, retried=$retried)"
     chunk_idx=$((chunk_idx + 1))
     continue
@@ -339,6 +346,14 @@ for chunk_file in "$CHUNK_DIR"/chunk-*.diff; do
   prt_log "chunk $chunk_idx: review ok ($(jq 'length' <<< "$tagged") findings)"
   chunk_idx=$((chunk_idx + 1))
 done
+
+# go-kure/.github#107: resolve the deferred review_parse_failures decision
+# now that every chunk has been attempted. See prt_resolve_review_parse_failures
+# in lib/prt/state.sh for the fatal-vs-degraded rule and citations. chunk_idx
+# here is every chunk actually iterated; if it's 0 (prt_split_diff itself
+# failed, :218-227) there's nothing to resolve — that path already marked
+# incomplete directly and left no chunk files to loop over.
+prt_resolve_review_parse_failures "$chunk_idx" "${review_parse_failures[@]}"
 
 # chunk_idx (chunks actually iterated, via the glob above) should always
 # equal chunk_count (chunks prt_split_diff reported writing) — a mismatch
@@ -981,6 +996,11 @@ if [ "$PRT_MODE" = enforce ]; then
   # this needs without dual-marking (see the partial-drop call site above,
   # :313-330ish, for why dual-marking would defeat degraded's whole point).
   prt_degraded_reasons | grep -q 'partial-drop' && incomplete_now=true
+  # go-kure/.github#107: same reasoning as the partial-drop fold-in just
+  # above — a chunk whose review call never parsed reviewed nothing, so any
+  # of its findings' existing threads must not be read as absent this run
+  # even though the run itself no longer fails closed for it.
+  prt_degraded_reasons | grep -q 'review-parse-failed' && incomplete_now=true
   for ((oi = 0; oi < n_owned; oi++)); do
     th="$(jq -c ".[$oi]" <<< "$OWNED")"
     fp="$(jq -r '.fp' <<< "$th")"
