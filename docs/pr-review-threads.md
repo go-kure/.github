@@ -144,7 +144,7 @@ current is preceded by a freshness check (`prt_freshness_check`, `gh.sh:136-165`
 the PR's live head SHA and compares it
 against the expected one — the run's real wall-clock spans multiple model calls, so the PR can
 move underneath it. The one documented exception is the reply posted after a marker-clearing write
-already failed (`pr-review-threads.sh:1050-1056`): it explains a failure that already happened and
+already failed (`pr-review-threads.sh:1062-1068`): it explains a failure that already happened and
 is deliberately allowed to post even if the head has since moved, rather than being silently
 dropped on top of the write failure it's explaining. `prt_freshness_check` returns a three-way
 status (go-kure/.github#99) instead
