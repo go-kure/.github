@@ -160,11 +160,22 @@ prt_degraded_reasons() {
 # RC 2 (PR read failed / malformed response) and RC 3 (freshness passed but
 # the write itself failed) both stay fatal via prt_mark_incomplete — neither
 # means "a newer run will redo this."
+#
+# NOT a universal drop-in for every freshness check in pr-review-threads.sh:
+# the "safe because superseded" argument for rc=1 requires the check to gate
+# the SAME action a successor would recompute from scratch. Three call sites
+# (REPLY_RESOLVE/REPLY_UNRESOLVE's post-mutation reply gate, and the absence-
+# loop's REPLY_RESOLVE reply gate) run this check only to decide whether to
+# post an explanatory reply AFTER the resolve/unresolve mutation already
+# committed. A successor's decision table sees the thread already mutated
+# and computes NONE, so it will not redo the skipped reply — call
+# prt_mark_incomplete directly at those three sites instead, never this
+# function (codex round-2 confirm finding, go-kure/.github#99).
 prt_handle_freshness_rc() {
   local rc="$1" context="$2"
   case "$rc" in
     1) prt_mark_degraded "${context}: stale head SHA (run superseded), write skipped" ;;
-    2) prt_mark_incomplete "${context}: PR read failed or returned no .head.sha, write skipped" ;;
+    2) prt_mark_incomplete "${context}: PR read failed, or returned a missing/malformed .head.sha, write skipped" ;;
     3) prt_mark_incomplete "${context}: write failed after a fresh head SHA check" ;;
     *) prt_mark_incomplete "${context}: freshness routing returned unexpected status '${rc}'" ;;
   esac

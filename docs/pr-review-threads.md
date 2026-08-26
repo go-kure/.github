@@ -140,7 +140,7 @@ actions and the pin-bump procedure").
 ## Failure surface
 
 Every write (create/reply/resolve/unresolve/marker edit) that depends on the head SHA still being
-current is preceded by a freshness check (`prt_freshness_check`, `gh.sh:107-149`) that re-fetches
+current is preceded by a freshness check (`prt_freshness_check`, `gh.sh:136-165`) that re-fetches
 the PR's live head SHA and compares it
 against the expected one — the run's real wall-clock spans multiple model calls, so the PR can
 move underneath it. The one documented exception is the reply posted after a marker-clearing write
@@ -154,14 +154,23 @@ stderr), `2` could not determine freshness at all (the PR read itself failed, or
 `.head.sha`). Only status `1` is safe to treat as non-fatal: a superseding push is guaranteed to
 have queued its own run (`.github/workflows/pr-review.yml`'s `cancel-in-progress: false`), so this
 run's skipped write will be redone. Status `2` carries no such guarantee and stays fatal.
-`prt_gh_rest_fresh` (`gh.sh:151-182`, the freshness-gated write wrapped by `prt_retry` — see below)
+`prt_gh_rest_fresh` (`gh.sh:191-198`, the freshness-gated write wrapped by `prt_retry` — see below)
 extends this to a four-way status: it passes `1`/`2` straight through from `prt_freshness_check`,
 and adds its own `3` for "the freshness check passed but the wrapped write itself then failed" —
 also fatal, and kept distinct from `1`/`2` so a caller can tell "stale", "couldn't tell if stale",
 and "was fresh but the write failed anyway" apart instead of every write failure reading as the
-same generic incompleteness. Every freshness call site in `pr-review-threads.sh` routes its
+same generic incompleteness. Almost every freshness call site in `pr-review-threads.sh` routes its
 non-zero status through `prt_handle_freshness_rc` (`state.sh`), which is the single place that
-maps `1` to `prt_mark_degraded` and `2`/`3` to `prt_mark_incomplete`.
+maps `1` to `prt_mark_degraded` and `2`/`3` to `prt_mark_incomplete`. Three call sites deliberately
+do not: `REPLY_RESOLVE`'s and `REPLY_UNRESOLVE`'s post-mutation freshness check (the one gating the
+explanatory reply after `resolveReviewThread`/`unresolveReviewThread` already succeeded), and the
+absence loop's equivalent `REPLY_RESOLVE` reply gate. `prt_handle_freshness_rc`'s rc=1 handling is
+safe only because a superseding run recomputes and redoes the exact same skipped write — true for a
+check gating a write not yet attempted, false for a check gating only the reply to a mutation that
+already committed, since the successor's decision table sees the thread already resolved/unresolved
+and computes no action at all. Those three sites call `prt_mark_incomplete` directly regardless of
+which rc `prt_freshness_check` returns, so a race there fails the run closed instead of silently
+losing the audit-trail reply while reporting success (go-kure/.github#99 confirm-round finding).
 
 Two independent, additive severities track a run's problems, both file-backed for the same reason
 (a shell variable set inside a `$(...)` subshell never reaches the parent shell, and every write
@@ -388,7 +397,7 @@ GitHub curl calls carry `--connect-timeout 10 --max-time 120`; the model proxy c
 the job's `timeout-minutes: 20` budget (see the comment at `scripts/lib/prt/model.sh` next to
 that value for the arithmetic). The two GitHub reads that used to have no retry at all — the
 initial diff fetch and the initial PR-metadata fetch — are wrapped in `prt_retry`
-(`gh.sh:184-219`), the same retry helper every write path already used; a permanent (retry-
+(`gh.sh:208-235`), the same retry helper every write path already used; a permanent (retry-
 budget-exhausted) PR-metadata fetch failure now prints its own `ERROR: failed to fetch PR
 metadata` line before exiting 1, instead of relying solely on `prt_gh_rest`'s generic HTTP-status
 line to explain the exit.
