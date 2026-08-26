@@ -1,0 +1,3 @@
+# npm install target for scripts/test/renovate-lane-policy-test.mjs -- kept
+# out of the repo root so a stray node_modules/ never lands in git status.
+/.renovate-lane-test/

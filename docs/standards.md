@@ -93,9 +93,35 @@ What it encodes:
   covers gomod/npm/pypi/maven/… datasources; it does not cover `docker`, `dockerfile`,
   `github-actions`, `mise` or other non-package-manager pins.
 
+- **Lane labels** — every PR gets exactly one of `unattended` (Renovate merges it once checks
+  pass — do not review, merge, or close it) or `needs-human` (blocked on a human). Set via
+  `labels`, never `addLabels`: `labels` is a scalar that the last matching rule overwrites, while
+  `addLabels` unions across every matching rule and can never be removed by a later one — building
+  this on `addLabels` would let a rule advertise "this will automerge" and a later
+  `automerge: false` rule leave the label in place regardless. See [Labels](../standards/labels.md)
+  for the label definitions.
+
 Repos add repo-specific rules (e.g. `postUpgradeTasks` running the repo's own
 `scripts/sync-versions.sh generate` so generated docs move in the same commit as the
 version bump) in their own `renovate.json` on top of the preset.
+
+#### Policy test
+
+`scripts/test/renovate-lane-policy-test.mjs`, run by `mise run test` and the required `test` CI
+context, runs Renovate's own `applyPackageRules` resolver over a matrix of representative
+dependency-update paths — one or more per `packageRules` entry — and asserts each resolves to
+exactly one lane label. It also asserts, structurally over the config itself, that no rule sets a
+lane via `addLabels`, that every `automerge: false` rule sets `needs-human`, and that every
+`automerge: true` rule sets `unattended`. A `packageRules` entry with no matrix case exercising it
+is a hard failure, so a new rule cannot go unverified by omission. A separate matrix covers the
+`vulnerabilityAlerts` path, which bypasses `packageRules` entirely via a synthetic rule Renovate
+injects at fetch time.
+
+The test runs against the installed `renovate` package's own rule resolver, not a reimplementation
+of Renovate's semantics — pinned in `scripts/test/renovate-version`, read by both `mise run test`
+and the `test` CI job. Nothing bumps this pin automatically; raise it deliberately when adopting a
+newer Renovate major, in step with `CI_RENOVATE_IMAGE` on the workspace side so the version this
+test resolves against does not drift from what actually runs the config.
 
 This preset and the workspace-default preset that GitLab repos consume are **asserted
 equivalent** by an automated parity check on the workspace side, which runs on every pipeline
