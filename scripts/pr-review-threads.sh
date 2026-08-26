@@ -1148,7 +1148,7 @@ if [ "$PRT_MODE" = enforce ]; then
             # this is best-effort tidy-up of a PAST run's comment, not this
             # run's primary output.
             prt_upsert_issue_comment "$PRT_REPO" "$PRT_PR_NUMBER" "$superseded_body" "$clean_id" || \
-              prt_mark_degraded "failed to supersede the clean-verdict comment (HTTP ${PRT_LAST_HTTP_STATUS:-unknown})"
+              prt_mark_degraded "failed to supersede the clean-verdict comment (HTTP ${PRT_LAST_HTTP_STATUS:-unknown}); this run's own findings/threads are unaffected, but the prior comment may still read as a clean verdict for an older SHA"
           else
             prt_mark_incomplete "stale head SHA, skipped clean-verdict supersede upsert"
           fi
