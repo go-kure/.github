@@ -759,7 +759,9 @@ if [ "$PRT_MODE" = advisory ]; then
   advisory_findings="$(jq -c '[.[] | select(.verdict != "FALSE_POSITIVE")]' <<< "$ALL_FINDINGS")"
   advisory_incomplete_reasons=""
   prt_is_incomplete && advisory_incomplete_reasons="$(prt_incomplete_reasons)"
-  body="$(prt_render_advisory_comment "$advisory_findings" "$advisory_incomplete_reasons")"
+  advisory_degraded_reasons=""
+  prt_is_degraded && advisory_degraded_reasons="$(prt_degraded_reasons)"
+  body="$(prt_render_advisory_comment "$advisory_findings" "$advisory_incomplete_reasons" "$advisory_degraded_reasons")"
   payload="$(jq -n --arg b "$body" '{body:$b}')"
   if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
     prt_gh_rest POST "/repos/${PRT_REPO}/issues/${PRT_PR_NUMBER}/comments" "$payload" >/dev/null || \

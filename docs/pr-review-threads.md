@@ -266,6 +266,19 @@ directly into that check (`prt_degraded_reasons | grep -q 'partial-drop'`) rathe
 `CLEAR_MARKER`/`NONE` instead of `SET_FIRST_ABSENT`/`REPLY_RESOLVE` for that thread, exactly as it
 would for a true `REVIEW_INCOMPLETE` run, without the run itself failing closed.
 
+`advisory` mode's single issue comment (`prt_render_advisory_comment`, `render.sh:160-207`)
+discloses both severities on its own live output surface, not only in `$GITHUB_STEP_SUMMARY`: a
+non-empty `advisory_incomplete_reasons` or `advisory_degraded_reasons`
+(`pr-review-threads.sh:756-767`, gathered via `prt_is_incomplete`/`prt_incomplete_reasons` and
+`prt_is_degraded`/`prt_degraded_reasons` respectively) renders its own warning banner ahead of the
+findings table, worded to distinguish the two ("this review run was incomplete" vs "this review
+run was degraded — some rows were dropped but the rest completed"). Critically, the "No issues
+found." shortcut only fires when the surviving-findings count is zero **and** there is no degraded
+reason to disclose: a partial-drop chunk (`REVIEW_DEGRADED`) whose surviving findings are then all
+assessed `FALSE_POSITIVE` still has `count == 0`, and printing a plain "No issues found." there
+would read as a clean bill of health despite a row having been silently dropped
+(chatgpt-codex-connector[bot] review, go-kure/.github#101, found post-merge-ready in round 3).
+
 The clean-verdict-comment supersede failure (`pr-review-threads.sh`, the `total_findings_this_run
 -gt 0` branch) is also `REVIEW_DEGRADED` rather than `REVIEW_INCOMPLETE`, matching the asymmetry
 already established two branches above it in the same `if` (a listing failure there was

@@ -844,6 +844,35 @@ assert_eq "prt_render_clean_comment_superseded: keeps the SAME marker as the ori
 assert_ne "prt_render_clean_comment_superseded: the superseded body is visibly distinct from a fresh clean-verdict body" \
   "$superseded_body" "$clean_body"
 
+# ============================================================ render.sh: prt_render_advisory_comment degraded disclosure (go-kure/.github#98 round 3, chatgpt-codex-connector[bot] review go-kure/.github#101#pullrequestreview-5028172237)
+adv_clean_zero="$(prt_render_advisory_comment '[]')"
+assert_eq "prt_render_advisory_comment: zero findings, no incomplete/degraded reasons -> plain 'No issues found.'" \
+  "true" "$(grep -qF 'No issues found.' <<< "$adv_clean_zero" && echo true || echo false)"
+
+adv_incomplete_zero="$(prt_render_advisory_comment '[]' 'chunk 0: something fatal')"
+assert_eq "prt_render_advisory_comment: zero findings + incomplete reasons -> banner renders ABOVE the (unchanged) 'No issues found.' among what succeeded — pre-existing B4 behavior, not touched by this fix" \
+  "true" "$(grep -qF 'No issues found.' <<< "$adv_incomplete_zero" && echo true || echo false)"
+assert_eq "prt_render_advisory_comment: incomplete banner wording" \
+  "true" "$(grep -qF 'This review run was incomplete' <<< "$adv_incomplete_zero" && echo true || echo false)"
+
+adv_degraded_zero="$(prt_render_advisory_comment '[]' '' 'chunk 0: partial-drop — one row dropped')"
+assert_eq "prt_render_advisory_comment: zero surviving findings + degraded reasons -> 'No issues found.' does NOT fire" \
+  "false" "$(grep -qF 'No issues found.' <<< "$adv_degraded_zero" && echo true || echo false)"
+assert_eq "prt_render_advisory_comment: degraded banner uses distinct wording from incomplete's" \
+  "true" "$(grep -qF 'This review run was degraded' <<< "$adv_degraded_zero" && echo true || echo false)"
+assert_eq "prt_render_advisory_comment: degraded banner carries the actual reason text" \
+  "true" "$(grep -qF 'partial-drop — one row dropped' <<< "$adv_degraded_zero" && echo true || echo false)"
+
+adv_degraded_nonzero="$(prt_render_advisory_comment '[{"severity":"High","category":"other","file":"x.go","issue":"i","fix":"f"}]' '' 'chunk 0: partial-drop')"
+assert_eq "prt_render_advisory_comment: degraded + nonzero surviving findings -> table still rendered alongside the banner" \
+  "true" "$(grep -qF '| High | other | x.go | i | f |' <<< "$adv_degraded_nonzero" && echo true || echo false)"
+assert_eq "prt_render_advisory_comment: degraded + nonzero -> banner still present" \
+  "true" "$(grep -qF 'This review run was degraded' <<< "$adv_degraded_nonzero" && echo true || echo false)"
+
+adv_both="$(prt_render_advisory_comment '[]' 'chunk 1: fatal' 'chunk 0: partial-drop')"
+assert_eq "prt_render_advisory_comment: both incomplete AND degraded reasons present -> both banners render" \
+  "true" "$([ "$(grep -c 'This review run was' <<< "$adv_both")" -eq 2 ] && echo true || echo false)"
+
 # ============================================================ state.sh: prt_annotation_escape (dot-github#61 Step 1)
 assert_eq "annotation_escape: percent escaped first" "a%25b" "$(prt_annotation_escape 'a%b')"
 assert_eq "annotation_escape: CR becomes %0D" "a%0Db" "$(prt_annotation_escape "$(printf 'a\rb')")"
@@ -1077,6 +1106,22 @@ fake_curl_orchestrator() {
               # (go-kure/.github#98, Case x).
               printf '%s' '{"choices":[{"message":{"content":"{\"assessments\":\"oops-not-an-array\"}"}}]}' > "$out"
               ;;
+            false_positive_survivor)
+              # go-kure/.github#98 round 3 (chatgpt-codex-connector[bot]
+              # review, go-kure/.github#101): unlike the hardcoded
+              # "deadbeefcafebabe" fp every other mode above uses (which
+              # never matches a real review-call finding's own fingerprint,
+              # per the round-1 F2 investigation), this mode computes the
+              # REAL fp of the PRT_TEST_MODEL_RESPONSE_MODE=partial_drop
+              # scenario's one surviving finding (file=x.go,
+              # category=other) via prt_fp_base — sourced into this same
+              # subprocess by pr-review-threads.sh itself — and verdicts it
+              # FALSE_POSITIVE, so the advisory table's post-filter
+              # surviving-findings count is genuinely 0, not merely
+              # unverdicted.
+              printf '%s' "$(jq -n --arg fp "$(prt_fp_base x.go other)" \
+                '{choices:[{message:{content:({assessments:[{fp:$fp,verdict:"FALSE_POSITIVE",reasoning:"not a real issue"}]} | tojson)}}]}')" > "$out"
+              ;;
             garbage_then_clean)
               if [ "$mc" -le 1 ]; then
                 printf '%s' '{"choices":[{"message":{"content":"not json at all, sorry"}}]}' > "$out"
@@ -1186,6 +1231,12 @@ fake_curl_orchestrator() {
       ;;
     */issues/*/comments)
       _prt_test_bump "${PRT_TEST_ISSUE_COMMENT_COUNTFILE:?}" >/dev/null
+      # Capture the posted body verbatim when a caller wants to assert on its
+      # rendered content (e.g. the advisory-comment degraded-banner test
+      # below) — optional, a no-op write when the caller hasn't set it.
+      if [ -n "${PRT_TEST_ISSUE_COMMENT_BODY_FILE:-}" ]; then
+        jq -r '.body' <<< "$data" > "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" 2>/dev/null || true
+      fi
       printf '%s' '{"id":1}' > "$out"
       echo 200
       ;;
@@ -1335,6 +1386,7 @@ run_orchestrator() {
   echo 0 > "$PRT_TEST_CREATE_COUNTFILE"
   echo 0 > "$PRT_TEST_REPLY_COUNTFILE"
   echo 0 > "$PRT_TEST_ISSUE_COMMENT_COUNTFILE"
+  [ -n "${PRT_TEST_ISSUE_COMMENT_BODY_FILE:-}" ] && : > "$PRT_TEST_ISSUE_COMMENT_BODY_FILE"
   : > "$PRT_TEST_STDOUT_FILE"
   : > "$PRT_TEST_STDERR_FILE"
   (
@@ -1351,6 +1403,7 @@ run_orchestrator() {
     PRT_TEST_CREATE_COUNTFILE="$PRT_TEST_CREATE_COUNTFILE" \
     PRT_TEST_REPLY_COUNTFILE="$PRT_TEST_REPLY_COUNTFILE" \
     PRT_TEST_ISSUE_COMMENT_COUNTFILE="$PRT_TEST_ISSUE_COMMENT_COUNTFILE" \
+    PRT_TEST_ISSUE_COMMENT_BODY_FILE="${PRT_TEST_ISSUE_COMMENT_BODY_FILE:-}" \
     PRT_TEST_DIFF_FAIL_TIMES="$diff_fail" \
     PRT_TEST_META_FAIL_TIMES="$meta_fail" \
     PRT_TEST_MODEL_ALWAYS_FAIL="$model_fail" \
@@ -1605,6 +1658,33 @@ assert_eq "orchestrator: partial-drop -> REVIEW_DEGRADED names it with the parti
 assert_eq "orchestrator: partial-drop -> does NOT also mark REVIEW_INCOMPLETE" \
   "false" "$(grep -qF 'REVIEW_INCOMPLETE:' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 PRT_TEST_MODEL_RESPONSE_MODE=clean
+
+# Case xii-b — advisory mode, a partial-drop run (Case xii's exact review
+# response) whose one surviving finding is then assessed FALSE_POSITIVE and
+# filtered out before rendering (pr-review-threads.sh:759), so the advisory
+# table's own count is 0 despite the run being REVIEW_DEGRADED — the exact
+# admission-test scenario from the chatgpt-codex-connector[bot] review
+# (go-kure/.github#101#pullrequestreview-5028172237): a human reading the
+# posted comment must still see the run was degraded, not "No issues
+# found.", or the dropped row disappears with no trace on this live surface.
+PRT_TEST_ISSUE_COMMENT_BODY_FILE="$(mktemp)"
+PRT_TEST_MODEL_RESPONSE_MODE=partial_drop
+PRT_TEST_ASSESS_RESPONSE_MODE=false_positive_survivor
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "orchestrator: advisory + partial-drop + surviving finding assessed FALSE_POSITIVE -> exits 0 (degraded, not fatal)" \
+  "0" "$rc"
+assert_eq "orchestrator: advisory + partial-drop + all-filtered -> REVIEW_DEGRADED still recorded" \
+  "true" "$(grep -qF 'REVIEW_DEGRADED: chunk 0: partial-drop' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator: advisory + partial-drop + all-filtered -> posted comment does NOT say 'No issues found.'" \
+  "false" "$(grep -qF 'No issues found.' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && echo true || echo false)"
+assert_eq "orchestrator: advisory + partial-drop + all-filtered -> posted comment shows the degraded-warning banner" \
+  "true" "$(grep -qF 'This review run was degraded' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && echo true || echo false)"
+assert_eq "orchestrator: advisory + partial-drop + all-filtered -> posted comment names the partial-drop reason" \
+  "true" "$(grep -qF 'partial-drop' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && echo true || echo false)"
+PRT_TEST_MODEL_RESPONSE_MODE=clean
+PRT_TEST_ASSESS_RESPONSE_MODE=clean
+rm -f "$PRT_TEST_ISSUE_COMMENT_BODY_FILE"
+unset PRT_TEST_ISSUE_COMMENT_BODY_FILE
 
 # Case xiii — the reconciliation this whole mechanism exists for
 # (go-kure/.github#98): a partial-drop run (Case xii's exact scenario) must
