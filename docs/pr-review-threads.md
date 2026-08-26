@@ -139,11 +139,23 @@ pinning" → "Same-repo composite actions and the pin-bump procedure").
 ## Failure surface
 
 Every write (create/reply/resolve/unresolve/marker edit) is preceded by a freshness check
-(`prt_freshness_check`, `gh.sh:115-132`) that re-fetches the PR's live head SHA and refuses to
-write against a stale one — the run's real wall-clock spans multiple model calls, so the PR can
-move underneath it. `prt_freshness_check` names which of its three failure paths fired (read
-failure, empty `.head.sha`, or a genuinely moved head printed as `expected -> live`) on stderr,
-rather than returning 1 silently for all three alike (go-kure/.github#61).
+(`prt_freshness_check`, `gh.sh:107-149`) that re-fetches the PR's live head SHA and compares it
+against the expected one — the run's real wall-clock spans multiple model calls, so the PR can
+move underneath it. `prt_freshness_check` returns a three-way status (go-kure/.github#99) instead
+of collapsing every failure mode to one bit: `0` fresh (proceed), `1` genuinely stale (the PR was
+read fine and its live head SHA is a real, different value — printed as `expected -> live` on
+stderr), `2` could not determine freshness at all (the PR read itself failed, or returned no usable
+`.head.sha`). Only status `1` is safe to treat as non-fatal: a superseding push is guaranteed to
+have queued its own run (`.github/workflows/pr-review.yml`'s `cancel-in-progress: false`), so this
+run's skipped write will be redone. Status `2` carries no such guarantee and stays fatal.
+`prt_gh_rest_fresh` (`gh.sh:151-182`, the freshness-gated write wrapped by `prt_retry` — see below)
+extends this to a four-way status: it passes `1`/`2` straight through from `prt_freshness_check`,
+and adds its own `3` for "the freshness check passed but the wrapped write itself then failed" —
+also fatal, and kept distinct from `1`/`2` so a caller can tell "stale", "couldn't tell if stale",
+and "was fresh but the write failed anyway" apart instead of every write failure reading as the
+same generic incompleteness. Every freshness call site in `pr-review-threads.sh` routes its
+non-zero status through `prt_handle_freshness_rc` (`state.sh`), which is the single place that
+maps `1` to `prt_mark_degraded` and `2`/`3` to `prt_mark_incomplete`.
 
 Two independent, additive severities track a run's problems, both file-backed for the same reason
 (a shell variable set inside a `$(...)` subshell never reaches the parent shell, and every write
@@ -153,22 +165,28 @@ Both share the same contract — the reason is echoed to stderr immediately (`RE
 <reason>` / `REVIEW_DEGRADED: <reason>`, not only written to the state file), and if the state
 file itself can't be appended to, the marking call fails closed with `exit 1` on the spot rather
 than silently tracking nothing. They differ only in what the run does with them: a write that
-can't complete at all (a failed create, a stale-head skip, a listing failure, or a model response
-so broken nothing in that chunk was reviewed) is `REVIEW_INCOMPLETE` and fails the run closed;
-something that didn't fully succeed but still left a usable result (see the assessment-call and
-partial-finding-drop cases below) is `REVIEW_DEGRADED` and lets the run exit 0. **Never
-dual-mark the same event with both** — `prt_mark_incomplete`'s file is read unconditionally by the
-exit gate below, so dual-marking a degraded event would force `exit 1` regardless, defeating the
-point of moving it to degraded.
+can't complete at all (a failed create, a freshness-check read failure, a listing failure, or a
+model response so broken nothing in that chunk was reviewed) is `REVIEW_INCOMPLETE` and fails the
+run closed; something that didn't fully succeed but still left a usable result (a genuinely-stale
+write skip, and the assessment-call and partial-finding-drop cases below) is `REVIEW_DEGRADED` and
+lets the run exit 0. **Never dual-mark the same event with both** — `prt_mark_incomplete`'s file is
+read unconditionally by the exit gate below, so dual-marking a degraded event would force `exit 1`
+regardless, defeating the point of moving it to degraded.
 
 Both are rendered as their own section in the job summary (`render.sh:87-121`) and checked at
 exit (`pr-review-threads.sh`'s tail): a non-empty `REVIEW_INCOMPLETE` state makes the top-level
 script print every reason to stderr (prefixed `  - `) and as capped `::error title=...::` workflow
 annotations (escaped via `prt_annotation_escape`, `state.sh`), then exit 1 instead of 0 — "the
 review could not run to completion" is distinguishable from "the review ran and found nothing" by
-exit code *and* job-log output, not only by a human reading the summary by hand. A non-empty
-`REVIEW_DEGRADED` state (checked independently, never gating the exit code) prints the same way but
-as `::warning title=...::` annotations and a `WARNING:` stderr line, since the run is not failing.
+exit code *and* job-log output, not only by a human reading the summary by hand. When the run is
+not `REVIEW_INCOMPLETE` but every recorded `REVIEW_DEGRADED` reason is one of `prt_handle_freshness_rc`'s
+staleness reasons (`prt_all_degraded_are_stale`, `state.sh`), the tail logs a single quiet
+`Stale run: head moved; a newer run is already queued` line and exits 0 (go-kure/.github#99,
+matching `meta/ci-templates/mr-review.yml`'s existing GitLab behavior) instead of the generic
+`REVIEW_DEGRADED` recap — this is the normal shape of "pushed twice inside one run", not a fault
+worth a warning banner. Any other non-empty `REVIEW_DEGRADED` state (mixed reasons, or none of them
+staleness) prints as `::warning title=...::` annotations and a `WARNING:` stderr line instead, since
+the run is not failing but did leave something worth a human's attention.
 
 The model-review call (`prt_model_review`, `model.sh:305-325`) has its exit status checked
 independently on **either** call — the original attempt and the one bounded retry alike: a

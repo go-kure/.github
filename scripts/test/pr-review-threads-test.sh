@@ -683,8 +683,13 @@ fake_curl_freshness_moved() {
 }
 fresh_err="$(PRT_CURL=fake_curl_freshness_moved PRT_GH_TOKEN=x \
   prt_freshness_check owner/repo 1 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 2>&1 >/dev/null)"
+rc=$?
 assert_eq "prt_freshness_check: a genuinely moved head names expected -> live" \
   "true" "$(grep -qF 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -> bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' <<< "$fresh_err" && echo true || echo false)"
+# go-kure/.github#99: a genuinely-moved head is now its OWN status (1),
+# distinct from a read failure/malformed response (2) — this is the case a
+# caller may safely route to prt_mark_degraded + exit 0.
+assert_eq "prt_freshness_check: genuinely-moved head returns 1 (the degradable case)" "1" "$rc"
 
 fake_curl_freshness_500() {
   local out=""
@@ -698,9 +703,63 @@ fake_curl_freshness_500() {
 fresh_err="$(PRT_CURL=fake_curl_freshness_500 PRT_GH_TOKEN=x \
   prt_freshness_check owner/repo 1 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 2>&1 >/dev/null)"
 rc=$?
-assert_eq "prt_freshness_check: read failure still returns 1 (fail-closed unchanged)" "1" "$rc"
+# go-kure/.github#99: a read failure can no longer read as "stale" (1) — it
+# gets its own status (2), which stays fatal at every call site regardless
+# of the genuinely-stale case's new degraded routing.
+assert_eq "prt_freshness_check: read failure returns 2 (distinct from genuinely-stale, still fatal)" "2" "$rc"
 assert_eq "prt_freshness_check: read failure gets its own diagnostic, distinct from the moved-head one" \
   "true" "$(grep -qF 'failed to read PR' <<< "$fresh_err" && echo true || echo false)"
+
+fake_curl_freshness_malformed() {
+  local out=""
+  local args=("$@")
+  for ((ai = 0; ai < ${#args[@]}; ai++)); do
+    if [ "${args[$ai]}" = "-o" ]; then out="${args[$((ai + 1))]}"; fi
+  done
+  # 2xx, but the body has no .head.sha at all — a malformed/unexpected
+  # response shape, not a moved head (go-kure/.github#99).
+  printf '{"title":"t"}' > "$out"
+  echo 200
+}
+fresh_err="$(PRT_CURL=fake_curl_freshness_malformed PRT_GH_TOKEN=x \
+  prt_freshness_check owner/repo 1 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 2>&1 >/dev/null)"
+rc=$?
+assert_eq "prt_freshness_check: a 2xx response with no .head.sha also returns 2, not 1" "2" "$rc"
+assert_eq "prt_freshness_check: malformed-response diagnostic names the missing field" \
+  "true" "$(grep -qF 'had no .head.sha' <<< "$fresh_err" && echo true || echo false)"
+
+# ============================================================ gh.sh: prt_gh_rest_fresh propagates a 4-way status (go-kure/.github#99)
+fake_curl_fresh_write_fail() {
+  # Freshness check passes (returns the expected SHA), but the wrapped
+  # write itself (the PATCH) fails with a 500 — must surface as status 3,
+  # distinct from either freshness outcome.
+  local out="" method=""
+  local args=("$@")
+  for ((ai = 0; ai < ${#args[@]}; ai++)); do
+    case "${args[$ai]}" in
+      -o) out="${args[$((ai + 1))]}" ;;
+      -X) method="${args[$((ai + 1))]}" ;;
+    esac
+  done
+  if [ "$method" = GET ]; then
+    printf '{"head":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}' > "$out"
+    echo 200
+  else
+    : > "$out"
+    echo 500
+  fi
+}
+PRT_CURL=fake_curl_fresh_write_fail PRT_GH_TOKEN=x \
+  prt_gh_rest_fresh PATCH owner/repo 1 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa /repos/owner/repo/pulls/comments/1 '{}' >/dev/null 2>&1
+assert_eq "prt_gh_rest_fresh: fresh head but the write itself fails -> status 3 (not 1 or 2)" "3" "$?"
+
+PRT_CURL=fake_curl_freshness_moved PRT_GH_TOKEN=x \
+  prt_gh_rest_fresh PATCH owner/repo 1 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa /repos/owner/repo/pulls/comments/1 '{}' >/dev/null 2>&1
+assert_eq "prt_gh_rest_fresh: genuinely-stale head short-circuits with status 1, write never attempted" "1" "$?"
+
+PRT_CURL=fake_curl_freshness_500 PRT_GH_TOKEN=x \
+  prt_gh_rest_fresh PATCH owner/repo 1 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa /repos/owner/repo/pulls/comments/1 '{}' >/dev/null 2>&1
+assert_eq "prt_gh_rest_fresh: freshness read failure short-circuits with status 2, write never attempted" "2" "$?"
 
 # ============================================================ gh.sh: prt_find_marked_comment (mocked curl, clean-verdict comment, 2026-08-22)
 fake_curl_find_marked_single_page() {
@@ -991,6 +1050,48 @@ rda_out="$(prt_report_degraded_annotations 2>/dev/null)"
 assert_eq "prt_report_degraded_annotations: still emits when the run is also incomplete" \
   "true" "$(grep -qF '::warning title=PR review threads degraded::assess transport fault' <<< "$rda_out" && echo true || echo false)"
 rm -rf "$rda_dir"
+unset PRT_INCOMPLETE_FILE PRT_DEGRADED_FILE
+
+# ============================================================ state.sh: prt_handle_freshness_rc / prt_all_degraded_are_stale (go-kure/.github#99)
+hfr_dir="$(mktemp -d)"
+prt_state_init "$hfr_dir"
+prt_handle_freshness_rc 1 "fp=abc: create" 2>/dev/null
+assert_eq "prt_handle_freshness_rc(1): routes to degraded, not incomplete" \
+  "true false" "$(prt_is_degraded && echo true || echo false) $(prt_is_incomplete && echo true || echo false)"
+assert_eq "prt_handle_freshness_rc(1): degraded reason carries the stale marker prt_all_degraded_are_stale matches on" \
+  "true" "$(grep -qF 'stale head SHA (run superseded)' <<< "$(prt_degraded_reasons)" && echo true || echo false)"
+assert_eq "prt_all_degraded_are_stale: true when the only degraded reason is staleness" \
+  "true" "$(prt_all_degraded_are_stale && echo true || echo false)"
+rm -rf "$hfr_dir"
+unset PRT_INCOMPLETE_FILE PRT_DEGRADED_FILE
+
+hfr_dir="$(mktemp -d)"
+prt_state_init "$hfr_dir"
+prt_handle_freshness_rc 2 "fp=abc: create" 2>/dev/null
+assert_eq "prt_handle_freshness_rc(2): routes to incomplete (fatal), not degraded" \
+  "false true" "$(prt_is_degraded && echo true || echo false) $(prt_is_incomplete && echo true || echo false)"
+rm -rf "$hfr_dir"
+unset PRT_INCOMPLETE_FILE PRT_DEGRADED_FILE
+
+hfr_dir="$(mktemp -d)"
+prt_state_init "$hfr_dir"
+prt_handle_freshness_rc 3 "fp=abc: setting first_absent_sha" 2>/dev/null
+assert_eq "prt_handle_freshness_rc(3): a fresh-but-failed write also routes to incomplete (fatal)" \
+  "false true" "$(prt_is_degraded && echo true || echo false) $(prt_is_incomplete && echo true || echo false)"
+rm -rf "$hfr_dir"
+unset PRT_INCOMPLETE_FILE PRT_DEGRADED_FILE
+
+hfr_dir="$(mktemp -d)"
+prt_state_init "$hfr_dir"
+assert_eq "prt_all_degraded_are_stale: false when not degraded at all" \
+  "false" "$(prt_all_degraded_are_stale && echo true || echo false)"
+prt_mark_degraded "fp=xyz: assess transport fault" 2>/dev/null
+assert_eq "prt_all_degraded_are_stale: false on a non-staleness degraded reason" \
+  "false" "$(prt_all_degraded_are_stale && echo true || echo false)"
+prt_handle_freshness_rc 1 "fp=abc: create" 2>/dev/null
+assert_eq "prt_all_degraded_are_stale: false on a MIX of staleness and other degraded reasons" \
+  "false" "$(prt_all_degraded_are_stale && echo true || echo false)"
+rm -rf "$hfr_dir"
 unset PRT_INCOMPLETE_FILE PRT_DEGRADED_FILE
 
 # ============================================================ orchestrator: exit-code contract (subprocess, mocked curl)
@@ -1417,7 +1518,16 @@ fake_curl_orchestrator() {
           if [ "$c" -le "${PRT_TEST_META_FAIL_TIMES:-0}" ]; then
             : > "$out"; echo 502; return 0
           fi
-          printf '{"title":"t","body":"d","head":{"sha":"%s"}}' "$PRT_HEAD_SHA" > "$out"
+          # go-kure/.github#99: call #1 is always the real meta fetch (must
+          # report the real head SHA so the run's own context is sane); every
+          # freshness re-check after PRT_TEST_STALE_AFTER_CALL reports a
+          # DIFFERENT, but still well-formed, head SHA — simulating a
+          # genuinely-superseding push mid-run, not a read failure.
+          if [ "${PRT_TEST_STALE_AFTER_CALL:-0}" != 0 ] && [ "$c" -gt "${PRT_TEST_STALE_AFTER_CALL}" ]; then
+            printf '{"title":"t","body":"d","head":{"sha":"%s"}}' "9999999999999999999999999999999999999999" > "$out"
+          else
+            printf '{"title":"t","body":"d","head":{"sha":"%s"}}' "$PRT_HEAD_SHA" > "$out"
+          fi
           echo 200
           ;;
       esac
@@ -1485,6 +1595,7 @@ run_orchestrator() {
     PRT_TEST_ASSESS_RESPONSE_MODE="${PRT_TEST_ASSESS_RESPONSE_MODE:-clean}" \
     PRT_TEST_ASSESS_ALWAYS_FAIL="${PRT_TEST_ASSESS_ALWAYS_FAIL:-0}" \
     PRT_TEST_INVENTORY_MODE="${PRT_TEST_INVENTORY_MODE:-single}" \
+    PRT_TEST_STALE_AFTER_CALL="${PRT_TEST_STALE_AFTER_CALL:-0}" \
     PRT_GH_TOKEN=x PRT_REPO=owner/repo PRT_PR_NUMBER=1 \
     PRT_HEAD_SHA=1111111111111111111111111111111111111111 \
     PRT_BOT_LOGIN="test-bot[bot]" PRT_PROXY_URL="http://proxy.invalid" \
@@ -1847,6 +1958,25 @@ assert_eq "orchestrator: enforce + empty diff + first sighting -> resolve count 
   "0" "$(cat "$PRT_TEST_RESOLVE_COUNTFILE" 2>/dev/null || echo 0)"
 assert_eq "orchestrator: enforce + empty diff + first sighting -> model count 0 (no findings pipeline on empty diff)" \
   "0" "$(cat "$PRT_TEST_MODEL_COUNTFILE" 2>/dev/null || echo 0)"
+
+# go-kure/.github#99: same scenario, but the head genuinely moves between
+# the meta fetch (call #1) and the SET_FIRST_ABSENT freshness re-check
+# (call #2 onward) — the run's ONLY REVIEW_DEGRADED reason is that
+# staleness, so the tail exit gate must take the quiet "Stale run" path
+# (exit 0, distinct log line) rather than the generic REVIEW_DEGRADED
+# warning recap, and must NOT attempt the now-stale PATCH at all.
+PRT_TEST_EMPTY_DIFF=1
+PRT_TEST_FIRST_ABSENT_SHA=""
+PRT_TEST_STALE_AFTER_CALL=1
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator: staleness-only run (head moved before SET_FIRST_ABSENT write) -> exits 0" "0" "$rc"
+assert_eq "orchestrator: staleness-only run -> logs the distinct 'Stale run' message" \
+  "true" "$(grep -qF 'Stale run: head moved; a newer run is already queued' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator: staleness-only run -> PATCH never attempted (skipped, not retried into a false success)" \
+  "0" "$(cat "$PRT_TEST_PATCH_COUNTFILE" 2>/dev/null || echo 0)"
+assert_eq "orchestrator: staleness-only run -> does NOT emit the generic REVIEW_DEGRADED warning recap" \
+  "false" "$(grep -qF 'WARNING: review degraded' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_STALE_AFTER_CALL=0
 
 # enforce + empty diff + owned open thread + first_absent_sha on a
 # different commit than this run's head -> the second absence -> resolve.

@@ -140,6 +140,48 @@ prt_degraded_reasons() {
 # incomplete AND a degraded reason silently dropped the degraded stderr
 # recap and ::warning annotations, even though the same run's job summary
 # still carried them.
+# prt_handle_freshness_rc RC CONTEXT — routes a non-zero return from
+# gh.sh's prt_freshness_check (1|2) or prt_gh_rest_fresh (1|2|3) to the
+# correct severity (go-kure/.github#99). CONTEXT is a short human-readable
+# description of what was being attempted (e.g. "fp=$fp: create",
+# "advisory comment") — this function appends the routing reason to it, so
+# callers should not also append their own "stale head SHA" text.
+#
+# RC 1 (genuinely-stale head, gh.sh:107-146's docstring): prt_mark_degraded,
+# not prt_mark_incomplete. Safe ONLY because a superseding run for the new
+# head SHA is guaranteed to be queued (`.github/workflows/pr-review.yml`'s
+# `cancel-in-progress: false`) — every reason string used here contains the
+# literal substring "stale head SHA (run superseded)" so the tail-of-script
+# exit gate can recognize a run whose ONLY degraded reasons are this kind
+# and give it the distinct "Stale run" log line instead of the generic
+# REVIEW_DEGRADED warning recap. Do not change that substring without also
+# updating the tail gate's match.
+#
+# RC 2 (PR read failed / malformed response) and RC 3 (freshness passed but
+# the write itself failed) both stay fatal via prt_mark_incomplete — neither
+# means "a newer run will redo this."
+prt_handle_freshness_rc() {
+  local rc="$1" context="$2"
+  case "$rc" in
+    1) prt_mark_degraded "${context}: stale head SHA (run superseded), write skipped" ;;
+    2) prt_mark_incomplete "${context}: PR read failed or returned no .head.sha, write skipped" ;;
+    3) prt_mark_incomplete "${context}: write failed after a fresh head SHA check" ;;
+    *) prt_mark_incomplete "${context}: freshness routing returned unexpected status '${rc}'" ;;
+  esac
+}
+
+# prt_all_degraded_are_stale — true if REVIEW_DEGRADED has at least one
+# reason recorded AND every single one of them is a prt_handle_freshness_rc
+# RC-1 staleness reason (go-kure/.github#99). Used by the tail exit gate to
+# distinguish "this run's only problem was a superseded head SHA" (log the
+# quiet "Stale run" message, matching meta/ci-templates/mr-review.yml's
+# GitLab behavior) from "degraded for other/mixed reasons too" (the existing
+# generic REVIEW_DEGRADED warning recap already covers that case).
+prt_all_degraded_are_stale() {
+  prt_is_degraded || return 1
+  ! prt_degraded_reasons | grep -qv 'stale head SHA (run superseded)'
+}
+
 prt_report_degraded_annotations() {
   prt_is_degraded || return 0
   echo "WARNING: review degraded — some non-fatal issues occurred. Reasons:" >&2
