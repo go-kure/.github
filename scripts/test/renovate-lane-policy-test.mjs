@@ -72,6 +72,13 @@ const { getOptions } = await import(optionsModuleSpecifier);
 const vulnerabilityAlertsOption = getOptions().find(
   (o) => o.name === "vulnerabilityAlerts",
 );
+if (!vulnerabilityAlertsOption) {
+  console.error(
+    `FATAL: no "vulnerabilityAlerts" option found via ${optionsModuleSpecifier} — ` +
+      "the installed renovate version may have renamed or removed it; check VULN_MATRIX below still applies.",
+  );
+  process.exit(1);
+}
 const resolvedVulnerabilityAlerts = {
   ...vulnerabilityAlertsOption.default,
   ...preset.vulnerabilityAlerts,
