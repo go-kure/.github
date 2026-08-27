@@ -52,6 +52,21 @@ RULESET_IMPORT_JQ_CACHE=""
 declare -A LABEL_RENAME_MAP=(
     ["bug"]="type/bug"
     ["enhancement"]="type/feature"
+    # go-kure/.github#121 — status::/priority::/effort:: -> slash-separated.
+    # Kept permanently (not removed once the rename lands) so a repo that
+    # missed the apply run, or drifts back via manual label creation, self-heals
+    # on the next audit instead of accumulating both spellings.
+    ["status::deferred"]="status/deferred"
+    ["status::blocked"]="status/blocked"
+    ["status::needs-review"]="status/needs-review"
+    ["status::in-progress"]="status/in-progress"
+    ["priority::critical"]="priority/critical"
+    ["priority::high"]="priority/high"
+    ["priority::medium"]="priority/medium"
+    ["priority::low"]="priority/low"
+    ["effort::low"]="effort/low"
+    ["effort::medium"]="effort/medium"
+    ["effort::high"]="effort/high"
 )
 
 # Top-level repo settings tracked by policy (audit_repo_settings + import_repo).

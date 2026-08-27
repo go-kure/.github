@@ -3,42 +3,42 @@
   "description": "Standard issue labels for go-kure repos. See labels.md for naming conventions.",
   "labels": [
     {
-      "name": "status::deferred",
+      "name": "status/deferred",
       "color": "#FEF2C0",
-      "description": "[deprecated] Use Milestone=Later instead"
+      "description": "Blocked or postponed for later"
     },
     {
-      "name": "status::blocked",
+      "name": "status/blocked",
       "color": "#D93F0B",
-      "description": "[deprecated] Use project Status=Blocked instead"
+      "description": "Blocked by external dependency"
     },
     {
-      "name": "status::needs-review",
+      "name": "status/needs-review",
       "color": "#0E8A16",
-      "description": "[deprecated] Use project Status=In Review instead"
+      "description": "Awaiting review"
     },
     {
-      "name": "status::in-progress",
+      "name": "status/in-progress",
       "color": "#1D76DB",
-      "description": "[deprecated] Use project Status=In Progress instead"
+      "description": "Currently being worked on"
     },
     {
-      "name": "priority::critical",
+      "name": "priority/critical",
       "color": "#B60205",
       "description": "Must be fixed immediately"
     },
     {
-      "name": "priority::high",
+      "name": "priority/high",
       "color": "#D93F0B",
       "description": "Important, fix soon"
     },
     {
-      "name": "priority::medium",
+      "name": "priority/medium",
       "color": "#FBCA04",
       "description": "Normal priority"
     },
     {
-      "name": "priority::low",
+      "name": "priority/low",
       "color": "#0E8A16",
       "description": "Nice to have, not urgent"
     },
@@ -153,17 +153,17 @@
       "description": "Changes a surface an external consumer imports"
     },
     {
-      "name": "effort::low",
+      "name": "effort/low",
       "color": "#0E8A16",
       "description": "Small task, single pattern change"
     },
     {
-      "name": "effort::medium",
+      "name": "effort/medium",
       "color": "#FBCA04",
       "description": "Moderate task, some design needed"
     },
     {
-      "name": "effort::high",
+      "name": "effort/high",
       "color": "#D93F0B",
       "description": "Large task, cross-repo or new patterns"
     },
