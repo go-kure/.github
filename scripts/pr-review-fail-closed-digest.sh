@@ -50,6 +50,16 @@
 # org is not, and must not look the same on exit.
 
 set -euo pipefail
+# Without this, `set -e` is silently unset inside every command-substitution
+# subshell by default (bash's non-POSIX default) — a gh_api_call failure
+# three function calls deep inside `x="$(some_func ...)"` would NOT abort
+# this script; it would fall through into the network functions' own
+# subsequent jq parses on an empty/garbage response and, worst case, loop
+# forever retrying the same failing page (codex round 1 finding, confirmed
+# by direct reproduction — see the commit history for this line). This
+# restores the fail-closed guarantee the header above promises for every
+# gh_api_call call site, not only the ones at true top level.
+shopt -s inherit_errexit
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -272,7 +282,7 @@ pr_digest_find_workflow_id() {
   local repo="$1" page=1 per_page=100
   while :; do
     local resp batch id n
-    resp="$(gh_api_call "$GH_API_BASE/repos/$GITHUB_ORG/$repo/actions/workflows?per_page=${per_page}&page=${page}")"
+    resp="$(gh_api_call GET "$GH_API_BASE/repos/$GITHUB_ORG/$repo/actions/workflows?per_page=${per_page}&page=${page}")"
     batch="$(jq -c '.workflows' <<<"$resp")"
     id="$(jq -r '.[] | select(.name == "PR Review") | .id' <<<"$batch" | head -1)"
     if [ -n "$id" ]; then
@@ -300,7 +310,7 @@ pr_digest_list_failed_runs() {
   local acc='[]'
   while :; do
     local resp batch n
-    resp="$(gh_api_call "$GH_API_BASE/repos/$GITHUB_ORG/$repo/actions/workflows/$workflow_id/runs?status=failure&created=%3E%3D${since_date}&per_page=${per_page}&page=${page}")"
+    resp="$(gh_api_call GET "$GH_API_BASE/repos/$GITHUB_ORG/$repo/actions/workflows/$workflow_id/runs?status=failure&created=%3E%3D${since_date}&per_page=${per_page}&page=${page}")"
     batch="$(jq -c '.workflow_runs' <<<"$resp")"
     acc="$(jq -c -n --argjson a "$acc" --argjson b "$batch" '$a + $b')"
     n="$(jq 'length' <<<"$batch")"
@@ -320,13 +330,13 @@ pr_digest_list_failed_runs() {
 pr_digest_get_annotations_for_run() {
   local repo="$1" run_id="$2"
   local jobs_resp check_run_url
-  jobs_resp="$(gh_api_call "$GH_API_BASE/repos/$GITHUB_ORG/$repo/actions/runs/$run_id/jobs?per_page=100")"
+  jobs_resp="$(gh_api_call GET "$GH_API_BASE/repos/$GITHUB_ORG/$repo/actions/runs/$run_id/jobs?per_page=100")"
   check_run_url="$(jq -r '.jobs[] | select(.name == "AI Code Review") | .check_run_url' <<<"$jobs_resp" | head -1)"
   if [ -z "$check_run_url" ]; then
     echo "[]"
     return 0
   fi
-  gh_api_call "${check_run_url}/annotations?per_page=100"
+  gh_api_call GET "${check_run_url}/annotations?per_page=100"
 }
 
 # --- Main -------------------------------------------------------------------
