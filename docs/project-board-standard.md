@@ -16,9 +16,11 @@ the Stream field, stayed in active use instead — 32 of 44 open launcher issues
 `area/*` label. Practice never followed the standard; the standard is what changed.
 
 The four Projects v2 boards this document governed — `1` Kure Roadmap, `2` Documentation
-Versioning, `3` OAM Runtime, `4` Launcher Roadmap — were deleted 2026-08-27 after migrating their
-field values to labels. `area/*` is un-deprecated and restored as an open per-repo namespace
-(`standards/labels.md`); planning runs on labels alone.
+Versioning, `3` OAM Runtime, `4` Launcher Roadmap — are scheduled for deletion after this change
+merges, once their field values are migrated to labels (a one-way forge operation, run only on
+explicit go-ahead — not part of this change). `area/*` is un-deprecated and restored as an open
+per-repo namespace (`standards/labels.md`); planning runs on labels alone as of this change,
+regardless of when the boards themselves are actually deleted.
 
 ---
 

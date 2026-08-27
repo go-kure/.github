@@ -145,12 +145,14 @@
     {
       "name": "area/oam",
       "color": "#5319E7",
-      "description": "OAM component/trait model"
+      "description": "OAM component/trait model",
+      "repos": ["launcher"]
     },
     {
       "name": "area/distribution",
       "color": "#5319E7",
-      "description": "Packaging and OCI distribution"
+      "description": "Packaging and OCI distribution",
+      "repos": ["launcher"]
     },
     {
       "name": "scope/launcher",
