@@ -15,4 +15,4 @@ Documentation: [www.gokure.dev](https://www.gokure.dev)
 
 **launcher** — OAM Phase 2 (built-in handlers): helmchart component type with native FluxCD and template delivery modes.
 
-Roadmap: [Kure Roadmap](https://github.com/orgs/go-kure/projects/1) · [OAM Runtime](https://github.com/orgs/go-kure/projects/3)
+Roadmap: tracked via `area/*` and `priority/*` issue labels — [kure issues](https://github.com/go-kure/kure/issues) · [launcher issues](https://github.com/go-kure/launcher/issues)
