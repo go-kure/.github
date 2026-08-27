@@ -391,6 +391,38 @@ summary_out=$( (SETTINGS_OK=5 SETTINGS_MISSING=2 SETTINGS_BLOCKED=1 JSON_OUTPUT=
 assert_contains "print_summary (--apply) keeps the applied count exclusive of blocked settings" "$summary_out" "2 applied"
 assert_contains "print_summary (--apply) reports blocked settings separately" "$summary_out" "1 blocked (audit-only, unresolved)"
 
+# ---- print_summary: a label DUPLICATE (old and new spelling coexisting —
+# go-kure/.github#122's launcher status::deferred/status/deferred case) must
+# fail an audit run's exit status, not just print a line nobody's exit-code
+# check reads. This is the regression guard for #122's second review round:
+# LABELS_BLOCKED already fed total_issues via SETTINGS_BLOCKED-shaped logic,
+# but the newer LABELS_DUPLICATE counter did not, until this fix. ----
+
+dup_audit_rc=$( (LABELS_DUPLICATE=1 JSON_OUTPUT=false print_summary false) >/dev/null 2>&1; echo $? )
+if [ "$dup_audit_rc" -eq 1 ]; then
+    echo "PASS: print_summary (audit) exits non-zero when a label DUPLICATE is present"
+    pass_count=$((pass_count + 1))
+else
+    echo "FAIL: print_summary (audit) should exit 1 on a label DUPLICATE, got rc=$dup_audit_rc"
+    failures=$((failures + 1))
+fi
+
+dup_audit_out=$( (LABELS_DUPLICATE=1 JSON_OUTPUT=false print_summary false) 2>&1 )
+assert_contains "print_summary (audit) reports the duplicate count" "$dup_audit_out" "1 duplicate"
+
+# --apply can't auto-fix a DUPLICATE (it needs a human to pick which issues
+# move where — see the DUPLICATE echo at github-settings.sh:871), so an
+# apply run intentionally still exits 0 on one; the daily audit-mode cron
+# is the real gate. Pin that as a decision, not a silent gap.
+dup_apply_rc=$( (LABELS_DUPLICATE=1 JSON_OUTPUT=false print_summary true) >/dev/null 2>&1; echo $? )
+if [ "$dup_apply_rc" -eq 0 ]; then
+    echo "PASS: print_summary (--apply) still exits 0 on an unresolved duplicate (audit mode is the gate)"
+    pass_count=$((pass_count + 1))
+else
+    echo "FAIL: print_summary (--apply) unexpectedly changed exit behavior on a label DUPLICATE, got rc=$dup_apply_rc"
+    failures=$((failures + 1))
+fi
+
 echo ""
 echo "github-settings-test: $pass_count passed, $failures failed"
 if [ "$failures" -gt 0 ]; then
