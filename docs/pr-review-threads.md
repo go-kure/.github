@@ -227,15 +227,26 @@ failed on retry (...)` if it's the retry attempt that faulted), with no parse at
 that call — this closes, on the review call's own retry, the same mislabeling gap a codex review
 found and fixed for the assess call's retry first (see below): a transport fault there was
 originally being collapsed into the "not valid JSON" branch instead of reported as its own kind of
-failure. It also gets one bounded retry — not `prt_retry`'s usual 3, each call already costs 40-60s
-against the job's `timeout-minutes: 20` budget — when a 2xx response fails the `jq -c '.'` parse
-(`pr-review-threads.sh:244-316`), with a salvage attempt interposed ahead of that retry:
-`prt_extract_json_braces` (`model.sh:33-53`) takes the substring from the first `{` to the last
-`}` in the raw content and re-parses that, a no-op on already-clean JSON and a fix for a chattier
-generation that wraps the JSON object in prose (`prt_strip_fence`, `model.sh:26-31`, only strips a
-fenced-code-block marker that is itself the first/last line, not surrounding prose). This closes a
-live incident: launcher#283 run 32175849548 hit `chunk 0: review response was not valid JSON` ->
-`prt_mark_incomplete` -> fail-closed exit, then succeeded on a same-head-SHA retry 39s later.
+failure. A transport fault on the **original** attempt is deliberately not retried at all — only a
+2xx response reaching the parse/normalize stage below can trigger the bounded retry.
+
+A 2xx response is parsed via `prt_parse_or_salvage` (`pr-review-threads.sh`, local to the
+orchestrator, next to the chunk loop it serves — not `model.sh`, since it's purely a compact-JSON-
+or-salvage wrapper, not a model call): a direct `jq -c '.'` attempt, falling back to a salvage pass
+ahead of the (bounded-to-1) retry — cheapest recovery first. `prt_extract_json_braces`
+(`model.sh:33-53`) takes the substring from the first `{` to the last `}` in the raw content and
+re-parses that, a no-op on already-clean JSON and a fix for a chattier generation that wraps the
+JSON object in prose (`prt_strip_fence`, `model.sh:26-31`, only strips a fenced-code-block marker
+that is itself the first/last line, not surrounding prose). go-kure/.github#95: the one bounded
+retry — not `prt_retry`'s usual 3, each call already costs 40-60s against the job's
+`timeout-minutes: 20` budget — now fires on **either** of two triggers: `prt_parse_or_salvage`
+failing outright (a 2xx response that's unparseable even after salvage), or a parse that succeeds
+but whose `.findings` is then rejected by `prt_normalize_findings` (rc=1, see below) — previously
+only the first trigger retried; the second went straight to fatal with no retry at all, the
+asymmetry `#95` closes. Either trigger consumes the same retry budget (at most two model calls per
+chunk, unchanged). This closes a live incident: launcher#283 run 32175849548 hit `chunk 0: review
+response was not valid JSON` -> `prt_mark_incomplete` -> fail-closed exit, then succeeded on a
+same-head-SHA retry 39s later.
 Raising `PRT_MAX_TOKENS` or checking for `finish_reason == "length"` cannot fix this against the
 current model-proxy backend — it hard-codes `maxTokens` server-side and `finish_reason` is
 unconditionally `"stop"` on its non-streaming path. If both the retry and the salvage still fail
@@ -302,30 +313,43 @@ the review call's own `.findings` field, via a three-way exit status (go-kure/.g
 clean, `1` when `.findings` itself is missing/null/non-array, OR it was array-shaped but every
 element was malformed and dropped (a non-empty `.findings` array whose normalized result is empty
 is total loss, not partial degradation — go-kure/.github#98 round 1 codex finding P1) — either way
-nothing usable came out of the chunk (`REVIEW_INCOMPLETE`), `2` when `.findings` was array-shaped and one or more
+nothing usable came out of that attempt, `2` when `.findings` was array-shaped and one or more
 individual rows were malformed and dropped while the rest survived (`REVIEW_DEGRADED`, reason text
-`chunk N: partial-drop — ...`). The two used to share one exit code and one message; splitting them
-needed a second change beyond the exit code, because `prt_normalize_findings` returning nonzero
-also exists so a dropped row's *existing* review thread isn't read as absent this run
-(`finding.sh:134-139`) — the absence loop's `incomplete_now` (`pr-review-threads.sh`, immediately
-before its owned-thread loop) derives from `prt_is_incomplete` alone, so a partial-drop chunk that
-now only calls `prt_mark_degraded` would stop setting it. The fix folds the `partial-drop` reason
-directly into that check (`prt_degraded_reasons | grep -q 'partial-drop'`) rather than dual-marking:
-`prt_decide_absent`'s `review_incomplete=true` branch (`reconcile.sh:111-114`) then still forces
-`CLEAR_MARKER`/`NONE` instead of `SET_FIRST_ABSENT`/`REPLY_RESOLVE` for that thread, exactly as it
-would for a true `REVIEW_INCOMPLETE` run, without the run itself failing closed.
+`chunk N: partial-drop — ...`, unconditionally usable on the first attempt — see below). The two
+used to share one exit code and one message; splitting them needed a second change beyond the exit
+code, because `prt_normalize_findings` returning nonzero also exists so a dropped row's *existing*
+review thread isn't read as absent this run (`finding.sh:134-139`) — the absence loop's
+`incomplete_now` (`pr-review-threads.sh`, immediately before its owned-thread loop) derives from
+`prt_is_incomplete` alone, so a partial-drop chunk that now only calls `prt_mark_degraded` would
+stop setting it. The fix folds the `partial-drop` reason directly into that check
+(`prt_degraded_reasons | grep -q 'partial-drop'`) rather than dual-marking: `prt_decide_absent`'s
+`review_incomplete=true` branch (`reconcile.sh:111-114`) then still forces `CLEAR_MARKER`/`NONE`
+instead of `SET_FIRST_ABSENT`/`REPLY_RESOLVE` for that thread, exactly as it would for a true
+`REVIEW_INCOMPLETE` run, without the run itself failing closed.
+
+**rc=1 is no longer unconditionally fatal (go-kure/.github#95).** A response that parses fine but
+whose `.findings` normalizes to rc=1 (nothing usable) now gets the identical bounded retry a
+review-call parse failure already got (previous paragraph) — the asymmetry closed was that only the
+parse failure retried, while a shape-valid-but-rejected `.findings` went straight to fatal on the
+very first attempt. If the retry ALSO returns rc=1, the residual failure is routed into the same
+`review_parse_failures` collection described next, with reason text `chunk N: .findings
+missing/null/non-array, or all rows malformed and dropped (after retry=<bool>)` — not called as
+`prt_mark_incomplete` inline any more. Whether that residual failure is ultimately fatal or merely
+degraded is decided the same way as any other entry in that collection: see below.
 
 A review-call parse or transport failure surviving the salvage-and-retry above (both the failed
-attempts described in the paragraph above, and the equivalent transport-fault case) used to call
-`prt_mark_incomplete` unconditionally, at the point the failure happened — one bad chunk failed
-the whole run closed even when every other chunk reviewed cleanly, unlike the GitLab
-`ci-templates/mr-review.yml` job's own tolerance for a partial chunk failure. `go-kure/.github#107`
-fixes this: each such failure is collected (`review_parse_failures`,
+attempts described two paragraphs up, and the equivalent transport-fault case), and — since
+go-kure/.github#95 — a normalize rc=1 residual failure surviving its own retry (previous
+paragraph), used to call `prt_mark_incomplete` unconditionally, at the point the failure happened —
+one bad chunk failed the whole run closed even when every other chunk reviewed cleanly, unlike the
+GitLab `ci-templates/mr-review.yml` job's own tolerance for a partial chunk failure. `go-kure/.github#107`
+fixes this for the review-call cases (`#95` extends it to the normalize rc=1 case): each such
+failure is collected (`review_parse_failures`,
 `pr-review-threads.sh`) as the review loop runs rather than acted on inline, and the decision is
 made once, after every chunk has been attempted, by `prt_resolve_review_parse_failures` (`state.sh`)
-— fatal (`REVIEW_INCOMPLETE`) only when *every* chunk in the run hit this failure (nothing was
-reviewed at all, matching GitLab's own `REVIEW_NO_STRUCTURED_OUTPUT` → `exit 2` for the identical
-all-chunks-failed condition); `REVIEW_DEGRADED`, tagged `review-parse-failed: ...`, when at least
+— fatal (`REVIEW_INCOMPLETE`) only when *every* chunk in the run hit one of these failures (nothing
+was reviewed at all, matching GitLab's own `REVIEW_NO_STRUCTURED_OUTPUT` → `exit 2` for the
+identical all-chunks-failed condition); `REVIEW_DEGRADED`, tagged `review-parse-failed: ...`, when at least
 one other chunk produced usable findings. The tag is load-bearing the same way `partial-drop` is
 just above: the absence loop's `incomplete_now` check greps `prt_degraded_reasons` for it
 (`pr-review-threads.sh`, alongside the existing `partial-drop` grep), so a chunk that never parsed
