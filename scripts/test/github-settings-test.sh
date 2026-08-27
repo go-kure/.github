@@ -478,7 +478,7 @@ drift_fixture_dir="$(mktemp -d)"
 trap 'rm -rf "$drift_fixture_dir"' EXIT
 DRIFT_LABELS_FILE="$drift_fixture_dir/labels.json"
 cat >"$DRIFT_LABELS_FILE" <<'EOF'
-{"labels": [{"name": "test/foo", "color": "#112233", "description": "expected desc"}]}
+{"labels": [{"name": "test/foo", "color": "#AABBCC", "description": "expected desc"}]}
 EOF
 
 # run_audit_labels_fixture LIVE_ROW — stubs get_github_labels to return
@@ -506,40 +506,43 @@ run_audit_labels_fixture() {
     rm -f "$out_file"
 }
 
-# color differs only (case-insensitive on the live side, so this must be a
-# REAL difference, not a casing artifact — the next case pins that).
-result="$(run_audit_labels_fixture $'test/foo\x1faabbcc\x1fexpected desc')"
+# The fixture color is #AABBCC, not a digits-only hex: every case below has to
+# distinguish a casing difference from a real one, and 112233 lowercased is
+# still 112233 — a digits-only fixture makes the normalization cases pass
+# whether or not the comparison lowercases anything at all.
+#
+# color differs only — 112233 vs the fixture's AABBCC is a REAL difference in
+# either casing, so this isolates the color half of the comparison.
+result="$(run_audit_labels_fixture $'test/foo\x1f112233\x1fexpected desc')"
 assert_eq "color-only drift is detected, not counted OK" "0,1" "${result%%$'\t'*}"
 assert_contains "color-only drift prints WRONG" "${result#*$'\t'}" "WRONG: test/foo"
 
 # description differs only
-result="$(run_audit_labels_fixture $'test/foo\x1f112233\x1fstale desc')"
+result="$(run_audit_labels_fixture $'test/foo\x1faabbcc\x1fstale desc')"
 assert_eq "description-only drift is detected" "0,1" "${result%%$'\t'*}"
 
 # both differ
-result="$(run_audit_labels_fixture $'test/foo\x1faabbcc\x1fstale desc')"
+result="$(run_audit_labels_fixture $'test/foo\x1f112233\x1fstale desc')"
 assert_eq "drift in both color and description is still just one drifted label" "0,1" "${result%%$'\t'*}"
 
-# exact match — no false positive
-result="$(run_audit_labels_fixture $'test/foo\x1f112233\x1fexpected desc')"
-assert_eq "an exact metadata match reports OK, not drift" "1,0" "${result%%$'\t'*}"
+# Exact match, and the normalization pin in one: this is the real-world pairing
+# — the GitHub API returns colors lowercased ('5319e7') while labels.json
+# stores them uppercase ('#5319E7'). Drop either `tr` call in audit_labels and
+# aabbcc stops matching AABBCC, so this assertion flips to drift and fails.
+result="$(run_audit_labels_fixture $'test/foo\x1faabbcc\x1fexpected desc')"
+assert_eq "a lowercase live color matches the uppercase standard (no false drift)" "1,0" "${result%%$'\t'*}"
 
 # live description missing entirely (API returns null -> get_github_labels
 # emits "" for that field) — must read as drift against a non-empty expected
 # description, not as a parse failure.
-result="$(run_audit_labels_fixture $'test/foo\x1f112233\x1f')"
+result="$(run_audit_labels_fixture $'test/foo\x1faabbcc\x1f')"
 assert_eq "an empty/null live description is drift, not a crash" "0,1" "${result%%$'\t'*}"
 
-# case-only color difference must NOT register as drift — the live API's
-# hex casing is not guaranteed, and labels.json's own casing is inconsistent
-# across entries (mixed case is normal, not a signal).
-result="$(run_audit_labels_fixture $'test/foo\x1f112233\x1fexpected desc')"
-assert_eq "case-only color difference is not drift" "1,0" "${result%%$'\t'*}"
+# The other casing direction — a live value that already matches the standard's
+# casing must not be treated as drift either, so neither side is assumed to
+# arrive in a particular case.
 result="$(run_audit_labels_fixture $'test/foo\x1fAABBCC\x1fexpected desc')"
-# AABBCC vs the fixture's #112233 (-> 112233) is a REAL mismatch once
-# lowercased, not a casing false-positive — sanity check the negative case
-# above isn't vacuously true because the comparison never runs.
-assert_eq "an uppercase-but-genuinely-different color is still drift" "0,1" "${result%%$'\t'*}"
+assert_eq "an uppercase live color matches the uppercase standard" "1,0" "${result%%$'\t'*}"
 
 rm -rf "$drift_fixture_dir"
 trap - EXIT
