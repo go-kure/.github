@@ -71,18 +71,19 @@ This ensures new issues appear on the board automatically without manual triage.
 
 ## Label Policy
 
-`area/*` and `status/*` issue labels are **deprecated** in favour of project fields.
+`area/*` issue labels are **deprecated** in favour of the Stream project field.
 
 | Replaced by | Labels |
 |---|---|
 | Stream project field | `area/cli`, `area/core`, `area/docs`, `area/flux`, `area/helm`, `area/k8s`, `area/layout` |
-| Project Status field | `status/blocked`, `status/needs-review`, `status/in-progress` |
-| Milestone = Later | `status/deferred` |
 
 **Policy for deprecated labels:**
 
-- Do **not** apply `area/*` or `status/*` to new or open issues.
+- Do **not** apply `area/*` to new or open issues.
 - Do **not** delete the labels — they are kept for historical compatibility on closed issues.
-- When triaging a new issue: set the GitHub milestone (Now / Next / Later), then set Stream and Status on the project item.
+- When triaging a new issue: set the GitHub milestone (Now / Next / Later), then set Stream on the project item.
 
-`effort/*` and `type/*` labels remain active and valid for new issues.
+`status/*` was previously listed here as deprecated in favour of the Status project field and the
+Later milestone, but that replacement was never actually adopted in practice — see
+go-kure/.github#119's investigation into dormant project boards. `status/*`, `priority/*`,
+`effort/*` and `type/*` labels remain active and valid for new issues (go-kure/.github#121).

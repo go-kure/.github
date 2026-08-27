@@ -148,10 +148,19 @@ jobs:
               "" \
               "This issue rolls forward: a recurrence reopens it (if closed) and adds a" \
               "comment with the new window's table, rather than opening a duplicate.")"
-            gh issue create --repo go-kure/.github \
+            # Create first, label second (best-effort): issue creation is the
+            # actual alert and must not be blocked by a label that doesn't
+            # exist yet, e.g. in the window between go-kure/.github#121
+            # merging (renames priority::high -> priority/high in code) and
+            # its live settings.yml apply run actually renaming the label on
+            # this repo -- gh issue create resolves --label via GraphQL and
+            # errors on an unknown name, unlike the REST API's old
+            # auto-create-on-issue behavior.
+            issue_url="$(gh issue create --repo go-kure/.github \
               --title "PR review fail-closed digest: ${affected_count} events in ${window_hours}h" \
-              --label type/ci --label "priority/high" \
-              --body "$body"
+              --body "$body")"
+            gh issue edit "$issue_url" --add-label type/ci --add-label "priority/high" \
+              || echo "::warning::could not add labels to $issue_url (label may not exist yet)"
           else
             number="$(jq -r '.number' <<<"$match")"
             state="$(jq -r '.state' <<<"$match")"
