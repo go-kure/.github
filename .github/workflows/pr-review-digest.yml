@@ -173,5 +173,11 @@ jobs:
             if [ "$state" != "OPEN" ] && [ "$state" != "open" ]; then
               gh issue reopen --repo go-kure/.github "$number"
             fi
+            # Best-effort, same as the create branch: retries in case the
+            # rolling issue's original creation landed in the label-missing
+            # window above and never got labeled. Idempotent -- a no-op if
+            # both labels are already present.
+            gh issue edit --repo go-kure/.github "$number" --add-label type/ci --add-label "priority/high" \
+              || echo "::warning::could not add labels to #$number (label may not exist yet)"
             gh issue comment --repo go-kure/.github "$number" --body "$comment_body"
           fi
