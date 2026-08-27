@@ -153,12 +153,11 @@ prt_render_overflow_comment() {
 # — used in `advisory` mode, where NO thread is ever created; this single
 # comment carries the merged review+assessment table, matching today's
 # plain-comment behavior exactly. INCOMPLETE_REASONS, when non-empty, is
-# rendered as a visible warning banner — this comment is the only
-# reviewer-visible surface `advisory` mode ever produces (it creates no
-# threads), so if every chunk's model call failed the empty findings list
-# must not read as a clean "No issues found." on that surface, with the
-# failure visible only in $GITHUB_STEP_SUMMARY (dot-github#50 gmr finding
-# B4). DEGRADED_REASONS (go-kure/.github#98) mirrors that same
+# rendered as a visible warning banner — advisory is the only live-wired
+# mode, so if every chunk's model call failed the empty findings list must
+# not read as a clean "No issues found." on the review's own output surface,
+# with the failure visible only in $GITHUB_STEP_SUMMARY (dot-github#50 gmr
+# finding B4). DEGRADED_REASONS (go-kure/.github#98) mirrors that same
 # disclosure requirement for the run's non-fatal problems: `prt_mark_degraded`
 # covers several distinct shapes (a chunk's malformed rows dropped, an
 # assess-call transport fault, an assess response unparseable after
