@@ -216,8 +216,10 @@ prt_all_degraded_are_stale() {
 # way — nothing was reviewed at all, mirroring the downstream platform's
 # equivalent job's own "no chunk produced structured output" fatal exit for
 # the identical condition. Degraded (prt_mark_degraded) when at least one
-# chunk produced parseable review JSON — that same job's tolerance for a
-# partial chunk failure ("a run where most chunks parsed is a partial
+# OTHER chunk completed review+normalize with usable output (rc=0 clean, or
+# rc=2 partial-drop — parseable-but-rejected-after-retry, rc=1, is itself
+# one of the collected failures, not a success) — that same job's tolerance
+# for a partial chunk failure ("a run where most chunks parsed is a partial
 # review, not an absent one").
 #
 # The "review-parse-failed:" prefix on each degraded reason is load-bearing,

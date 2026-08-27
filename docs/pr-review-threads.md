@@ -279,7 +279,7 @@ possible. Equal fingerprints across runs prove it; differing ones redirect the i
 something diff-dependent.
 
 The model-assess call (`prt_model_assess`, `model.sh:329-357`) gets the identical salvage-then-retry
-treatment (`pr-review-threads.sh:372-466`), for the same reason: it shares the backend and the
+treatment (`pr-review-threads.sh:447-543`), for the same reason: it shares the backend and the
 same prose-wrapping failure mode, so it gets the same recovery, not a lesser one. Before this, a
 non-2xx/curl/empty-content failure from `prt_model_assess` was indistinguishable from a 2xx response
 that simply wasn't parseable JSON — both fell through into an empty `assess_raw` and the same
@@ -308,7 +308,7 @@ Both are covered by the unit suite, including an explicit assertion that neither
 nor `prt_response_shape` ever echoes any part of the response, and that every emitted class is a
 member of the declared enum.
 
-`prt_normalize_findings` (`finding.sh:79-151`) draws the same fatal/degraded line one level up, on
+`prt_normalize_findings` (`finding.sh:85-161`) draws the same fatal/degraded line one level up, on
 the review call's own `.findings` field, via a three-way exit status (go-kure/.github#98): `0`
 clean, `1` when `.findings` itself is missing/null/non-array, OR it was array-shaped but every
 element was malformed and dropped (a non-empty `.findings` array whose normalized result is empty
@@ -318,7 +318,7 @@ individual rows were malformed and dropped while the rest survived (`REVIEW_DEGR
 `chunk N: partial-drop — ...`, unconditionally usable on the first attempt — see below). The two
 used to share one exit code and one message; splitting them needed a second change beyond the exit
 code, because `prt_normalize_findings` returning nonzero also exists so a dropped row's *existing*
-review thread isn't read as absent this run (`finding.sh:134-139`) — the absence loop's
+review thread isn't read as absent this run (`finding.sh:139-160`) — the absence loop's
 `incomplete_now` (`pr-review-threads.sh`, immediately before its owned-thread loop) derives from
 `prt_is_incomplete` alone, so a partial-drop chunk that now only calls `prt_mark_degraded` would
 stop setting it. The fix folds the `partial-drop` reason directly into that check
@@ -371,17 +371,17 @@ run — the run reports degraded rather than red, it does not recover the review
 `advisory` mode's single issue comment (`prt_render_advisory_comment`, `render.sh:186-234`)
 discloses both severities on its own live output surface, not only in `$GITHUB_STEP_SUMMARY`: a
 non-empty `advisory_incomplete_reasons` or `advisory_degraded_reasons`
-(`pr-review-threads.sh:778-782`, gathered via `prt_is_incomplete`/`prt_incomplete_reasons` and
+(`pr-review-threads.sh:854-859`, gathered via `prt_is_incomplete`/`prt_incomplete_reasons` and
 `prt_is_degraded`/`prt_degraded_reasons` respectively) renders its own warning banner ahead of the
 findings table, worded to distinguish the two ("this review run was incomplete" vs "this review
 run was degraded"). The degraded banner is deliberately degradation-neutral prose ("see the
 reason(s) below; this may mean part of this run's output is incomplete, unverdicted, or dropped")
 rather than a blanket "rows were dropped" claim: `prt_mark_degraded` covers six call sites
-(`pr-review-threads.sh:341,394,428,450,463,1194`, plus `prt_resolve_review_parse_failures` in
-`state.sh` for the review-parse-failure case above), only one of the direct call sites (`:341`, a chunk's malformed
+(`pr-review-threads.sh:418,471,505,527,540,1282`, plus `prt_resolve_review_parse_failures` in
+`state.sh` for the review-parse-failure case above), only one of the direct call sites (`:418`, a chunk's malformed
 finding rows dropped) is actually a drop — the other five leave findings present but unverdicted
 (an assess-call transport fault or unparseable response, an `.assessments` join failure) or are
-unrelated to the current run's findings at all (`:1194`, a past run's clean-verdict comment failing
+unrelated to the current run's findings at all (`:1282`, a past run's clean-verdict comment failing
 to be superseded). The banner intro no longer overrides those per-reason bullets (rendered
 verbatim below it) with a claim that is only true for one of the six (round 4, go-kure/.github#101
 second review pass, `chatgpt-codex-connector[bot]`). Critically, the "No issues found." shortcut
