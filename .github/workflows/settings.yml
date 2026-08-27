@@ -85,13 +85,14 @@ jobs:
               print("| Repo | Labels | Settings | Rulesets | Status |")
               print("|------|--------|----------|----------|--------|")
               for r in d.get("repos", []):
-                  issues = r["labels_missing"] + r["labels_renamed"] + r.get("labels_extra", 0) + r.get("labels_duplicate", 0) + r["settings_missing"] + r["rulesets_missing"]
+                  issues = r["labels_missing"] + r["labels_renamed"] + r.get("labels_extra", 0) + r.get("labels_duplicate", 0) + r.get("labels_drift", 0) + r["settings_missing"] + r["rulesets_missing"]
                   status = "OK" if issues == 0 else f"**{issues} issues**"
                   lbl = f"{r['labels_ok']} ok"
                   if r["labels_missing"]: lbl += f", **{r['labels_missing']} missing**"
                   if r["labels_renamed"]: lbl += f", **{r['labels_renamed']} to rename**"
                   if r.get("labels_extra", 0): lbl += f", **{r['labels_extra']} extra**"
                   if r.get("labels_duplicate", 0): lbl += f", **{r['labels_duplicate']} duplicate**"
+                  if r.get("labels_drift", 0): lbl += f", **{r['labels_drift']} metadata drift**"
                   sett = f"{r['settings_ok']} ok"
                   if r["settings_missing"]: sett += f", **{r['settings_missing']} wrong**"
                   rs = f"{r['rulesets_ok']} ok"

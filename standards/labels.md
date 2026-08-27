@@ -40,7 +40,9 @@ introduces it.** `labels.json` alone is not enough — `scripts/check-label-docs
 not the other. A label that exists only on a live repo and never in this file is exactly the
 undeclared-label state `scripts/github-settings.sh`'s settings audit reports as `EXTRA` — the
 tooling has no way to tell "deliberately repo-specific" apart from a typo except by what this file
-records. Colour is fixed for the whole namespace at `#5319E7` (see `area/oam` above), so the
+records. The audit also compares a name-matched label's live color and description against this
+file and reports drift (`WRONG` on audit, `UPDATING` on `--apply`) — editing an `area/` label's
+description here reaches every repo that already has the label, not just new creations. Colour is fixed for the whole namespace at `#5319E7` (see `area/oam` above), so the
 author never chooses one. A value used by only one repo (as `area/oam` and `area/distribution`
 currently are) should carry a `repos` scope in `labels.json` — see "Repo-scoped labels" below —
 so the settings audit doesn't require it org-wide.

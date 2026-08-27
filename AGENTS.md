@@ -146,7 +146,7 @@ repo in this list, including `go-kure.github.io`.
 
 ### Adding or changing labels
 
-Edit `standards/labels.json`. See `standards/labels.md` for naming conventions and the category reference before adding new labels. The settings script syncs labels to all repos automatically.
+Edit `standards/labels.json`. See `standards/labels.md` for naming conventions and the category reference before adding new labels. The settings script syncs labels to all repos automatically — this includes color/description metadata drift on a label that already exists live: `--apply` rewrites a live label's color or description to match `labels.json`, not just creating and renaming labels.
 
 `scripts/check-label-docs.sh` (`mise run check:label-docs`) guards `standards/labels.md` against
 drifting from `standards/labels.json` in both directions — add a label to one and forget the
