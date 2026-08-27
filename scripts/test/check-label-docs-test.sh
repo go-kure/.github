@@ -209,6 +209,9 @@ assert_rc "color on a line naming zero labels" 1 "$(run_fixture "$(base_json)" "
 md_color_ambiguous() { base_md | sed 's/`type\/bug` renders as `#d73a4a`\./`type\/bug` and `type\/chore` both render as `#d73a4a`./'; }
 assert_rc "color on a line naming two labels is ambiguous" 1 "$(run_fixture "$(base_json)" "$(md_color_ambiguous)")"
 
+md_color_same_label_twice() { base_md | sed 's/`type\/bug` renders as `#d73a4a`\./`type\/bug` is `#d73a4a`; apply `type\/bug` to new bug reports./'; }
+assert_rc "color line naming the same label twice is not ambiguous" 0 "$(run_fixture "$(base_json)" "$(md_color_same_label_twice)")"
+
 md_issue_shaped_hex_not_a_color() { base_md | sed 's/`type\/bug` renders as `#d73a4a`\./See issue #4212 for background./'; }
 assert_rc "an issue-number-shaped #4212 (not 6 hex digits) is not read as a color" 0 \
   "$(run_fixture "$(base_json)" "$(md_issue_shaped_hex_not_a_color)")"

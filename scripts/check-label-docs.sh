@@ -272,10 +272,14 @@ color_count=0
 # \x1f, not tab — $toks is legitimately empty on a line with a color but no
 # backticked token, which tab-as-IFS-whitespace would collapse away.
 while IFS=$'\x1f' read -r color toks lineno; do
+  declare -A seen_tok=()
   matches=()
   IFS=',' read -ra tok_arr <<<"$toks"
   for t in "${tok_arr[@]}"; do
-    [[ -n "${JSON_COLOR[$t]+x}" ]] && matches+=("$t")
+    if [[ -n "${JSON_COLOR[$t]+x}" && -z "${seen_tok[$t]+x}" ]]; then
+      matches+=("$t")
+      seen_tok[$t]=1
+    fi
   done
   case "${#matches[@]}" in
     0)
