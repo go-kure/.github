@@ -81,9 +81,12 @@ overrides the workflow's own default) is one of three values. An unrecognized va
 
 - **`off`** — the incident escape hatch. Short-circuits to `exit 0` immediately after state
   init, before any network call (`pr-review-threads.sh:123-130`). See "Incident procedure" below.
-- **`advisory`** (default) — zero thread creates or mutations. One plain (non-resolvable) issue
-  comment per run with the merged findings table. This is the staged-rollout mechanism itself:
-  advisory mode proves the pipeline works against real PRs without ever blocking a merge.
+- **`advisory`** (the composite action's and `pr-review-threads.sh`'s own fallback default —
+  NOT `pr-review.yml`'s declared default, which is `enforce` as of go-kure/.github#108; see
+  `enforce` below) — zero thread creates or mutations. One plain (non-resolvable) issue comment
+  per run with the merged findings table. This was the staged-rollout mechanism: advisory mode
+  proved the pipeline works against real PRs without ever blocking a merge, before `enforce`
+  was ratified as the workflow's own default.
   **Required-check status (go-kure/.github#108):** `pr-review / AI Code Review` is a required
   status check on kure and launcher (`governance/repository-settings-policy.yaml`), so a red run
   now blocks merge there directly, on top of `required_review_thread_resolution` already gating
@@ -498,10 +501,10 @@ PR or a `merge_group` run on the queue's temporary ref (V1, V7 in
 The review runs on draft PRs (2026-08-19), by design — parity with the downstream GitLab CI
 template this workflow was backported from, which reviews every merge-request pipeline with no
 draft condition. Draft blocks merge, not review: a draft PR gets the same 2-pass review as a
-ready one — resolvable threads under `enforce` (live via the `PR_REVIEW_THREADS_MODE` org
-variable as of 2026-08-22, ahead of `pr-review.yml`'s own header comment — see the STALE note
-there) or one plain issue comment per run under `advisory` (see § Modes above) — so review
-feedback is available throughout development instead of only after the PR is marked ready.
+ready one — resolvable threads under `enforce` (live via the org `PR_REVIEW_THREADS_MODE`
+variable since 2026-08-18, and `pr-review.yml`'s own declared default since go-kure/.github#108)
+or one plain issue comment per run under `advisory` (see § Modes above) — so review feedback is
+available throughout development instead of only after the PR is marked ready.
 
 Consumer callers dropped `ready_for_review` from their own `types:` once the rollout window
 closed (see `pr-review-caller.yml`): it existed only because this workflow is pinned `@main` in

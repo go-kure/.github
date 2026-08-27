@@ -45,9 +45,13 @@
 # Required-check scope: `pr-review / AI Code Review` is required on kure and
 # launcher only, DELIBERATELY excluded from `.github` itself — making it
 # required here would deadlock `.github`'s own two-PR pin-bump sequence
-# (PR2 fixing the placeholder pin could never pass its own now-required
-# check). Full reasoning: docs/standards.md's "Interim outage window"
-# section.
+# under normal enforcement: PR2, which fixes the placeholder pin, would have
+# to pass its own now-required check while that very check is still broken
+# by the placeholder PR2 exists to fix (the PR_REVIEW_THREADS_MODE=off
+# incident escape hatch could unblock it, same as any other outage, but
+# routing every ordinary pin-bump PR through an incident toggle isn't a
+# workable default). Full reasoning: docs/standards.md's "Interim outage
+# window" section.
 #
 # The job's `if:` no longer excludes drafts (2026-08-19) — this workflow was
 # backported from GitLab's `meta/ci-templates/mr-review.yml`, which reviews
