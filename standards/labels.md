@@ -33,12 +33,17 @@ so it bought nothing `/` doesn't already give — dropped 2026-08-27, see go-kur
 
 **`area/` is an open per-repo namespace.** Unlike the other categories above, a repo may create
 a new `area/<component>` label directly to unblock triage, without landing a change here first —
-the set of subsystems a repo has is repo-specific and grows over time. The one obligation: **back-
-fill the new label into `labels.json` in the same unit of work that introduces it.** A label that
-exists only on a live repo and never in this file is exactly the undeclared-label state
-`scripts/github-settings.sh`'s settings audit reports as `EXTRA` — the tooling has no way to tell
-"deliberately repo-specific" apart from a typo except by what this file records. Colour is fixed
-for the whole namespace at `#5319E7` (see `area/oam` above), so the author never chooses one.
+the set of subsystems a repo has is repo-specific and grows over time. The obligation: **back-fill
+the new label into both `labels.json` and this row's value list, in the same unit of work that
+introduces it.** `labels.json` alone is not enough — `scripts/check-label-docs.sh` compares the
+`area/` row above against `labels.json` in both directions and fails CI if a value is in one but
+not the other. A label that exists only on a live repo and never in this file is exactly the
+undeclared-label state `scripts/github-settings.sh`'s settings audit reports as `EXTRA` — the
+tooling has no way to tell "deliberately repo-specific" apart from a typo except by what this file
+records. Colour is fixed for the whole namespace at `#5319E7` (see `area/oam` above), so the
+author never chooses one. A value used by only one repo (as `area/oam` and `area/distribution`
+currently are) should carry a `repos` scope in `labels.json` — see "Repo-scoped labels" below —
+so the settings audit doesn't require it org-wide.
 
 **Special labels** (no category prefix): `dependencies`, `github_actions`, `go` — used by Dependabot and GitHub automation.
 

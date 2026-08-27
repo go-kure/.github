@@ -59,6 +59,17 @@ jq -e '
   exit 1
 }
 
+# Duplicate-name preflight — fatal. A duplicate .name survives the shape
+# check above and the later `sort -u` on values silently hides it, so
+# github-settings.sh's audit_labels would iterate the same name twice and
+# attempt to create it twice on an --apply run.
+jq -e '(.labels | map(.name) | unique | length) == (.labels | length)' \
+  "$LABELS_FILE" >/dev/null 2>&1 || {
+  dupes="$(jq -r '.labels | group_by(.name) | map(select(length > 1) | .[0].name) | join(", ")' "$LABELS_FILE")"
+  echo "check-label-docs: standards/labels.json has duplicate label name(s): $dupes" >&2
+  exit 1
+}
+
 errors=0
 fail() { echo "FAIL: $*" >&2; errors=$((errors + 1)); }
 

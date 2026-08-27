@@ -151,8 +151,11 @@ Edit `standards/labels.json`. See `standards/labels.md` for naming conventions a
 `scripts/check-label-docs.sh` (`mise run check:label-docs`) guards `standards/labels.md` against
 drifting from `standards/labels.json` in both directions — add a label to one and forget the
 other, and CI fails. `area/` is an open per-repo namespace: a repo may create `area/<component>`
-directly, but it must be back-filled into `labels.json` in the same unit of work, or the settings
-audit reports it `EXTRA`.
+directly, but it must be back-filled into **both** `labels.json` and the `area/` row in
+`labels.md`'s Category Reference table in the same unit of work, or CI (settings audit for
+`labels.json`; `check-label-docs.sh` for `labels.md`) reports it `EXTRA` or a drift `FAIL`. Scope
+a repo-specific value with `repos` in `labels.json` (see `docs-skip`, `area/oam` for examples) so
+the settings audit doesn't require it org-wide.
 
 ## Working with Organization Settings
 

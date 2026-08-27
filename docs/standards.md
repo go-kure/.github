@@ -594,7 +594,9 @@ The step-by-step remediation runbook — usable for a first sweep of any upstrea
 ## Project Management
 
 Planning runs on labels alone — see [`standards/labels.md`](../standards/labels.md). GitHub
-Projects roadmaps were tried and retired 2026-08-27; the boards were deleted.
+Projects roadmaps were tried and retired 2026-08-27; the boards themselves are scheduled for
+deletion after their field values are migrated to labels (see
+[project board standard](project-board-standard.md) for status).
 
 - [Project board standard](project-board-standard.md) — retired; kept as a dated status record
 

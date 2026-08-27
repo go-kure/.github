@@ -277,6 +277,11 @@ result_missing_json="$(run_fixture "" "$(base_md)")"
 assert_rc "missing labels.json is fatal" 1 "$result_missing_json"
 assert_no_fail_lines "missing-json fatal shape has no FAIL: lines" "$result_missing_json"
 
+json_duplicate_name() { base_json | jq -c '.labels += [{"name":"type/bug","color":"#d73a4a","description":"a second, duplicate type/bug entry"}]'; }
+result_duplicate_name="$(run_fixture "$(json_duplicate_name)" "$(base_md)")"
+assert_rc "duplicate label name in labels.json is fatal" 1 "$result_duplicate_name"
+assert_no_fail_lines "duplicate-name fatal shape has no FAIL: lines" "$result_duplicate_name"
+
 # ---------------------------------------------------------------------------
 # 11. area/ open-namespace growth path: a new label added to both, in sync
 # ---------------------------------------------------------------------------
