@@ -423,6 +423,128 @@ else
     failures=$((failures + 1))
 fi
 
+# ---- print_summary: label metadata DRIFT (go-kure/.github#125 — a
+# name-matched label whose live color/description no longer matches
+# labels.json) must fail an audit run's exit status, the same way DUPLICATE
+# does above. ----
+
+drift_audit_rc=$( (LABELS_DRIFT=1 JSON_OUTPUT=false print_summary false) >/dev/null 2>&1; echo $? )
+if [ "$drift_audit_rc" -eq 1 ]; then
+    echo "PASS: print_summary (audit) exits non-zero when label metadata DRIFT is present"
+    pass_count=$((pass_count + 1))
+else
+    echo "FAIL: print_summary (audit) should exit 1 on label metadata DRIFT, got rc=$drift_audit_rc"
+    failures=$((failures + 1))
+fi
+
+drift_audit_out=$( (LABELS_DRIFT=1 JSON_OUTPUT=false print_summary false) 2>&1 )
+assert_contains "print_summary (audit) reports the drift count" "$drift_audit_out" "1 metadata drift"
+
+# Unlike DUPLICATE, --apply *can* auto-fix DRIFT (audit_labels PATCHes the
+# label before print_summary ever runs) — so print_summary exiting 0 here
+# reflects that the fix already happened, not an unresolved gap the way the
+# DUPLICATE case above is. Pin the exit code and the reworded summary text.
+drift_apply_rc=$( (LABELS_DRIFT=1 JSON_OUTPUT=false print_summary true) >/dev/null 2>&1; echo $? )
+if [ "$drift_apply_rc" -eq 0 ]; then
+    echo "PASS: print_summary (--apply) exits 0 on label metadata DRIFT (already patched by audit_labels)"
+    pass_count=$((pass_count + 1))
+else
+    echo "FAIL: print_summary (--apply) unexpectedly changed exit behavior on label metadata DRIFT, got rc=$drift_apply_rc"
+    failures=$((failures + 1))
+fi
+
+drift_apply_out=$( (LABELS_DRIFT=1 JSON_OUTPUT=false print_summary true) 2>&1 )
+assert_contains "print_summary (--apply) reports the drift count as updated" "$drift_apply_out" "1 metadata updated"
+
+# ---------------------------------------------------------------------------
+# audit_labels() metadata-drift detection — a new seam, not an existing
+# pattern. audit_labels() calls get_github_labels() (real gh api call) and
+# reads $LABELS_FILE (real standards/labels.json, 42 live labels, no
+# override hook previously existed for either). Two levers make this
+# testable without touching the network:
+#   - LABELS_FILE is a plain global var; the source-and-call harness above
+#     already relies on later-definition-wins for functions, and the same
+#     applies to reassigning a global after sourcing.
+#   - get_github_labels is a plain bash function; redefining it AFTER
+#     sourcing github-settings.sh shadows the original, because bash looks
+#     up a function by name at CALL time, not at definition time. audit_labels
+#     calls it as a bare `get_github_labels "$repo"`, so it picks up whichever
+#     definition is current when audit_labels actually runs.
+# Both levers are restored after each fixture via a trap-free explicit
+# reset, since these are the only tests in the file that touch them.
+# ---------------------------------------------------------------------------
+
+drift_fixture_dir="$(mktemp -d)"
+trap 'rm -rf "$drift_fixture_dir"' EXIT
+DRIFT_LABELS_FILE="$drift_fixture_dir/labels.json"
+cat >"$DRIFT_LABELS_FILE" <<'EOF'
+{"labels": [{"name": "test/foo", "color": "#112233", "description": "expected desc"}]}
+EOF
+
+# run_audit_labels_fixture LIVE_ROW — stubs get_github_labels to return
+# exactly one \x1f-delimited row, points LABELS_FILE at the one-label
+# fixture above, resets the counters this test cares about, runs
+# audit_labels in audit mode (no real API calls — LIVE_ROW already IS the
+# "existing" state), and echoes "LABELS_OK,LABELS_DRIFT\toutput".
+# Deliberately NOT run inside a `$(...)` command substitution: that forks a
+# subshell, and LABELS_OK/LABELS_DRIFT would increment only in the
+# subshell's copy — invisible to this function's caller once it returns.
+# audit_labels runs directly in the current shell instead, with its output
+# redirected to a temp file, so the real global counters are what the
+# caller reads back.
+run_audit_labels_fixture() {
+    local live_row="$1" out_file
+    # shellcheck disable=SC2317 # invoked indirectly via audit_labels -> get_github_labels
+    get_github_labels() { printf '%s\n' "$live_row"; }
+    out_file="$(mktemp)"
+    # shellcheck disable=SC2034 # read by audit_labels() via global scope, defined in the sourced github-settings.sh, invisible to this file's lint
+    LABELS_FILE="$DRIFT_LABELS_FILE"
+    LABELS_OK=0
+    LABELS_DRIFT=0
+    audit_labels "drift-test-repo" "false" >"$out_file" 2>&1
+    printf '%s,%s\t%s' "$LABELS_OK" "$LABELS_DRIFT" "$(cat "$out_file")"
+    rm -f "$out_file"
+}
+
+# color differs only (case-insensitive on the live side, so this must be a
+# REAL difference, not a casing artifact — the next case pins that).
+result="$(run_audit_labels_fixture $'test/foo\x1faabbcc\x1fexpected desc')"
+assert_eq "color-only drift is detected, not counted OK" "0,1" "${result%%$'\t'*}"
+assert_contains "color-only drift prints WRONG" "${result#*$'\t'}" "WRONG: test/foo"
+
+# description differs only
+result="$(run_audit_labels_fixture $'test/foo\x1f112233\x1fstale desc')"
+assert_eq "description-only drift is detected" "0,1" "${result%%$'\t'*}"
+
+# both differ
+result="$(run_audit_labels_fixture $'test/foo\x1faabbcc\x1fstale desc')"
+assert_eq "drift in both color and description is still just one drifted label" "0,1" "${result%%$'\t'*}"
+
+# exact match — no false positive
+result="$(run_audit_labels_fixture $'test/foo\x1f112233\x1fexpected desc')"
+assert_eq "an exact metadata match reports OK, not drift" "1,0" "${result%%$'\t'*}"
+
+# live description missing entirely (API returns null -> get_github_labels
+# emits "" for that field) — must read as drift against a non-empty expected
+# description, not as a parse failure.
+result="$(run_audit_labels_fixture $'test/foo\x1f112233\x1f')"
+assert_eq "an empty/null live description is drift, not a crash" "0,1" "${result%%$'\t'*}"
+
+# case-only color difference must NOT register as drift — the live API's
+# hex casing is not guaranteed, and labels.json's own casing is inconsistent
+# across entries (mixed case is normal, not a signal).
+result="$(run_audit_labels_fixture $'test/foo\x1f112233\x1fexpected desc')"
+assert_eq "case-only color difference is not drift" "1,0" "${result%%$'\t'*}"
+result="$(run_audit_labels_fixture $'test/foo\x1fAABBCC\x1fexpected desc')"
+# AABBCC vs the fixture's #112233 (-> 112233) is a REAL mismatch once
+# lowercased, not a casing false-positive — sanity check the negative case
+# above isn't vacuously true because the comparison never runs.
+assert_eq "an uppercase-but-genuinely-different color is still drift" "0,1" "${result%%$'\t'*}"
+
+rm -rf "$drift_fixture_dir"
+trap - EXIT
+unset -f get_github_labels
+
 echo ""
 echo "github-settings-test: $pass_count passed, $failures failed"
 if [ "$failures" -gt 0 ]; then

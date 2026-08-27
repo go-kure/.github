@@ -249,6 +249,7 @@ LABELS_RENAMED=0
 LABELS_EXTRA=0
 LABELS_BLOCKED=0
 LABELS_DUPLICATE=0
+LABELS_DRIFT=0
 SETTINGS_MISSING=0
 SETTINGS_OK=0
 SETTINGS_BLOCKED=0
@@ -824,10 +825,23 @@ build_reverse_rename_map() {
     done
 }
 
-# Get current labels for a repo
+# URL-encode a label name for use as a path segment — every namespaced label
+# contains '/', so an unencoded name in a URL path is a different endpoint
+# (repos/.../labels/area/cli resolves as .../labels/area/cli, not the label
+# literally named "area/cli").
+url_encode_label() {
+    python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$1"
+}
+
+# Get current labels for a repo, one '\x1f'-delimited "name\x1fcolor\x1fdescription"
+# row per label. \x1f (ASCII unit separator), not tab: bash `read` treats tab
+# as IFS whitespace regardless of how IFS is set, silently eating an empty
+# trailing field (a description-less label is the common case). `// ""`
+# on description because the API returns null, not "", when unset.
 get_github_labels() {
     local repo="$1"
-    gh api "repos/$GITHUB_ORG/$repo/labels" --paginate --jq '.[].name'
+    gh api "repos/$GITHUB_ORG/$repo/labels" --paginate \
+        --jq '.[] | [.name, .color, (.description // "")] | join("")'
 }
 
 # Audit labels
@@ -837,8 +851,21 @@ audit_labels() {
 
     echo -e "\n${BLUE}=== Labels: $GITHUB_ORG/$repo ===${NC}"
 
+    local existing_rows
+    existing_rows=$(get_github_labels "$repo")
+
+    # Split the fetched rows into the plain-names list every consumer below
+    # already expects, plus color/description lookups for the drift check.
     local existing_labels
-    existing_labels=$(get_github_labels "$repo")
+    existing_labels=""
+    declare -A LIVE_COLOR=() LIVE_DESC=()
+    while IFS=$'\x1f' read -r ex_name ex_color ex_desc; do
+        [ -z "$ex_name" ] && continue
+        existing_labels="${existing_labels}${ex_name}"$'\n'
+        LIVE_COLOR["$ex_name"]="$ex_color"
+        LIVE_DESC["$ex_name"]="$ex_desc"
+    done <<<"$existing_rows"
+    existing_labels="${existing_labels%$'\n'}"
 
     build_reverse_rename_map
 
@@ -859,8 +886,34 @@ audit_labels() {
         fi
 
         if echo "$existing_labels" | grep -qx "$name"; then
-            echo -e "  ${GREEN}OK${NC}: $name"
-            LABELS_OK=$((LABELS_OK + 1))
+            # Compare metadata, not just the name — a name match alone used
+            # to short-circuit as OK, so an edited color/description in
+            # labels.json could never reach a repo where the label already
+            # existed, no matter how many times --apply ran
+            # (go-kure/.github#125). Colors are lowercased on both sides:
+            # labels.json stores '#5319E7', $color above already strips the
+            # '#', and the API's casing is not guaranteed.
+            local live_color live_desc
+            live_color=$(printf '%s' "${LIVE_COLOR[$name]}" | tr '[:upper:]' '[:lower:]')
+            live_desc="${LIVE_DESC[$name]}"
+            if [ "$live_color" = "$(printf '%s' "$color" | tr '[:upper:]' '[:lower:]')" ] && [ "$live_desc" = "$description" ]; then
+                echo -e "  ${GREEN}OK${NC}: $name"
+                LABELS_OK=$((LABELS_OK + 1))
+            else
+                LABELS_DRIFT=$((LABELS_DRIFT + 1))
+                if [ "$apply" = "true" ]; then
+                    echo -e "  ${YELLOW}UPDATING${NC}: $name (color/description drift)"
+                    local encoded_name
+                    encoded_name=$(url_encode_label "$name")
+                    gh api "repos/$GITHUB_ORG/$repo/labels/$encoded_name" \
+                        --method PATCH \
+                        -f color="$color" \
+                        -f description="$description" \
+                        --silent
+                else
+                    echo -e "  ${RED}WRONG${NC}: $name (color=$live_color desc='$live_desc', should be color=$color desc='$description')"
+                fi
+            fi
             # The rename branch below is unreachable once the target already
             # exists, so a repo carrying both spellings (e.g. an ad hoc
             # slash-form label created before its :: counterpart was renamed)
@@ -880,7 +933,14 @@ audit_labels() {
                 LABELS_RENAMED=$((LABELS_RENAMED + 1))
                 if [ "$apply" = "true" ]; then
                     echo -e "  ${YELLOW}RENAMING${NC}: $old_name -> $name"
-                    gh api "repos/$GITHUB_ORG/$repo/labels/$old_name" \
+                    # $old_name must be URL-encoded — every LABEL_RENAME_MAP
+                    # entry so far has been a '::' name (path-safe), but a
+                    # future slash-named rename source would otherwise hit
+                    # the wrong endpoint the same way the drift PATCH above
+                    # would (go-kure/.github#125 fix, same defect class).
+                    local encoded_old_name
+                    encoded_old_name=$(url_encode_label "$old_name")
+                    gh api "repos/$GITHUB_ORG/$repo/labels/$encoded_old_name" \
                         --method PATCH \
                         -f new_name="$name" \
                         -f color="$color" \
@@ -929,7 +989,7 @@ audit_labels() {
                 else
                     echo -e "  ${YELLOW}DELETING${NC}: $existing_name"
                     local encoded_name
-                    encoded_name=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$existing_name")
+                    encoded_name=$(url_encode_label "$existing_name")
                     gh api "repos/$GITHUB_ORG/$repo/labels/$encoded_name" --method DELETE --silent
                 fi
             else
@@ -1648,6 +1708,7 @@ audit_repo() {
     local labels_extra_before=$LABELS_EXTRA
     local labels_blocked_before=$LABELS_BLOCKED
     local labels_duplicate_before=$LABELS_DUPLICATE
+    local labels_drift_before=$LABELS_DRIFT
     local settings_missing_before=$SETTINGS_MISSING
     local settings_ok_before=$SETTINGS_OK
     local ruleset_missing_before=$RULESET_MISSING
@@ -1667,12 +1728,13 @@ audit_repo() {
         local repo_labels_extra=$((LABELS_EXTRA - labels_extra_before))
         local repo_labels_blocked=$((LABELS_BLOCKED - labels_blocked_before))
         local repo_labels_duplicate=$((LABELS_DUPLICATE - labels_duplicate_before))
+        local repo_labels_drift=$((LABELS_DRIFT - labels_drift_before))
         local repo_settings_missing=$((SETTINGS_MISSING - settings_missing_before))
         local repo_settings_ok=$((SETTINGS_OK - settings_ok_before))
         local repo_ruleset_missing=$((RULESET_MISSING - ruleset_missing_before))
         local repo_ruleset_ok=$((RULESET_OK - ruleset_ok_before))
         local repo_status="OK"
-        if [ $((repo_labels_missing + repo_labels_renamed + repo_labels_extra + repo_labels_duplicate + repo_settings_missing + repo_ruleset_missing)) -gt 0 ]; then
+        if [ $((repo_labels_missing + repo_labels_renamed + repo_labels_extra + repo_labels_duplicate + repo_labels_drift + repo_settings_missing + repo_ruleset_missing)) -gt 0 ]; then
             repo_status="WARN"
         fi
         json_results=$(echo "$json_results" | jq \
@@ -1683,12 +1745,13 @@ audit_repo() {
             --argjson le "$repo_labels_extra" \
             --argjson lb "$repo_labels_blocked" \
             --argjson ld "$repo_labels_duplicate" \
+            --argjson ldr "$repo_labels_drift" \
             --argjson sm "$repo_settings_missing" \
             --argjson so "$repo_settings_ok" \
             --argjson rm "$repo_ruleset_missing" \
             --argjson ro "$repo_ruleset_ok" \
             --arg st "$repo_status" \
-            '. + [{"repo": $r, "labels_missing": $lm, "labels_ok": $lo, "labels_renamed": $lr, "labels_extra": $le, "labels_blocked": $lb, "labels_duplicate": $ld, "settings_missing": $sm, "settings_ok": $so, "rulesets_missing": $rm, "rulesets_ok": $ro, "status": $st}]')
+            '. + [{"repo": $r, "labels_missing": $lm, "labels_ok": $lo, "labels_renamed": $lr, "labels_extra": $le, "labels_blocked": $lb, "labels_duplicate": $ld, "labels_drift": $ldr, "settings_missing": $sm, "settings_ok": $so, "rulesets_missing": $rm, "rulesets_ok": $ro, "status": $st}]')
     fi
 
     return 0
@@ -1734,14 +1797,14 @@ print_summary() {
     echo -e "${BLUE}Summary${NC}"
     echo -e "${BLUE}========================================${NC}"
 
-    local total_issues=$((LABELS_MISSING + LABELS_RENAMED + LABELS_EXTRA + LABELS_DUPLICATE + SETTINGS_MISSING + SETTINGS_BLOCKED + RULESET_MISSING))
+    local total_issues=$((LABELS_MISSING + LABELS_RENAMED + LABELS_EXTRA + LABELS_DUPLICATE + LABELS_DRIFT + SETTINGS_MISSING + SETTINGS_BLOCKED + RULESET_MISSING))
 
     if [ "$apply" = "true" ]; then
-        echo -e "Labels: ${GREEN}$LABELS_OK OK${NC}, ${YELLOW}$LABELS_MISSING created${NC}, ${YELLOW}$LABELS_RENAMED renamed${NC}, ${YELLOW}$LABELS_EXTRA extra (${LABELS_BLOCKED} skipped, in use)${NC}, ${RED}$LABELS_DUPLICATE duplicate (needs manual reconciliation)${NC}"
+        echo -e "Labels: ${GREEN}$LABELS_OK OK${NC}, ${YELLOW}$LABELS_MISSING created${NC}, ${YELLOW}$LABELS_RENAMED renamed${NC}, ${YELLOW}$LABELS_EXTRA extra (${LABELS_BLOCKED} skipped, in use)${NC}, ${RED}$LABELS_DUPLICATE duplicate (needs manual reconciliation)${NC}, ${YELLOW}$LABELS_DRIFT metadata updated${NC}"
         echo -e "Settings: ${GREEN}$SETTINGS_OK OK${NC}, ${YELLOW}$SETTINGS_MISSING applied${NC}, ${RED}$SETTINGS_BLOCKED blocked (audit-only, unresolved)${NC}"
         echo -e "Rulesets: ${GREEN}$RULESET_OK OK${NC}, ${YELLOW}$RULESET_MISSING issues${NC}"
     else
-        echo -e "Labels: ${GREEN}$LABELS_OK OK${NC}, ${RED}$LABELS_MISSING missing${NC}, ${YELLOW}$LABELS_RENAMED to rename${NC}, ${RED}$LABELS_EXTRA extra${NC}, ${RED}$LABELS_DUPLICATE duplicate (needs manual reconciliation)${NC}"
+        echo -e "Labels: ${GREEN}$LABELS_OK OK${NC}, ${RED}$LABELS_MISSING missing${NC}, ${YELLOW}$LABELS_RENAMED to rename${NC}, ${RED}$LABELS_EXTRA extra${NC}, ${RED}$LABELS_DUPLICATE duplicate (needs manual reconciliation)${NC}, ${RED}$LABELS_DRIFT metadata drift${NC}"
         echo -e "Settings: ${GREEN}$SETTINGS_OK OK${NC}, ${RED}$SETTINGS_MISSING wrong${NC}, ${RED}$SETTINGS_BLOCKED audit-only wrong${NC}"
         echo -e "Rulesets: ${GREEN}$RULESET_OK OK${NC}, ${RED}$RULESET_MISSING wrong${NC}"
     fi
@@ -1755,6 +1818,7 @@ print_summary() {
             --argjson le "$LABELS_EXTRA" \
             --argjson lb "$LABELS_BLOCKED" \
             --argjson ld "$LABELS_DUPLICATE" \
+            --argjson ldr "$LABELS_DRIFT" \
             --argjson so "$SETTINGS_OK" \
             --argjson sm "$SETTINGS_MISSING" \
             --argjson sb "$SETTINGS_BLOCKED" \
@@ -1762,7 +1826,7 @@ print_summary() {
             --argjson rm "$RULESET_MISSING" \
             --argjson repos "$json_results" \
             --argjson org "$json_org_result" \
-            '{"generated": $ts, "labels_ok": $lo, "labels_missing": $lm, "labels_renamed": $lr, "labels_extra": $le, "labels_blocked": $lb, "labels_duplicate": $ld, "settings_ok": $so, "settings_missing": $sm, "settings_blocked": $sb, "rulesets_ok": $ro, "rulesets_missing": $rm, "repos": $repos, "org": $org}' \
+            '{"generated": $ts, "labels_ok": $lo, "labels_missing": $lm, "labels_renamed": $lr, "labels_extra": $le, "labels_blocked": $lb, "labels_duplicate": $ld, "labels_drift": $ldr, "settings_ok": $so, "settings_missing": $sm, "settings_blocked": $sb, "rulesets_ok": $ro, "rulesets_missing": $rm, "repos": $repos, "org": $org}' \
             > github-settings-report.json
         echo ""
         echo "JSON report: github-settings-report.json"
