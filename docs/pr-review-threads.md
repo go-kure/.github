@@ -150,8 +150,10 @@ dropped on top of the write failure it's explaining. `prt_freshness_check` retur
 status (go-kure/.github#99) instead
 of collapsing every failure mode to one bit: `0` fresh (proceed), `1` genuinely stale (the PR was
 read fine and its live head SHA is a real, different value — printed as `expected -> live` on
-stderr), `2` could not determine freshness at all (the PR read itself failed, or returned no usable
-`.head.sha`). Only status `1` is safe to treat as non-fatal: a superseding push is guaranteed to
+stderr), `2` could not determine freshness at all (the PR read itself failed, returned no usable
+`.head.sha`, or returned a `.head.sha` that doesn't match the 40-hex shape a real commit SHA has —
+`gh.sh:157` — treated as indeterminate rather than risking a malformed value reading as genuinely
+stale). Only status `1` is safe to treat as non-fatal: a superseding push is guaranteed to
 have queued its own run (`.github/workflows/pr-review.yml`'s `cancel-in-progress: false`), so this
 run's skipped write will be redone. Status `2` carries no such guarantee and stays fatal.
 `prt_gh_rest_fresh` (`gh.sh:191-198`, the freshness-gated write wrapped by `prt_retry` — see below)
