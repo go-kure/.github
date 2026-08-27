@@ -60,6 +60,7 @@ bash scripts/test/github-settings-test.sh .
 bash scripts/test/govulncheck-gate-test.sh .
 bash scripts/test/pr-review-threads-test.sh .
 bash scripts/test/check-pin-bump-test.sh .
+bash scripts/test/pr-review-fail-closed-digest-test.sh .
 RENOVATE_VERSION="$(cat scripts/test/renovate-version)"
 npm install --no-save --prefix .renovate-lane-test "renovate@${RENOVATE_VERSION}"
 npx --prefix .renovate-lane-test renovate-config-validator --no-global renovate/shared.json

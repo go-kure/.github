@@ -147,6 +147,8 @@ jobs:
         run: bash scripts/check-action-pins.sh .
       - name: pr-review-threads.sh unit test suite
         run: bash scripts/test/pr-review-threads-test.sh .
+      - name: pr-review-fail-closed-digest.sh unit test suite
+        run: bash scripts/test/pr-review-fail-closed-digest-test.sh .
       - name: check-pin-bump.sh unit test suite
         run: bash scripts/test/check-pin-bump-test.sh .
       - name: Fetch origin/main for check-pin-bump.sh
