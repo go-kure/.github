@@ -14,7 +14,7 @@ run = "actionlint"
 
 [tasks."lint:shell"]
 description = "shellcheck the scripts this repo ships"
-run = "shellcheck scripts/check-doc-sync.sh scripts/check-doc-gate.sh scripts/check-links.sh scripts/exact-array-member.sh scripts/check-workflow-refs.sh scripts/github-settings.sh scripts/check-settings-doc.sh scripts/check-action-pins.sh scripts/govulncheck-gate.sh scripts/check-forbidden-terms.sh scripts/check-pin-bump.sh scripts/pr-review-threads.sh scripts/lib/prt/state.sh scripts/lib/prt/json.sh scripts/lib/prt/marker.sh scripts/lib/prt/finding.sh scripts/lib/prt/gh.sh scripts/lib/prt/diff.sh scripts/lib/prt/render.sh scripts/lib/prt/model.sh scripts/lib/prt/reconcile.sh"
+run = "shellcheck scripts/check-doc-sync.sh scripts/check-doc-gate.sh scripts/check-links.sh scripts/exact-array-member.sh scripts/check-workflow-refs.sh scripts/github-settings.sh scripts/check-settings-doc.sh scripts/check-action-pins.sh scripts/govulncheck-gate.sh scripts/check-forbidden-terms.sh scripts/check-pin-bump.sh scripts/pr-review-threads.sh scripts/lib/prt/state.sh scripts/lib/prt/json.sh scripts/lib/prt/marker.sh scripts/lib/prt/finding.sh scripts/lib/prt/gh.sh scripts/lib/prt/diff.sh scripts/lib/prt/render.sh scripts/lib/prt/model.sh scripts/lib/prt/reconcile.sh scripts/pr-review-fail-closed-digest.sh scripts/lib/api.sh"
 
 [tasks."check:links"]
 description = "Check every internal markdown link resolves"
@@ -74,4 +74,9 @@ depends = ["lint", "check", "test", "check:forbidden-terms", "check:links"]
 [tasks.settings]
 description = "Audit or apply GitHub repo/org settings (dry-run by default — pass --apply to mutate). Forwards args, e.g.: mise run settings -- --org"
 run = "bash scripts/github-settings.sh"
+raw = true
+
+[tasks."pr-review-digest"]
+description = "Scan the org's PR Review runs for fail-closed events (requires GH_TOKEN). Forwards args, e.g.: mise run pr-review-digest -- --window-hours 720 --json"
+run = "bash scripts/pr-review-fail-closed-digest.sh"
 raw = true
