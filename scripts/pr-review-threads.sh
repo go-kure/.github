@@ -341,6 +341,13 @@ for chunk_file in "$CHUNK_DIR"/chunk-*.diff; do
       chunk_idx=$((chunk_idx + 1))
       continue
     fi
+    # salvaged is reset here, not just norm_rc/normalized: it must describe
+    # only the attempt whose result is actually used below. Without this
+    # reset, a first attempt that salvaged but was rejected by
+    # prt_normalize_findings (norm_rc=1) would leave salvaged=true even when
+    # the retry's response parses cleanly on its own — go-kure/.github#115
+    # review finding, PR1 of go-kure/.github#95.
+    salvaged=false
     raw_json="$(prt_parse_or_salvage "$raw")"
     parse_rc=$?
     [ "$parse_rc" -eq 2 ] && salvaged=true
