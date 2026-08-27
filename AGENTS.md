@@ -43,6 +43,7 @@ settings audit/apply, ...); `mise run <task>` runs one, `mise run verify` runs e
 │   ├── check-workflow-refs.sh           # Guards AGENTS.md/standards.md against dead workflow refs
 │   ├── exact-array-member.sh            # Shared helper used by the check-*.sh scripts
 │   ├── migrate-kure-labels.sh           # One-off label migration script
+│   ├── pr-review-fail-closed-digest.sh  # Org-wide digest of fail-closed pr-review-threads runs
 │   └── lib/api.sh                       # Shared HTTP API utilities
 ├── .github/
 │   ├── workflows/                       # GitHub Actions — self-CI, org settings, and the
@@ -252,10 +253,13 @@ uses: go-kure/.github/.github/workflows/<name>.yml@main
 secrets: inherit
 ```
 
-`ci.yml` and `settings.yml` are **not** reusable — `ci.yml` is this repo's own self-CI
-(`pull_request` + `workflow_dispatch`), `settings.yml` is this repo's own org-settings audit/apply
-job (push to `governance/`/`standards/` + daily schedule + `workflow_dispatch`, see above). Neither
-is consumed by kure/launcher.
+`ci.yml`, `settings.yml` and `pr-review-digest.yml` are **not** reusable — `ci.yml` is this repo's
+own self-CI (`pull_request` + `workflow_dispatch`), `settings.yml` is this repo's own org-settings
+audit/apply job (push to `governance/`/`standards/` + daily schedule + `workflow_dispatch`, see
+above), and `pr-review-digest.yml` is this repo's own daily org-wide scan for fail-closed
+`pr-review-threads` events (schedule + `workflow_dispatch`; see
+`docs/pr-review-threads.md` § Fail-closed alerting). None of the three is consumed by
+kure/launcher.
 
 ### When updating a reusable workflow
 

@@ -219,6 +219,10 @@ worth a warning banner. Any other non-empty `REVIEW_DEGRADED` state (mixed reaso
 staleness) prints as `::warning title=...::` annotations and a `WARNING:` stderr line instead, since
 the run is not failing but did leave something worth a human's attention.
 
+The `::error title=PR review threads incomplete::` annotations this exit gate emits are per-PR —
+loud on that one run, but nothing aggregates them across the org. § Fail-closed alerting below
+covers the daily digest that does.
+
 The model-review call (`prt_model_review`, `model.sh:305-325`) has its exit status checked
 independently on **either** call — the original attempt and the one bounded retry alike: a
 non-zero return (transport/proxy fault — curl failure, non-2xx, or empty response content,
@@ -493,6 +497,57 @@ The regression test for this (`pr-review-threads-test.sh`, "model.sh: oversized 
 `PRT_CURL` with a **real executable on disk**, not a shell function: a function stub is called
 in-process and never `execve`'d, so it cannot reproduce `E2BIG` and would pass against the broken
 form, making the test vacuous.
+
+## Fail-closed alerting
+
+Per-PR, a fatal run is already loud: the exit gate above prints `::error title=PR review threads
+incomplete::` annotations and leaves the job non-green, visible to that PR's author without any
+further mechanism (go-kure/.github#95). What's missing is the *pattern* view — several fatal runs
+across the org inside a short window usually means the shared model proxy or the model itself is
+degraded, not a string of unrelated one-offs, and nobody sees that pattern until someone happens to
+notice. `.github/workflows/pr-review-digest.yml` (`scripts/pr-review-fail-closed-digest.sh`) closes
+that gap: a scheduled, org-wide scan raised by go-kure/.github#117.
+
+**What it watches.** Once a day (06:15 UTC, `workflow_dispatch` also available for a manual/backfill
+run) it lists every repo's `PR Review` workflow (matched by workflow **name**, never filename — the
+caller workflow file differs per repo: `.github` uses `pr-review-caller.yml`, kure/launcher use
+`pr-review.yml`), scans its failed runs inside the window, and for each one fetches the `AI Code
+Review` job's check-run annotations.
+
+**Why the annotation title, not the job conclusion, is the signal.** A failed `pr-review` job is too
+coarse a filter on its own — the two-PR pin-bump window between a `pr-review-threads` action release
+and consumer repos catching up produces the exact same "job failed" shape for an unrelated reason
+(`Unable to resolve action go-kure/.github@...`). The digest instead requires an annotation titled
+exactly `PR review threads incomplete` **and** whose message (after stripping the `chunk N: ` prefix)
+matches one of the three model/proxy patterns above: `review response was not valid JSON`,
+`.findings missing/null/non-array`, or `review call failed (transport/proxy error` (including the
+retry form, `review call failed on retry (transport/proxy error`). The title alone over-includes —
+every `prt_mark_incomplete` call site uses it, including clean-comment-upsert failures and chunk-count
+mismatches, which are real fatals but not evidence the model/proxy itself is sick. A run that fails
+either check (wrong title, or a same-titled message that doesn't match a known pattern) is counted
+separately as an "other failure" in the digest's output, never toward the alert threshold.
+
+**Window and threshold.** Default window: 24 hours. Default threshold: 2 affected runs — one fatal
+run already blocks its own PR and is visible to its author; two or more inside a day is the
+cross-PR pattern this alert exists for. Both are overridable per `workflow_dispatch` (`window_hours`,
+`threshold` inputs) for a backfill run or a tuning pass; post-go-kure/.github#115/#116 event
+frequency was unmeasured when the threshold default was chosen, so expect one tuning pass once real
+data accumulates.
+
+**Where the alert lands.** The job summary always renders the window's table (found events and how
+many other failures were excluded), pass or fail. When the affected-run count meets the threshold,
+the workflow raises or updates one rolling issue on `go-kure/.github`, tracked by the HTML marker
+`<!-- prt-fail-closed-digest:v1 -->` in its body (mirroring the `<!-- wharf-mr-review:v1-note -->`
+convention): none found creates one labelled `type/ci`, `priority::high`; found and open adds a
+comment with the new window's table; found and closed reopens it and comments — a recurrence after
+triage must reopen, not silently open a duplicate.
+
+**Who triages.** A human reads the alert issue. If it points at the shared proxy or model rather
+than one repo's own bug, follow § Incident procedure below to mute `pr-review-threads` on the
+affected repo(s) while the underlying issue is worked. The digest raises and labels; it does not
+attempt to diagnose or auto-remediate (chunking failures where no chunk is ever attempted, and
+clean-comment-upsert failures, are explicitly out of scope — they still surface as "other failure"
+in the digest's output, just not counted toward the threshold).
 
 ## Incident procedure
 
