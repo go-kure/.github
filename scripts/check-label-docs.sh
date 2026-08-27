@@ -80,7 +80,7 @@ while IFS=$'\x1f' read -r ns val dep color; do
   if [[ -z "$ns" ]]; then
     JSON_UNNAMESPACED+=("$val")
   else
-    JSON_VALUES[$ns]="${JSON_VALUES[$ns]:-} $val"
+    JSON_VALUES[$ns]="${JSON_VALUES[$ns]:-}$val"$'\n'
     JSON_TOTAL[$ns]=$(( ${JSON_TOTAL[$ns]:-0} + 1 ))
     if [[ "$dep" == "1" ]]; then
       JSON_DEP_COUNT[$ns]=$(( ${JSON_DEP_COUNT[$ns]:-0} + 1 ))
@@ -217,7 +217,7 @@ while IFS= read -r ns; do
     continue
   fi
 
-  json_vals_sorted="$(printf '%s\n' ${JSON_VALUES[$ns]} | sort -u)"
+  json_vals_sorted="$(printf '%s' "${JSON_VALUES[$ns]}" | sort -u)"
   doc_vals_sorted="$(printf '%s' "${DOC_VALUES[$ns]}" | tr ',' '\n' | sort -u)"
   only_json="$(comm -23 <(echo "$json_vals_sorted") <(echo "$doc_vals_sorted") | sed '/^$/d')"
   only_doc="$(comm -13 <(echo "$json_vals_sorted") <(echo "$doc_vals_sorted") | sed '/^$/d')"
