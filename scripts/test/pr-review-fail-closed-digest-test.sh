@@ -3,12 +3,17 @@
 # the classifier/aggregator/render functions in
 # scripts/pr-review-fail-closed-digest.sh.
 #
-# No mocked `gh`/network harness: every function exercised here is the pure,
-# no-network half of the script (classify/build/render/threshold). The
-# network half (pr_digest_find_workflow_id, pr_digest_list_failed_runs,
-# pr_digest_get_annotations_for_run) is covered by the plan's own oracle
+# No mocked `gh`/network harness: most functions exercised here are the pure,
+# no-network half of the script (classify/build/render/threshold). The live
+# network behaviour of pr_digest_find_workflow_id, pr_digest_list_failed_runs
+# and pr_digest_get_annotations_for_run is covered by the plan's own oracle
 # check instead (run against the real org, compare against known historical
-# run ids) — not reproducible here without live GitHub state.
+# run ids) — not reproducible here without live GitHub state. The one
+# exception is the "fail-closed propagation" check below, which stubs
+# gh_api_call to fail and asserts the *process itself* aborts rather than
+# looping or returning empty — that's a bash-semantics property, not a live
+# API behaviour, and is exactly what shipped broken in this script's first
+# version (see that test's own comment).
 #
 # Usage: pr-review-fail-closed-digest-test.sh [REPO_ROOT]
 
@@ -186,6 +191,35 @@ assert_eq "json render's reason_summary groups by class" \
 below_threshold_json="$(pr_digest_render_json '[]' 24 2 "2026-08-27T00:00:00Z" 0)"
 assert_eq "json render's threshold_met is false below threshold" \
     "false" "$(jq -r '.threshold_met' <<<"$below_threshold_json")"
+
+# ---- fail-closed propagation on a real API failure ----
+#
+# Regression for a codex round 1 finding: bash disables `set -e` inside
+# every command-substitution subshell by default (the non-POSIX
+# `inherit_errexit` default), so a `gh_api_call` failure three calls deep
+# inside `x="$(pr_digest_find_workflow_id ...)"` fell through into that
+# function's own subsequent jq parses on an empty/garbage response and
+# looped forever retrying the same failing page — it never reached the exit
+# gate this script promises. `shopt -s inherit_errexit` (top of the target
+# script) is the fix; this proves it holds, in a FRESH bash process rather
+# than this already-`set +e` test shell (needed above to survive sourcing
+# the target script, which would otherwise mask exactly the propagation
+# behaviour under test here). Bounded by `timeout` so a regression here
+# hangs this test for 5s, not forever.
+# shellcheck disable=SC2016 # single-quoted on purpose: this is a script
+# template for the CHILD `bash -c` process below, not this shell — its `$1`
+# must stay literal here and expand only once, inside that child, from the
+# positional arg ("$ROOT") passed after `_`.
+fail_closed_repro='
+source "$1/scripts/pr-review-fail-closed-digest.sh"
+gh_api_call() { echo "ERROR: HTTP 401 from GET forced-failure" >&2; return 1; }
+GITHUB_ORG="go-kure"
+pr_digest_find_workflow_id ".github"
+'
+timeout 5 bash -c "$fail_closed_repro" _ "$ROOT" >/dev/null 2>&1
+fail_closed_rc=$?
+assert_eq "a forced gh_api_call failure aborts the whole run (fail-closed), rather than looping or returning empty" \
+    "1" "$fail_closed_rc"
 
 # ---- structural: the auth-header wrapper cannot be bypassed ----
 #
