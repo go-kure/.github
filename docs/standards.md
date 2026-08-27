@@ -230,9 +230,12 @@ anchor, aliased by launcher) — so this window now blocks every PR on both of t
 lands; land PR2 immediately after PR1 merges, do not let the window span a working day.
 `.github` itself is deliberately excluded from this required check for exactly this reason:
 `.github` is where the bootstrap/pin-bump PRs themselves land, and PR2 — the PR that fixes
-the placeholder pin — would otherwise have to pass its own now-required check while that
-check is still broken by the placeholder it exists to fix, a self-deadlock no `off` toggle
-or merge-queue trick escapes. kure/launcher have no equivalent problem: their fix always
+the placeholder pin — would otherwise have to pass its own now-required check under normal
+enforcement while that check is still broken by the placeholder it exists to fix. The
+`PR_REVIEW_THREADS_MODE=off` escape hatch below could unblock a single stuck PR2 the same
+way it covers any other incident, but routing every ordinary pin-bump PR through an incident
+toggle isn't a workable default — excluding the required check is the actual fix, `off` stays
+the fallback for a genuine outage. kure/launcher have no equivalent problem: their fix always
 lands in a different repo (`.github`) than the one enforcing the check, so the requirement
 there gates a genuinely independent signal, not the fix's own PR.
 
