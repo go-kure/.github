@@ -1143,6 +1143,31 @@ assert_eq "prt_resolve_review_parse_failures: all-failed reasons are NOT also ta
 rm -rf "$rpf_dir"
 unset PRT_INCOMPLETE_FILE PRT_DEGRADED_FILE
 
+# go-kure/.github#95: the same resolver, fed a normalize-rc=1 reason (a
+# shape-valid response whose .findings was rejected after its own retry)
+# instead of a parse/transport reason — the resolver itself doesn't inspect
+# the reason text, but this proves the rc=1 reason string routes through the
+# identical fatal-vs-degraded split as any other collected failure.
+rpf_dir="$(mktemp -d)"
+prt_state_init "$rpf_dir"
+prt_resolve_review_parse_failures 3 "chunk 1: .findings missing/null/non-array, or all rows malformed and dropped (after retry=true)" 2>/dev/null
+assert_eq "prt_resolve_review_parse_failures: one-of-three normalize-rc=1 failure -> degraded, not incomplete" \
+  "true false" "$(prt_is_degraded && echo true || echo false) $(prt_is_incomplete && echo true || echo false)"
+assert_eq "prt_resolve_review_parse_failures: normalize-rc=1 degraded reason carries the load-bearing review-parse-failed tag" \
+  "true" "$(grep -qF 'review-parse-failed: chunk 1: .findings missing/null/non-array' <<< "$(prt_degraded_reasons)" && echo true || echo false)"
+rm -rf "$rpf_dir"
+unset PRT_INCOMPLETE_FILE PRT_DEGRADED_FILE
+
+rpf_dir="$(mktemp -d)"
+prt_state_init "$rpf_dir"
+prt_resolve_review_parse_failures 1 "chunk 0: .findings missing/null/non-array, or all rows malformed and dropped (after retry=true)" 2>/dev/null
+assert_eq "prt_resolve_review_parse_failures: ALL chunks hit normalize-rc=1 -> incomplete (fatal), not degraded" \
+  "false true" "$(prt_is_degraded && echo true || echo false) $(prt_is_incomplete && echo true || echo false)"
+assert_eq "prt_resolve_review_parse_failures: all-failed normalize-rc=1 reasons are NOT also tagged degraded (no dual-marking)" \
+  "false" "$(grep -qF 'review-parse-failed' <<< "$(prt_degraded_reasons)" && echo true || echo false)"
+rm -rf "$rpf_dir"
+unset PRT_INCOMPLETE_FILE PRT_DEGRADED_FILE
+
 # A partial review-parse failure (degraded, not incomplete) with zero findings
 # from the chunks that DID parse must not be eligible for the clean-verdict
 # "Reviewed, no findings" comment (codex round-3 finding on go-kure/.github#109:
@@ -1439,6 +1464,56 @@ fake_curl_orchestrator() {
               # (go-kure/.github#98).
               printf '%s' '{"choices":[{"message":{"content":"{\"findings\":[{\"file\":\"x.go\",\"line\":1,\"category\":\"other\",\"severity\":\"Medium\",\"issue\":\"i\",\"fix\":\"f\"},{\"file\":\"\",\"category\":\"other\",\"severity\":\"Medium\",\"issue\":\"bad\",\"fix\":\"f\"}]}"}}]}' > "$out"
               ;;
+            all_malformed)
+              # go-kure/.github#95: valid JSON, `.findings` array-shaped,
+              # but EVERY row is malformed (empty .file) — the rc=1 ("total
+              # loss") branch of prt_normalize_findings on a response that
+              # parsed fine. Malformed on every call, so this proves the
+              # retry fires (call count 2) but never becomes usable — the
+              # single-chunk run still exits 1.
+              printf '%s' '{"choices":[{"message":{"content":"{\"findings\":[{\"file\":\"\",\"category\":\"other\",\"severity\":\"Medium\",\"issue\":\"bad\",\"fix\":\"f\"}]}"}}]}' > "$out"
+              ;;
+            all_malformed_then_clean)
+              # go-kure/.github#95 mirror of garbage_then_clean, but for the
+              # NEW retry trigger: rc=1 (all rows malformed) on call 1,
+              # clean_with_finding on call 2 — proves the retry recovers a
+              # response that parsed but was normalize-rejected, not just one
+              # that failed to parse at all.
+              if [ "$mc" -le 1 ]; then
+                printf '%s' '{"choices":[{"message":{"content":"{\"findings\":[{\"file\":\"\",\"category\":\"other\",\"severity\":\"Medium\",\"issue\":\"bad\",\"fix\":\"f\"}]}"}}]}' > "$out"
+              else
+                printf '%s' '{"choices":[{"message":{"content":"{\"findings\":[{\"file\":\"x.go\",\"line\":1,\"category\":\"other\",\"severity\":\"Medium\",\"issue\":\"i\",\"fix\":\"f\"}]}"}}]}' > "$out"
+              fi
+              ;;
+            two_chunk_first_all_malformed)
+              # go-kure/.github#95: call-count-aware (not run-global) mode
+              # for the multi-chunk fixture below — malformed for calls 1
+              # and 2 (chunk 0's original attempt and its bounded retry),
+              # clean_with_finding from call 3 on (chunk 1, and any later
+              # chunk). Reusing all_malformed (malformed on EVERY call)
+              # would also poison chunk 1's single call, not just chunk 0's
+              # two; this mode is needed because that variable is one value
+              # for the whole run, dispatched only on the monotonic global
+              # call counter above.
+              if [ "$mc" -le 2 ]; then
+                printf '%s' '{"choices":[{"message":{"content":"{\"findings\":[{\"file\":\"\",\"category\":\"other\",\"severity\":\"Medium\",\"issue\":\"bad\",\"fix\":\"f\"}]}"}}]}' > "$out"
+              else
+                printf '%s' '{"choices":[{"message":{"content":"{\"findings\":[{\"file\":\"y.go\",\"line\":1,\"category\":\"other\",\"severity\":\"Medium\",\"issue\":\"i2\",\"fix\":\"f2\"}]}"}}]}' > "$out"
+              fi
+              ;;
+            two_chunk_first_all_malformed_second_empty)
+              # Enforce-mode sibling of the mode above: chunk 0 still
+              # exhausts its retry and degrades, but chunk 1 (call 3+)
+              # returns a genuinely clean, EMPTY .findings — so the
+              # clean-verdict "Reviewed, no findings" comment must NOT fire
+              # over a PR with an unreviewed chunk (the review-parse-failed
+              # exclusion, pr-review-threads.sh's enforce-mode gate).
+              if [ "$mc" -le 2 ]; then
+                printf '%s' '{"choices":[{"message":{"content":"{\"findings\":[{\"file\":\"\",\"category\":\"other\",\"severity\":\"Medium\",\"issue\":\"bad\",\"fix\":\"f\"}]}"}}]}' > "$out"
+              else
+                printf '%s' '{"choices":[{"message":{"content":"{\"findings\":[]}"}}]}' > "$out"
+              fi
+              ;;
             prose)
               printf '%s' '{"choices":[{"message":{"content":"Here you go:\n{\"findings\":[]}\nHope that helps!"}}]}' > "$out"
               ;;
@@ -1597,7 +1672,18 @@ fake_curl_orchestrator() {
           if [ "$c" -le "${PRT_TEST_DIFF_FAIL_TIMES:-0}" ]; then
             : > "$out"; echo 502; return 0
           fi
-          printf 'diff --git a/x.go b/x.go\nindex 1111111..2222222 100644\n--- a/x.go\n+++ b/x.go\n@@ -1,1 +1,1 @@\n-old\n+new\n' > "$out"
+          if [ "${PRT_TEST_TWO_FILE_DIFF:-0}" = 1 ]; then
+            # go-kure/.github#95: a second `diff --git` record (a second
+            # file), served only when the caller opts in via an explicit
+            # max-diff-chars override low enough to split at this record
+            # boundary — prt_split_diff (diff.sh:36-50) splits first at
+            # `diff --git` boundaries, so this is what lets the multi-chunk
+            # fixtures below land two real chunks without tripping the
+            # unrelated hard-ceiling hunk-truncation path.
+            printf 'diff --git a/x.go b/x.go\nindex 1111111..2222222 100644\n--- a/x.go\n+++ b/x.go\n@@ -1,1 +1,1 @@\n-old\n+new\ndiff --git a/y.go b/y.go\nindex 3333333..4444444 100644\n--- a/y.go\n+++ b/y.go\n@@ -1,1 +1,1 @@\n-old2\n+new2\n' > "$out"
+          else
+            printf 'diff --git a/x.go b/x.go\nindex 1111111..2222222 100644\n--- a/x.go\n+++ b/x.go\n@@ -1,1 +1,1 @@\n-old\n+new\n' > "$out"
+          fi
           echo 200
           ;;
         *)
@@ -1634,14 +1720,19 @@ _prt_test_bump() {
 }
 export -f fake_curl_orchestrator _prt_test_bump
 
-# run_orchestrator MODE DIFF_FAIL_TIMES META_FAIL_TIMES MODEL_ALWAYS_FAIL —
+# run_orchestrator MODE DIFF_FAIL_TIMES META_FAIL_TIMES MODEL_ALWAYS_FAIL [MAX_DIFF_CHARS] —
 # prints the subprocess exit code; countfiles are left behind in the paths
 # given via the PRT_TEST_*_COUNTFILE globals set by the caller. stdout/
 # stderr are now captured to PRT_TEST_STDOUT_FILE/PRT_TEST_STDERR_FILE
 # (also caller-set globals) instead of being discarded — #61's whole point
 # is that this output now carries information worth asserting on.
+# MAX_DIFF_CHARS (go-kure/.github#95, optional, 5th positional) forwards a
+# PRT_MAX_DIFF_CHARS override into the subprocess — used together with the
+# caller-set PRT_TEST_TWO_FILE_DIFF global (fake_curl_orchestrator's diff
+# arm above) to land a genuine two-chunk run: neither knob alone can, see
+# the comment at that diff arm.
 run_orchestrator() {
-  local mode="$1" diff_fail="$2" meta_fail="$3" model_fail="$4"
+  local mode="$1" diff_fail="$2" meta_fail="$3" model_fail="$4" max_diff_chars="${5:-50000}"
   local scratch summary rc
   scratch="$(mktemp -d)"
   summary="$(mktemp)"
@@ -1689,6 +1780,8 @@ run_orchestrator() {
     PRT_TEST_ASSESS_ALWAYS_FAIL="${PRT_TEST_ASSESS_ALWAYS_FAIL:-0}" \
     PRT_TEST_INVENTORY_MODE="${PRT_TEST_INVENTORY_MODE:-single}" \
     PRT_TEST_STALE_AFTER_CALL="${PRT_TEST_STALE_AFTER_CALL:-0}" \
+    PRT_TEST_TWO_FILE_DIFF="${PRT_TEST_TWO_FILE_DIFF:-0}" \
+    PRT_MAX_DIFF_CHARS="$max_diff_chars" \
     PRT_GH_TOKEN=x PRT_REPO=owner/repo PRT_PR_NUMBER=1 \
     PRT_HEAD_SHA=1111111111111111111111111111111111111111 \
     PRT_BOT_LOGIN="test-bot[bot]" PRT_PROXY_URL="http://proxy.invalid" \
@@ -1779,6 +1872,39 @@ assert_eq "orchestrator: garbage then clean on retry -> exits 0" "0" "$rc"
 assert_eq "orchestrator: garbage then clean on retry -> model called exactly twice (retry fired)" \
   "2" "$(cat "$PRT_TEST_MODEL_COUNTFILE")"
 assert_eq "orchestrator: garbage then clean on retry -> stderr carries the recovered line with retried=true" \
+  "true" "$(grep -q 'review recovered (retried=true salvaged=false)' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_MODEL_RESPONSE_MODE=clean
+
+# Case iii-b (go-kure/.github#95) — every row of a shape-valid `.findings`
+# malformed and dropped (prt_normalize_findings rc=1) on BOTH the original
+# attempt and the retry: proves the retry fires on this trigger too (model
+# called exactly twice), but a response that merely parses is not enough to
+# recover — it still exits 1, and must NOT log "review recovered" (the retry
+# parsed fine both times, it just never became usable; the log-timing fix in
+# §2 means this diagnostic only fires past the norm_rc=1 check).
+PRT_TEST_MODEL_RESPONSE_MODE=all_malformed
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "orchestrator: all-malformed .findings on original + retry -> exits 1" "1" "$rc"
+assert_eq "orchestrator: all-malformed .findings on original + retry -> model called exactly twice (original + 1 bounded retry)" \
+  "2" "$(cat "$PRT_TEST_MODEL_COUNTFILE")"
+assert_eq "orchestrator: all-malformed .findings on original + retry -> REVIEW_INCOMPLETE carries the retry=true reason" \
+  "true" "$(grep -qF 'REVIEW_INCOMPLETE: chunk 0: .findings missing/null/non-array, or all rows malformed and dropped (after retry=true)' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator: all-malformed .findings on original + retry -> stderr does NOT carry a false 'review recovered' line" \
+  "false" "$(grep -q 'review recovered' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_MODEL_RESPONSE_MODE=clean
+
+# Case iii-c (go-kure/.github#95) — all-malformed on the original attempt,
+# a genuinely clean finding on the retry: proves the retry actually
+# recovers a normalize-rc=1 response, not just that it fires. Exits 0, no
+# REVIEW_INCOMPLETE, and the recovered line IS present (retried=true).
+PRT_TEST_MODEL_RESPONSE_MODE=all_malformed_then_clean
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "orchestrator: all-malformed then clean on retry -> exits 0" "0" "$rc"
+assert_eq "orchestrator: all-malformed then clean on retry -> model called exactly twice (retry fired)" \
+  "2" "$(cat "$PRT_TEST_MODEL_COUNTFILE")"
+assert_eq "orchestrator: all-malformed then clean on retry -> no REVIEW_INCOMPLETE" \
+  "false" "$(grep -qF 'REVIEW_INCOMPLETE:' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator: all-malformed then clean on retry -> stderr carries the recovered line with retried=true" \
   "true" "$(grep -q 'review recovered (retried=true salvaged=false)' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 PRT_TEST_MODEL_RESPONSE_MODE=clean
 
@@ -1937,13 +2063,20 @@ PRT_TEST_MODEL_RESPONSE_MODE=clean
 # are asserted here rather than folded into the assess-resilience block.
 
 # Case xi — `.findings` key missing entirely: nothing in this chunk was
-# reviewed at all, stays fatal (unchanged fatal behavior — this case proves
-# the fatal/degraded split by contrast with Case xii below).
+# reviewed at all on either attempt (this mode returns the same
+# missing-key body every call, so the go-kure/.github#95 retry fires and
+# still finds nothing usable) — stays fatal (unchanged fatal behavior —
+# this case proves the fatal/degraded split by contrast with Case xii
+# below).
 PRT_TEST_MODEL_RESPONSE_MODE=no_findings_key
 rc="$(run_orchestrator advisory 0 0 0)"
 assert_eq "orchestrator: .findings missing entirely -> exits 1 (stays fatal)" "1" "$rc"
 assert_eq "orchestrator: .findings missing entirely -> REVIEW_INCOMPLETE names the missing-key case" \
   "true" "$(grep -qF 'REVIEW_INCOMPLETE: chunk 0: .findings missing/null/non-array' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+# go-kure/.github#95: the retry now fires on this rc=1 trigger too — model
+# called exactly twice (original + 1 bounded retry), not once as before.
+assert_eq "orchestrator: .findings missing entirely -> model called exactly twice (retry fired on rc=1, still unusable)" \
+  "2" "$(cat "$PRT_TEST_MODEL_COUNTFILE")"
 PRT_TEST_MODEL_RESPONSE_MODE=clean
 
 # Case xii — `.findings` array-shaped, one row malformed and dropped, the
@@ -1955,6 +2088,12 @@ assert_eq "orchestrator: partial-drop -> REVIEW_DEGRADED names it with the parti
   "true" "$(grep -qF 'REVIEW_DEGRADED: chunk 0: partial-drop' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 assert_eq "orchestrator: partial-drop -> does NOT also mark REVIEW_INCOMPLETE" \
   "false" "$(grep -qF 'REVIEW_INCOMPLETE:' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+# go-kure/.github#95 mirror-image assertion: rc=2 must stay usable WITHOUT
+# a retry — only rc=1 triggers one. Nothing before this proved an
+# implementation didn't mistakenly retry on any non-zero
+# prt_normalize_findings return instead of on rc=1 specifically.
+assert_eq "orchestrator: partial-drop -> model called exactly once (rc=2 is usable on the first attempt, no retry)" \
+  "1" "$(cat "$PRT_TEST_MODEL_COUNTFILE")"
 PRT_TEST_MODEL_RESPONSE_MODE=clean
 
 # Case xii-b — advisory mode, a partial-drop run (Case xii's exact review
@@ -2008,6 +2147,73 @@ assert_eq "orchestrator: partial-drop + owned thread absent this run -> PATCH co
 PRT_TEST_MODEL_RESPONSE_MODE=clean
 PRT_TEST_OWNED_FP="deadbeefcafebabe"
 PRT_TEST_FIRST_ABSENT_SHA=""
+
+# ---- Cases xiv-xv (go-kure/.github#95): a genuine two-chunk run ----
+# The orchestrator harness above cannot otherwise produce more than one
+# chunk — PRT_TEST_TWO_FILE_DIFF (fake_curl_orchestrator's diff arm) serves
+# a second `diff --git` record, and the max-diff-chars override (150,
+# between the ~103-byte single-record size and the ~208-byte combined size)
+# forces prt_split_diff to land the split cleanly at that record boundary
+# rather than the unrelated hard-ceiling hunk-truncation path. This is what
+# lets a two-chunk fixture exist at all: reusing all_malformed (malformed on
+# every call, unconditionally) would also poison chunk 1's single call, so
+# two_chunk_first_all_malformed/_second_empty (call-count-aware, not
+# run-global) are used instead — see their definitions above.
+
+# Case xiv — chunk 0 exhausts its retry and degrades (routed into
+# review_parse_failures, tagged review-parse-failed:), chunk 1 succeeds:
+# the plan's central claim ("the multi-chunk case is closed by the
+# routing") had no regression test without this — an implementation that
+# mistakenly dual-marks the rc=1 site (also calling prt_mark_incomplete,
+# forbidden per state.sh:10-19) would fail every single-chunk fixture above
+# identically whether or not the multi-chunk routing actually works.
+# Combined with Case xiii's owned-thread setup: chunk 0's existing thread
+# must not be read as absent this run (the incomplete_now fold-in,
+# pr-review-threads.sh's absence loop, immediately before its owned-thread
+# loop) even though the run itself exits 0 (degraded, not incomplete).
+PRT_TEST_MODEL_RESPONSE_MODE=two_chunk_first_all_malformed
+PRT_TEST_TWO_FILE_DIFF=1
+PRT_TEST_OWNED_FP="0000000000000000"
+PRT_TEST_FIRST_ABSENT_SHA="2222222222222222222222222222222222222222"
+rc="$(run_orchestrator enforce 0 0 0 150)"
+assert_eq "orchestrator: two-chunk run, chunk 0 degrades + chunk 1 succeeds -> exits 0" "0" "$rc"
+assert_eq "orchestrator: two-chunk degrade -> REVIEW_DEGRADED carries the review-parse-failed tag for chunk 0" \
+  "true" "$(grep -qF 'REVIEW_DEGRADED: review-parse-failed: chunk 0: .findings missing/null/non-array' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator: two-chunk degrade -> stdout carries the ::warning annotation, not ::error" \
+  "true false" "$(grep -q '::warning title=PR review threads degraded' "$PRT_TEST_STDOUT_FILE" && echo true || echo false) $(grep -q '::error title=' "$PRT_TEST_STDOUT_FILE" && echo true || echo false)"
+assert_eq "orchestrator: two-chunk degrade -> no REVIEW_INCOMPLETE anywhere in stderr" \
+  "false" "$(grep -qF 'REVIEW_INCOMPLETE:' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator: two-chunk degrade -> chunk 1's finding was still reviewed (model called 3x: chunk 0's original+retry, chunk 1's single call)" \
+  "3" "$(cat "$PRT_TEST_MODEL_COUNTFILE")"
+assert_eq "orchestrator: two-chunk degrade -> owned thread absent this run resolve count 0 (NOT wrongly auto-resolved)" \
+  "0" "$(cat "$PRT_TEST_RESOLVE_COUNTFILE" 2>/dev/null || echo 0)"
+assert_eq "orchestrator: two-chunk degrade -> PATCH count >= 1 (CLEAR_MARKER, not REPLY_RESOLVE — the incomplete_now fold-in fired)" \
+  "true" "$([ "$(cat "$PRT_TEST_PATCH_COUNTFILE")" -ge 1 ] && echo true || echo false)"
+PRT_TEST_OWNED_FP="deadbeefcafebabe"
+PRT_TEST_FIRST_ABSENT_SHA=""
+
+# Case xv — enforce-mode sibling: chunk 0 still degrades the same way, but
+# chunk 1 comes back genuinely clean with ZERO findings. §3's "inherited for
+# free" claim names two safety nets keyed off the review-parse-failed tag,
+# not one (Case xiv above covers the first, the absence-loop fold-in) — this
+# covers the second: the enforce clean-verdict gate must not post "Reviewed,
+# no findings" over a PR with an unreviewed chunk just because the chunks
+# that DID run happened to find nothing (the exclusion at
+# pr-review-threads.sh's enforce-mode gate, docs/pr-review-threads.md's
+# "Failure surface").
+PRT_TEST_ISSUE_COMMENT_BODY_FILE="$(mktemp)"
+PRT_TEST_MODEL_RESPONSE_MODE=two_chunk_first_all_malformed_second_empty
+PRT_TEST_TWO_FILE_DIFF=1
+rc="$(run_orchestrator enforce 0 0 0 150)"
+assert_eq "orchestrator: two-chunk degrade + chunk 1 empty -> exits 0" "0" "$rc"
+assert_eq "orchestrator: two-chunk degrade + chunk 1 empty -> REVIEW_DEGRADED carries the review-parse-failed tag" \
+  "true" "$(grep -qF 'REVIEW_DEGRADED: review-parse-failed: chunk 0:' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator: two-chunk degrade + chunk 1 empty -> enforce mode does NOT post a clean-verdict 'Reviewed, no findings' comment" \
+  "false" "$(grep -qiF 'Reviewed, no findings' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" 2>/dev/null && echo true || echo false)"
+PRT_TEST_TWO_FILE_DIFF=0
+PRT_TEST_MODEL_RESPONSE_MODE=clean
+rm -f "$PRT_TEST_ISSUE_COMMENT_BODY_FILE"
+unset PRT_TEST_ISSUE_COMMENT_BODY_FILE
 
 # Case 3a — permanent metadata-fetch failure (F3): every attempt (matching
 # prt_retry 3's own attempt count) returns 502, unlike meta_fail=1 below
