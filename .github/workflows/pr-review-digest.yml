@@ -1,0 +1,168 @@
+name: PR Review Fail-Closed Digest
+
+# Daily org-wide digest of fail-closed pr-review-threads events
+# (scripts/pr-review-fail-closed-digest.sh), per go-kure/.github#117. Nothing
+# else aggregates this across repos — each run's own ::error annotations and
+# non-green job are only visible on that one PR. See
+# docs/pr-review-threads.md § Fail-closed alerting.
+
+on:
+  schedule:
+    - cron: '15 6 * * *'  # just after settings.yml's 06:00, so the two daily jobs don't contend
+  workflow_dispatch:
+    inputs:
+      window_hours:
+        description: "How far back to scan, in hours"
+        default: "24"
+        required: false
+      threshold:
+        description: "Affected-run count at/above which the digest is alert-worthy"
+        default: "2"
+        required: false
+
+concurrency:
+  group: pr-review-digest
+  # A manual backfill run can legitimately overlap the schedule, and the
+  # "Raise alert" step's find-then-create/reopen isn't atomic: two concurrent
+  # runs can both see no marker issue and both create one. This protects a
+  # RUNNING invocation from being killed mid-flight (which would leave
+  # digest.rc stale for the "Post summary" step) — it does not queue
+  # arbitrarily. A third overlapping trigger while one run is already
+  # pending still cancels that pending run; accepted as a residual risk
+  # given the operational cadence (one daily schedule plus rare manual
+  # dispatches) — see the plan's "What this does NOT solve" for the full
+  # reasoning.
+  cancel-in-progress: false
+
+jobs:
+  digest:
+    name: digest
+    # GitHub-hosted, not autops-kube-kure — this needs gh/jq, not in-cluster
+    # proxy access.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ secrets.SETTINGS_PAT }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Run digest
+        id: digest
+        env:
+          WINDOW_HOURS: ${{ inputs.window_hours || '24' }}
+          THRESHOLD: ${{ inputs.threshold || '2' }}
+        run: |
+          set +e
+          bash scripts/pr-review-fail-closed-digest.sh \
+            --window-hours "$WINDOW_HOURS" --threshold "$THRESHOLD" --json \
+            > digest.json
+          rc=$?
+          echo "$rc" > digest.rc
+          exit 0
+
+      - name: Post summary
+        if: always()
+        run: |
+          rc="$(cat digest.rc 2>/dev/null || echo 1)"
+          if [ "$rc" = "0" ] && jq empty digest.json 2>/dev/null; then
+            {
+              echo "## PR Review Fail-Closed Digest"
+              echo ""
+              echo "Window: $(jq -r '.window_hours' digest.json)h — threshold: $(jq -r '.threshold' digest.json) — affected runs: $(jq -r '.affected_count' digest.json) — other failures excluded: $(jq -r '.other_failure_count' digest.json)"
+              echo ""
+              affected="$(jq -r '.affected_count' digest.json)"
+              if [ "$affected" -gt 0 ]; then
+                echo "| Repo | Run | PR | Branch | When (UTC) | Reasons |"
+                echo "|------|-----|----|--------|------------|---------|"
+                jq -r '.rows[] | "| \(.repo) | [\(.run_id)](\(.run_url)) | \(if .pr_number then "#\(.pr_number)" else "-" end) | \(.head_branch) | \(.created_at) | \(.reasons | join(", ")) |"' digest.json
+              else
+                echo "No fail-closed pr-review-threads events in the window."
+              fi
+              echo ""
+              echo "_Generated: $(jq -r '.generated_at' digest.json)_"
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            # Unlike settings.yml's silent `exit 0` on a missing report, fail
+            # loud here — "found nothing" must stay distinguishable from "did
+            # not run" or "produced garbage".
+            echo "ERROR: digest script failed (exit $rc, see job log)" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+      - name: Raise alert
+        run: |
+          set -euo pipefail
+
+          threshold_met="$(jq -r '.threshold_met' digest.json)"
+          if [ "$threshold_met" != "true" ]; then
+            echo "Below threshold — nothing to raise."
+            exit 0
+          fi
+
+          affected_count="$(jq -r '.affected_count' digest.json)"
+          window_hours="$(jq -r '.window_hours' digest.json)"
+          table="$(jq -r '.rows[] | "| \(.repo) | [\(.run_id)](\(.run_url)) | \(if .pr_number then "#\(.pr_number)" else "-" end) | \(.head_branch) | \(.created_at) | \(.reasons | join(", ")) |"' digest.json)"
+
+          # --limit 100 is required because `gh issue list --search` still
+          # defaults to --limit 30 even for a content search; 100 is well
+          # above any plausible count of issues whose body contains this one
+          # marker string. `--state all` matches this step's own search below
+          # (a triaged-and-closed marker issue must still be found, and
+          # reopened, not silently duplicated).
+          existing="$(gh issue list --repo go-kure/.github \
+            --search "prt-fail-closed-digest v1 in:body" --state all --limit 100 \
+            --json number,state,body)"
+          # `in:body` scopes gh's search to the body (its default also matches
+          # titles/comments); the jq filter below guards against a
+          # same-substring, different-marker false match. Take the first
+          # match — there should only ever be one rolling issue.
+          match="$(jq -c '[.[] | select(.body | contains("<!-- prt-fail-closed-digest:v1 -->"))] | first // empty' <<<"$existing")"
+
+          # Built with printf, not a heredoc: a heredoc body's lines would sit
+          # at column 0, below this step's YAML block-scalar indentation, and
+          # break the workflow's own YAML parse.
+          if [ -z "$match" ]; then
+            body="$(printf '%s\n' \
+              "<!-- prt-fail-closed-digest:v1 -->" \
+              "## PR review fail-closed digest alert" \
+              "" \
+              "**${affected_count} fail-closed \`pr-review-threads\` run(s)** in the last ${window_hours}h -- at or above this digest's threshold." \
+              "" \
+              "A fail-closed run means every chunk in that PR's diff exhausted its retry and" \
+              "produced nothing usable (invalid JSON from the model, or a missing/malformed" \
+              "\`.findings\` shape) -- a much sharper signal than a generic job failure." \
+              "Several inside a short window across different PRs/repos usually means the" \
+              "shared model proxy or the model itself is degraded, not a one-off." \
+              "" \
+              "| Repo | Run | PR | Branch | When (UTC) | Reasons |" \
+              "|------|-----|----|--------|------------|---------|" \
+              "${table}" \
+              "" \
+              "See \`docs/pr-review-threads.md\` section Fail-closed alerting for what this" \
+              "digest watches, and section Incident procedure to mute pr-review-threads on" \
+              "an affected repo while the underlying issue is triaged." \
+              "" \
+              "This issue rolls forward: a recurrence reopens it (if closed) and adds a" \
+              "comment with the new window's table, rather than opening a duplicate.")"
+            gh issue create --repo go-kure/.github \
+              --title "PR review fail-closed digest: ${affected_count} events in ${window_hours}h" \
+              --label type/ci --label "priority::high" \
+              --body "$body"
+          else
+            number="$(jq -r '.number' <<<"$match")"
+            state="$(jq -r '.state' <<<"$match")"
+            comment_body="$(printf '%s\n' \
+              "Recurrence: **${affected_count}** fail-closed run(s) in the last ${window_hours}h." \
+              "" \
+              "| Repo | Run | PR | Branch | When (UTC) | Reasons |" \
+              "|------|-----|----|--------|------------|---------|" \
+              "${table}")"
+            if [ "$state" != "OPEN" ] && [ "$state" != "open" ]; then
+              gh issue reopen --repo go-kure/.github "$number"
+            fi
+            gh issue comment --repo go-kure/.github "$number" --body "$comment_body"
+          fi
