@@ -159,12 +159,25 @@ assert_eq "kure main-protection payload rule types" \
     "deletion,merge_queue,non_fast_forward,pull_request,required_linear_history,required_status_checks" \
     "$(jq -r '[.rules[].type] | sort | join(",")' <<<"$main_payload")"
 
+# go-kure/.github#108: pr-review / AI Code Review is now a required context on
+# kure/launcher (the queue_protection override), deliberately NOT on .github
+# (org default) — see governance/repository-settings-policy.yaml's inline
+# comment and docs/standards.md's "Interim outage window" section.
+assert_eq "kure main-protection payload requires pr-review context" "true" \
+    "$(jq -r '.rules[] | select(.type=="required_status_checks") | .parameters.required_status_checks | map(.context) | index("pr-review / AI Code Review") != null' <<<"$main_payload")"
+
+launcher_payload=$(build_ruleset_payload "launcher" "main-protection")
+assert_eq "launcher main-protection payload requires pr-review context" "true" \
+    "$(jq -r '.rules[] | select(.type=="required_status_checks") | .parameters.required_status_checks | map(.context) | index("pr-review / AI Code Review") != null' <<<"$launcher_payload")"
+
 github_main_payload=$(build_ruleset_payload ".github" "main-protection")
 assert_eq ".github main-protection payload has no merge_queue (no override)" \
     "deletion,non_fast_forward,pull_request,required_linear_history,required_status_checks" \
     "$(jq -r '[.rules[].type] | sort | join(",")' <<<"$github_main_payload")"
 assert_eq ".github main-protection keeps rebase-check context" "true" \
     "$(jq -r '.rules[] | select(.type=="required_status_checks") | .parameters.required_status_checks | map(.context) | index("rebase-check") != null' <<<"$github_main_payload")"
+assert_eq ".github main-protection does NOT require pr-review context" "false" \
+    "$(jq -r '.rules[] | select(.type=="required_status_checks") | .parameters.required_status_checks | map(.context) | index("pr-review / AI Code Review") != null' <<<"$github_main_payload")"
 
 # ---- ruleset_diff: the comparison engine shared by audit_rulesets and
 # ruleset_has_drift. Crafted "live API" fixtures, no gh needed. ----
@@ -198,7 +211,7 @@ main_live_match=$(jq -n '{
         }},
         {type: "required_status_checks", parameters: {
             strict_required_status_checks_policy: false,
-            required_status_checks: [{context: "lint"}, {context: "test"}, {context: "build"}],
+            required_status_checks: [{context: "lint"}, {context: "test"}, {context: "build"}, {context: "pr-review / AI Code Review"}],
             do_not_enforce_on_create: false
         }},
         {type: "merge_queue", parameters: {
@@ -224,7 +237,7 @@ import_filter=$(build_ruleset_import_jq)
 imported=$(jq "$import_filter" <<<"$main_live_match")
 assert_eq "import strips dismissal_restriction from pull_request" "null" \
     "$(jq -r '.rules.pull_request.dismissal_restriction // "null"' <<<"$imported")"
-assert_eq "import maps required_status_checks to policy shape" '{"contexts":["lint","test","build"],"strict":false}' \
+assert_eq "import maps required_status_checks to policy shape" '{"contexts":["lint","test","build","pr-review / AI Code Review"],"strict":false}' \
     "$(jq -Sc '.rules.required_status_checks' <<<"$imported")"
 assert_eq "import reports no unmapped rule types for a fully-modeled ruleset" "[]" \
     "$(jq -c '.unmapped_rule_types' <<<"$imported")"

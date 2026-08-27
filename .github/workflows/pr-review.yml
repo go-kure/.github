@@ -19,34 +19,35 @@
 # judged a false positive) via the pr-review-threads composite action — see
 # .github/actions/pr-review-threads/action.yml and scripts/pr-review-threads.sh.
 #
-# PR_REVIEW_THREADS_MODE is set to "advisory" below (matching the composite
-# action's and the underlying script's own default — no mode is ever
-# implicitly "enforce" anywhere in this chain). It's set explicitly, not
-# left to fall through, because required_review_thread_resolution is
-# ALREADY true org-wide (governance/repository-settings-policy.yaml), so an
-# unresolved thread already blocks merge today, independent of the
-# still-open Gating-section work (making this job itself a required check,
-# to close the auto-merge timing race). Flipping the default below to
-# "enforce" is a deliberate later step, only after: (1) V1-V7 live-PR
-# verification (see the design plan and docs/pr-review-threads-live-findings.md)
-# is recorded — V1 confirmed 2026-08-18: the required-check context string is
-# byte-identical on merge_group as on pull_request, and reports skipped (not
-# missing) on the queue's temporary ref; the fork if: below needed no
-# change for this to hold, (2) the merge_group trigger lands in kure/launcher
-# (done, Task 3), (3) the required_status_checks.contexts policy change lands.
-# Until then, advisory mode is intentionally the only wired path (still posts
-# one plain issue comment with the merged findings table, matching
-# pre-existing behavior).
+# PR_REVIEW_THREADS_MODE is set to "enforce" below (go-kure/.github#108),
+# matching the org variable's own live value since 2026-08-18 — no mode is
+# ever implicitly "enforce" anywhere else in this chain (the composite
+# action's and the underlying script's own defaults both stay "advisory";
+# an unrecognized mode string still degrades to "advisory", never
+# "enforce" — see action.yml's `mode` input and
+# scripts/pr-review-threads.sh:103-111). It's set explicitly, not left to
+# fall through, because required_review_thread_resolution is ALREADY true
+# org-wide (governance/repository-settings-policy.yaml), so an unresolved
+# thread already blocks merge independent of this job's own required-check
+# status.
 #
-# STALE as of 2026-08-22 (found investigating go-kure/kure#684): live runs on
-# kure log `prt: mode=enforce`, so `vars.PR_REVIEW_THREADS_MODE` is already
-# set to `enforce` at the org level today, overriding the `advisory` default
-# below via the `mode:` line further down — ahead of condition (3) above,
-# which has NOT landed: `governance/repository-settings-policy.yaml`'s
-# `required_status_checks.contexts` for kure/launcher lists only
-# `lint, test, build` (kure/launcher override) / `+rebase-check` (org
-# default), no `pr-review` entry. Whoever flipped the org variable and why
-# is not recorded here — left as found rather than guessed at.
+# All three preconditions this rollout named are now met:
+# (1) V1-V9 live-PR verification recorded, including the bot auto-resolve
+#     path (docs/pr-review-threads-live-findings.md — V9 confirms full
+#     production-path auto-resolve via KURE_BOT_PAT).
+# (2) the `merge_group` trigger is wired into kure/launcher's own
+#     pr-review-caller.yml.
+# (3) `governance/repository-settings-policy.yaml`'s kure/launcher
+#     `required_status_checks.contexts` now includes
+#     `pr-review / AI Code Review` (go-kure/.github#108, same PR as this
+#     comment update).
+#
+# Required-check scope: `pr-review / AI Code Review` is required on kure and
+# launcher only, DELIBERATELY excluded from `.github` itself — making it
+# required here would deadlock `.github`'s own two-PR pin-bump sequence
+# (PR2 fixing the placeholder pin could never pass its own now-required
+# check). Full reasoning: docs/standards.md's "Interim outage window"
+# section.
 #
 # The job's `if:` no longer excludes drafts (2026-08-19) — this workflow was
 # backported from GitLab's `meta/ci-templates/mr-review.yml`, which reviews
@@ -95,7 +96,7 @@
 #                                 ci-templates/mr-review.yml, which this port
 #                                 lacked until now. Inert until PR2 below
 #                                 replaces the placeholder pin.)
-#   PR_REVIEW_THREADS_MODE      (default: advisory; vars.PR_REVIEW_THREADS_MODE overrides — see note above)
+#   PR_REVIEW_THREADS_MODE      (default: enforce; vars.PR_REVIEW_THREADS_MODE overrides — see note above)
 #   PR_REVIEW_MAX_FINDINGS_TOTAL (default: 5)
 
 name: PR Review
@@ -137,7 +138,7 @@ jobs:
       PR_REVIEW_ASSESS_MAX_TOKENS: "4096"
       PR_REVIEW_AGENTS_FILE: "AGENTS.md"
       PR_REVIEW_STANDARDS_FILE: "docs/standards.md"
-      PR_REVIEW_THREADS_MODE: "advisory"
+      PR_REVIEW_THREADS_MODE: "enforce"
       PR_REVIEW_MAX_FINDINGS_TOTAL: "5"
 
     steps:

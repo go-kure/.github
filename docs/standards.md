@@ -222,10 +222,19 @@ ever be the SHA that ends up on `main`:
 placeholder SHA. Until PR2 lands, the composite-action step fails to resolve for every
 PR in those consumers, and the job it's part of now fails outright (`pr-review.yml` fails
 closed as of Phase 2 Task 5 — `continue-on-error: true` was removed once the failure
-surface was hardened). PRs still merge as long as `pr-review / AI Code Review` is not a
-required status check (see governance/repository-settings-policy.yaml); once it is
-required, this window blocks every PR in the affected consumers until PR2 lands, so land
-PR2 immediately after PR1 merges — do not let the window span a working day.
+surface was hardened).
+
+**As of go-kure/.github#108, `pr-review / AI Code Review` IS a required status check on
+kure and launcher** (`governance/repository-settings-policy.yaml`'s kure `&queue_protection`
+anchor, aliased by launcher) — so this window now blocks every PR on both of them until PR2
+lands; land PR2 immediately after PR1 merges, do not let the window span a working day.
+`.github` itself is deliberately excluded from this required check for exactly this reason:
+`.github` is where the bootstrap/pin-bump PRs themselves land, and PR2 — the PR that fixes
+the placeholder pin — would otherwise have to pass its own now-required check while that
+check is still broken by the placeholder it exists to fix, a self-deadlock no `off` toggle
+or merge-queue trick escapes. kure/launcher have no equivalent problem: their fix always
+lands in a different repo (`.github`) than the one enforcing the check, so the requirement
+there gates a genuinely independent signal, not the fix's own PR.
 
 **`PR_REVIEW_THREADS_MODE=off` now covers this window too — with one open caveat.** The
 mode is checked twice: inside the script (as before), and, since a live review finding on
