@@ -537,10 +537,10 @@ data accumulates.
 **Where the alert lands.** The job summary always renders the window's table (found events and how
 many other failures were excluded), pass or fail. When the affected-run count meets the threshold,
 the workflow raises or updates one rolling issue on `go-kure/.github`, tracked by the HTML marker
-`<!-- prt-fail-closed-digest:v1 -->` in its body (mirroring the `<!-- wharf-mr-review:v1-note -->`
-convention): none found creates one labelled `type/ci`, `priority::high`; found and open adds a
-comment with the new window's table; found and closed reopens it and comments — a recurrence after
-triage must reopen, not silently open a duplicate.
+`<!-- prt-fail-closed-digest:v1 -->` in its body (a self-contained rolling-issue convention, not tied
+to any other tracker's marker scheme): none found creates one labelled `type/ci`, `priority::high`;
+found and open adds a comment with the new window's table; found and closed reopens it and comments
+— a recurrence after triage must reopen, not silently open a duplicate.
 
 **Who triages.** A human reads the alert issue. If it points at the shared proxy or model rather
 than one repo's own bug, follow § Incident procedure below to mute `pr-review-threads` on the
