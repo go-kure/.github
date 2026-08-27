@@ -860,6 +860,17 @@ audit_labels() {
         if echo "$existing_labels" | grep -qx "$name"; then
             echo -e "  ${GREEN}OK${NC}: $name"
             LABELS_OK=$((LABELS_OK + 1))
+            # The rename branch below is unreachable once the target already
+            # exists, so a repo carrying both spellings (e.g. an ad hoc
+            # slash-form label created before its :: counterpart was renamed)
+            # would otherwise sit silently forever: LABEL_RENAME_MAP keys are
+            # unconditionally skipped by the extra-label loop, so nothing else
+            # ever flags the orphaned old name. Surface it instead.
+            local old_name="${REVERSE_RENAME_MAP[$name]:-}"
+            if [ -n "$old_name" ] && echo "$existing_labels" | grep -qx "$old_name"; then
+                echo -e "  ${YELLOW}DUPLICATE${NC}: $old_name coexists with $name — reconcile issues onto $name and delete $old_name manually (not automated: could drop issue associations)"
+                LABELS_BLOCKED=$((LABELS_BLOCKED + 1))
+            fi
         else
             # Check if there's a rename candidate
             local old_name="${REVERSE_RENAME_MAP[$name]:-}"
