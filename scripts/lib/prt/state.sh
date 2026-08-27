@@ -202,12 +202,15 @@ prt_all_degraded_are_stale() {
 #
 # go-kure/.github#107: called once after the review loop closes, with every
 # chunk's review-parse failure reason (transport fault on either attempt, or
-# invalid JSON surviving salvage+retry — distinct from a shape-valid
-# response whose .findings itself was rejected, which stays fatal
-# unconditionally at its own call site) collected during the loop rather
-# than marked inline. The decision genuinely can't be made until every
-# chunk has been attempted: a chunk failing early doesn't yet know whether a
-# later chunk will succeed.
+# invalid JSON surviving salvage+retry) collected during the loop rather
+# than marked inline. go-kure/.github#95 extends this same collection to a
+# shape-valid response whose .findings was rejected after its own retry
+# (prt_normalize_findings rc=1, finding.sh) — previously excluded from this
+# deferred decision and marked fatal unconditionally at its own call site;
+# now routed here identically, since both share the same "nothing usable
+# came out of this chunk" outcome. The decision genuinely can't be made
+# until every chunk has been attempted: a chunk failing early doesn't yet
+# know whether a later chunk will succeed.
 #
 # Fatal (prt_mark_incomplete) only when every chunk that ran failed this
 # way — nothing was reviewed at all, mirroring the downstream platform's
