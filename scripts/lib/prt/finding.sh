@@ -53,8 +53,14 @@ prt_normalize_category() {
 #   1 — RAW_JSON's `.findings` is missing/null/not-an-array, OR it was
 #       array-shaped but EVERY element was malformed and dropped (empty `[]`
 #       on stdout either way): nothing usable came out of this chunk. The
-#       caller must treat this as REVIEW_INCOMPLETE (fatal) — there is no
-#       partial result to fall back to. A non-empty `.findings` array whose
+#       caller (go-kure/.github#95) retries the model call once — the same
+#       bounded retry already given to an unparseable response — and only
+#       after that retry ALSO returns rc=1 does it apply the same
+#       all-chunks-failed rule as a review-call parse failure
+#       (prt_resolve_review_parse_failures, state.sh): fatal only when every
+#       chunk in the run hit this outcome, degraded when at least one other
+#       chunk produced usable findings. There is no partial result to fall
+#       back to from a single rc=1 return alone. A non-empty `.findings` array whose
 #       normalized result is empty is total loss, not partial degradation
 #       (go-kure/.github#98 round 1 codex finding P1 — `{"findings":
 #       ["oops"]}` must not exit 0 and read as a clean review): only a
@@ -144,7 +150,11 @@ prt_normalize_findings() {
     # garbage payload (e.g. {"findings":["oops"]}) exit 0 and, in enforce
     # mode with zero accumulated findings, post a clean-verdict comment
     # (go-kure/.github#98 round 1 codex finding P1).
-    echo "prt_normalize_findings: all $raw_count row(s) malformed — nothing usable, treating as fatal" >&2
+    # go-kure/.github#95: no "treating as fatal" here — this fires
+    # unconditionally on every rc=1 return, including a first attempt the
+    # caller's retry (see the rc=1 docstring above) can go on to recover.
+    # Only the caller, after that retry, actually knows the outcome.
+    echo "prt_normalize_findings: all $raw_count row(s) malformed — nothing usable" >&2
     return 1
   fi
   return 2

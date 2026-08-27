@@ -228,6 +228,34 @@ if [ "$split_rc" -ne 0 ] || ! [[ "$chunk_count" =~ ^[0-9]+$ ]]; then
 fi
 prt_log "diff: $(wc -c < "$DIFF_FILE" | tr -d ' ') bytes, chunks=$chunk_count"
 
+# prt_parse_or_salvage RAW — parses RAW as JSON directly, falling back to a
+# prt_extract_json_braces (model.sh:33-53) salvage pass before giving up.
+# Local to this orchestrator, not model.sh — go-kure/.github#95: the "parse,
+# else salvage" block used to be written out twice verbatim in the chunk
+# loop below (the original attempt and its one bounded retry); this wraps
+# the two `jq -c '.'` attempts around prt_extract_json_braces once, used by
+# both call sites. Prints compact JSON to stdout on success, nothing on
+# failure.
+#   rc 0 — parsed directly, no salvage needed.
+#   rc 2 — direct parse failed; parsed only after prt_extract_json_braces
+#          salvage.
+#   rc 1 — unparseable either way; stdout is empty.
+prt_parse_or_salvage() {
+  local raw="$1" parsed salvage
+  parsed="$(jq -c '.' <<< "$raw" 2>/dev/null || echo '')"
+  if [ -n "$parsed" ]; then
+    printf '%s' "$parsed"
+    return 0
+  fi
+  salvage="$(prt_extract_json_braces "$raw")" && \
+    parsed="$(jq -c '.' <<< "$salvage" 2>/dev/null || echo '')"
+  if [ -n "$parsed" ]; then
+    printf '%s' "$parsed"
+    return 2
+  fi
+  return 1
+}
+
 ALL_FINDINGS='[]'
 chunk_idx=0
 # go-kure/.github#107: chunks whose review call never produced parseable
@@ -235,7 +263,9 @@ chunk_idx=0
 # salvage+retry) are collected here rather than marked incomplete inline —
 # whether that's fatal or merely degraded depends on whether any OTHER
 # chunk in this run succeeded, which isn't known until the whole loop
-# closes. See the decision made right after this loop.
+# closes. go-kure/.github#95: a shape-valid response whose .findings was
+# rejected after its own retry (prt_normalize_findings rc=1) is collected
+# here too, identically. See the decision made right after this loop.
 review_parse_failures=()
 for chunk_file in "$CHUNK_DIR"/chunk-*.diff; do
   [ -f "$chunk_file" ] || continue
@@ -271,40 +301,58 @@ for chunk_file in "$CHUNK_DIR"/chunk-*.diff; do
   # surrounding prose), and one retry of the model call itself (not
   # prt_retry's usual 3 — each call already costs 40-60s against the job's
   # 20-minute budget, model.sh:267-279) if salvage doesn't recover it either.
-  raw_json="$(jq -c '.' <<< "$raw" 2>/dev/null || echo '')"
+  #
+  # go-kure/.github#95: an attempt is "usable" only when it BOTH parses
+  # (prt_parse_or_salvage rc 0/2) AND normalizes to something usable
+  # (prt_normalize_findings rc 0/2) — not merely when it parses. Before this,
+  # a response that parsed cleanly but whose .findings was totally unusable
+  # (finding.sh rc=1: missing/null/non-array, or every row malformed and
+  # dropped) went straight to fatal with no retry at all, unlike its sibling
+  # parse-failure case right above, which already got the retry. The retry
+  # below now fires on EITHER trigger, still bounded to one retry (at most
+  # two model calls total, unchanged). A transport fault on the ORIGINAL
+  # attempt (above) is deliberately NOT retried here — that behavior is
+  # unchanged from before this fix.
   retried=false
   salvaged=false
-  if [ -z "$raw_json" ]; then
-    salvage="$(prt_extract_json_braces "$raw")" && \
-      raw_json="$(jq -c '.' <<< "$salvage" 2>/dev/null || echo '')"
-    [ -n "$raw_json" ] && salvaged=true
+  raw_json="$(prt_parse_or_salvage "$raw")"
+  parse_rc=$?
+  [ "$parse_rc" -eq 2 ] && salvaged=true
+  norm_rc=1
+  normalized='[]'
+  if [ "$parse_rc" -ne 1 ]; then
+    normalized="$(prt_normalize_findings "$raw_json")"
+    norm_rc=$?
   fi
-  if [ -z "$raw_json" ]; then
+
+  if [ "$parse_rc" -eq 1 ] || [ "$norm_rc" -eq 1 ]; then
     retried=true
     review_rc=0
     raw="$(prt_model_review "$PRT_PROXY_URL" "$PRT_MODEL" "$PRT_MAX_TOKENS" "$chunk_diff" \
       "$PR_TITLE" "$PR_DESC" "$PRT_PROJECT_CONTEXT" "$PROJECT_AGENTS" "$PROJECT_CLAUDE_MD" "$PROJECT_STANDARDS")" || review_rc=$?
     if [ "$review_rc" -ne 0 ]; then
       # The retry call can ALSO hit a transport fault, distinct from the
-      # retry producing another unparseable body — collapsing this into the
-      # parse-failure branch below would both mislabel it and compute
-      # prt_response_shape over an empty string, mirroring the assess call's
-      # own retry check above.
+      # retry producing another unparseable/unusable body — collapsing this
+      # into a parse/normalize-failure branch below would both mislabel it
+      # and compute prt_response_shape over an empty string, mirroring the
+      # assess call's own retry check above.
       review_parse_failures+=("chunk $chunk_idx: review call failed on retry (transport/proxy error, exit $review_rc)")
       prt_log "chunk $chunk_idx: review FAILED (transport error on retry, exit $review_rc)"
       chunk_idx=$((chunk_idx + 1))
       continue
     fi
-    if [ -n "$raw" ]; then
-      raw_json="$(jq -c '.' <<< "$raw" 2>/dev/null || echo '')"
-      if [ -z "$raw_json" ]; then
-        salvage="$(prt_extract_json_braces "$raw")" && \
-          raw_json="$(jq -c '.' <<< "$salvage" 2>/dev/null || echo '')"
-        [ -n "$raw_json" ] && salvaged=true
-      fi
+    raw_json="$(prt_parse_or_salvage "$raw")"
+    parse_rc=$?
+    [ "$parse_rc" -eq 2 ] && salvaged=true
+    norm_rc=1
+    normalized='[]'
+    if [ "$parse_rc" -ne 1 ]; then
+      normalized="$(prt_normalize_findings "$raw_json")"
+      norm_rc=$?
     fi
   fi
-  if [ -z "$raw_json" ]; then
+
+  if [ "$parse_rc" -eq 1 ]; then
     # Shape-only diagnostic — length + leading-char class + whether salvage
     # was attempted, never the response text itself (Step 3c rule, "Failure
     # surface" in docs/pr-review-threads.md, stays in force).
@@ -314,18 +362,36 @@ for chunk_file in "$CHUNK_DIR"/chunk-*.diff; do
     chunk_idx=$((chunk_idx + 1))
     continue
   fi
+
+  if [ "$norm_rc" -eq 1 ]; then
+    # go-kure/.github#95: nothing usable came out of this chunk even after
+    # the retry above — either .findings itself was missing/null/non-array,
+    # or every row in an array-shaped .findings was malformed and dropped
+    # (total loss, go-kure/.github#98 round 1 codex finding P1). This is the
+    # sibling of the parse-failure branch above and gets identical
+    # treatment: collected into review_parse_failures rather than marked
+    # fatal inline, so the fatal-vs-degraded decision is made once, after
+    # every chunk has been attempted, by prt_resolve_review_parse_failures
+    # (state.sh) — fatal only when EVERY chunk in the run hit an unusable
+    # response this way.
+    review_parse_failures+=("chunk $chunk_idx: .findings missing/null/non-array, or all rows malformed and dropped (after retry=$retried)")
+    prt_log "chunk $chunk_idx: review FAILED (.findings unusable, retried=$retried)"
+    chunk_idx=$((chunk_idx + 1))
+    continue
+  fi
+
+  # This diagnostic must fire only once the retried/salvaged attempt's
+  # prt_normalize_findings call itself has returned 0 or 2 (i.e. only once
+  # we reach here, past both failure branches above) — not merely upon a
+  # successful JSON parse. Logging it earlier (right after the parse) would
+  # print a false "recovered" line for a chunk that parsed fine on the retry
+  # but still returned norm_rc=1 (both attempts exhausted) and was just
+  # routed to review_parse_failures as failed above.
   if [ "$retried" = true ] || [ "$salvaged" = true ]; then
     prt_log "chunk $chunk_idx: review recovered (retried=$retried salvaged=$salvaged)"
   fi
-  normalized="$(prt_normalize_findings "$raw_json")"
-  norm_rc=$?
-  if [ "$norm_rc" -eq 1 ]; then
-    # Nothing usable came out of this chunk — either .findings itself was
-    # missing/null/non-array, or every row in an array-shaped .findings was
-    # malformed and dropped (total loss, go-kure/.github#98 round 1 codex
-    # finding P1). Either way it stays fatal.
-    prt_mark_incomplete "chunk $chunk_idx: .findings missing/null/non-array, or all rows malformed and dropped"
-  elif [ "$norm_rc" -eq 2 ]; then
+
+  if [ "$norm_rc" -eq 2 ]; then
     # go-kure/.github#98: a shape-valid .findings array with one or more
     # individually malformed rows dropped is degraded, not fatal — most of
     # the chunk was still reviewed (finding.sh:49-68's rc contract, enforced
@@ -337,7 +403,9 @@ for chunk_file in "$CHUNK_DIR"/chunk-*.diff; do
     # closed. Do NOT also call prt_mark_incomplete here — dual-marking would
     # force exit 1 regardless (the exit gate at this file's tail treats
     # PRT_INCOMPLETE_FILE as fatal unconditionally), defeating the point of
-    # moving this case to degraded.
+    # moving this case to degraded. rc=2 is usable on the FIRST attempt
+    # already (see the retry trigger above, which only fires on rc=1) — it
+    # never reaches a second model call.
     prt_mark_degraded "chunk $chunk_idx: partial-drop — one or more malformed finding row(s) dropped from .findings, rest of chunk reviewed"
   fi
 
