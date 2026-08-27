@@ -278,24 +278,54 @@ pr_digest_render_json() {
 # exactly "PR Review" (never match on filename — it differs per repo:
 # .github/workflows/pr-review-caller.yml vs kure/launcher's pr-review.yml),
 # or an empty string if this repo has no such workflow.
+#
+# go-kure/.github itself hosts BOTH the caller (pr-review-caller.yml,
+# triggered on pull_request) and the reusable definition it calls
+# (pr-review.yml, workflow_call-only) — GitHub's workflows-list API returns
+# an entry for every syntactically valid file under .github/workflows/
+# regardless of trigger type, and both files declare `name: PR Review`
+# (codex round 2 finding, confirmed by direct read of both files' `name:`
+# lines). Matching on name alone and taking the first hit is therefore
+# ambiguous for exactly this one repo: depending on API list order, it can
+# resolve to the reusable definition's id instead of the caller's, silently
+# scoping every subsequent query to a workflow whose own run history does
+# not carry this repo's actual pull-request-triggered failures — the digest
+# would then miss go-kure/.github's own fail-closed events indefinitely.
+# All possible name matches are gathered across every page first (never
+# return on the first hit), then disambiguated using this org's own stated
+# convention (AGENTS.md "Working with Reusable Workflows": caller files end
+# in `-caller.yml`, the reusable definitions they delegate to do not) —
+# prefer a path ending in `-caller.yml` when more than one match exists.
+# kure/launcher only ever have a single match (they reference the reusable
+# workflow remotely, by @main, never as a local file), so this preference
+# is a no-op there. If somehow neither match ends in `-caller.yml`, fall
+# back to the first one rather than erroring — there is nothing further to
+# disambiguate on with the fields this endpoint returns.
 pr_digest_find_workflow_id() {
   local repo="$1" page=1 per_page=100
+  local acc='[]'
   while :; do
-    local resp batch id n
+    local resp batch n
     resp="$(gh_api_call GET "$GH_API_BASE/repos/$GITHUB_ORG/$repo/actions/workflows?per_page=${per_page}&page=${page}")"
     batch="$(jq -c '.workflows' <<<"$resp")"
-    id="$(jq -r '.[] | select(.name == "PR Review") | .id' <<<"$batch" | head -1)"
-    if [ -n "$id" ]; then
-      echo "$id"
-      return 0
-    fi
+    acc="$(jq -c -n --argjson a "$acc" --argjson b "$batch" '$a + $b')"
     n="$(jq 'length' <<<"$batch")"
     if [ "$n" -lt "$per_page" ]; then
-      echo ""
-      return 0
+      break
     fi
     page=$((page + 1))
   done
+  jq -r '
+    [.[] | select(.name == "PR Review")] as $matches
+    | if ($matches | length) == 0 then ""
+      elif ($matches | length) == 1 then ($matches[0].id | tostring)
+      else
+        ([$matches[] | select(.path | endswith("-caller.yml"))]) as $callers
+        | if ($callers | length) > 0 then ($callers[0].id | tostring)
+          else ($matches[0].id | tostring)
+          end
+      end
+  ' <<<"$acc"
 }
 
 # pr_digest_list_failed_runs REPO WORKFLOW_ID SINCE_DATE — every failed run

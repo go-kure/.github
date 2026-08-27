@@ -512,7 +512,11 @@ that gap: a scheduled, org-wide scan raised by go-kure/.github#117.
 run) it lists every repo's `PR Review` workflow (matched by workflow **name**, never filename — the
 caller workflow file differs per repo: `.github` uses `pr-review-caller.yml`, kure/launcher use
 `pr-review.yml`), scans its failed runs inside the window, and for each one fetches the `AI Code
-Review` job's check-run annotations.
+Review` job's check-run annotations. `.github` itself also hosts the reusable definition
+(`pr-review.yml`, `workflow_call`-only) that its own caller delegates to, and GitHub's workflow
+list carries both under the same name — the digest disambiguates by preferring the path ending in
+`-caller.yml` (this org's own naming convention for callers) whenever a repo's name match isn't
+unique, rather than taking whichever entry the API happens to list first.
 
 **Why the annotation title, not the job conclusion, is the signal.** A failed `pr-review` job is too
 coarse a filter on its own — the two-PR pin-bump window between a `pr-review-threads` action release

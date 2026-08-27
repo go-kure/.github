@@ -206,6 +206,17 @@ assert_eq "json render's threshold_met is false below threshold" \
 # the target script, which would otherwise mask exactly the propagation
 # behaviour under test here). Bounded by `timeout` so a regression here
 # hangs this test for 5s, not forever.
+#
+# Invoked via `x="$(pr_digest_find_workflow_id ...)"`, matching main()'s own
+# call shape exactly (line ~402), not a bare direct call — a codex round 2
+# finding, confirmed by direct reproduction, showed a bare direct call to
+# this function still returns rc=1 even with `inherit_errexit` removed
+# (a *different*, incidental top-level comparison failure happens to catch
+# it there), so a test written that way would stay green after a real
+# regression and prove nothing. Only the extra outer command-substitution
+# layer — the thing `inherit_errexit` actually governs — reproduces the
+# original hang (rc=124) once the fix is removed; that is what this test
+# must exercise to be a real regression guard.
 # shellcheck disable=SC2016 # single-quoted on purpose: this is a script
 # template for the CHILD `bash -c` process below, not this shell — its `$1`
 # must stay literal here and expand only once, inside that child, from the
@@ -214,12 +225,55 @@ fail_closed_repro='
 source "$1/scripts/pr-review-fail-closed-digest.sh"
 gh_api_call() { echo "ERROR: HTTP 401 from GET forced-failure" >&2; return 1; }
 GITHUB_ORG="go-kure"
-pr_digest_find_workflow_id ".github"
+workflow_id="$(pr_digest_find_workflow_id ".github")"
+echo "unreachable: workflow_id=[$workflow_id]"
 '
 timeout 5 bash -c "$fail_closed_repro" _ "$ROOT" >/dev/null 2>&1
 fail_closed_rc=$?
-assert_eq "a forced gh_api_call failure aborts the whole run (fail-closed), rather than looping or returning empty" \
+assert_eq "a forced gh_api_call failure aborts the whole run (fail-closed) through the same command-substitution nesting main() uses, rather than looping or returning empty" \
     "1" "$fail_closed_rc"
+
+# ---- pr_digest_find_workflow_id disambiguates a name collision ----
+#
+# Regression for a codex round 2 finding: go-kure/.github hosts both the
+# caller (pr-review-caller.yml, triggered on pull_request) and the reusable
+# definition it delegates to (pr-review.yml, workflow_call-only) — GitHub's
+# workflows-list API returns an entry for every valid file regardless of
+# trigger type, and both declare `name: PR Review`. Taking the first name
+# match (as this function originally did) is order-dependent: stubbed with
+# the reusable definition listed first, it resolved to the reusable
+# workflow's id instead of the caller's, which would scope every subsequent
+# query to a workflow that never carries this repo's own pull-request
+# failures.
+reusable_first_stub='[
+  {"id": 111, "name": "PR Review", "path": ".github/workflows/pr-review.yml"},
+  {"id": 222, "name": "PR Review", "path": ".github/workflows/pr-review-caller.yml"},
+  {"id": 333, "name": "Some Other Workflow", "path": ".github/workflows/other.yml"}
+]'
+# shellcheck disable=SC2317 # false positive: `source=/dev/null` above (line
+# 25) makes the target script opaque to shellcheck, so it can't see that
+# pr_digest_find_workflow_id (defined there) calls this stub internally —
+# each of the three redefinitions below IS invoked, via that indirection.
+gh_api_call() { echo "{\"workflows\": $reusable_first_stub}"; }
+assert_eq "prefers the *-caller.yml path when the reusable definition is listed first" \
+    "222" "$(pr_digest_find_workflow_id ".github")"
+
+caller_first_stub='[
+  {"id": 222, "name": "PR Review", "path": ".github/workflows/pr-review-caller.yml"},
+  {"id": 111, "name": "PR Review", "path": ".github/workflows/pr-review.yml"}
+]'
+# shellcheck disable=SC2317 # same false positive as above.
+gh_api_call() { echo "{\"workflows\": $caller_first_stub}"; }
+assert_eq "still resolves to the *-caller.yml path when it's listed first" \
+    "222" "$(pr_digest_find_workflow_id ".github")"
+
+single_match_stub='[{"id": 999, "name": "PR Review", "path": "kure/.github/workflows/pr-review.yml"}]'
+# shellcheck disable=SC2317 # same false positive as above.
+gh_api_call() { echo "{\"workflows\": $single_match_stub}"; }
+assert_eq "a single match (kure/launcher's own shape — no local reusable-definition copy) is unaffected" \
+    "999" "$(pr_digest_find_workflow_id "kure")"
+
+unset -f gh_api_call
 
 # ---- structural: the auth-header wrapper cannot be bypassed ----
 #
