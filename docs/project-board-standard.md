@@ -1,4 +1,28 @@
-# Project Board Standard
+# Project Board Standard — Status
+
+Defined 2026-05-24 (`1753afe`) as the field model, views, and label policy for GitHub Projects
+roadmaps across go-kure repositories. Retired 2026-08-27 — see `standards/labels.md` for the
+superseding authority. Kept as a plain status record rather than deleted: it recorded a real
+decision, and the record of why it didn't work is still useful. Last updated 2026-08-27.
+
+## Why retired
+
+The field model below was never adopted. As of 2026-08-27: `go-kure/projects/4` (Launcher
+Roadmap) held 44 open items — 34 carried only the auto-add default `Status=Todo`, 10 carried a
+`Stream` value, none carried `Priority`. `go-kure/projects/1` (Kure Roadmap) held 247 items, only
+3 open. Milestones were equally half-used: 15 of 44 open launcher issues and 3 of 4 open kure
+issues carried `Now`/`Next`/`Later`. `area/*`, which this standard marked deprecated in favour of
+the Stream field, stayed in active use instead — 32 of 44 open launcher issues carried an
+`area/*` label. Practice never followed the standard; the standard is what changed.
+
+The four Projects v2 boards this document governed — `1` Kure Roadmap, `2` Documentation
+Versioning, `3` OAM Runtime, `4` Launcher Roadmap — were deleted 2026-08-27 after migrating their
+field values to labels. `area/*` is un-deprecated and restored as an open per-repo namespace
+(`standards/labels.md`); planning runs on labels alone.
+
+---
+
+*The original standard follows, as written, for historical reference.*
 
 This document defines the field model, views, and label policy for GitHub Projects roadmaps across all go-kure repositories.
 

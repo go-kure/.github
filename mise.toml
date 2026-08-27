@@ -14,7 +14,7 @@ run = "actionlint"
 
 [tasks."lint:shell"]
 description = "shellcheck the scripts this repo ships"
-run = "shellcheck scripts/check-doc-sync.sh scripts/check-doc-gate.sh scripts/check-links.sh scripts/exact-array-member.sh scripts/check-workflow-refs.sh scripts/github-settings.sh scripts/check-settings-doc.sh scripts/check-action-pins.sh scripts/govulncheck-gate.sh scripts/check-forbidden-terms.sh scripts/check-pin-bump.sh scripts/pr-review-threads.sh scripts/lib/prt/state.sh scripts/lib/prt/json.sh scripts/lib/prt/marker.sh scripts/lib/prt/finding.sh scripts/lib/prt/gh.sh scripts/lib/prt/diff.sh scripts/lib/prt/render.sh scripts/lib/prt/model.sh scripts/lib/prt/reconcile.sh scripts/pr-review-fail-closed-digest.sh scripts/lib/api.sh"
+run = "shellcheck scripts/check-doc-sync.sh scripts/check-doc-gate.sh scripts/check-links.sh scripts/exact-array-member.sh scripts/check-workflow-refs.sh scripts/github-settings.sh scripts/check-settings-doc.sh scripts/check-action-pins.sh scripts/check-label-docs.sh scripts/govulncheck-gate.sh scripts/check-forbidden-terms.sh scripts/check-pin-bump.sh scripts/pr-review-threads.sh scripts/lib/prt/state.sh scripts/lib/prt/json.sh scripts/lib/prt/marker.sh scripts/lib/prt/finding.sh scripts/lib/prt/gh.sh scripts/lib/prt/diff.sh scripts/lib/prt/render.sh scripts/lib/prt/model.sh scripts/lib/prt/reconcile.sh scripts/pr-review-fail-closed-digest.sh scripts/lib/api.sh"
 
 [tasks."check:links"]
 description = "Check every internal markdown link resolves"
@@ -44,18 +44,23 @@ run = "bash scripts/check-action-pins.sh ."
 description = "Guard against docs/standards.md and the settings policy drifting apart"
 run = "bash scripts/check-settings-doc.sh ."
 
+[tasks."check:label-docs"]
+description = "Guard against standards/labels.md and standards/labels.json drifting apart"
+run = "bash scripts/check-label-docs.sh ."
+
 [tasks."check:pin-bump"]
 description = "Guard that a PR touching the pr-review-threads action also bumps its pinned SHA"
 run = "bash scripts/check-pin-bump.sh origin/main ."
 
 [tasks.check]
 description = "Run all repo checks (matches the scripts-smoke-test CI job)"
-depends = ["lint:shell", "check:doc-sync", "check:doc-gate", "check:workflow-refs", "check:action-pins", "check:settings-doc", "check:pin-bump"]
+depends = ["lint:shell", "check:doc-sync", "check:doc-gate", "check:workflow-refs", "check:action-pins", "check:settings-doc", "check:label-docs", "check:pin-bump"]
 
 [tasks.test]
 description = "Run this repo's own script test suites"
 run = """
 bash scripts/test/check-action-pins-test.sh .
+bash scripts/test/check-label-docs-test.sh .
 bash scripts/test/github-settings-test.sh .
 bash scripts/test/govulncheck-gate-test.sh .
 bash scripts/test/pr-review-threads-test.sh .

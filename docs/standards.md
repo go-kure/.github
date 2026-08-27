@@ -593,9 +593,10 @@ The step-by-step remediation runbook — usable for a first sweep of any upstrea
 
 ## Project Management
 
-GitHub Projects roadmaps across all go-kure repos follow a shared field model and view set.
+Planning runs on labels alone — see [`standards/labels.md`](../standards/labels.md). GitHub
+Projects roadmaps were tried and retired 2026-08-27; the boards were deleted.
 
-- [Project board standard](project-board-standard.md) — field model, views, and label policy for GitHub Projects roadmaps
+- [Project board standard](project-board-standard.md) — retired; kept as a dated status record
 
 ## Proposing Changes
 

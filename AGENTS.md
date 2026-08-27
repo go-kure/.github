@@ -148,6 +148,12 @@ repo in this list, including `go-kure.github.io`.
 
 Edit `standards/labels.json`. See `standards/labels.md` for naming conventions and the category reference before adding new labels. The settings script syncs labels to all repos automatically.
 
+`scripts/check-label-docs.sh` (`mise run check:label-docs`) guards `standards/labels.md` against
+drifting from `standards/labels.json` in both directions — add a label to one and forget the
+other, and CI fails. `area/` is an open per-repo namespace: a repo may create `area/<component>`
+directly, but it must be back-filled into `labels.json` in the same unit of work, or the settings
+audit reports it `EXTRA`.
+
 ## Working with Organization Settings
 
 Distinct from repository settings above: this governs `orgs/go-kure` itself (member

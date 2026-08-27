@@ -110,37 +110,47 @@
     {
       "name": "area/cli",
       "color": "#5319E7",
-      "description": "[deprecated] Use Stream project field instead"
+      "description": "Command-line interface"
     },
     {
       "name": "area/core",
       "color": "#5319E7",
-      "description": "[deprecated] Use Stream project field instead"
+      "description": "Core engine or library logic"
     },
     {
       "name": "area/docs",
       "color": "#5319E7",
-      "description": "[deprecated] Use Stream project field instead"
+      "description": "Documentation and design docs"
     },
     {
       "name": "area/flux",
       "color": "#5319E7",
-      "description": "[deprecated] Use Stream project field instead"
+      "description": "FluxCD resources and reconciliation"
     },
     {
       "name": "area/helm",
       "color": "#5319E7",
-      "description": "[deprecated] Use Stream project field instead"
+      "description": "Helm chart rendering and compatibility"
     },
     {
       "name": "area/k8s",
       "color": "#5319E7",
-      "description": "[deprecated] Use Stream project field instead"
+      "description": "Kubernetes resource generation"
     },
     {
       "name": "area/layout",
       "color": "#5319E7",
-      "description": "[deprecated] Use Stream project field instead"
+      "description": "Repository layout and directory structure"
+    },
+    {
+      "name": "area/oam",
+      "color": "#5319E7",
+      "description": "OAM component/trait model"
+    },
+    {
+      "name": "area/distribution",
+      "color": "#5319E7",
+      "description": "Packaging and OCI distribution"
     },
     {
       "name": "scope/launcher",
