@@ -34,6 +34,7 @@ Two separator styles are used, depending on label semantics:
 | `type/` | `bug`, `chore`, `ci`, `design`, `documentation`, `epic`, `feature`, `refactor`, `roadmap`, `security`, `testing`, `upgrade`, `breaking-change` | What kind of issue it is |
 | `area/` **(deprecated)** | `cli`, `core`, `docs`, `flux`, `helm`, `k8s`, `layout` | Replaced by the Stream project field. Kept for historical compatibility on closed issues only. |
 | `upstream/` | `kure` | Blocked on an upstream repo |
+| `scope/` | `launcher`, `downstream` | Whether the change reaches a surface an external consumer already imports |
 
 **Special labels** (no category prefix): `dependencies`, `github_actions`, `go` — used by Dependabot and GitHub automation.
 
@@ -56,6 +57,16 @@ the two repos that extend the shared preset — do not add them without `repos` 
 - `type/epic` — phase or milestone group issue within a roadmap (blue `#0052CC`)
 
 An issue can have both if it serves both roles, but a tracking issue that is purely tactical should use only `type/epic`.
+
+### `scope/launcher` vs `scope/downstream`
+
+`scope/downstream` applies when the change reaches a surface an external consumer *already*
+imports — a library's public engine API, a builtin/handler that consumer registers directly, or a
+type name it has reserved or shadowed. A brand-new surface nobody has claimed yet is
+`scope/launcher`, even if a consumer will eventually adopt it.
+
+Not enumerated: a single issue can be `scope/launcher` (it is this repo's own decision to make)
+and `scope/downstream` (a consumer's registration or behavior depends on the outcome) at once.
 
 ## Adding New Labels
 

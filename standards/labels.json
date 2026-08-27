@@ -143,6 +143,16 @@
       "description": "[deprecated] Use Stream project field instead"
     },
     {
+      "name": "scope/launcher",
+      "color": "#5319E7",
+      "description": "Self-contained; no external consumer contract"
+    },
+    {
+      "name": "scope/downstream",
+      "color": "#5319E7",
+      "description": "Changes a surface an external consumer imports"
+    },
+    {
       "name": "effort::low",
       "color": "#0E8A16",
       "description": "Small task, single pattern change"
