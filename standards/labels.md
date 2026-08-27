@@ -2,7 +2,10 @@
 
 This document defines the label taxonomy and naming conventions for all go-kure repositories. The canonical label list is in [`labels.json`](labels.json).
 
-> **Deprecated labels**: `area/*` is kept for historical compatibility on existing closed issues. **Do not apply it to new or open issues.** Use the Stream project field instead (see [project-board-standard.md](../docs/project-board-standard.md)).
+No label category is deprecated as of 2026-08-27. `area/*`'s deprecation (superseded by GitHub
+Projects v2 Stream fields) and the `::` separator convention (superseded by `/`, single-select by
+convention only) were both retired the same day — see [project-board-standard.md](../docs/project-board-standard.md)
+and go-kure/.github#121.
 
 ## Naming Convention
 
@@ -24,9 +27,18 @@ so it bought nothing `/` doesn't already give — dropped 2026-08-27, see go-kur
 | `priority/` | `critical`, `high`, `medium`, `low` | Relative urgency — single-value by convention; valid for repos that use labels instead of a Priority project field (see [project board standard](../docs/project-board-standard.md)) |
 | `effort/` | `low`, `medium`, `high` | Implementation complexity — single-value by convention |
 | `type/` | `bug`, `chore`, `ci`, `design`, `documentation`, `epic`, `feature`, `refactor`, `roadmap`, `security`, `testing`, `upgrade`, `breaking-change` | What kind of issue it is |
-| `area/` **(deprecated)** | `cli`, `core`, `docs`, `flux`, `helm`, `k8s`, `layout` | Replaced by the Stream project field. Kept for historical compatibility on closed issues only. |
+| `area/` | `cli`, `core`, `docs`, `flux`, `helm`, `k8s`, `layout`, `oam`, `distribution` | Subsystem or component the issue touches |
 | `upstream/` | `kure` | Blocked on an upstream repo |
 | `scope/` | `launcher`, `downstream` | Whether the change reaches a surface an external consumer already imports |
+
+**`area/` is an open per-repo namespace.** Unlike the other categories above, a repo may create
+a new `area/<component>` label directly to unblock triage, without landing a change here first —
+the set of subsystems a repo has is repo-specific and grows over time. The one obligation: **back-
+fill the new label into `labels.json` in the same unit of work that introduces it.** A label that
+exists only on a live repo and never in this file is exactly the undeclared-label state
+`scripts/github-settings.sh`'s settings audit reports as `EXTRA` — the tooling has no way to tell
+"deliberately repo-specific" apart from a typo except by what this file records. Colour is fixed
+for the whole namespace at `#5319E7` (see `area/oam` above), so the author never chooses one.
 
 **Special labels** (no category prefix): `dependencies`, `github_actions`, `go` — used by Dependabot and GitHub automation.
 
