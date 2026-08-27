@@ -41,9 +41,11 @@ Once filled in, cross-reference the corresponding facts already asserted (and ma
 - `scripts/pr-review-threads.sh:434-439` — the `resolvedBy`/`resolved_by_bot` comment cited V6 as
   "unverified until a live spike"; updated in this same commit to record that the branch is
   currently unreachable in production (bot-driven resolve never succeeds, see V6).
-- **Open follow-up, not filed as an issue by this update**: production `enforce` mode (org-wide
-  since 2026-08-18) will never auto-close a gating thread even when the underlying finding is
-  fixed — every one requires manual resolution. Fixing this needs a token with real write access
-  (a PAT or GitHub App installation token) wired into `pr-review.yml`'s `github-token:` input in
-  place of `${{ github.token }}`, which is a real (if scoped) infrastructure change and a separate
-  decision from documenting the finding.
+- **Resolved, superseded by V9 below (2026-08-19) — do not read this bullet as still open.** It
+  originally claimed production `enforce` mode could never auto-close a gating thread. That gap
+  is exactly what V8 (fixing the `viewerCanResolve` restriction via a human-owned `KURE_BOT_PAT`)
+  and V9 (full production-path acceptance test of that fix) closed: `pr-review.yml` now wires
+  `secrets.KURE_BOT_PAT || github.token` as `github-token:`, and V9 confirms end-to-end
+  auto-resolve (`SET_FIRST_ABSENT` then `REPLY_RESOLVE`, `incomplete=0`, `resolvedBy.login:
+  "kure-bot"`) with the real script in production `enforce` mode. Left here rather than deleted so
+  the contradiction this file used to contain is visible in its own history.

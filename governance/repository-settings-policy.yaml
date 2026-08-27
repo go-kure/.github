@@ -106,6 +106,15 @@ github_repos:
             bypass_mode: always
         # Per-repo rule overrides: the merge queue tests the real merged result,
         # so rebase-check and strict up-to-date enforcement are no longer needed.
+        #
+        # `pr-review / AI Code Review` is required here (go-kure/.github#108) now that
+        # PR_REVIEW_THREADS_MODE=enforce is the org's live and declared state — this closes
+        # the auto-merge timing race a red-but-not-required run left open. Deliberately NOT
+        # added to .github's own contexts list (org default, above): .github's PR2 of its
+        # own two-PR pin-bump sequence would deadlock against its own required check while
+        # fixing the placeholder pin that makes the job fail — see docs/standards.md's
+        # "Interim outage window" section. kure/launcher have no equivalent problem, since
+        # their fix lands in a different repo (.github) than the one enforcing the check.
         rules:
           required_status_checks:
             strict: false
@@ -113,6 +122,7 @@ github_repos:
               - lint
               - test
               - build
+              - pr-review / AI Code Review
           merge_queue:
             merge_method: REBASE                 # preserves linear history
             grouping_strategy: ALLGREEN          # drop any failing entry from the group

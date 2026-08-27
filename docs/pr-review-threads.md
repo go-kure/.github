@@ -84,6 +84,15 @@ overrides the workflow's own default) is one of three values. An unrecognized va
 - **`advisory`** (default) — zero thread creates or mutations. One plain (non-resolvable) issue
   comment per run with the merged findings table. This is the staged-rollout mechanism itself:
   advisory mode proves the pipeline works against real PRs without ever blocking a merge.
+  **Required-check status (go-kure/.github#108):** `pr-review / AI Code Review` is a required
+  status check on kure and launcher (`governance/repository-settings-policy.yaml`), so a red run
+  now blocks merge there directly, on top of `required_review_thread_resolution` already gating
+  any unresolved thread. `.github` deliberately does not require this check — see
+  docs/standards.md's "Interim outage window" section for why. A run that reports
+  `conclusion: skipped` — fork PRs, `PR_REVIEW_THREADS_MODE=off`, or a `merge_group` run on the
+  queue's temporary ref — counts as passing for a required context exactly like any other skipped
+  required check (docs/pr-review-threads-live-findings.md V1, V7), so none of those paths are
+  newly blocked by making the context required.
 - **`enforce`** — findings become resolvable, merge-gating review threads: created on first
   sighting, replied-to-and-resolved when the model calls a finding a false positive or the issue
   disappears from the diff (including when the *whole* net diff goes empty — see below), reopened
@@ -477,6 +486,12 @@ override only on `.github` has no effect on their jobs. The **org**-level variab
 is unaffected by this — it's visible identically everywhere. Full record:
 `docs/pr-review-threads-live-findings.md`. Unset the variable (or set it back to
 `advisory`/`enforce`) to resume.
+
+Since go-kure/.github#108, `pr-review / AI Code Review` is a required status check on kure and
+launcher — this does not weaken the escape hatch: the job-level `if:` skips the whole job when
+`off` is set, and a `skipped` conclusion counts as passing for a required context, same as a fork
+PR or a `merge_group` run on the queue's temporary ref (V1, V7 in
+`docs/pr-review-threads-live-findings.md`). `off` still unblocks merge immediately.
 
 ## Draft PRs
 
