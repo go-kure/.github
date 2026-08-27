@@ -403,9 +403,11 @@ for chunk_file in "$CHUNK_DIR"/chunk-*.diff; do
     # closed. Do NOT also call prt_mark_incomplete here — dual-marking would
     # force exit 1 regardless (the exit gate at this file's tail treats
     # PRT_INCOMPLETE_FILE as fatal unconditionally), defeating the point of
-    # moving this case to degraded. rc=2 is usable on the FIRST attempt
-    # already (see the retry trigger above, which only fires on rc=1) — it
-    # never reaches a second model call.
+    # moving this case to degraded. The retry trigger above only fires on
+    # rc=1, so an rc=2 result on the FIRST attempt never itself causes a
+    # retry — but rc=2 can still be the outcome of a retried attempt, when
+    # the first attempt returned rc=1 and the retry's response normalizes
+    # with some (not all) rows malformed.
     prt_mark_degraded "chunk $chunk_idx: partial-drop — one or more malformed finding row(s) dropped from .findings, rest of chunk reviewed"
   fi
 
