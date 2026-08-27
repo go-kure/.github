@@ -49,7 +49,7 @@ so the settings audit doesn't require it org-wide.
 
 **Special labels** (no category prefix): `dependencies`, `github_actions`, `go` — used by Dependabot and GitHub automation.
 
-**Process labels** (no category prefix): `docs-skip` — maintainer-only PR label that bypasses the documentation-sync CI gate (see the Documentation Sync standard in [`../docs/standards.md`](../docs/standards.md)). Not for self-application.
+**Process labels** (no category prefix): `docs-skip` `#FBCA04` — maintainer-only PR label that bypasses the documentation-sync CI gate (see the Documentation Sync standard in [`../docs/standards.md`](../docs/standards.md)). Not for self-application. The colour is deliberately **not** the `area/` namespace purple it carried until 2026-08-28: a process label that repaints itself as a subsystem is unreadable in a label list, and the audit now rewrites live colour, so a wrong value here reaches every repo.
 
 **Repo-scoped labels.** A label in `labels.json` may carry an optional `repos` array
 (e.g. `docs-skip` → `["launcher"]`). The settings audit then requires that label only on

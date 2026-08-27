@@ -201,7 +201,7 @@
     },
     {
       "name": "docs-skip",
-      "color": "#5319E7",
+      "color": "#FBCA04",
       "description": "Maintainer-only: bypass the documentation-sync CI gate",
       "repos": ["launcher"]
     },
