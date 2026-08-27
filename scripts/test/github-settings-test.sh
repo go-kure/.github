@@ -456,6 +456,18 @@ fi
 drift_apply_out=$( (LABELS_DRIFT=1 JSON_OUTPUT=false print_summary true) 2>&1 )
 assert_contains "print_summary (--apply) reports the drift count as updated" "$drift_apply_out" "1 metadata updated"
 
+# ---- url_encode_label: the '/' case is the only one that matters here, and
+# it is the one urllib.parse.quote()'s default safe='/' silently skips. Every
+# label this repo governs outside the special/process ones is namespaced, so a
+# no-op encoder looks correct on every casual reading. Pin the slash. ----
+
+assert_eq "url_encode_label percent-encodes the namespace slash" \
+    "area%2Fcli" "$(url_encode_label 'area/cli')"
+assert_eq "url_encode_label leaves an unnamespaced label alone" \
+    "docs-skip" "$(url_encode_label 'docs-skip')"
+assert_eq "url_encode_label encodes the legacy '::' separator's neighbours safely" \
+    "status%3A%3Ablocked" "$(url_encode_label 'status::blocked')"
+
 # ---------------------------------------------------------------------------
 # audit_labels() metadata-drift detection — a new seam, not an existing
 # pattern. audit_labels() calls get_github_labels() (real gh api call) and

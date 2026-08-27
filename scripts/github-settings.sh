@@ -825,12 +825,16 @@ build_reverse_rename_map() {
     done
 }
 
-# URL-encode a label name for use as a path segment — every namespaced label
-# contains '/', so an unencoded name in a URL path is a different endpoint
-# (repos/.../labels/area/cli resolves as .../labels/area/cli, not the label
-# literally named "area/cli").
+# URL-encode a label name for use as a single path segment. safe='' is the
+# whole point: quote() defaults to safe='/', which leaves untouched the one
+# character every namespaced label here contains, making the call a no-op for
+# 'area/cli' and friends. GitHub's API does currently resolve the bare form
+# (repos/ORG/REPO/labels/area/cli returns the label named "area/cli"), but that
+# is undocumented leniency about an extra path segment, not a contract — encode
+# so correctness doesn't rest on it, and so a name with a space, '?' or '#'
+# works too.
 url_encode_label() {
-    python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$1"
+    python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$1"
 }
 
 # Get current labels for a repo, one '\x1f'-delimited "name\x1fcolor\x1fdescription"
