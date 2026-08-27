@@ -150,7 +150,7 @@ jobs:
               "comment with the new window's table, rather than opening a duplicate.")"
             gh issue create --repo go-kure/.github \
               --title "PR review fail-closed digest: ${affected_count} events in ${window_hours}h" \
-              --label type/ci --label "priority::high" \
+              --label type/ci --label "priority/high" \
               --body "$body"
           else
             number="$(jq -r '.number' <<<"$match")"

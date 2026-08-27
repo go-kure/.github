@@ -13,7 +13,7 @@ The launcher roadmap (go-kure/projects/4) is the reference implementation. The k
 | Status | single-select (built-in) | Yes | Todo · In Progress · In Review · Done · Blocked |
 | Stream | single-select (custom) | Yes | Values are repo-specific — see below |
 | Milestone | built-in (GitHub) | Yes | Now · Next · Later — planning bucket |
-| Priority | single-select (custom) | Optional | Repos may use the Priority field OR priority::* labels — not both |
+| Priority | single-select (custom) | Optional | Repos may use the Priority field OR priority/* labels — not both |
 
 ### Milestone values
 
@@ -36,8 +36,8 @@ Every open issue must have exactly one of Now / Next / Later set as its GitHub m
 
 | Repo | Mechanism |
 |---|---|
-| go-kure/kure | Priority custom field (P1-Critical through P5-Deferred) — canonical. Do not apply priority::* labels to new issues. |
-| go-kure/launcher | priority::* labels — no Priority field currently |
+| go-kure/kure | Priority custom field (P1-Critical through P5-Deferred) — canonical. Do not apply priority/* labels to new issues. |
+| go-kure/launcher | priority/* labels — no Priority field currently |
 
 ---
 
@@ -71,18 +71,18 @@ This ensures new issues appear on the board automatically without manual triage.
 
 ## Label Policy
 
-`area/*` and `status::*` issue labels are **deprecated** in favour of project fields.
+`area/*` and `status/*` issue labels are **deprecated** in favour of project fields.
 
 | Replaced by | Labels |
 |---|---|
 | Stream project field | `area/cli`, `area/core`, `area/docs`, `area/flux`, `area/helm`, `area/k8s`, `area/layout` |
-| Project Status field | `status::blocked`, `status::needs-review`, `status::in-progress` |
-| Milestone = Later | `status::deferred` |
+| Project Status field | `status/blocked`, `status/needs-review`, `status/in-progress` |
+| Milestone = Later | `status/deferred` |
 
 **Policy for deprecated labels:**
 
-- Do **not** apply `area/*` or `status::*` to new or open issues.
+- Do **not** apply `area/*` or `status/*` to new or open issues.
 - Do **not** delete the labels — they are kept for historical compatibility on closed issues.
 - When triaging a new issue: set the GitHub milestone (Now / Next / Later), then set Stream and Status on the project item.
 
-`effort::*` and `type/*` labels remain active and valid for new issues.
+`effort/*` and `type/*` labels remain active and valid for new issues.

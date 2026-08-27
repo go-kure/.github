@@ -542,7 +542,7 @@ data accumulates.
 many other failures were excluded), pass or fail. When the affected-run count meets the threshold,
 the workflow raises or updates one rolling issue on `go-kure/.github`, tracked by the HTML marker
 `<!-- prt-fail-closed-digest:v1 -->` in its body (a self-contained rolling-issue convention, not tied
-to any other tracker's marker scheme): none found creates one labelled `type/ci`, `priority::high`;
+to any other tracker's marker scheme): none found creates one labelled `type/ci`, `priority/high`;
 found and open adds a comment with the new window's table; found and closed reopens it and comments
 — a recurrence after triage must reopen, not silently open a duplicate.
 
