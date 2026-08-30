@@ -282,7 +282,7 @@ fi
 prt_log "diff: $(wc -c < "$DIFF_FILE" | tr -d ' ') bytes, chunks=$chunk_count"
 
 # prt_parse_or_salvage RAW — parses RAW as JSON directly, falling back to a
-# prt_extract_json_braces (model.sh:33-53) salvage pass before giving up.
+# prt_extract_json_braces (model.sh:63-83) salvage pass before giving up.
 # Local to this orchestrator, not model.sh — go-kure/.github#95: the "parse,
 # else salvage" block used to be written out twice verbatim in the chunk
 # loop below (the original attempt and its one bounded retry); this wraps
@@ -335,7 +335,7 @@ for chunk_file in "$CHUNK_DIR"/chunk-*.diff; do
   if [ "$review_rc" -ne 0 ]; then
     # Mirrors the assess call's own exit-status check below: a non-zero
     # return here is a transport/proxy fault (curl failure, non-2xx, or
-    # empty response content, model.sh:286-299), a different problem than a
+    # empty response content, model.sh:394-413), a different problem than a
     # 2xx response that isn't parseable JSON below. Closes, on the review
     # call's own retry, the same mislabeling gap a codex review found and
     # fixed for the assess call's retry (a transport fault there was being
@@ -522,7 +522,7 @@ for ((i = 0; i < chunk_idx; i++)); do
   if [ "$assess_rc" -ne 0 ]; then
     # A non-zero return here is a transport/proxy fault (prt_model_assess's
     # own stderr already named it — curl failure, non-2xx, or empty response
-    # content, model.sh:286-299) and is a different problem than a 2xx
+    # content, model.sh:394-413) and is a different problem than a 2xx
     # response that isn't parseable JSON below. Reported distinctly so the
     # two don't collapse into one ambiguous message (root cause 2).
     # go-kure/.github#98: an assessment-call fault means this chunk's review
