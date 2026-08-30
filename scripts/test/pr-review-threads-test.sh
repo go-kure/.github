@@ -963,9 +963,9 @@ assert_eq "prt_render_advisory_comment: both reasons present + zero findings -> 
 # round 4 (go-kure/.github#101 second review pass, chatgpt-codex-connector[bot]):
 # the round-3 banner unconditionally said "some rows were dropped ... reflects
 # only the surviving rows", which is only true of the partial-drop reason
-# (:334) and misdescribes the other five prt_mark_degraded call sites (assess
-# transport/parse/join failures at :379,413,435,448, and the unrelated
-# clean-verdict-comment supersede failure at :1151) — none of which drop any
+# (:478) and misdescribes the other five prt_mark_degraded call sites (assess
+# transport/parse/join failures at :534,570,592,605, and the unrelated
+# clean-verdict-comment supersede failure at :1347) — none of which drop any
 # row; four leave findings present but unverdicted, the fifth isn't about
 # current findings at all. Assert the banner text itself is now
 # degradation-neutral and does not assert "dropped"/"surviving" regardless of
@@ -1010,7 +1010,7 @@ assert_eq "annotation_escape: percent-then-LF does not double-escape (order: % f
 # report clean success with its own incomplete-state bookkeeping silently
 # never established. prt_state_init calls `exit 1` directly (same
 # exit-not-return contract as prt_mark_incomplete, documented at state.sh:37-53
-# — this is a bare top-level call at pr-review-threads.sh:115, not inside a
+# — this is a bare top-level call at pr-review-threads.sh:156, not inside a
 # $(...) or subshell), so it must be invoked inside an explicit subshell here
 # to observe its exit status without killing the test runner.
 si_dir="$(mktemp -d)"
@@ -1175,7 +1175,7 @@ unset PRT_INCOMPLETE_FILE PRT_DEGRADED_FILE
 # prt_is_incomplete, so it still fired here and published a false-clean
 # verdict over a PR with an unreviewed chunk). This mirrors the exact
 # review-parse-failed grep already used for the absence-loop's incomplete_now
-# fold-in (pr-review-threads.sh:1003) rather than re-deriving a new check.
+# fold-in (pr-review-threads.sh:1145) rather than re-deriving a new check.
 rpf_dir="$(mktemp -d)"
 prt_state_init "$rpf_dir"
 prt_resolve_review_parse_failures 3 "chunk 2: review response was not valid JSON after retry=true, salvage_attempted=true (object)" 2>/dev/null
@@ -1196,7 +1196,7 @@ unset PRT_INCOMPLETE_FILE PRT_DEGRADED_FILE
 # pr-review-threads.sh itself is not exercised by the rest of this suite (its
 # own header comment says so — it's wiring, not a pure function) but its
 # top-level exit code IS a contract worth pinning down directly:
-# pr-review-threads.sh:1208's REVIEW_INCOMPLETE -> exit 1, PRT_MODE=off's exit 0 staying ahead of that
+# pr-review-threads.sh:1380's REVIEW_INCOMPLETE -> exit 1, PRT_MODE=off's exit 0 staying ahead of that
 # check, and the two prt_retry-wrapped reads actually retrying. Run as a real
 # subprocess (not sourced) so $? reflects the same exit path CI observes,
 # against a mocked PRT_CURL exported into that subprocess's environment
@@ -1339,10 +1339,10 @@ fake_curl_orchestrator() {
     */chat/completions)
       # The review and assess calls share this one URL — distinguish them by
       # reading the request body model.sh writes to disk and passes as
-      # `-d @FILE` (the E2BIG fix, model.sh:255-265: never inline on argv),
+      # `-d @FILE` (the E2BIG fix, model.sh:257-267: never inline on argv),
       # so `$data` here is a `@`-prefixed path, not literal JSON. The assess
       # call's user message always contains the literal
-      # "--- FINDINGS (JSON) ---" marker (model.sh:349); the review call's
+      # "--- FINDINGS (JSON) ---" marker (model.sh:478); the review call's
       # never does.
       req_body=""
       case "$data" in
@@ -1356,7 +1356,7 @@ fake_curl_orchestrator() {
           # own resilience below. Only reachable when the review call above
           # actually produced >=1 finding (PRT_TEST_MODEL_RESPONSE_MODE=
           # clean_with_finding), since the orchestrator skips assessment for
-          # an empty-findings chunk (pr-review-threads.sh:320).
+          # an empty-findings chunk (pr-review-threads.sh:512).
           mc="$(_prt_test_bump "${PRT_TEST_ASSESS_COUNTFILE:?}")"
           if [ "${PRT_TEST_ASSESS_ALWAYS_FAIL:-0}" = 1 ]; then
             : > "$out"; echo 500; return 0
@@ -1687,7 +1687,7 @@ fake_curl_orchestrator() {
           echo 200
           ;;
         *)
-          # meta fetch (:190) and every later freshness re-check (gh.sh:136)
+          # meta fetch (:243) and every later freshness re-check (gh.sh:136)
           # share this same GET pulls/<N> shape — deliberately: a freshness
           # check after the meta fetch has already consumed the fail budget
           # must succeed immediately, matching how the real one-run head-SHA
@@ -1915,13 +1915,13 @@ PRT_TEST_MODEL_RESPONSE_MODE=clean
 # call's own mirror of Case viii. The review call is forced to
 # clean_with_finding once here and stays that way through all five cases
 # below (iv-viii — the mode is never reset in between) so the assess call
-# actually fires at all (pr-review-threads.sh:320 skips assessment for an
+# actually fires at all (pr-review-threads.sh:512 skips assessment for an
 # empty-findings chunk, and every other scenario in this file leaves review
 # findings empty on purpose).
 PRT_TEST_MODEL_RESPONSE_MODE=clean_with_finding
 
 # Case iv — assess call itself fails at the transport layer (non-2xx/curl/
-# empty-content — model.sh:286-299), on both the only attempt and would-be
+# empty-content — model.sh:407-426), on both the only attempt and would-be
 # retry alike: prt_model_assess's own exit status is checked explicitly and
 # reported as a transport fault, never silently parsed as empty JSON (root
 # cause 2). No salvage/retry is attempted for a transport fault — there is no
@@ -2022,7 +2022,7 @@ PRT_TEST_ASSESS_RESPONSE_MODE=clean
 PRT_TEST_MODEL_RESPONSE_MODE=clean
 
 # Case viii-b — .assessments shape rejected by prt_join_assessment
-# (:409-410 in pr-review-threads.sh, distinct from Cases iv/vi/viii above:
+# (:604-605 in pr-review-threads.sh, distinct from Cases iv/vi/viii above:
 # the assessment response here DOES parse as valid JSON, it's the
 # `.assessments` field itself that's the wrong shape) — go-kure/.github#98:
 # REVIEW_DEGRADED, exits 0, every finding in the chunk stays unverdicted.
@@ -2098,7 +2098,7 @@ PRT_TEST_MODEL_RESPONSE_MODE=clean
 
 # Case xii-b — advisory mode, a partial-drop run (Case xii's exact review
 # response) whose one surviving finding is then assessed FALSE_POSITIVE and
-# filtered out before rendering (pr-review-threads.sh:759), so the advisory
+# filtered out before rendering (pr-review-threads.sh:919), so the advisory
 # table's own count is 0 despite the run being REVIEW_DEGRADED — the exact
 # admission-test scenario from the chatgpt-codex-connector[bot] review
 # (go-kure/.github#101#pullrequestreview-5028172237): a human reading the
@@ -2223,8 +2223,8 @@ assert_eq "orchestrator: PR-metadata fetch failing all 3 attempts exits 1" "1" "
 assert_eq "orchestrator: permanent metadata-fetch failure — stderr carries the Step 3a ERROR line" \
   "true" "$(grep -qF 'ERROR: failed to fetch PR metadata' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 
-# PRT_MODE=off must short-circuit before any curl call at all (:123-130, ahead
-# of the diff fetch at :149) — proven here by wiring in settings that would
+# PRT_MODE=off must short-circuit before any curl call at all (:176-183, ahead
+# of the diff fetch at :194) — proven here by wiring in settings that would
 # fail the run if the off-mode gate were ever bypassed (an always-failing
 # model call, on top of a diff-fetch failure budget deliberately larger than
 # the retry cap, so a non-off run would exit 1 either way).
@@ -2260,12 +2260,12 @@ assert_eq "orchestrator: enforce + empty diff + first sighting -> model count 0 
 
 # go-kure/.github#99 kure-bot round-5 finding: this comment previously
 # labeled call #1 "the meta fetch", which is wrong under an empty diff —
-# pr-review-threads.sh:189's `EMPTY_DIFF != 1` guard means no meta fetch
+# pr-review-threads.sh:242's `EMPTY_DIFF != 1` guard means no meta fetch
 # ever runs on this path (same reason the absence-resolve block below
 # gives for its own numbering). Verified against the shared META_COUNTFILE
-# (this file's `_prt_bump`d "meta fetch (:190) and every later freshness
+# (this file's `_prt_bump`d "meta fetch (:243) and every later freshness
 # re-check" counter): call #1 is actually the SET_FIRST_ABSENT loop's own
-# pre-mutate freshness check (pr-review-threads.sh:1022) — the first and
+# pre-mutate freshness check (pr-review-threads.sh:1183) — the first and
 # only thing to touch that counter before it — and it stays fresh; call #2
 # onward is the SAME check re-invoked by prt_gh_rest_fresh inside the
 # retried PATCH write (gh.sh's prt_retry 3 wrapping), which now observes
@@ -2310,8 +2310,8 @@ PRT_TEST_FIRST_ABSENT_SHA=""
 # not-yet-attempted write would be. Must stay REVIEW_INCOMPLETE (exit 1),
 # not REVIEW_DEGRADED.
 #   call #1 = the real meta fetch (must report the true head SHA)
-#   call #2 = the pre-mutate freshness check (line ~851) -> stays fresh
-#   call #3 = the post-mutate freshness check (line ~871) -> goes stale
+#   call #2 = the pre-mutate freshness check (line ~1008) -> stays fresh
+#   call #3 = the post-mutate freshness check (line ~1036) -> goes stale
 PRT_TEST_MODEL_RESPONSE_MODE=clean_with_finding
 PRT_TEST_ASSESS_RESPONSE_MODE=false_positive_survivor
 PRT_TEST_OWNED_FP="$(prt_fp_base x.go other)"
@@ -2342,8 +2342,8 @@ PRT_TEST_STALE_AFTER_CALL=0
 # stale-superseded path, exactly like REPLY_RESOLVE's own pinning test
 # above.
 #   call #1 = the real meta fetch (must report the true head SHA)
-#   call #2 = the pre-mutate freshness check (line ~893) -> stays fresh
-#   call #3 = the post-mutate freshness check (line ~907) -> goes stale
+#   call #2 = the pre-mutate freshness check (line ~1050) -> stays fresh
+#   call #3 = the post-mutate freshness check (line ~1064) -> goes stale
 PRT_TEST_MODEL_RESPONSE_MODE=clean_with_finding
 PRT_TEST_OWNED_FP="$(prt_fp_base x.go other)"
 PRT_TEST_OWNED_RESOLVED_BY_BOT=1
@@ -2370,14 +2370,14 @@ PRT_TEST_STALE_AFTER_CALL=0
 # moves before the post-mutation freshness re-check gating the auto-close
 # reply. Mirrors the two pinning tests above; only the call numbering
 # differs because this scenario runs against an empty diff, which skips the
-# initial meta fetch entirely (pr-review-threads.sh:189's `EMPTY_DIFF != 1`
+# initial meta fetch entirely (pr-review-threads.sh:242's `EMPTY_DIFF != 1`
 # guard) — the absence loop's own explicit pre-mutate check becomes call #1.
 # This numbering (confirmed against the shared META_COUNTFILE) is what the
 # staleness-only SET_FIRST_ABSENT block above was corrected to match
 # (round-5 kure-bot finding) — its own call #1 is likewise its loop's
 # pre-mutate check, not a meta fetch, for this identical EMPTY_DIFF reason.
-#   call #1 = the pre-mutate freshness check (line ~1072) -> stays fresh
-#   call #2 = the post-mutate freshness check (line ~1087) -> goes stale
+#   call #1 = the pre-mutate freshness check (line ~1234) -> stays fresh
+#   call #2 = the post-mutate freshness check (line ~1249) -> goes stale
 PRT_TEST_EMPTY_DIFF=1
 PRT_TEST_FIRST_ABSENT_SHA="2222222222222222222222222222222222222222"
 PRT_TEST_STALE_AFTER_CALL=1
