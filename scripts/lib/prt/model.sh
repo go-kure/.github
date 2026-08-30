@@ -26,10 +26,12 @@
 # PRT_LAST_MODEL_FAILURE the orchestrator reads after the substitution
 # returns is untouched by the call it's supposedly describing, so every
 # annotated failure rendered "[unknown]" regardless of the real cause
-# (go-kure/.github#128 round 1). The variable is kept for direct,
-# non-subshell callers (e.g. the unit tests that call _prt_call_proxy
-# in-process without wrapping it in `$(...)`), but the value that actually
-# survives a command substitution is the file at PRT_LAST_MODEL_FAILURE_FILE,
+# (go-kure/.github#128 round 1). The variable is kept for any direct,
+# non-subshell caller — none of the current tests in
+# scripts/test/pr-review-threads-test.sh are one; both existing
+# _prt_call_proxy call sites there are themselves command-substitution-
+# wrapped — but the value that actually survives a command substitution is
+# the file at PRT_LAST_MODEL_FAILURE_FILE,
 # if the caller set one — a real filesystem write is unaffected by subshell
 # scoping. _prt_set_model_failure keeps both in sync from one call site.
 # shellcheck disable=SC2034 # read by callers in pr-review-threads.sh, not within this file
@@ -317,11 +319,22 @@ _prt_call_proxy() {
   # aggregate still can't blow the job budget — while a single-chunk PR (the
   # common case, and every failure seen 2026-08-30 was one) gets the full
   # ceiling below. Callers that never set a run deadline (every direct unit
-  # test of this function) fall back to `now + 300`, i.e. today's old fixed
-  # value, so this default changes nothing under test.
-  local now budget_left max_time
+  # test of this function) are meant to fall back to `now + 300` fresh on
+  # EVERY call.
+  #
+  # That fallback must land in a call-local variable, not mutate the shared
+  # PRT_MODEL_DEADLINE_EPOCH via `:=` (go-kure/.github#128 round 2, kure-bot):
+  # unlike PRT_MODEL_TIMEOUT_FLOOR/CEILING/PRT_MODEL_CONNECT_RETRY_DELAY below
+  # — fixed constants, so `:=` into the global is a harmless one-time default
+  # — this one is a function of `now`, so mutating the global freezes the
+  # FIRST call's `now + 300` there; every later call in the same shell that
+  # never sets PRT_MODEL_DEADLINE_EPOCH (exactly the direct, non-subshell unit
+  # test callers named above) would then reuse that stale value instead of
+  # computing a fresh one, and a call made more than ~270s after the first
+  # would spuriously hit the deadline-exhausted refusal below.
+  local now budget_left max_time deadline
   now="$(date +%s)"
-  : "${PRT_MODEL_DEADLINE_EPOCH:=$((now + 300))}"
+  deadline="${PRT_MODEL_DEADLINE_EPOCH:-$((now + 300))}"
   : "${PRT_MODEL_TIMEOUT_FLOOR:=30}"
   # 900s ceiling: the measured 8-day p99 was 557s and ZERO of 1066 calls
   # exceeded 900s — high enough to absorb the whole observed tail, not so
@@ -352,7 +365,7 @@ _prt_call_proxy() {
     # time attempt 2 started, yet the retry still ran with attempt 1's
     # leftover max_time instead of being refused).
     now="$(date +%s)"
-    budget_left=$((PRT_MODEL_DEADLINE_EPOCH - now))
+    budget_left=$((deadline - now))
     if [ "$budget_left" -lt "$PRT_MODEL_TIMEOUT_FLOOR" ]; then
       # Refuse to START (or retry) a call that the run's own deadline says
       # can't finish, rather than issuing it with a near-zero/stale
