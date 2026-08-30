@@ -232,7 +232,11 @@ that call — this closes, on the review call's own retry, the same mislabeling 
 found and fixed for the assess call's retry first (see below): a transport fault there was
 originally being collapsed into the "not valid JSON" branch instead of reported as its own kind of
 failure. A transport fault on the **original** attempt is deliberately not retried at all — only a
-2xx response reaching the parse/normalize stage below can trigger the bounded retry.
+2xx response reaching the parse/normalize stage below can trigger the bounded retry. "Not retried
+at all" describes this orchestrator-level decision (no second `prt_model_review`/`prt_model_assess`
+call), not what happens underneath it: `_prt_call_proxy` itself absorbs one short connect-class
+retry (curl exit 6/7 only) before it ever returns a failure the orchestrator can see — see the
+model proxy `--max-time`/deadline discussion later in this section for that mechanism.
 
 A 2xx response is parsed via `prt_parse_or_salvage` (`pr-review-threads.sh`, local to the
 orchestrator, next to the chunk loop it serves — not `model.sh`, since it's purely a compact-JSON-
@@ -466,10 +470,34 @@ replays that page shape, a comment inventory above the same limit with a late hu
 oversized `OWNED` cap input. This removes argv-size failures; it does not bound total memory or
 runtime for pathological PR histories.
 
-GitHub curl calls carry `--connect-timeout 10 --max-time 120`; the model proxy call carries
-`--connect-timeout 10 --max-time 300` — a per-call ceiling so one hung call can't alone consume
-the job's `timeout-minutes: 20` budget (see the comment at `scripts/lib/prt/model.sh` next to
-that value for the arithmetic). The two GitHub reads that used to have no retry at all — the
+GitHub curl calls carry `--connect-timeout 10 --max-time 120`. The model proxy call's `--max-time`
+is **not** a fixed value — it's derived per call from a run-level deadline,
+`PRT_MODEL_DEADLINE_EPOCH`, computed once at the top of `pr-review-threads.sh` from
+`PRT_MODEL_BUDGET_SECONDS` (default 1020s, 17 of the job's `timeout-minutes: 20`) and consumed by
+`_prt_call_proxy` (`model.sh`): each call's `--max-time` is whatever's left of that deadline,
+clamped to `[PRT_MODEL_TIMEOUT_FLOOR, PRT_MODEL_TIMEOUT_CEILING]` (defaults 30s / 900s). A fixed
+300s ceiling used to sit here instead — below the workload's own measured p95 (315s over 1066 live
+calls against claude-proxy, 2026-08-30 investigation), so roughly 1 in 20 model calls was killed by
+curl mid-generation with no application fault at all, and on a single-chunk PR (the common case)
+that one killed call failed the whole required check closed. If the deadline has less than the
+floor left when a call is about to start, `_prt_call_proxy` refuses to issue it at all
+(`PRT_LAST_MODEL_FAILURE=deadline-exhausted`) rather than firing it with a near-zero `--max-time`
+and reporting whatever curl does with that as an ordinary transport fault. Recomputing the budget
+per call, rather than fixing it once, means a multi-chunk PR's later calls get less headroom than
+its first while the aggregate still can't exceed the job's own budget.
+
+Separately, `_prt_call_proxy` now gives connect-class transport faults (curl exit 6 DNS failure, 7
+connection refused — the "proxy pod momentarily out of the Service" mode this file's top-of-job
+comment already describes) one short-backoff retry (`PRT_MODEL_CONNECT_RETRY_DELAY`, default 3s)
+*inside itself*, before ever returning to its caller. This is invisible to the orchestrator-level
+retry policy described above (a curl exit 6/7 that recovers on this internal retry never surfaces
+as a `prt_model_review`/`prt_model_assess` failure at all) and is deliberately narrower than that
+policy: exit 28 (timed out — the call DID connect and simply ran past `--max-time`) is excluded
+from this retry, since retrying it would only re-spend budget on a call already shown to be this
+slow for the same result; the deadline above is the correct control for that case, not a retry
+here.
+
+The two GitHub reads that used to have no retry at all — the
 initial diff fetch and the initial PR-metadata fetch — are wrapped in `prt_retry`
 (`gh.sh:208-235`), the same retry helper every write path already used; a permanent (retry-
 budget-exhausted) PR-metadata fetch failure now prints its own `ERROR: failed to fetch PR

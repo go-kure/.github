@@ -114,6 +114,18 @@ fi
 : "${PRT_MODEL_BUDGET_SECONDS:=1020}"   # 17 of the job's 20 minutes
 # shellcheck disable=SC2034 # read by _prt_call_proxy in lib/prt/model.sh, not within this file
 PRT_MODEL_DEADLINE_EPOCH=$(( $(date +%s) + PRT_MODEL_BUDGET_SECONDS ))
+# Anchored at THIS script's start, not the job's — checkout + "Setup tools"
+# (.github/workflows/pr-review.yml) run before this script does, so their
+# elapsed time is NOT inside the 180s margin the 1020s default reserves out
+# of timeout-minutes: 20. Judged acceptable (go-kure/.github#128 round 1,
+# thread on pr-review-threads.sh:116): checkout is a shallow clone of this
+# small repo, and Setup tools is a `command -v` check that no-ops on the
+# self-hosted runner image where curl/jq are already present — both
+# expected in the single-digit-seconds range in the common case, well
+# inside the margin. A runner needing a genuine cold apt-get install, or a
+# slow checkout, could still erode it; anchoring PRT_MODEL_DEADLINE_EPOCH at
+# a PRT_JOB_STARTED_EPOCH captured in a workflow step before checkout would
+# close that gap if it's ever observed to matter in practice.
 
 for req in PRT_GH_TOKEN PRT_REPO PRT_PR_NUMBER PRT_HEAD_SHA PRT_BOT_LOGIN PRT_PROXY_URL; do
   [ -n "${!req:-}" ] || { echo "ERROR: $req is required" >&2; exit 1; }
