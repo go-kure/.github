@@ -12,6 +12,15 @@
 # never execve'd and so cannot reproduce the fault it guards.
 : "${PRT_CURL:=curl}"
 
+# PRT_LAST_MODEL_FAILURE — short, closed-vocabulary reason code for the LAST
+# failure _prt_call_proxy produced (curl-exit-N, http-NNN, empty-content,
+# deadline-exhausted, payload-build, local-tempdir). Read by callers in
+# pr-review-threads.sh to annotate a bare "exit 1" with which of several
+# unrelated causes actually fired — same cross-file pattern as
+# PRT_LAST_RETRY_AFTER/PRT_LAST_RATELIMIT_REMAINING in gh.sh.
+# shellcheck disable=SC2034 # read by callers in pr-review-threads.sh, not within this file
+PRT_LAST_MODEL_FAILURE=""
+
 set -uo pipefail
 
 prt_strip_thinking() {
@@ -238,9 +247,12 @@ _prt_call_proxy() {
   # Both are fixed together; fixing only the reported one moves the fault
   # rather than removing it.
   local dir sysf userf req tmp
+  # shellcheck disable=SC2034 # read by callers in pr-review-threads.sh, not within this file
+  PRT_LAST_MODEL_FAILURE=""
   dir="$(mktemp -d)"
   if [ -z "$dir" ] || [ ! -d "$dir" ]; then
     echo "prt_model: could not create a temp dir for the request" >&2
+    PRT_LAST_MODEL_FAILURE="local-tempdir"
     return 1
   fi
   sysf="$dir/system"; userf="$dir/user"; req="$dir/request"; tmp="$dir/response"
@@ -264,19 +276,73 @@ _prt_call_proxy() {
       messages: [{role: "system", content: $system}, {role: "user", content: $user}]}' \
     > "$req" || { echo "prt_model: failed to build request payload" >&2; rm -rf "$dir"; return 1; }
 
-  # --connect-timeout 10 --max-time 300: a per-call ceiling, not a claim the
-  # whole run fits the job's 20-minute budget (.github/workflows/pr-review.yml
-  # timeout-minutes: 20 = 1200s). Up to 5 diff chunks x 2 calls (review +
-  # assess) = up to 10 model calls sharing that budget; 10 x 300s = 3000s can
-  # exceed it if every call maxes out. 300s bounds any single hung call so it
-  # alone can't consume the whole job; the job-level timeout is the backstop
-  # for the aggregate, not this per-call value.
-  local curl_rc=0
-  http_code="$("$PRT_CURL" -s -o "$tmp" -w '%{http_code}' \
-    --connect-timeout 10 --max-time 300 \
-    -X POST "${proxy_url}/v1/chat/completions" \
-    -H "Content-Type: application/json" \
-    -d @"$req")" || curl_rc=$?
+  # --max-time is derived from a RUN-LEVEL deadline, not a fixed value.
+  # go-kure/.github#(this fix), from opsmaster's claude-proxy investigation
+  # (2026-08-30): a fixed 300s ceiling sat BELOW the workload's own p95
+  # (measured 315s over 1066 live calls, 5.3% of calls ran long), so ~1 in 20
+  # model calls was killed by curl mid-generation with no application fault
+  # at all — indistinguishable in the job log from a real network/proxy
+  # outage ("transport/proxy error, exit 1"), because that IS what it was,
+  # just self-inflicted by too tight a client-side deadline.
+  #
+  # PRT_MODEL_DEADLINE_EPOCH is set once by pr-review-threads.sh at the start
+  # of the run (its own comment there has the budget math against
+  # timeout-minutes: 20). Recomputing budget_left on every call means a
+  # multi-chunk PR's later calls get less headroom than its first — the
+  # aggregate still can't blow the job budget — while a single-chunk PR (the
+  # common case, and every failure seen 2026-08-30 was one) gets the full
+  # ceiling below. Callers that never set a run deadline (every direct unit
+  # test of this function) fall back to `now + 300`, i.e. today's old fixed
+  # value, so this default changes nothing under test.
+  local now budget_left max_time
+  now="$(date +%s)"
+  : "${PRT_MODEL_DEADLINE_EPOCH:=$((now + 300))}"
+  : "${PRT_MODEL_TIMEOUT_FLOOR:=30}"
+  # 900s ceiling: the measured 8-day p99 was 557s and ZERO of 1066 calls
+  # exceeded 900s — high enough to absorb the whole observed tail, not so
+  # high a single call could still eat the entire job budget.
+  : "${PRT_MODEL_TIMEOUT_CEILING:=900}"
+  budget_left=$((PRT_MODEL_DEADLINE_EPOCH - now))
+  if [ "$budget_left" -lt "$PRT_MODEL_TIMEOUT_FLOOR" ]; then
+    # Refuse to START a call that the run's own deadline says can't finish,
+    # rather than issuing it with a near-zero --max-time and reporting
+    # whatever curl does with that as a transport fault.
+    echo "prt_model: run deadline exhausted (${budget_left}s left, floor ${PRT_MODEL_TIMEOUT_FLOOR}s) — refusing call" >&2
+    # shellcheck disable=SC2034 # read by callers in pr-review-threads.sh, not within this file
+    PRT_LAST_MODEL_FAILURE="deadline-exhausted"
+    return 1
+  fi
+  max_time=$budget_left
+  [ "$max_time" -gt "$PRT_MODEL_TIMEOUT_CEILING" ] && max_time="$PRT_MODEL_TIMEOUT_CEILING"
+
+  # Connect-class transport faults (curl exit 6 DNS, 7 connection refused)
+  # get ONE short-backoff retry here, inside the call itself: this is the
+  # "proxy pod momentarily out of the Service" mode the workflow's own
+  # comment records (.github/workflows/pr-review.yml:4-10), and a retry a
+  # few seconds later plausibly lands on a live replica. Exit 28 (timed out
+  # — the call DID connect and just ran past --max-time) is deliberately
+  # excluded: retrying it re-spends budget on a call already shown to be
+  # this slow, for the same result. The deadline above is the correct
+  # control for that case, not a retry here.
+  : "${PRT_MODEL_CONNECT_RETRY_DELAY:=3}"
+  local curl_rc=0 attempt
+  for attempt in 1 2; do
+    curl_rc=0
+    http_code="$("$PRT_CURL" -s -o "$tmp" -w '%{http_code}' \
+      --connect-timeout 10 --max-time "$max_time" \
+      -X POST "${proxy_url}/v1/chat/completions" \
+      -H "Content-Type: application/json" \
+      -d @"$req")" || curl_rc=$?
+    case "$curl_rc" in
+      6 | 7)
+        if [ "$attempt" -eq 1 ]; then
+          sleep "$PRT_MODEL_CONNECT_RETRY_DELAY"
+          continue
+        fi
+        ;;
+    esac
+    break
+  done
   resp="$(cat "$tmp")"
   rm -rf "$dir"
 
@@ -286,17 +352,26 @@ _prt_call_proxy() {
   if [ "$curl_rc" -ne 0 ]; then
     echo "prt_model: curl failed (exit $curl_rc, http_code='$http_code')" >&2
     echo "$resp" | head -c 500 >&2
+    # shellcheck disable=SC2034 # read by callers in pr-review-threads.sh, not within this file
+    PRT_LAST_MODEL_FAILURE="curl-exit-$curl_rc"
     return 1
   fi
 
   if [[ ! "$http_code" =~ ^2[0-9]{2}$ ]]; then
     echo "prt_model: proxy returned HTTP $http_code" >&2
     echo "$resp" | head -c 500 >&2
+    # shellcheck disable=SC2034 # read by callers in pr-review-threads.sh, not within this file
+    PRT_LAST_MODEL_FAILURE="http-$http_code"
     return 1
   fi
 
   content="$(jq -r '.choices[0].message.content // empty' <<< "$resp" 2>/dev/null || true)"
-  [ -n "$content" ] || { echo "prt_model: empty response content" >&2; return 1; }
+  if [ -z "$content" ]; then
+    echo "prt_model: empty response content" >&2
+    # shellcheck disable=SC2034 # read by callers in pr-review-threads.sh, not within this file
+    PRT_LAST_MODEL_FAILURE="empty-content"
+    return 1
+  fi
   prt_strip_thinking <<< "$content"
 }
 

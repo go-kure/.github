@@ -33,6 +33,17 @@
 #                                   checkout (the pinned action's, not the
 #                                   caller's — see the PRT_SCRIPT_DIR note
 #                                   below), default: docs/standards.md
+#   PRT_MODEL_BUDGET_SECONDS       seconds reserved for review+assess model
+#                                   calls out of the job's timeout-minutes: 20,
+#                                   default: 1020 (17m) — see the
+#                                   PRT_MODEL_DEADLINE_EPOCH comment below
+#   PRT_MODEL_TIMEOUT_FLOOR        min seconds of budget to still attempt a
+#                                   call (model.sh), default: 30
+#   PRT_MODEL_TIMEOUT_CEILING      per-call --max-time ceiling even when more
+#                                   budget remains (model.sh), default: 900
+#   PRT_MODEL_CONNECT_RETRY_DELAY  seconds to wait before the one connect-class
+#                                   retry (curl exit 6/7 only) inside
+#                                   _prt_call_proxy (model.sh), default: 3
 
 set -uo pipefail  # not -e: every stage must run to completion and report,
                    # a single failed write must not abort the whole run —
@@ -85,6 +96,24 @@ source "$PRT_LIB_DIR/reconcile.sh"
 if [ -z "${PRT_STANDARDS_FILE+set}" ]; then
   PRT_STANDARDS_FILE="docs/standards.md"
 fi
+
+# PRT_MODEL_DEADLINE_EPOCH bounds every review/assess model call
+# (model.sh:_prt_call_proxy) to a reserved slice of this job's own
+# timeout-minutes: 20 budget (.github/workflows/pr-review.yml), leaving the
+# remainder for the diff fetch above and the reconcile/render writes below.
+# Computed ONCE here, not per call: model.sh derives each call's --max-time
+# from whatever is left of it, so a multi-chunk PR's later calls get less
+# headroom than its first, and a run that has already spent its budget
+# refuses a doomed call instead of issuing one that can only fail.
+#
+# Root cause this replaces: a fixed 300s --max-time sat BELOW the workload's
+# own measured p95 (315s over 1066 live calls against claude-proxy, 2026-08-30
+# investigation) — about 1 in 20 calls was killed by curl mid-generation with
+# no application fault at all, and on a single-chunk PR (the common case)
+# that one killed call failed the whole required check closed.
+: "${PRT_MODEL_BUDGET_SECONDS:=1020}"   # 17 of the job's 20 minutes
+# shellcheck disable=SC2034 # read by _prt_call_proxy in lib/prt/model.sh, not within this file
+PRT_MODEL_DEADLINE_EPOCH=$(( $(date +%s) + PRT_MODEL_BUDGET_SECONDS ))
 
 for req in PRT_GH_TOKEN PRT_REPO PRT_PR_NUMBER PRT_HEAD_SHA PRT_BOT_LOGIN PRT_PROXY_URL; do
   [ -n "${!req:-}" ] || { echo "ERROR: $req is required" >&2; exit 1; }
@@ -282,7 +311,7 @@ for chunk_file in "$CHUNK_DIR"/chunk-*.diff; do
     # call's own retry, the same mislabeling gap a codex review found and
     # fixed for the assess call's retry (a transport fault there was being
     # reported as "not valid JSON").
-    review_parse_failures+=("chunk $chunk_idx: review call failed (transport/proxy error, exit $review_rc)")
+    review_parse_failures+=("chunk $chunk_idx: review call failed (transport/proxy error, exit $review_rc) [${PRT_LAST_MODEL_FAILURE:-unknown}]")
     prt_log "chunk $chunk_idx: review FAILED (transport error, exit $review_rc)"
     chunk_idx=$((chunk_idx + 1))
     continue
@@ -336,7 +365,7 @@ for chunk_file in "$CHUNK_DIR"/chunk-*.diff; do
       # into a parse/normalize-failure branch below would both mislabel it
       # and compute prt_response_shape over an empty string, mirroring the
       # assess call's own retry check above.
-      review_parse_failures+=("chunk $chunk_idx: review call failed on retry (transport/proxy error, exit $review_rc)")
+      review_parse_failures+=("chunk $chunk_idx: review call failed on retry (transport/proxy error, exit $review_rc) [${PRT_LAST_MODEL_FAILURE:-unknown}]")
       prt_log "chunk $chunk_idx: review FAILED (transport error on retry, exit $review_rc)"
       chunk_idx=$((chunk_idx + 1))
       continue
@@ -468,7 +497,7 @@ for ((i = 0; i < chunk_idx; i++)); do
     # review-call fault above, which means the chunk wasn't reviewed at
     # all). The finding stays open with verdict:null via the fallback below,
     # same as before this change; only the run's severity/exit code differs.
-    prt_mark_degraded "chunk $i: assessment call failed (transport/proxy error, exit $assess_rc); findings stay unverdicted"
+    prt_mark_degraded "chunk $i: assessment call failed (transport/proxy error, exit $assess_rc); findings stay unverdicted [${PRT_LAST_MODEL_FAILURE:-unknown}]"
     prt_log "chunk $i: review ok, assess FAILED (transport error, exit $assess_rc)"
     ASSESSED="$(jq -c -n --argjson a "$ASSESSED" --argjson b "$chunk_findings" '$a + ($b | map(. + {verdict: null, reasoning: null}))')"
     continue
@@ -502,7 +531,7 @@ for ((i = 0; i < chunk_idx; i++)); do
       # go-kure/.github#98: degraded, not fatal — see the original-attempt
       # transport-fault comment above; the same reasoning applies to the
       # retry.
-      prt_mark_degraded "chunk $i: assessment call failed on retry (transport/proxy error, exit $assess_rc); findings stay unverdicted"
+      prt_mark_degraded "chunk $i: assessment call failed on retry (transport/proxy error, exit $assess_rc); findings stay unverdicted [${PRT_LAST_MODEL_FAILURE:-unknown}]"
       prt_log "chunk $i: review ok, assess FAILED (transport error on retry, exit $assess_rc)"
       ASSESSED="$(jq -c -n --argjson a "$ASSESSED" --argjson b "$chunk_findings" '$a + ($b | map(. + {verdict: null, reasoning: null}))')"
       continue
