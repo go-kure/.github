@@ -318,8 +318,9 @@ _prt_call_proxy() {
   # multi-chunk PR's later calls get less headroom than its first — the
   # aggregate still can't blow the job budget — while a single-chunk PR (the
   # common case, and every failure seen 2026-08-30 was one) gets the full
-  # ceiling below. Callers that never set a run deadline (every direct unit
-  # test of this function) are meant to fall back to `now + 300` fresh on
+  # ceiling below. A caller that never sets a run deadline (hypothetically,
+  # a direct unit test of this function — none currently in this repo's
+  # suite; see the note below) is meant to fall back to `now + 300` fresh on
   # EVERY call.
   #
   # That fallback must land in a call-local variable, not mutate the shared
@@ -328,8 +329,8 @@ _prt_call_proxy() {
   # — fixed constants, so `:=` into the global is a harmless one-time default
   # — this one is a function of `now`, so mutating the global freezes the
   # FIRST call's `now + 300` there; every later call in the same shell that
-  # never sets PRT_MODEL_DEADLINE_EPOCH (exactly the direct, non-subshell unit
-  # test callers named above) would then reuse that stale value instead of
+  # never sets PRT_MODEL_DEADLINE_EPOCH (a hypothetical direct, non-subshell
+  # caller, per the note above) would then reuse that stale value instead of
   # computing a fresh one, and a call made more than ~270s after the first
   # would spuriously hit the deadline-exhausted refusal below.
   local now budget_left max_time deadline
