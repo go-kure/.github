@@ -167,9 +167,9 @@ prt_state_init "$WORKDIR"
 export PRT_LAST_MODEL_FAILURE_FILE="$WORKDIR/last_model_failure"
 : > "$PRT_LAST_MODEL_FAILURE_FILE"
 
-# prt_log cannot be called before state.sh is sourced (:53-54); the
+# prt_log cannot be called before state.sh is sourced (:64-65); the
 # earliest safe site with something worth reporting is here, right after
-# prt_state_init — mode resolution above (:103-111) has already run, so this
+# prt_state_init — mode resolution above (:144-151) has already run, so this
 # one line covers both.
 prt_log "mode=$PRT_MODE repo=$PRT_REPO pr=$PRT_PR_NUMBER head=${PRT_HEAD_SHA:0:7}"
 
@@ -282,7 +282,7 @@ fi
 prt_log "diff: $(wc -c < "$DIFF_FILE" | tr -d ' ') bytes, chunks=$chunk_count"
 
 # prt_parse_or_salvage RAW — parses RAW as JSON directly, falling back to a
-# prt_extract_json_braces (model.sh:63-83) salvage pass before giving up.
+# prt_extract_json_braces (model.sh:65-85) salvage pass before giving up.
 # Local to this orchestrator, not model.sh — go-kure/.github#95: the "parse,
 # else salvage" block used to be written out twice verbatim in the chunk
 # loop below (the original attempt and its one bounded retry); this wraps
@@ -335,7 +335,7 @@ for chunk_file in "$CHUNK_DIR"/chunk-*.diff; do
   if [ "$review_rc" -ne 0 ]; then
     # Mirrors the assess call's own exit-status check below: a non-zero
     # return here is a transport/proxy fault (curl failure, non-2xx, or
-    # empty response content, model.sh:394-413), a different problem than a
+    # empty response content, model.sh:407-426), a different problem than a
     # 2xx response that isn't parseable JSON below. Closes, on the review
     # call's own retry, the same mislabeling gap a codex review found and
     # fixed for the assess call's retry (a transport fault there was being
@@ -358,7 +358,7 @@ for chunk_file in "$CHUNK_DIR"/chunk-*.diff; do
   # — prt_strip_fence only handles a fenced marker on line 1/last line, not
   # surrounding prose), and one retry of the model call itself (not
   # prt_retry's usual 3 — each call already costs 40-60s against the job's
-  # 20-minute budget, model.sh:267-279) if salvage doesn't recover it either.
+  # 20-minute budget, model.sh:269-281) if salvage doesn't recover it either.
   #
   # go-kure/.github#95: an attempt is "usable" only when it BOTH parses
   # (prt_parse_or_salvage rc 0/2) AND normalizes to something usable
@@ -464,7 +464,7 @@ for chunk_file in "$CHUNK_DIR"/chunk-*.diff; do
     # the chunk was still reviewed (finding.sh:49-68's rc contract, enforced
     # at finding.sh:140-150). The
     # "partial-drop" substring in this reason is load-bearing: the absence
-    # loop's incomplete_now check below (:914ish) greps prt_degraded_reasons
+    # loop's incomplete_now check below (:1140) greps prt_degraded_reasons
     # for it specifically, so a dropped row's existing thread still isn't
     # read as absent this run even though the run itself no longer fails
     # closed. Do NOT also call prt_mark_incomplete here — dual-marking would
@@ -522,7 +522,7 @@ for ((i = 0; i < chunk_idx; i++)); do
   if [ "$assess_rc" -ne 0 ]; then
     # A non-zero return here is a transport/proxy fault (prt_model_assess's
     # own stderr already named it — curl failure, non-2xx, or empty response
-    # content, model.sh:394-413) and is a different problem than a 2xx
+    # content, model.sh:407-426) and is a different problem than a 2xx
     # response that isn't parseable JSON below. Reported distinctly so the
     # two don't collapse into one ambiguous message (root cause 2).
     # go-kure/.github#98: an assessment-call fault means this chunk's review
@@ -1291,7 +1291,7 @@ fi
 # Also excludes a review-parse-failed DEGRADED run (go-kure/.github#107,
 # codex round-3 finding): that reason means one or more chunks never
 # produced a usable review, same as the `incomplete_now` fold-in a few
-# hundred lines below (:1003) — so the OTHER chunks coming back empty must
+# hundred lines below (:1145) — so the OTHER chunks coming back empty must
 # not be allowed to post "Reviewed, no findings" over a PR whose diff was
 # only partially looked at. Every other degraded reason (e.g. a superseded
 # stale-head run, :182) is unrelated to whether findings are trustworthy and
@@ -1375,7 +1375,7 @@ prt_log "done: findings=$(jq 'length' <<< "$ALL_FINDINGS") gating=$(jq '[.[] | s
 # only reads the job's own exit code (e.g. a future required status check) —
 # only the job summary's REVIEW_INCOMPLETE section told the difference, and
 # nothing consumed that but a human reading the summary by hand. The
-# PRT_MODE=off short-circuit at :123-130 stays ahead of this check (an unconditional
+# PRT_MODE=off short-circuit at :176-183 stays ahead of this check (an unconditional
 # exit 0, run before prt_mark_incomplete can ever be called) — the incident
 # escape hatch must keep working even if something else here is broken.
 if prt_is_incomplete; then

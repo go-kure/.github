@@ -77,10 +77,10 @@ to an org repo, with no repo picker even offered for org repos.
 `PRT_MODE` (env `PR_REVIEW_THREADS_MODE`, org/repo variable `vars.PR_REVIEW_THREADS_MODE`
 overrides the workflow's own default) is one of three values. An unrecognized value degrades to
 `advisory`, never to `enforce` — a typo must fail toward the safe side of a gate
-(`pr-review-threads.sh:103-111`).
+(`pr-review-threads.sh:144-151`).
 
 - **`off`** — the incident escape hatch. Short-circuits to `exit 0` immediately after state
-  init, before any network call (`pr-review-threads.sh:123-130`). See "Incident procedure" below.
+  init, before any network call (`pr-review-threads.sh:176-183`). See "Incident procedure" below.
 - **`advisory`** (the composite action's and `pr-review-threads.sh`'s own fallback default —
   NOT `pr-review.yml`'s declared default, which is `enforce` as of go-kure/.github#108; see
   `enforce` below) — zero thread creates or mutations. One plain (non-resolvable) issue comment
@@ -156,7 +156,7 @@ current is preceded by a freshness check (`prt_freshness_check`, `gh.sh:136-165`
 the PR's live head SHA and compares it
 against the expected one — the run's real wall-clock spans multiple model calls, so the PR can
 move underneath it. The one documented exception is the reply posted after a marker-clearing write
-already failed (`pr-review-threads.sh:1080-1088`): it explains a failure that already happened and
+already failed (`pr-review-threads.sh:1222-1230`): it explains a failure that already happened and
 is deliberately allowed to post even if the head has since moved, rather than being silently
 dropped on top of the write failure it's explaining. `prt_freshness_check` returns a three-way
 status (go-kure/.github#99) instead
@@ -223,10 +223,10 @@ The `::error title=PR review threads incomplete::` annotations this exit gate em
 loud on that one run, but nothing aggregates them across the org. § Fail-closed alerting below
 covers the daily digest that does.
 
-The model-review call (`prt_model_review`, `model.sh:421-441`) has its exit status checked
+The model-review call (`prt_model_review`, `model.sh:434-454`) has its exit status checked
 independently on **either** call — the original attempt and the one bounded retry alike: a
 non-zero return (transport/proxy fault — curl failure, non-2xx, or empty response content,
-`_prt_call_proxy`'s three failure branches, `model.sh:394-413`) is recorded as `review call failed (transport/proxy error, exit N)` (`...
+`_prt_call_proxy`'s three failure branches, `model.sh:407-426`) is recorded as `review call failed (transport/proxy error, exit N)` (`...
 failed on retry (...)` if it's the retry attempt that faulted), with no parse attempted at all for
 that call — this closes, on the review call's own retry, the same mislabeling gap a codex review
 found and fixed for the assess call's retry first (see below): a transport fault there was
@@ -242,9 +242,9 @@ A 2xx response is parsed via `prt_parse_or_salvage` (`pr-review-threads.sh`, loc
 orchestrator, next to the chunk loop it serves — not `model.sh`, since it's purely a compact-JSON-
 or-salvage wrapper, not a model call): a direct `jq -c '.'` attempt, falling back to a salvage pass
 ahead of the (bounded-to-1) retry — cheapest recovery first. `prt_extract_json_braces`
-(`model.sh:63-83`) takes the substring from the first `{` to the last `}` in the raw content and
+(`model.sh:65-85`) takes the substring from the first `{` to the last `}` in the raw content and
 re-parses that, a no-op on already-clean JSON and a fix for a chattier generation that wraps the
-JSON object in prose (`prt_strip_fence`, `model.sh:56-61`, only strips a fenced-code-block marker
+JSON object in prose (`prt_strip_fence`, `model.sh:58-63`, only strips a fenced-code-block marker
 that is itself the first/last line, not surrounding prose). go-kure/.github#95: the one bounded
 retry — not `prt_retry`'s usual 3, each call already costs 40-60s against the job's
 `timeout-minutes: 20` budget — now fires on **either** of two triggers: `prt_parse_or_salvage`
@@ -286,7 +286,7 @@ four runs, which is suggestive but not proof, since two distinct 57-byte respons
 possible. Equal fingerprints across runs prove it; differing ones redirect the investigation to
 something diff-dependent.
 
-The model-assess call (`prt_model_assess`, `model.sh:445-473`) gets the identical salvage-then-retry
+The model-assess call (`prt_model_assess`, `model.sh:458-486`) gets the identical salvage-then-retry
 treatment (`pr-review-threads.sh`'s assessment loop), for the same reason: it shares the backend and the
 same prose-wrapping failure mode, so it gets the same recovery, not a lesser one. Before this, a
 non-2xx/curl/empty-content failure from `prt_model_assess` was indistinguishable from a 2xx response
@@ -295,7 +295,7 @@ that simply wasn't parseable JSON — both fell through into an empty `assess_ra
 later fold-in closed it there too). The two are now reported separately, on **either** call — the
 original attempt and the one bounded retry alike, checked independently: a non-zero return from
 `prt_model_assess` (transport/proxy fault — curl failure, non-2xx, or empty response content,
-`_prt_call_proxy`'s three failure branches, `model.sh:394-413`) is recorded as `assessment call failed (transport/proxy error, exit N)` (`...
+`_prt_call_proxy`'s three failure branches, `model.sh:407-426`) is recorded as `assessment call failed (transport/proxy error, exit N)` (`...
 failed on retry (...)` if it's the retry attempt that faulted), with no parse attempted at all for
 that call. A 2xx response that still fails
 `jq -c '.'` after both the salvage pass and the one bounded retry is recorded as `assessment
@@ -379,17 +379,17 @@ run — the run reports degraded rather than red, it does not recover the review
 `advisory` mode's single issue comment (`prt_render_advisory_comment`, `render.sh:186-234`)
 discloses both severities on its own live output surface, not only in `$GITHUB_STEP_SUMMARY`: a
 non-empty `advisory_incomplete_reasons` or `advisory_degraded_reasons`
-(`pr-review-threads.sh:854-859`, gathered via `prt_is_incomplete`/`prt_incomplete_reasons` and
+(`pr-review-threads.sh:920-923`, gathered via `prt_is_incomplete`/`prt_incomplete_reasons` and
 `prt_is_degraded`/`prt_degraded_reasons` respectively) renders its own warning banner ahead of the
 findings table, worded to distinguish the two ("this review run was incomplete" vs "this review
 run was degraded"). The degraded banner is deliberately degradation-neutral prose ("see the
 reason(s) below; this may mean part of this run's output is incomplete, unverdicted, or dropped")
 rather than a blanket "rows were dropped" claim: `prt_mark_degraded` covers six call sites
-(`pr-review-threads.sh:418,471,505,527,540,1282`, plus `prt_resolve_review_parse_failures` in
-`state.sh` for the review-parse-failure case above), only one of the direct call sites (`:418`, a chunk's malformed
+(`pr-review-threads.sh:478,534,570,592,605,1347`, plus `prt_resolve_review_parse_failures` in
+`state.sh` for the review-parse-failure case above), only one of the direct call sites (`:478`, a chunk's malformed
 finding rows dropped) is actually a drop — the other five leave findings present but unverdicted
 (an assess-call transport fault or unparseable response, an `.assessments` join failure) or are
-unrelated to the current run's findings at all (`:1282`, a past run's clean-verdict comment failing
+unrelated to the current run's findings at all (`:1347`, a past run's clean-verdict comment failing
 to be superseded). The banner intro no longer overrides those per-reason bullets (rendered
 verbatim below it) with a claim that is only true for one of the six (round 4, go-kure/.github#101
 second review pass, `chatgpt-codex-connector[bot]`). Critically, the "No issues found." shortcut
@@ -513,7 +513,7 @@ metadata` line before exiting 1, instead of relying solely on `prt_gh_rest`'s ge
 line to explain the exit.
 
 Neither the request payload nor the two strings it wraps ever go through `argv`
-(`_prt_call_proxy`, `model.sh:248-417`): the system and user strings reach `jq` via `--rawfile`
+(`_prt_call_proxy`, `model.sh:250-430`): the system and user strings reach `jq` via `--rawfile`
 from a temp dir, and the assembled body reaches curl via `-d @FILE`. Linux caps a *single* argv
 entry at `MAX_ARG_STRLEN` = 32 pages = 131072 bytes, independent of `ARG_MAX` and of any
 `ulimit`, and a chunk can legitimately exceed that: `prt_split_diff`'s hard ceiling is
