@@ -18,8 +18,29 @@
 # pr-review-threads.sh to annotate a bare "exit 1" with which of several
 # unrelated causes actually fired — same cross-file pattern as
 # PRT_LAST_RETRY_AFTER/PRT_LAST_RATELIMIT_REMAINING in gh.sh.
+#
+# Every real caller invokes prt_model_review/prt_model_assess (and so
+# _prt_call_proxy) via command substitution — `raw="$(prt_model_review ...)"`
+# — which forks a subshell to run the function. A plain variable assignment
+# made inside that subshell never propagates back to the caller: the
+# PRT_LAST_MODEL_FAILURE the orchestrator reads after the substitution
+# returns is untouched by the call it's supposedly describing, so every
+# annotated failure rendered "[unknown]" regardless of the real cause
+# (go-kure/.github#128 round 1). The variable is kept for direct,
+# non-subshell callers (e.g. the unit tests that call _prt_call_proxy
+# in-process without wrapping it in `$(...)`), but the value that actually
+# survives a command substitution is the file at PRT_LAST_MODEL_FAILURE_FILE,
+# if the caller set one — a real filesystem write is unaffected by subshell
+# scoping. _prt_set_model_failure keeps both in sync from one call site.
 # shellcheck disable=SC2034 # read by callers in pr-review-threads.sh, not within this file
 PRT_LAST_MODEL_FAILURE=""
+
+_prt_set_model_failure() {
+  # shellcheck disable=SC2034 # read by callers in pr-review-threads.sh, not within this file
+  PRT_LAST_MODEL_FAILURE="$1"
+  [ -n "${PRT_LAST_MODEL_FAILURE_FILE:-}" ] && printf '%s' "$1" > "$PRT_LAST_MODEL_FAILURE_FILE"
+  return 0
+}
 
 set -uo pipefail
 
@@ -247,12 +268,11 @@ _prt_call_proxy() {
   # Both are fixed together; fixing only the reported one moves the fault
   # rather than removing it.
   local dir sysf userf req tmp
-  # shellcheck disable=SC2034 # read by callers in pr-review-threads.sh, not within this file
-  PRT_LAST_MODEL_FAILURE=""
+  _prt_set_model_failure ""
   dir="$(mktemp -d)"
   if [ -z "$dir" ] || [ ! -d "$dir" ]; then
     echo "prt_model: could not create a temp dir for the request" >&2
-    PRT_LAST_MODEL_FAILURE="local-tempdir"
+    _prt_set_model_failure "local-tempdir"
     return 1
   fi
   sysf="$dir/system"; userf="$dir/user"; req="$dir/request"; tmp="$dir/response"
@@ -274,7 +294,12 @@ _prt_call_proxy() {
     --argjson max_tokens "$max_tokens" \
     '{model: $model, max_tokens: $max_tokens,
       messages: [{role: "system", content: $system}, {role: "user", content: $user}]}' \
-    > "$req" || { echo "prt_model: failed to build request payload" >&2; rm -rf "$dir"; return 1; }
+    > "$req" || {
+      echo "prt_model: failed to build request payload" >&2
+      _prt_set_model_failure "payload-build"
+      rm -rf "$dir"
+      return 1
+    }
 
   # --max-time is derived from a RUN-LEVEL deadline, not a fixed value.
   # go-kure/.github#(this fix), from opsmaster's claude-proxy investigation
@@ -308,8 +333,14 @@ _prt_call_proxy() {
     # rather than issuing it with a near-zero --max-time and reporting
     # whatever curl does with that as a transport fault.
     echo "prt_model: run deadline exhausted (${budget_left}s left, floor ${PRT_MODEL_TIMEOUT_FLOOR}s) — refusing call" >&2
-    # shellcheck disable=SC2034 # read by callers in pr-review-threads.sh, not within this file
-    PRT_LAST_MODEL_FAILURE="deadline-exhausted"
+    _prt_set_model_failure "deadline-exhausted"
+    # Every other failure path in this function removes $dir before
+    # returning (the payload-build failure above, and after the curl retry
+    # loop below); this one returns before curl ever runs, so without this
+    # rm it was the one path that leaked the mktemp -d directory (with the
+    # already-written system/user prompt files inside it) for the whole
+    # job's lifetime — go-kure/.github#128 round 1.
+    rm -rf "$dir"
     return 1
   fi
   max_time=$budget_left
@@ -352,24 +383,21 @@ _prt_call_proxy() {
   if [ "$curl_rc" -ne 0 ]; then
     echo "prt_model: curl failed (exit $curl_rc, http_code='$http_code')" >&2
     echo "$resp" | head -c 500 >&2
-    # shellcheck disable=SC2034 # read by callers in pr-review-threads.sh, not within this file
-    PRT_LAST_MODEL_FAILURE="curl-exit-$curl_rc"
+    _prt_set_model_failure "curl-exit-$curl_rc"
     return 1
   fi
 
   if [[ ! "$http_code" =~ ^2[0-9]{2}$ ]]; then
     echo "prt_model: proxy returned HTTP $http_code" >&2
     echo "$resp" | head -c 500 >&2
-    # shellcheck disable=SC2034 # read by callers in pr-review-threads.sh, not within this file
-    PRT_LAST_MODEL_FAILURE="http-$http_code"
+    _prt_set_model_failure "http-$http_code"
     return 1
   fi
 
   content="$(jq -r '.choices[0].message.content // empty' <<< "$resp" 2>/dev/null || true)"
   if [ -z "$content" ]; then
     echo "prt_model: empty response content" >&2
-    # shellcheck disable=SC2034 # read by callers in pr-review-threads.sh, not within this file
-    PRT_LAST_MODEL_FAILURE="empty-content"
+    _prt_set_model_failure "empty-content"
     return 1
   fi
   prt_strip_thinking <<< "$content"

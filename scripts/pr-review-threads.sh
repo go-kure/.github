@@ -143,6 +143,18 @@ WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT
 prt_state_init "$WORKDIR"
 
+# PRT_LAST_MODEL_FAILURE_FILE — every prt_model_review/prt_model_assess call
+# below is invoked via command substitution (`raw="$(prt_model_review ...)"`),
+# which forks a subshell; a plain PRT_LAST_MODEL_FAILURE="..." assignment made
+# inside _prt_call_proxy (model.sh) during that call is invisible here once
+# the substitution returns, so every failure annotation below read back
+# "[unknown]" regardless of the real cause (go-kure/.github#128 round 1).
+# model.sh's _prt_set_model_failure writes the same reason to this file too,
+# which — unlike a shell variable — survives the subshell; each call site
+# re-reads it into PRT_LAST_MODEL_FAILURE right after its own call returns.
+export PRT_LAST_MODEL_FAILURE_FILE="$WORKDIR/last_model_failure"
+: > "$PRT_LAST_MODEL_FAILURE_FILE"
+
 # prt_log cannot be called before state.sh is sourced (:53-54); the
 # earliest safe site with something worth reporting is here, right after
 # prt_state_init — mode resolution above (:103-111) has already run, so this
@@ -166,7 +178,7 @@ DIFF_FILE="$WORKDIR/full.diff"
 # would only burn the retry budget on a condition that can't change between
 # attempts — so the retryable function itself returns success on 406 and lets
 # the existing check below handle it exactly as before.
-# shellcheck disable=SC2317  # invoked indirectly: prt_retry calls it via "$@"
+# shellcheck disable=SC2317,SC2329  # invoked indirectly: prt_retry calls it via "$@"
 _prt_fetch_pr_diff() {
   http_code=$("$PRT_CURL" -sS -o "$DIFF_FILE" -w '%{http_code}' \
     --connect-timeout 10 --max-time 120 \
@@ -303,6 +315,11 @@ for chunk_file in "$CHUNK_DIR"/chunk-*.diff; do
   review_rc=0
   raw="$(prt_model_review "$PRT_PROXY_URL" "$PRT_MODEL" "$PRT_MAX_TOKENS" "$chunk_diff" \
     "$PR_TITLE" "$PR_DESC" "$PRT_PROJECT_CONTEXT" "$PROJECT_AGENTS" "$PROJECT_CLAUDE_MD" "$PROJECT_STANDARDS")" || review_rc=$?
+  # The call above ran in a command-substitution subshell, so model.sh's own
+  # PRT_LAST_MODEL_FAILURE assignment never reached this shell — re-read the
+  # file-backed copy PRT_LAST_MODEL_FAILURE_FILE points at instead (set once,
+  # near WORKDIR's creation).
+  PRT_LAST_MODEL_FAILURE="$(cat "$PRT_LAST_MODEL_FAILURE_FILE" 2>/dev/null || true)"
   if [ "$review_rc" -ne 0 ]; then
     # Mirrors the assess call's own exit-status check below: a non-zero
     # return here is a transport/proxy fault (curl failure, non-2xx, or
@@ -359,6 +376,8 @@ for chunk_file in "$CHUNK_DIR"/chunk-*.diff; do
     review_rc=0
     raw="$(prt_model_review "$PRT_PROXY_URL" "$PRT_MODEL" "$PRT_MAX_TOKENS" "$chunk_diff" \
       "$PR_TITLE" "$PR_DESC" "$PRT_PROJECT_CONTEXT" "$PROJECT_AGENTS" "$PROJECT_CLAUDE_MD" "$PROJECT_STANDARDS")" || review_rc=$?
+    # Same subshell-scoping reason as the original attempt's re-read above.
+    PRT_LAST_MODEL_FAILURE="$(cat "$PRT_LAST_MODEL_FAILURE_FILE" 2>/dev/null || true)"
     if [ "$review_rc" -ne 0 ]; then
       # The retry call can ALSO hit a transport fault, distinct from the
       # retry producing another unparseable/unusable body — collapsing this
@@ -485,6 +504,9 @@ for ((i = 0; i < chunk_idx; i++)); do
   assess_rc=0
   assess_raw="$(prt_model_assess "$PRT_PROXY_URL" "$PRT_ASSESS_MODEL" "$PRT_ASSESS_MAX_TOKENS" \
     "$chunk_diff" "$chunk_findings" "$PR_TITLE" "$PRT_PROJECT_CONTEXT" "$PROJECT_AGENTS" "$PROJECT_CLAUDE_MD" "$PROJECT_STANDARDS")" || assess_rc=$?
+  # Command substitution above runs in a subshell; re-read the file-backed
+  # PRT_LAST_MODEL_FAILURE (see the review call's identical comment above).
+  PRT_LAST_MODEL_FAILURE="$(cat "$PRT_LAST_MODEL_FAILURE_FILE" 2>/dev/null || true)"
   if [ "$assess_rc" -ne 0 ]; then
     # A non-zero return here is a transport/proxy fault (prt_model_assess's
     # own stderr already named it — curl failure, non-2xx, or empty response
@@ -521,6 +543,8 @@ for ((i = 0; i < chunk_idx; i++)); do
     assess_rc=0
     assess_raw="$(prt_model_assess "$PRT_PROXY_URL" "$PRT_ASSESS_MODEL" "$PRT_ASSESS_MAX_TOKENS" \
       "$chunk_diff" "$chunk_findings" "$PR_TITLE" "$PRT_PROJECT_CONTEXT" "$PROJECT_AGENTS" "$PROJECT_CLAUDE_MD" "$PROJECT_STANDARDS")" || assess_rc=$?
+    # Same subshell-scoping reason as the original attempt's re-read above.
+    PRT_LAST_MODEL_FAILURE="$(cat "$PRT_LAST_MODEL_FAILURE_FILE" 2>/dev/null || true)"
     if [ "$assess_rc" -ne 0 ]; then
       # The retry call can ALSO hit a transport fault, distinct from the
       # retry producing another unparseable body — collapsing this into the
