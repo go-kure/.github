@@ -327,37 +327,50 @@ _prt_call_proxy() {
   # exceeded 900s — high enough to absorb the whole observed tail, not so
   # high a single call could still eat the entire job budget.
   : "${PRT_MODEL_TIMEOUT_CEILING:=900}"
-  budget_left=$((PRT_MODEL_DEADLINE_EPOCH - now))
-  if [ "$budget_left" -lt "$PRT_MODEL_TIMEOUT_FLOOR" ]; then
-    # Refuse to START a call that the run's own deadline says can't finish,
-    # rather than issuing it with a near-zero --max-time and reporting
-    # whatever curl does with that as a transport fault.
-    echo "prt_model: run deadline exhausted (${budget_left}s left, floor ${PRT_MODEL_TIMEOUT_FLOOR}s) — refusing call" >&2
-    _prt_set_model_failure "deadline-exhausted"
-    # Every other failure path in this function removes $dir before
-    # returning (the payload-build failure above, and after the curl retry
-    # loop below); this one returns before curl ever runs, so without this
-    # rm it was the one path that leaked the mktemp -d directory (with the
-    # already-written system/user prompt files inside it) for the whole
-    # job's lifetime — go-kure/.github#128 round 1.
-    rm -rf "$dir"
-    return 1
-  fi
-  max_time=$budget_left
-  [ "$max_time" -gt "$PRT_MODEL_TIMEOUT_CEILING" ] && max_time="$PRT_MODEL_TIMEOUT_CEILING"
 
   # Connect-class transport faults (curl exit 6 DNS, 7 connection refused)
   # get ONE short-backoff retry here, inside the call itself: this is the
   # "proxy pod momentarily out of the Service" mode the workflow's own
   # comment records (.github/workflows/pr-review.yml:4-10), and a retry a
-  # few seconds later plausibly lands on a live replica. Exit 28 (timed out
-  # — the call DID connect and just ran past --max-time) is deliberately
-  # excluded: retrying it re-spends budget on a call already shown to be
-  # this slow, for the same result. The deadline above is the correct
-  # control for that case, not a retry here.
+  # few seconds later plausibly lands on a live replica. Exit 28 (curl's
+  # generic --max-time/--connect-timeout timeout — usually the call
+  # connected and ran past --max-time, but curl's own docs don't guarantee
+  # that; it can also fire on a slow connect that never quite hit 6/7) is
+  # deliberately excluded: retrying it re-spends budget on a call already
+  # shown to be this slow, for the same result either way. The deadline
+  # above is the correct control for that case, not a retry here.
   : "${PRT_MODEL_CONNECT_RETRY_DELAY:=3}"
   local curl_rc=0 attempt
   for attempt in 1 2; do
+    # Recomputed on EVERY attempt, not once before the loop: attempt 1's own
+    # runtime (up to --connect-timeout) plus PRT_MODEL_CONNECT_RETRY_DELAY's
+    # sleep can together burn most or all of the remaining budget before
+    # attempt 2 ever runs curl. Reusing attempt 1's stale max_time here would
+    # let attempt 2 run with a ceiling computed against a deadline that has
+    # already passed by the time it starts (go-kure/.github#128 round 1,
+    # codex-lens finding — reproduced live: budget already exhausted by the
+    # time attempt 2 started, yet the retry still ran with attempt 1's
+    # leftover max_time instead of being refused).
+    now="$(date +%s)"
+    budget_left=$((PRT_MODEL_DEADLINE_EPOCH - now))
+    if [ "$budget_left" -lt "$PRT_MODEL_TIMEOUT_FLOOR" ]; then
+      # Refuse to START (or retry) a call that the run's own deadline says
+      # can't finish, rather than issuing it with a near-zero/stale
+      # --max-time and reporting whatever curl does with that as a
+      # transport fault.
+      echo "prt_model: run deadline exhausted before attempt $attempt (${budget_left}s left, floor ${PRT_MODEL_TIMEOUT_FLOOR}s) — refusing call" >&2
+      _prt_set_model_failure "deadline-exhausted"
+      # Every other failure path in this function removes $dir before
+      # returning (the payload-build failure above, and the post-loop
+      # branches below); mirror that here rather than falling through to
+      # the post-loop cleanup, since this return happens from inside the
+      # loop, before curl ever runs for this attempt.
+      rm -rf "$dir"
+      return 1
+    fi
+    max_time=$budget_left
+    [ "$max_time" -gt "$PRT_MODEL_TIMEOUT_CEILING" ] && max_time="$PRT_MODEL_TIMEOUT_CEILING"
+
     curl_rc=0
     http_code="$("$PRT_CURL" -s -o "$tmp" -w '%{http_code}' \
       --connect-timeout 10 --max-time "$max_time" \
