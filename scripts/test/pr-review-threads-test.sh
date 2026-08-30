@@ -1196,7 +1196,7 @@ unset PRT_INCOMPLETE_FILE PRT_DEGRADED_FILE
 # pr-review-threads.sh itself is not exercised by the rest of this suite (its
 # own header comment says so — it's wiring, not a pure function) but its
 # top-level exit code IS a contract worth pinning down directly:
-# pr-review-threads.sh:1380's REVIEW_INCOMPLETE -> exit 1, PRT_MODE=off's exit 0 staying ahead of that
+# pr-review-threads.sh:1381-1394's REVIEW_INCOMPLETE -> exit 1, PRT_MODE=off's exit 0 staying ahead of that
 # check, and the two prt_retry-wrapped reads actually retrying. Run as a real
 # subprocess (not sourced) so $? reflects the same exit path CI observes,
 # against a mocked PRT_CURL exported into that subprocess's environment
@@ -1339,7 +1339,7 @@ fake_curl_orchestrator() {
     */chat/completions)
       # The review and assess calls share this one URL — distinguish them by
       # reading the request body model.sh writes to disk and passes as
-      # `-d @FILE` (the E2BIG fix, model.sh:257-267: never inline on argv),
+      # `-d @FILE` (the E2BIG fix, model.sh:289-299,387-392: never inline on argv),
       # so `$data` here is a `@`-prefixed path, not literal JSON. The assess
       # call's user message always contains the literal
       # "--- FINDINGS (JSON) ---" marker (model.sh:478); the review call's
@@ -2265,7 +2265,7 @@ assert_eq "orchestrator: enforce + empty diff + first sighting -> model count 0 
 # gives for its own numbering). Verified against the shared META_COUNTFILE
 # (this file's `_prt_bump`d "meta fetch (:243) and every later freshness
 # re-check" counter): call #1 is actually the SET_FIRST_ABSENT loop's own
-# pre-mutate freshness check (pr-review-threads.sh:1183) — the first and
+# pre-mutate freshness check (pr-review-threads.sh:1184) — the first and
 # only thing to touch that counter before it — and it stays fresh; call #2
 # onward is the SAME check re-invoked by prt_gh_rest_fresh inside the
 # retried PATCH write (gh.sh's prt_retry 3 wrapping), which now observes

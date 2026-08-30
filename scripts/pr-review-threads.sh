@@ -131,7 +131,7 @@ for req in PRT_GH_TOKEN PRT_REPO PRT_PR_NUMBER PRT_HEAD_SHA PRT_BOT_LOGIN PRT_PR
   [ -n "${!req:-}" ] || { echo "ERROR: $req is required" >&2; exit 1; }
 done
 
-# These three feed --argjson calls downstream (PRT_PR_NUMBER at :478 below;
+# These three feed --argjson calls downstream (PRT_PR_NUMBER at :673 below;
 # PRT_MAX_TOKENS via model.sh's _prt_call_proxy; PRT_MAX_FINDINGS_TOTAL via
 # reconcile.sh's cap arithmetic) — a non-numeric value fails jq with an
 # unclear error deep in the run instead of a clear one here.
@@ -358,7 +358,7 @@ for chunk_file in "$CHUNK_DIR"/chunk-*.diff; do
   # — prt_strip_fence only handles a fenced marker on line 1/last line, not
   # surrounding prose), and one retry of the model call itself (not
   # prt_retry's usual 3 — each call already costs 40-60s against the job's
-  # 20-minute budget, model.sh:269-281) if salvage doesn't recover it either.
+  # 20-minute budget, model.sh:306-342) if salvage doesn't recover it either.
   #
   # go-kure/.github#95: an attempt is "usable" only when it BOTH parses
   # (prt_parse_or_salvage rc 0/2) AND normalizes to something usable
@@ -1136,7 +1136,7 @@ if [ "$PRT_MODE" = enforce ]; then
   # (reconcile.sh:111-114) forces CLEAR_MARKER/NONE, never
   # SET_FIRST_ABSENT/REPLY_RESOLVE, which is exactly the fail-safe behavior
   # this needs without dual-marking (see the partial-drop call site above,
-  # :313-330ish, for why dual-marking would defeat degraded's whole point).
+  # :461-479, for why dual-marking would defeat degraded's whole point).
   prt_degraded_reasons | grep -q 'partial-drop' && incomplete_now=true
   # go-kure/.github#107: same reasoning as the partial-drop fold-in just
   # above — a chunk whose review call never parsed reviewed nothing, so any
@@ -1294,7 +1294,7 @@ fi
 # hundred lines below (:1145) — so the OTHER chunks coming back empty must
 # not be allowed to post "Reviewed, no findings" over a PR whose diff was
 # only partially looked at. Every other degraded reason (e.g. a superseded
-# stale-head run, :182) is unrelated to whether findings are trustworthy and
+# stale-head run, state.sh:182) is unrelated to whether findings are trustworthy and
 # stays eligible for the clean comment.
 if [ "$PRT_MODE" = enforce ]; then
   total_findings_this_run="$(jq 'length' <<< "$ALL_FINDINGS")"
