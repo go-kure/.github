@@ -223,10 +223,10 @@ The `::error title=PR review threads incomplete::` annotations this exit gate em
 loud on that one run, but nothing aggregates them across the org. § Fail-closed alerting below
 covers the daily digest that does.
 
-The model-review call (`prt_model_review`, `model.sh:305-325`) has its exit status checked
+The model-review call (`prt_model_review`, `model.sh:421-441`) has its exit status checked
 independently on **either** call — the original attempt and the one bounded retry alike: a
 non-zero return (transport/proxy fault — curl failure, non-2xx, or empty response content,
-`model.sh:286-299`) is recorded as `review call failed (transport/proxy error, exit N)` (`...
+`_prt_call_proxy`'s three failure branches, `model.sh:394-413`) is recorded as `review call failed (transport/proxy error, exit N)` (`...
 failed on retry (...)` if it's the retry attempt that faulted), with no parse attempted at all for
 that call — this closes, on the review call's own retry, the same mislabeling gap a codex review
 found and fixed for the assess call's retry first (see below): a transport fault there was
@@ -242,9 +242,9 @@ A 2xx response is parsed via `prt_parse_or_salvage` (`pr-review-threads.sh`, loc
 orchestrator, next to the chunk loop it serves — not `model.sh`, since it's purely a compact-JSON-
 or-salvage wrapper, not a model call): a direct `jq -c '.'` attempt, falling back to a salvage pass
 ahead of the (bounded-to-1) retry — cheapest recovery first. `prt_extract_json_braces`
-(`model.sh:33-53`) takes the substring from the first `{` to the last `}` in the raw content and
+(`model.sh:63-83`) takes the substring from the first `{` to the last `}` in the raw content and
 re-parses that, a no-op on already-clean JSON and a fix for a chattier generation that wraps the
-JSON object in prose (`prt_strip_fence`, `model.sh:26-31`, only strips a fenced-code-block marker
+JSON object in prose (`prt_strip_fence`, `model.sh:56-61`, only strips a fenced-code-block marker
 that is itself the first/last line, not surrounding prose). go-kure/.github#95: the one bounded
 retry — not `prt_retry`'s usual 3, each call already costs 40-60s against the job's
 `timeout-minutes: 20` budget — now fires on **either** of two triggers: `prt_parse_or_salvage`
@@ -286,8 +286,8 @@ four runs, which is suggestive but not proof, since two distinct 57-byte respons
 possible. Equal fingerprints across runs prove it; differing ones redirect the investigation to
 something diff-dependent.
 
-The model-assess call (`prt_model_assess`, `model.sh:329-357`) gets the identical salvage-then-retry
-treatment (`pr-review-threads.sh:447-543`), for the same reason: it shares the backend and the
+The model-assess call (`prt_model_assess`, `model.sh:445-473`) gets the identical salvage-then-retry
+treatment (`pr-review-threads.sh`'s assessment loop), for the same reason: it shares the backend and the
 same prose-wrapping failure mode, so it gets the same recovery, not a lesser one. Before this, a
 non-2xx/curl/empty-content failure from `prt_model_assess` was indistinguishable from a 2xx response
 that simply wasn't parseable JSON — both fell through into an empty `assess_raw` and the same
@@ -295,7 +295,7 @@ that simply wasn't parseable JSON — both fell through into an empty `assess_ra
 later fold-in closed it there too). The two are now reported separately, on **either** call — the
 original attempt and the one bounded retry alike, checked independently: a non-zero return from
 `prt_model_assess` (transport/proxy fault — curl failure, non-2xx, or empty response content,
-`model.sh:286-299`) is recorded as `assessment call failed (transport/proxy error, exit N)` (`...
+`_prt_call_proxy`'s three failure branches, `model.sh:394-413`) is recorded as `assessment call failed (transport/proxy error, exit N)` (`...
 failed on retry (...)` if it's the retry attempt that faulted), with no parse attempted at all for
 that call. A 2xx response that still fails
 `jq -c '.'` after both the salvage pass and the one bounded retry is recorded as `assessment
@@ -492,10 +492,18 @@ comment already describes) one short-backoff retry (`PRT_MODEL_CONNECT_RETRY_DEL
 *inside itself*, before ever returning to its caller. This is invisible to the orchestrator-level
 retry policy described above (a curl exit 6/7 that recovers on this internal retry never surfaces
 as a `prt_model_review`/`prt_model_assess` failure at all) and is deliberately narrower than that
-policy: exit 28 (timed out — the call DID connect and simply ran past `--max-time`) is excluded
-from this retry, since retrying it would only re-spend budget on a call already shown to be this
-slow for the same result; the deadline above is the correct control for that case, not a retry
-here.
+policy: exit 28 (curl's generic `--max-time`/`--connect-timeout` timeout — usually the call
+connected and ran past `--max-time`, though curl doesn't distinguish that from a slow connect that
+never quite hit exit 6/7) is excluded from this retry, since retrying it would only re-spend budget
+on a call already shown to be this slow for the same result either way; the deadline above is the
+correct control for that case, not a retry here.
+
+The per-attempt `--max-time` above is recomputed from the *current* time on every iteration of the
+connect-class retry loop, not computed once before it: the first attempt's own runtime plus the
+retry's backoff sleep can together consume most of the remaining budget, and reusing a `max_time`
+computed before that time passed would let the retry run against a deadline that has already
+expired by the time it starts. Each iteration re-checks the floor first and refuses the retry
+outright (`deadline-exhausted`) if the budget is already gone (go-kure/.github#128 round 1).
 
 The two GitHub reads that used to have no retry at all — the
 initial diff fetch and the initial PR-metadata fetch — are wrapped in `prt_retry`
@@ -505,7 +513,7 @@ metadata` line before exiting 1, instead of relying solely on `prt_gh_rest`'s ge
 line to explain the exit.
 
 Neither the request payload nor the two strings it wraps ever go through `argv`
-(`_prt_call_proxy`, `model.sh:218-300`): the system and user strings reach `jq` via `--rawfile`
+(`_prt_call_proxy`, `model.sh:248-417`): the system and user strings reach `jq` via `--rawfile`
 from a temp dir, and the assembled body reaches curl via `-d @FILE`. Linux caps a *single* argv
 entry at `MAX_ARG_STRLEN` = 32 pages = 131072 bytes, independent of `ARG_MAX` and of any
 `ulimit`, and a chunk can legitimately exceed that: `prt_split_diff`'s hard ceiling is
