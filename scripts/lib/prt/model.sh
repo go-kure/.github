@@ -304,7 +304,7 @@ _prt_call_proxy() {
     }
 
   # --max-time is derived from a RUN-LEVEL deadline, not a fixed value.
-  # go-kure/.github#(this fix), from opsmaster's claude-proxy investigation
+  # go-kure/.github#128, from opsmaster's claude-proxy investigation
   # (2026-08-30): a fixed 300s ceiling sat BELOW the workload's own p95
   # (measured 315s over 1066 live calls, 5.3% of calls ran long), so ~1 in 20
   # model calls was killed by curl mid-generation with no application fault
