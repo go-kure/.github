@@ -40,9 +40,18 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Read actionlint version from mise.toml
+        id: actionlint-version
+        run: |
+          VER=$(grep '^actionlint = ' mise.toml | sed 's/actionlint = "\(.*\)"/\1/')
+          if [ -z "$VER" ]; then
+            echo "::error::Failed to parse actionlint version from mise.toml"
+            exit 1
+          fi
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
       - name: Install actionlint
         env:
-          ACTIONLINT_VERSION: '1.7.7'
+          ACTIONLINT_VERSION: ${{ steps.actionlint-version.outputs.version }}
         run: |
           curl -fsSL -o /tmp/actionlint.tar.gz \
             "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
@@ -82,9 +91,18 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Read lychee version from mise.toml
+        id: lychee-version
+        run: |
+          VER=$(grep '^lychee = ' mise.toml | sed 's/lychee = "\(.*\)"/\1/')
+          if [ -z "$VER" ]; then
+            echo "::error::Failed to parse lychee version from mise.toml"
+            exit 1
+          fi
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
       - name: Install lychee
         env:
-          LYCHEE_VERSION: '0.24.2'
+          LYCHEE_VERSION: ${{ steps.lychee-version.outputs.version }}
         run: |
           curl -fsSL -o /tmp/lychee.tar.gz \
             "https://github.com/lycheeverse/lychee/releases/download/lychee-v${LYCHEE_VERSION}/lychee-x86_64-unknown-linux-gnu.tar.gz"
@@ -119,9 +137,18 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0 # check-doc-gate.sh diffs against HEAD~1; check-pin-bump.sh needs origin/main
+      - name: Read shellcheck version from mise.toml
+        id: shellcheck-version
+        run: |
+          VER=$(grep '^shellcheck = ' mise.toml | sed 's/shellcheck = "\(.*\)"/\1/')
+          if [ -z "$VER" ]; then
+            echo "::error::Failed to parse shellcheck version from mise.toml"
+            exit 1
+          fi
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
       - name: Install shellcheck
         env:
-          SHELLCHECK_VERSION: '0.10.0'
+          SHELLCHECK_VERSION: ${{ steps.shellcheck-version.outputs.version }}
         run: |
           curl -fsSL -o /tmp/shellcheck.tar.xz \
             "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
@@ -129,9 +156,18 @@ jobs:
           sudo install -m755 "/tmp/shellcheck-v${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck
       - name: shellcheck
         run: shellcheck scripts/check-doc-sync.sh scripts/check-doc-gate.sh scripts/check-links.sh scripts/exact-array-member.sh scripts/check-workflow-refs.sh scripts/github-settings.sh scripts/check-settings-doc.sh scripts/check-action-pins.sh scripts/check-label-docs.sh scripts/govulncheck-gate.sh scripts/check-forbidden-terms.sh scripts/check-pin-bump.sh scripts/pr-review-threads.sh scripts/lib/prt/state.sh scripts/lib/prt/json.sh scripts/lib/prt/marker.sh scripts/lib/prt/finding.sh scripts/lib/prt/gh.sh scripts/lib/prt/diff.sh scripts/lib/prt/render.sh scripts/lib/prt/model.sh scripts/lib/prt/reconcile.sh scripts/pr-review-fail-closed-digest.sh scripts/lib/api.sh
+      - name: Read yq version from mise.toml
+        id: yq-version
+        run: |
+          VER=$(grep '^yq = ' mise.toml | sed 's/yq = "\(.*\)"/\1/')
+          if [ -z "$VER" ]; then
+            echo "::error::Failed to parse yq version from mise.toml"
+            exit 1
+          fi
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
       - name: Install yq
         env:
-          YQ_VERSION: '4.44.6'
+          YQ_VERSION: ${{ steps.yq-version.outputs.version }}
         run: |
           sudo curl -fsSL -o /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64"
           sudo chmod +x /usr/local/bin/yq
@@ -165,9 +201,18 @@ jobs:
         run: bash scripts/check-label-docs.sh .
       - name: github-settings.sh mock-gh test suite
         run: bash scripts/test/github-settings-test.sh .
+      - name: Read lychee version from mise.toml
+        id: lychee-version
+        run: |
+          VER=$(grep '^lychee = ' mise.toml | sed 's/lychee = "\(.*\)"/\1/')
+          if [ -z "$VER" ]; then
+            echo "::error::Failed to parse lychee version from mise.toml"
+            exit 1
+          fi
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
       - name: Install lychee
         env:
-          LYCHEE_VERSION: '0.24.2'
+          LYCHEE_VERSION: ${{ steps.lychee-version.outputs.version }}
         run: |
           curl -fsSL -o /tmp/lychee.tar.gz \
             "https://github.com/lycheeverse/lychee/releases/download/lychee-v${LYCHEE_VERSION}/lychee-x86_64-unknown-linux-gnu.tar.gz"

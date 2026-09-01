@@ -37,9 +37,19 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
+      - name: Read yq version from mise.toml
+        id: yq-version
+        run: |
+          VER=$(grep '^yq = ' mise.toml | sed 's/yq = "\(.*\)"/\1/')
+          if [ -z "$VER" ]; then
+            echo "::error::Failed to parse yq version from mise.toml"
+            exit 1
+          fi
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+
       - name: Install yq
         env:
-          YQ_VERSION: '4.44.6'
+          YQ_VERSION: ${{ steps.yq-version.outputs.version }}
         run: |
           sudo curl -fsSL -o /usr/local/bin/yq \
             https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64

@@ -61,8 +61,9 @@ shared Renovate preset ([`renovate/shared.json`](../renovate/shared.json)) to fl
 update needs human review or is eligible for automerge. Scoped to
 `["kure", "launcher", ".github"]`, the repos that extend the shared preset (`.github` extends
 its own copy of the preset it hosts) — do not add them without `repos` scoping, since
-`go-kure.github.io` still carries no `renovate.json` and would have the labels deleted as
-extra on its next settings audit.
+`go-kure.github.io` still carries no `renovate.json` and the daily settings audit would flag
+the labels as extra on it — deleted only if a maintainer later dispatches settings in `apply`
+mode (audit alone never deletes; see `scripts/github-settings.sh`'s label-reconciliation step).
 
 ### `type/roadmap` vs `type/epic`
 
