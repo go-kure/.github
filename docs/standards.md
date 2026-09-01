@@ -549,11 +549,14 @@ standard `// Code generated ... DO NOT EDIT.` header
 gate when every line a diff touches — on both the new and old side — is marked
 `// doc-gate:trivial`, e.g. a version const whose value is propagated automatically
 from an upstream pin with no human documentation decision behind the change. The
-marker is trusted only inside a generated file, and only for the lines a diff actually
-touched: unlike the `docs-skip` label it is not a maintainer action on the PR, but it
-can still only ever originate from a change to the *generator* — a separate,
-ordinarily-reviewed change to shared code — never as a self-applied annotation on
-hand-written source a PR author controls unilaterally. See `trivial_change()` in
+marker is trusted only inside a file carrying that header, and only for the lines a
+diff actually touched. The header itself is a textual convention, not a verified
+fact — a PR author can add it to hand-written source — so unlike the `docs-skip`
+label this is not an unforgeable maintainer action; what it buys instead is that
+faking it still costs one full doc-gate PR (the base-side check below rejects a
+line's first marking, same as for a genuinely generated file), and the header's
+appearance on a previously-ordinary file is a visible, diffable event a reviewer
+can catch, not a silent one. See `trivial_change()` in
 [`check-doc-gate.sh`](../scripts/check-doc-gate.sh) for the exact mechanics.
 
 `.github` (docs-only) runs only map validity, link checks, the agentic-file rule,
