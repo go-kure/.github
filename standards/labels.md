@@ -58,9 +58,11 @@ the listed repos, and flags it as extra if it appears on any other repo. Labels 
 
 **Renovate labels** (no category prefix): `needs-human`, `unattended` — applied by the
 shared Renovate preset ([`renovate/shared.json`](../renovate/shared.json)) to flag whether an
-update needs human review or is eligible for automerge. Scoped to `["kure", "launcher"]`,
-the two repos that extend the shared preset — do not add them without `repos` scoping, since
-`.github` and `go-kure.github.io` carry no `renovate.json`.
+update needs human review or is eligible for automerge. Scoped to
+`["kure", "launcher", ".github"]`, the repos that extend the shared preset (`.github` extends
+its own copy of the preset it hosts) — do not add them without `repos` scoping, since
+`go-kure.github.io` still carries no `renovate.json` and would have the labels deleted as
+extra on its next settings audit.
 
 ### `type/roadmap` vs `type/epic`
 

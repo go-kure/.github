@@ -209,13 +209,13 @@
       "name": "needs-human",
       "color": "#D93F0B",
       "description": "Renovate: update needs human review before merge",
-      "repos": ["kure", "launcher"]
+      "repos": ["kure", "launcher", ".github"]
     },
     {
       "name": "unattended",
       "color": "#0E8A16",
       "description": "Renovate: update eligible for automerge without review",
-      "repos": ["kure", "launcher"]
+      "repos": ["kure", "launcher", ".github"]
     }
   ]
 }
