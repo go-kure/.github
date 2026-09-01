@@ -134,40 +134,71 @@ doc_trivial() {
   git -C "$ROOT" diff --quiet --ignore-all-space --ignore-blank-lines \
     "${BASE}...HEAD" -- "$1"
 }
-# Does every line this diff actually touched in $1, at HEAD, carry an explicit
-# "// doc-gate:trivial" marker? A generated const whose *value* changes on
-# every upstream pin bump (mise.toml's go version, propagated through
-# sync-go-version.sh into pkg/versions/versions_gen.go's GoVersion) carries no
-# human documentation decision — unlike the rest of that same file's generated
-# content (Dependency.SupportedRange/Min/Max), which DOES warrant a paired
-# README update (go-kure/kure's 748c782 + 517e554 is the real pair that proves
-# it: a genuine supported-range widening, correctly caught and fixed).
+# Is $1, at HEAD, a machine-generated file per the standard Go "Code
+# generated ... DO NOT EDIT." header convention (https://go.dev/s/generatedcode,
+# first line, any generator name)? trivial_change() below trusts the
+# doc-gate:trivial marker ONLY inside a file this returns true for.
+#
+# Why gate on that at all: docs/standards.md's Layer-3 escape hatch is
+# explicitly "a maintainer-restricted docs-skip PR label, not a self-applied
+# commit trailer" (:541-543). A marker any PR author could drop into
+# hand-written source to bypass the gate on their own change would be exactly
+# that self-applied trailer in inline-comment form — go-kure/.github#136
+# review caught this in the first version of this function, which trusted the
+# marker in any file. Gating on the generated-code header instead means the
+# only way a line can ever carry the marker is for someone to add it to the
+# *generator* — a separate, ordinarily-reviewed change to shared script code,
+# not a unilateral annotation on the very diff it's meant to exempt.
+is_generated_file() {
+  local first_line
+  first_line="$(git -C "$ROOT" show "HEAD:$1" 2>/dev/null | head -1)"
+  [[ "$first_line" =~ ^//\ Code\ generated\ .*\ DO\ NOT\ EDIT\.$ ]]
+}
+# Does every line this diff actually touched in $1, at HEAD *and* at BASE,
+# carry an explicit "// doc-gate:trivial" marker? A generated const whose
+# *value* changes on every upstream pin bump (mise.toml's go version,
+# propagated through sync-go-version.sh into pkg/versions/versions_gen.go's
+# GoVersion) carries no human documentation decision — unlike the rest of
+# that same file's generated content (Dependency.SupportedRange/Min/Max),
+# which DOES warrant a paired README update (go-kure/kure's 748c782 + 517e554
+# is the real pair that proves it: a genuine supported-range widening,
+# correctly caught and fixed).
 # Line-level, not whole-file: the two kinds of change live in the same
 # generated file, so a whole-file "is this generated" exemption would have
 # silently swallowed the SupportedRange case too — go-kure/kure#734 is where
 # a first cut of this check got that wrong, caught by testing against real
 # history before it shipped.
 #
-# The marker itself is the only thing this function trusts — not a filename,
-# not a "Code generated" header. It's deliberately placed by whoever writes
-# the *generator* (so it survives regeneration) or, for hand-written code, by
-# a maintainer who's decided a specific line's churn never needs prose. This
-# keeps the "which fields are trivial" judgment call in the repo that owns
-# the field, not hardcoded into this shared script.
-#
 # -U0 (zero context) so each hunk's line range is exactly what changed, with
 # nothing to misparse as "touched". A pure-deletion hunk (new-side count 0)
 # has no line left to carry a marker — fails closed (not trivial); that's the
 # right default when this function can't tell.
+#
+# Base-side check, not just new-side: a hunk that replaces an unmarked line
+# with a differently-marked one would otherwise read as trivial purely
+# because the new side looks right, regardless of what the old side actually
+# said — go-kure/.github#136 review caught this too. The one case this
+# rejects on purpose is the very first commit that adds the marker to a
+# previously-unmarked generated line: that one SHOULD cost a real doc touch
+# once, since it's the maintainer decision this mechanism otherwise assumes
+# was already made. A pure insertion (old-side count 0 — nothing being
+# replaced) has no base-side line to check and isn't held to this.
 trivial_change() {
-  local f="$1" hunk newstart newcount i line
+  local f="$1" hunk oldstart oldcount newstart newcount i line
+  is_generated_file "$f" || return 1
   while IFS= read -r hunk; do
-    [[ "$hunk" =~ ^@@\ -[0-9]+(,[0-9]+)?\ \+([0-9]+)(,([0-9]+))?\ @@ ]] || continue
-    newstart="${BASH_REMATCH[2]}"
-    newcount="${BASH_REMATCH[4]:-1}"
+    [[ "$hunk" =~ ^@@\ -([0-9]+)(,([0-9]+))?\ \+([0-9]+)(,([0-9]+))?\ @@ ]] || continue
+    oldstart="${BASH_REMATCH[1]}"
+    oldcount="${BASH_REMATCH[3]:-1}"
+    newstart="${BASH_REMATCH[4]}"
+    newcount="${BASH_REMATCH[6]:-1}"
     [[ "$newcount" -gt 0 ]] || return 1
     for ((i = 0; i < newcount; i++)); do
       line="$(git -C "$ROOT" show "HEAD:$f" 2>/dev/null | sed -n "$((newstart + i))p")"
+      [[ "$line" == *'// doc-gate:trivial'* ]] || return 1
+    done
+    for ((i = 0; i < oldcount; i++)); do
+      line="$(git -C "$ROOT" show "${BASE}:$f" 2>/dev/null | sed -n "$((oldstart + i))p")"
       [[ "$line" == *'// doc-gate:trivial'* ]] || return 1
     done
   done < <(git -C "$ROOT" diff -U0 "${BASE}...HEAD" -- "$f" | grep -E '^@@ ')
