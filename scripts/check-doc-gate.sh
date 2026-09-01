@@ -135,11 +135,20 @@ doc_trivial() {
     "${BASE}...HEAD" -- "$1"
 }
 # Is $1, at HEAD, a machine-generated file per the standard Go "Code
-# generated ... DO NOT EDIT." header convention (https://go.dev/s/generatedcode,
-# first line, any generator name)? trivial_change() below trusts the
-# doc-gate:trivial marker ONLY inside a file this returns true for.
+# generated ... DO NOT EDIT." header convention (https://go.dev/s/generatedcode)?
+# trivial_change() below trusts the doc-gate:trivial marker ONLY inside a file
+# this returns true for.
 #
-# Why gate on that at all: docs/standards.md's Layer-3 escape hatch is
+# The convention allows the marker line to be preceded by other leading
+# comments (a license header, a //go:build constraint) as long as it appears
+# before the package clause — scan that whole leading region, not line 1
+# alone, or a standards-compliant generated file with a header above the
+# marker would be wrongly rejected (go-kure/.github#136 review). Stop at the
+# first `package ` line: Go syntax requires exactly one, near the top of
+# every file, so normal files stop the scan long before it. The 50-line cap
+# is a backstop against a pathological file, not a real limit.
+#
+# Why gate on this header at all: docs/standards.md's Layer-3 escape hatch is
 # explicitly "a maintainer-restricted docs-skip PR label, not a self-applied
 # commit trailer" (:541-543). A marker any PR author could drop into
 # hand-written source to bypass the gate on their own change would be exactly
@@ -150,9 +159,12 @@ doc_trivial() {
 # *generator* — a separate, ordinarily-reviewed change to shared script code,
 # not a unilateral annotation on the very diff it's meant to exempt.
 is_generated_file() {
-  local first_line
-  first_line="$(git -C "$ROOT" show "HEAD:$1" 2>/dev/null | head -1)"
-  [[ "$first_line" =~ ^//\ Code\ generated\ .*\ DO\ NOT\ EDIT\.$ ]]
+  local line n=0
+  while IFS= read -r line && ((n++ < 50)); do
+    [[ "$line" =~ ^//\ Code\ generated\ .*\ DO\ NOT\ EDIT\.$ ]] && return 0
+    [[ "$line" == package\ * ]] && return 1
+  done < <(git -C "$ROOT" show "HEAD:$1" 2>/dev/null)
+  return 1
 }
 # Does every line this diff actually touched in $1, at HEAD *and* at BASE,
 # carry an explicit "// doc-gate:trivial" marker? A generated const whose
@@ -191,9 +203,28 @@ is_generated_file() {
 # unconditional success below. That's fail-*open* on exactly the "can't
 # tell" case the surrounding comments say should fail closed, so require at
 # least one real hunk before trusting the loop's silence.
+#
+# Old-side reads use the merge-base, not $BASE's own tip: the diff below is
+# three-dot (`${BASE}...HEAD`), which git defines as diffing
+# merge-base($BASE,HEAD) against HEAD — so the hunk's old-side line numbers
+# are only valid against that merge-base's content. $BASE is typically a
+# moving ref (origin/main in the documented usage); reading "${BASE}:$f" once
+# it has advanced past the merge-base misaddresses old-side lines and can
+# reject a genuinely trivial change (go-kure/.github#136 review).
+#
+# Both blobs are read once, up front, rather than once per line: the
+# original per-line `git show | sed` pair re-read the whole file from git on
+# every iteration, which is needless I/O for a hunk with many marked lines
+# (go-kure/.github#136 review) — this script runs as a shared CI gate across
+# every go-kure repo via composite action, not just against the small,
+# single-const diffs it was written against.
 trivial_change() {
-  local f="$1" hunk oldstart oldcount newstart newcount i line saw_hunk=0
+  local f="$1" hunk oldstart oldcount newstart newcount i saw_hunk=0 mb
   is_generated_file "$f" || return 1
+  mb="$(git -C "$ROOT" merge-base "$BASE" HEAD)"
+  local -a new_lines old_lines
+  mapfile -t new_lines < <(git -C "$ROOT" show "HEAD:$f" 2>/dev/null)
+  mapfile -t old_lines < <(git -C "$ROOT" show "$mb:$f" 2>/dev/null)
   while IFS= read -r hunk; do
     [[ "$hunk" =~ ^@@\ -([0-9]+)(,([0-9]+))?\ \+([0-9]+)(,([0-9]+))?\ @@ ]] || continue
     saw_hunk=1
@@ -203,12 +234,10 @@ trivial_change() {
     newcount="${BASH_REMATCH[6]:-1}"
     [[ "$newcount" -gt 0 ]] || return 1
     for ((i = 0; i < newcount; i++)); do
-      line="$(git -C "$ROOT" show "HEAD:$f" 2>/dev/null | sed -n "$((newstart + i))p")"
-      [[ "$line" == *'// doc-gate:trivial'* ]] || return 1
+      [[ "${new_lines[newstart + i - 1]-}" == *'// doc-gate:trivial'* ]] || return 1
     done
     for ((i = 0; i < oldcount; i++)); do
-      line="$(git -C "$ROOT" show "${BASE}:$f" 2>/dev/null | sed -n "$((oldstart + i))p")"
-      [[ "$line" == *'// doc-gate:trivial'* ]] || return 1
+      [[ "${old_lines[oldstart + i - 1]-}" == *'// doc-gate:trivial'* ]] || return 1
     done
   done < <(git -C "$ROOT" diff -U0 "${BASE}...HEAD" -- "$f" | grep -E '^@@ ')
   [[ "$saw_hunk" == 1 ]]
