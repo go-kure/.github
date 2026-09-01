@@ -221,6 +221,21 @@ is_generated_file() {
 # looks like a modification is, structurally, still an insertion or deletion
 # and gets the same treatment (go-kure/.github#136 review, round 9).
 #
+# Marker presence alone isn't enough either: a hunk can replace one marked
+# declaration with a *different* marked declaration in a 1:1 line swap (e.g.
+# renaming a public constant while keeping its value) and pass every check
+# above, since both counts match and both lines carry the marker — this is
+# still a change with a real documentation decision behind it (a rename is
+# an API change, not a value refresh), which the whole exemption was scoped
+# to exclude in the first place. Compare each pair's declaration prefix (the
+# text before the first "=", where Go's own const/var grammar guarantees
+# that separator can only be the assignment operator, never part of a name
+# or type) and require it to match old-to-new, word-tokenized rather than
+# byte-compared: gofmt column-aligns consecutive single-line declarations in
+# a block, so an untouched line's "=" can shift by columns when a sibling
+# line's value changes length, and a byte-exact compare would wrongly reject
+# that (go-kure/.github#136 review, round 10).
+#
 # The marker match is anchored to end-of-line (after optional trailing
 # whitespace), not a bare substring test: `// doc-gate:trivial` appearing
 # inside a Go string literal's *value* — e.g. a generated constant whose text
@@ -258,11 +273,21 @@ is_generated_file() {
 # (go-kure/.github#136 review) — this script runs as a shared CI gate across
 # every go-kure repo via composite action, not just against the small,
 # single-const diffs it was written against.
+#
+# --inter-hunk-context=0 pins the gap that triggers hunk-merging to zero,
+# independent of whatever diff.interHunkContext the runner's git config
+# carries: -U0 alone only controls context *within* a hunk, not the distance
+# that makes git fuse two nearby hunks into one. A nonzero inter-hunk-context
+# can pull an unrelated, unmarked line between two genuinely marked edits
+# into their merged range, and this loop then requires that unmarked context
+# line to carry the marker too — failing closed, not open, but on an
+# ordinary environment-config difference rather than anything about the
+# change itself (go-kure/.github#136 review, round 10).
 trivial_change() {
-  local f="$1" hunk oldstart oldcount newstart newcount i saw_hunk=0 mb
+  local f="$1" hunk oldstart oldcount newstart newcount i saw_hunk=0 mb newl oldl
+  local -a new_lines old_lines new_words old_words
   is_generated_file "$f" || return 1
   mb="$(git -C "$ROOT" merge-base "$BASE" HEAD)"
-  local -a new_lines old_lines
   mapfile -t new_lines < <(git -C "$ROOT" show "HEAD:$f" 2>/dev/null)
   mapfile -t old_lines < <(git -C "$ROOT" show "$mb:$f" 2>/dev/null)
   while IFS= read -r hunk; do
@@ -274,12 +299,15 @@ trivial_change() {
     newcount="${BASH_REMATCH[6]:-1}"
     [[ "$newcount" -gt 0 && "$newcount" -eq "$oldcount" ]] || return 1
     for ((i = 0; i < newcount; i++)); do
-      [[ "${new_lines[newstart + i - 1]-}" =~ //\ doc-gate:trivial[[:space:]]*$ ]] || return 1
+      newl="${new_lines[newstart + i - 1]-}"
+      oldl="${old_lines[oldstart + i - 1]-}"
+      [[ "$newl" =~ //\ doc-gate:trivial[[:space:]]*$ ]] || return 1
+      [[ "$oldl" =~ //\ doc-gate:trivial[[:space:]]*$ ]] || return 1
+      read -ra new_words <<<"${newl%%=*}"
+      read -ra old_words <<<"${oldl%%=*}"
+      [[ "${new_words[*]}" == "${old_words[*]}" ]] || return 1
     done
-    for ((i = 0; i < oldcount; i++)); do
-      [[ "${old_lines[oldstart + i - 1]-}" =~ //\ doc-gate:trivial[[:space:]]*$ ]] || return 1
-    done
-  done < <(git -C "$ROOT" diff -U0 "${BASE}...HEAD" -- "$f" | grep -E '^@@ ')
+  done < <(git -C "$ROOT" diff -U0 --inter-hunk-context=0 "${BASE}...HEAD" -- "$f" | grep -E '^@@ ')
   [[ "$saw_hunk" == 1 ]]
 }
 
