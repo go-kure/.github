@@ -547,11 +547,17 @@ maintainer-restricted `docs-skip` PR label, not a self-applied commit trailer.
 standard `// Code generated ... DO NOT EDIT.` header
 ([go.dev/s/generatedcode](https://go.dev/s/generatedcode)) is exempt from the package
 gate when every line a diff touches already existed, already marked
-`// doc-gate:trivial`, in the base revision — e.g. a version const whose value is
+`// doc-gate:trivial`, in the base revision, **and** the edit changes only the
+value, not the declaration itself — e.g. a version const whose value is
 propagated automatically from an upstream pin with no human documentation decision
 behind the change. A hunk that inserts a brand-new line has no old side to check and
 is never exempt this way, however the new line is marked; the same is true of a
-brand-new generated file, whose only hunk is always an insertion. The marker is
+brand-new generated file, whose only hunk is always an insertion, and of a pure
+deletion, which has no new side to check. Renaming or otherwise changing the
+identity of an already-marked declaration is exempt from neither this nor either
+of the insertion/deletion cases — a 1:1 line swap that changes what a marked
+constant is called still carries a real documentation decision, even though the
+old and new line counts match and both lines are marked. The marker is
 trusted only inside a file carrying that header, and only for the lines a
 diff actually touched. The header itself is a textual convention, not a verified
 fact — a PR author can add it to hand-written source — so unlike the `docs-skip`
