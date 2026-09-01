@@ -183,11 +183,20 @@ is_generated_file() {
 # once, since it's the maintainer decision this mechanism otherwise assumes
 # was already made. A pure insertion (old-side count 0 — nothing being
 # replaced) has no base-side line to check and isn't held to this.
+#
+# saw_hunk guards the loop's own default: with zero `@@` lines to read (a
+# mode-only change, or any other content-identical diff `-U0` renders with no
+# hunks at all — go-kure/.github#136 review found this via a chmod +x
+# reproduction), the while loop body never runs and falls through to the
+# unconditional success below. That's fail-*open* on exactly the "can't
+# tell" case the surrounding comments say should fail closed, so require at
+# least one real hunk before trusting the loop's silence.
 trivial_change() {
-  local f="$1" hunk oldstart oldcount newstart newcount i line
+  local f="$1" hunk oldstart oldcount newstart newcount i line saw_hunk=0
   is_generated_file "$f" || return 1
   while IFS= read -r hunk; do
     [[ "$hunk" =~ ^@@\ -([0-9]+)(,([0-9]+))?\ \+([0-9]+)(,([0-9]+))?\ @@ ]] || continue
+    saw_hunk=1
     oldstart="${BASH_REMATCH[1]}"
     oldcount="${BASH_REMATCH[3]:-1}"
     newstart="${BASH_REMATCH[4]}"
@@ -202,7 +211,7 @@ trivial_change() {
       [[ "$line" == *'// doc-gate:trivial'* ]] || return 1
     done
   done < <(git -C "$ROOT" diff -U0 "${BASE}...HEAD" -- "$f" | grep -E '^@@ ')
-  return 0
+  [[ "$saw_hunk" == 1 ]]
 }
 
 violations=0
