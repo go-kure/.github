@@ -9,8 +9,9 @@ The go-kure repos are:
 
 1. **Public open-source projects** — must accommodate external contributors
 2. **Hosted on GitHub** — use GitHub Actions, not GitLab CI. Dependency updates are Renovate
-   in `kure` and `launcher` (via the shared preset hosted here); only this repo is on
-   Dependabot, and only for `github-actions`. See [Dependency Management](#dependency-management).
+   across all three repos here, via the shared preset this repo hosts and also extends on
+   itself. `go-kure.github.io` — not a member of this table, see below — is the org's one
+   remaining Dependabot repo. See [Dependency Management](#dependency-management).
 3. **Released independently** — separate cadence from the downstream platform
 
 ## Organization Members
@@ -30,7 +31,7 @@ The go-kure repos are:
 | golangci-lint       | Modified | Yes      | N/A      | kure relaxes two linters during migration; launcher uses the full set |
 | Container builds    | No       | No       | N/A      | kure is a library; launcher ships binaries via GoReleaser, no container |
 | CI/CD               | Modified | Modified | Modified | GitHub Actions; kure + launcher call shared workflows hosted here |
-| Dependency updates  | Same | Same | Modified | Renovate (shared preset hosted here); `.github` itself stays on Dependabot |
+| Dependency updates  | Same | Same | Same | Renovate (shared preset hosted here); `.github` extends its own preset — see [Dependency Management](#dependency-management) |
 | Repository settings | Modified | Modified | Modified | Applied by this repo's `settings.yml` workflow |
 
 ## CI Platform
@@ -48,8 +49,8 @@ workflows here.
 
 | Aspect | Workspace Default  | kure                     | launcher                 | .github            |
 |--------|----------------|--------------------------|--------------------------|--------------------|
-| Tool   | Renovate       | Renovate                 | Renovate                 | Dependabot         |
-| Config | `renovate.json`| `renovate.json`          | `renovate.json`          | `.github/dependabot.yml` (github-actions only — no Go deps) |
+| Tool   | Renovate       | Renovate                 | Renovate                 | Renovate           |
+| Config | `renovate.json`| `renovate.json`          | `renovate.json`          | `renovate.json` (self-extends the preset it hosts) |
 
 ### Shared Renovate preset
 
@@ -149,8 +150,15 @@ surfaced the error. The earlier claim was made after searching for the check by 
 finding a different script that compares a different pair of files, and concluding from its
 absence that nothing compared the presets.
 
-`.github` itself stays on Dependabot: it has no Go code and no `renovate.json`, and
-the Renovate runner skips repos without one.
+`.github` now onboards itself onto Renovate too, via a `renovate.json` that
+self-extends the preset hosted here — closing a real gap: this repo's own
+mise-pinned tools (actionlint, shellcheck, yq, lychee, node) had no updater of
+any kind while it stayed Dependabot-only, since Dependabot has no mise
+ecosystem and cannot read a bare version file. No bot-side change was needed:
+the runner's `--autodiscover-filter=go-kure/*` already matches this repo, and
+the same PAT already reaches it. `go-kure.github.io` (not a member of this
+table — it hosts rendered site content, not application code) is the one
+repo left in the org on Dependabot, for its single `github-actions` ecosystem.
 
 ### GitHub Actions pinning
 
