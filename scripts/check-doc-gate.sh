@@ -193,8 +193,18 @@ is_generated_file() {
 # rejects on purpose is the very first commit that adds the marker to a
 # previously-unmarked generated line: that one SHOULD cost a real doc touch
 # once, since it's the maintainer decision this mechanism otherwise assumes
-# was already made. A pure insertion (old-side count 0 — nothing being
-# replaced) has no base-side line to check and isn't held to this.
+# was already made.
+#
+# Pure insertions (old-side count 0 — no line being replaced) are rejected
+# for the identical reason, one layer deeper: a brand-new marked line has no
+# old side to check at all, so it would otherwise sail through with zero
+# evidence a maintainer, rather than this PR's own diff, put the marker
+# there — indistinguishable from the self-applied trailer the generated-file
+# gate exists to rule out in the first place (go-kure/.github#136 review,
+# round 4). Only a line that already existed, already marked, in the merge
+# base is trusted to have its *value* change for free; new marked surface —
+# a new field, a newly inserted line, a brand-new generated file — always
+# costs the doc touch once, same as the first-marking case above.
 #
 # saw_hunk guards the loop's own default: with zero `@@` lines to read (a
 # mode-only change, or any other content-identical diff `-U0` renders with no
@@ -233,6 +243,7 @@ trivial_change() {
     newstart="${BASH_REMATCH[4]}"
     newcount="${BASH_REMATCH[6]:-1}"
     [[ "$newcount" -gt 0 ]] || return 1
+    [[ "$oldcount" -gt 0 ]] || return 1
     for ((i = 0; i < newcount; i++)); do
       [[ "${new_lines[newstart + i - 1]-}" == *'// doc-gate:trivial'* ]] || return 1
     done
