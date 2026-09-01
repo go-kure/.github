@@ -211,6 +211,31 @@ is_generated_file() {
 # a new field, a newly inserted line, a brand-new generated file — always
 # costs the doc touch once, same as the first-marking case above.
 #
+# newcount must equal oldcount, not just be positive: a replacement hunk can
+# mix a real value change with a smuggled-in insertion (oldcount=1,
+# newcount=2 — one marked line "replaced" by two marked lines) and the
+# per-side loops below would happily accept it, since each side is checked
+# independently and both ranges are individually nonzero. Requiring the
+# counts to match is what actually enforces the 1:1 correspondence the two
+# paragraphs above assume — a hunk that inserts or drops a line inside what
+# looks like a modification is, structurally, still an insertion or deletion
+# and gets the same treatment (go-kure/.github#136 review, round 9).
+#
+# The marker match is anchored to end-of-line (after optional trailing
+# whitespace), not a bare substring test: `// doc-gate:trivial` appearing
+# inside a Go string literal's *value* — e.g. a generated constant whose text
+# happens to contain that sequence — would satisfy a substring match without
+# being a comment at all, letting a real content change to that value skip
+# the gate. Anchoring to end-of-line matches every real usage (the marker is
+# always a trailing comment with nothing after it) and rejects the
+# string-literal case, since a string's closing quote sits between the match
+# and end-of-line. This doesn't fully parse Go — a contrived multi-line raw
+# string whose one physical line is exactly the marker text with nothing
+# else would still pass — but that requires deliberately-crafted source, the
+# same residual-risk class as the header check itself: costly and visible to
+# construct, not a bypass that falls out of ordinary use (go-kure/.github#136
+# review, round 9).
+#
 # saw_hunk guards the loop's own default: with zero `@@` lines to read (a
 # mode-only change, or any other content-identical diff `-U0` renders with no
 # hunks at all — go-kure/.github#136 review found this via a chmod +x
@@ -247,13 +272,12 @@ trivial_change() {
     oldcount="${BASH_REMATCH[3]:-1}"
     newstart="${BASH_REMATCH[4]}"
     newcount="${BASH_REMATCH[6]:-1}"
-    [[ "$newcount" -gt 0 ]] || return 1
-    [[ "$oldcount" -gt 0 ]] || return 1
+    [[ "$newcount" -gt 0 && "$newcount" -eq "$oldcount" ]] || return 1
     for ((i = 0; i < newcount; i++)); do
-      [[ "${new_lines[newstart + i - 1]-}" == *'// doc-gate:trivial'* ]] || return 1
+      [[ "${new_lines[newstart + i - 1]-}" =~ //\ doc-gate:trivial[[:space:]]*$ ]] || return 1
     done
     for ((i = 0; i < oldcount; i++)); do
-      [[ "${old_lines[oldstart + i - 1]-}" == *'// doc-gate:trivial'* ]] || return 1
+      [[ "${old_lines[oldstart + i - 1]-}" =~ //\ doc-gate:trivial[[:space:]]*$ ]] || return 1
     done
   done < <(git -C "$ROOT" diff -U0 "${BASE}...HEAD" -- "$f" | grep -E '^@@ ')
   [[ "$saw_hunk" == 1 ]]
