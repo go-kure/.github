@@ -154,10 +154,15 @@ doc_trivial() {
 # hand-written source to bypass the gate on their own change would be exactly
 # that self-applied trailer in inline-comment form — go-kure/.github#136
 # review caught this in the first version of this function, which trusted the
-# marker in any file. Gating on the generated-code header instead means the
-# only way a line can ever carry the marker is for someone to add it to the
-# *generator* — a separate, ordinarily-reviewed change to shared script code,
-# not a unilateral annotation on the very diff it's meant to exempt.
+# marker in any file. Gating on the generated-code header narrows this but
+# does not eliminate it: the header is a textual convention, not a verified
+# fact, so a PR author can type it into a hand-written file too — but doing
+# so still pays the base-side check's cost once (below), the same as first-
+# marking a genuinely generated line, since the file has no prior marked
+# history to point to. What this buys is not unforgeability, it's a paper
+# trail: faking generated status is a one-time, diffable act a reviewer can
+# catch, not a standing bypass a PR author gets for free (go-kure/.github#136
+# review, round 6 — the original wording here overclaimed unforgeability).
 is_generated_file() {
   local line n=0
   while IFS= read -r line && ((n++ < 50)); do
