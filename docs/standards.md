@@ -496,7 +496,8 @@ the go-kure canon of the shared documentation-sync standard.
 4. **Links resolve.** All internal/intra-repo links MUST resolve in rendered output.
 5. **API change touches its docs.** A change to a mapped package's source MUST touch
    its mapped `README.md`/guide(s) in the same PR, unless a maintainer applies the
-   escape hatch.
+   escape hatch. A narrower, code-level exemption also exists for a single line inside
+   a machine-generated file — see the Enforcement table below.
 
 ### `docs-map.yaml` schema
 
@@ -541,6 +542,20 @@ review_mappings:
 Layers 1–3 guarantee links resolve, structure is consistent, and docs are touched;
 they cannot verify prose accuracy (Layer 4). **Escape hatch (Layer 3):** a
 maintainer-restricted `docs-skip` PR label, not a self-applied commit trailer.
+
+**Generated-line exemption (Layer 3, narrower).** A line inside a file carrying Go's
+standard `// Code generated ... DO NOT EDIT.` header
+([go.dev/s/generatedcode](https://go.dev/s/generatedcode)) is exempt from the package
+gate when every line a diff touches — on both the new and old side — is marked
+`// doc-gate:trivial`, e.g. a version const whose value is propagated automatically
+from an upstream pin with no human documentation decision behind the change. The
+marker is trusted only inside a generated file, and only for the lines a diff actually
+touched: unlike the `docs-skip` label it is not a maintainer action on the PR, but it
+can still only ever originate from a change to the *generator* — a separate,
+ordinarily-reviewed change to shared code — never as a self-applied annotation on
+hand-written source a PR author controls unilaterally. See `trivial_change()` in
+[`check-doc-gate.sh`](../scripts/check-doc-gate.sh) for the exact mechanics.
+
 `.github` (docs-only) runs only map validity, link checks, the agentic-file rule,
 and the PR docs checkbox.
 
