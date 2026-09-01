@@ -5,7 +5,12 @@
 # Two complementary gates, both driven by docs-map.yaml:
 #
 #   1. Package gate — for every packages[] entry, if a non-test .go file directly in
-#      that package dir changed, the entry's README (and/or its guides) must change.
+#      that package dir changed, the entry's README (and/or its guides) must change —
+#      UNLESS every line the diff touched is marked "// doc-gate:trivial" (see
+#      trivial_change() below): a value that changes with no human documentation
+#      decision behind it, e.g. a generated version const propagated from an upstream
+#      pin bump. Line-level, not file-level — a generated file can mix trivial and
+#      non-trivial content, and only the former is exempt.
 #      Also covers packages REMOVED from the map between base and head: if a
 #      package's old source path still shows real changes, its old docs must too.
 #   2. review_mappings gate — for every review_mappings[] entry that carries BOTH an
@@ -129,6 +134,45 @@ doc_trivial() {
   git -C "$ROOT" diff --quiet --ignore-all-space --ignore-blank-lines \
     "${BASE}...HEAD" -- "$1"
 }
+# Does every line this diff actually touched in $1, at HEAD, carry an explicit
+# "// doc-gate:trivial" marker? A generated const whose *value* changes on
+# every upstream pin bump (mise.toml's go version, propagated through
+# sync-go-version.sh into pkg/versions/versions_gen.go's GoVersion) carries no
+# human documentation decision — unlike the rest of that same file's generated
+# content (Dependency.SupportedRange/Min/Max), which DOES warrant a paired
+# README update (go-kure/kure's 748c782 + 517e554 is the real pair that proves
+# it: a genuine supported-range widening, correctly caught and fixed).
+# Line-level, not whole-file: the two kinds of change live in the same
+# generated file, so a whole-file "is this generated" exemption would have
+# silently swallowed the SupportedRange case too — go-kure/kure#734 is where
+# a first cut of this check got that wrong, caught by testing against real
+# history before it shipped.
+#
+# The marker itself is the only thing this function trusts — not a filename,
+# not a "Code generated" header. It's deliberately placed by whoever writes
+# the *generator* (so it survives regeneration) or, for hand-written code, by
+# a maintainer who's decided a specific line's churn never needs prose. This
+# keeps the "which fields are trivial" judgment call in the repo that owns
+# the field, not hardcoded into this shared script.
+#
+# -U0 (zero context) so each hunk's line range is exactly what changed, with
+# nothing to misparse as "touched". A pure-deletion hunk (new-side count 0)
+# has no line left to carry a marker — fails closed (not trivial); that's the
+# right default when this function can't tell.
+trivial_change() {
+  local f="$1" hunk newstart newcount i line
+  while IFS= read -r hunk; do
+    [[ "$hunk" =~ ^@@\ -[0-9]+(,[0-9]+)?\ \+([0-9]+)(,([0-9]+))?\ @@ ]] || continue
+    newstart="${BASH_REMATCH[2]}"
+    newcount="${BASH_REMATCH[4]:-1}"
+    [[ "$newcount" -gt 0 ]] || return 1
+    for ((i = 0; i < newcount; i++)); do
+      line="$(git -C "$ROOT" show "HEAD:$f" 2>/dev/null | sed -n "$((newstart + i))p")"
+      [[ "$line" == *'// doc-gate:trivial'* ]] || return 1
+    done
+  done < <(git -C "$ROOT" diff -U0 "${BASE}...HEAD" -- "$f" | grep -E '^@@ ')
+  return 0
+}
 
 violations=0
 warnings=0
@@ -142,16 +186,24 @@ warn_trivial() {
 while IFS= read -r path; do
   [[ -n "$path" && "$path" != "null" ]] || continue
   # Source files directly in this package dir (not nested subpackages, which are
-  # their own map entries), excluding tests. `path: .` (a root package) needs its
-  # own pattern: git diff --name-only reports a root file as "foo.go", never
-  # "./foo.go", so "^${path}/[^/]+\.go$" can never match it — every root-package
-  # change would silently skip the gate otherwise.
+  # their own map entries), excluding tests and lines a maintainer has marked
+  # trivial. `path: .` (a root package) needs its own pattern: git diff
+  # --name-only reports a root file as "foo.go", never "./foo.go", so
+  # "^${path}/[^/]+\.go$" can never match it — every root-package change would
+  # silently skip the gate otherwise.
   if [[ "$path" == "." ]]; then
     src_pattern='^[^/]+\.go$'
   else
     src_pattern="^$(regex_escape "$path")/[^/]+\.go\$"
   fi
-  src="$(grep -E "$src_pattern" <<<"$changed_set" | grep -v '_test\.go$' || true)"
+  src=""
+  while IFS= read -r f; do
+    [[ -n "$f" ]] || continue
+    [[ "$f" == *_test.go ]] && continue
+    trivial_change "$f" && continue
+    src+="$f"$'\n'
+  done < <(grep -E "$src_pattern" <<<"$changed_set" || true)
+  src="${src%$'\n'}"
   [[ -n "$src" ]] || continue
 
   readme="$(yq ".packages[] | select(.path==\"$path\") | .readme" "$MAP")"
