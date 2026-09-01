@@ -1,5 +1,7 @@
 [tools]
-# Pinned to the versions ci.yml installs, so local runs match CI exactly.
+# Source of truth: ci.yml and settings.yml each read these versions at runtime
+# (their "Read <tool> version from mise.toml" steps), so bumping a version here
+# is the only edit needed — local runs and CI can no longer diverge.
 actionlint = "1.7.7"
 shellcheck = "0.10.0"
 yq = "4.44.6"
