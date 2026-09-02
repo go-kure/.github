@@ -302,6 +302,11 @@ reads as "the ack didn't take." **It did — re-running the stale run undid it.*
 label and leave the resulting fresh `labeled`-triggered run alone instead; that event's `action` is
 `labeled`, so `strip-ack`'s condition correctly skips it and the ack survives to the gate check.
 
+**This gotcha, too, is scoped to same-repository PRs.** `strip-ack`'s `if:` also requires the PR's
+head repository to equal the current repository, so it never runs at all on a fork PR — but that's
+moot: the gate step separately forces `PIN_IMPACT_ACK=false` unconditionally for forks, regardless
+of labels. A fork PR has no acknowledgment path at all.
+
 ### Vulnerability gating (govulncheck)
 
 `scripts/govulncheck-gate.sh` turns a `govulncheck -format json` report into a CI verdict:
