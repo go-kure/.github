@@ -119,3 +119,56 @@ jobs:
             echo ""
             echo "_Generated: $(date -u '+%Y-%m-%d %H:%M UTC')_"
           } >> $GITHUB_STEP_SUMMARY
+
+  # Independent of `settings` above: settings drift and PR/CI health are
+  # different failure classes, and a red run here shouldn't need the other
+  # job to also be red (or vice versa) to be visible — either job failing
+  # already fails the overall workflow run, which is the notification.
+  # See docs/standards.md, "PR CI Health" for what this does and does not
+  # cover.
+  pr-ci-health:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Check open-PR CI health across org repos
+        env:
+          GH_TOKEN: ${{ secrets.SETTINGS_PAT }}
+        run: |
+          set -o pipefail
+          bash scripts/pr-ci-health.sh --ci --json 2>&1 | tee pr-ci-health-output.txt
+
+      - name: Post summary
+        if: always()
+        run: |
+          [ -f pr-ci-health-report.json ] || exit 0
+          {
+            echo "## PR CI Health"
+            echo ""
+            python3 - <<'EOF'
+          import json
+          with open("pr-ci-health-report.json") as f:
+              failing = json.load(f)
+          if not failing:
+              print("All open, non-draft PRs green (or none open).")
+          else:
+              print(f"**{len(failing)} open PR(s) with failing/erroring checks:**")
+              print()
+              print("| Repo | PR | State | Title |")
+              print("|------|----|-------|-------|")
+              for p in failing:
+                  print(f"| `{p['repo']}` | [#{p['number']}]({p['url']}) | {p['state']} | {p['title']} |")
+          EOF
+            if grep -q 'WARNING:' pr-ci-health-output.txt 2>/dev/null; then
+              echo ""
+              echo "## Warnings"
+              echo '```'
+              grep 'WARNING:' pr-ci-health-output.txt
+              echo '```'
+            fi
+            echo ""
+            echo "_Generated: $(date -u '+%Y-%m-%d %H:%M UTC')_"
+          } >> $GITHUB_STEP_SUMMARY

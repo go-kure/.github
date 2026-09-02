@@ -262,9 +262,11 @@ secrets: inherit
 ```
 
 `ci.yml`, `settings.yml` and `pr-review-digest.yml` are **not** reusable — `ci.yml` is this repo's
-own self-CI (`pull_request` + `workflow_dispatch`), `settings.yml` is this repo's own org-settings
-audit/apply job (push to `governance/`/`standards/` + daily schedule + `workflow_dispatch`, see
-above), and `pr-review-digest.yml` is this repo's own daily org-wide scan for fail-closed
+own self-CI (`pull_request` + `workflow_dispatch`), `settings.yml` carries two independent jobs on
+the same push-to-`governance`/`standards` + daily schedule + `workflow_dispatch` triggers: this
+repo's own org-settings audit/apply job (see above) and `pr-ci-health`, an unrelated org-wide open-PR
+CI-health check (see `docs/standards.md` § "PR CI Health") — bolted onto the same workflow file for
+schedule/trigger reuse, not because the two are related. `pr-review-digest.yml` is this repo's own daily org-wide scan for fail-closed
 `pr-review-threads` events (schedule + `workflow_dispatch`; see
 `docs/pr-review-threads.md` § Fail-closed alerting). None of the three is consumed by
 kure/launcher.

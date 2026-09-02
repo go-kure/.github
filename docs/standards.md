@@ -278,6 +278,30 @@ unlike the bootstrap's "no prior pin" exception) — leaving the previous pin in
 fail that check, so the placeholder step is mandatory, not optional. Dependabot cannot open this PR for you — it doesn't track same-repo paths as
 a dependency, so this stays a manual, two-PR habit for every change to the delegate code.
 
+### Pin-impact-ack (consumer-side gate on this repo's own pin)
+
+The inverse direction from the rest of this section: kure and launcher each pin `go-kure/.github`
+itself by SHA (same convention as any other action), and each runs its own `pin-impact` CI job —
+defined in **that consumer's own `.github/workflows/ci.yml`, not centrally here** — that gates a
+pin bump on what it actually touches. `scripts/check-pin-impact.sh` (lives in the consumer repo)
+diffs the old and new SHA, and intersects the changed files with the paths that repo's own `uses:`
+lines actually reference — "changed" and "consumed" are different sets; a file like
+`standards/labels.md` routinely shows up changed but not consumed, since it's governance prose, not
+something either repo's CI executes. A changed-and-consumed path (in practice, almost always
+`scripts/check-doc-gate.sh`, the one script kure/launcher invoke directly rather than via a
+composite action) fails the job and blocks merge until a human reviews the diff and adds the
+`pin-impact-ack` label.
+
+**Gotcha: acking via `gh run rerun` on a stale run silently fails.** The job's `strip-ack` step
+removes `pin-impact-ack` on genuine new pushes, so an ack from a prior commit can't silently cover
+a later, unreviewed diff — but its `if:` condition reads `github.event.action`, which is frozen at
+whatever triggered that run *originally* (`synchronize` or `reopened`). Re-running an old failed
+run replays that same frozen condition and strips a freshly-added ack again, before the gate step
+re-checks it — even though nothing was actually pushed. The job then fails exactly as before, which
+reads as "the ack didn't take." **It did — re-running the stale run undid it.** Add (or re-add) the
+label and leave the resulting fresh `labeled`-triggered run alone instead; that event's `action` is
+`labeled`, so `strip-ack`'s condition correctly skips it and the ack survives to the gate check.
+
 ### Vulnerability gating (govulncheck)
 
 `scripts/govulncheck-gate.sh` turns a `govulncheck -format json` report into a CI verdict:
@@ -459,6 +483,28 @@ not something the initial `github_org:` block did.
 | `actions.sha_pinning_required`           | `false` |
 | `actions.default_workflow_permissions`   | `read`  |
 | `actions.can_approve_pull_request_reviews` | `false` |
+
+## PR CI Health
+
+A second, independent job in `settings.yml` (`pr-ci-health`, `scripts/pr-ci-health.sh`) — separate
+from the settings audit above, because settings drift and PR/CI health are different failure
+classes and either one should be visible without needing the other to also be red. It runs on the
+same daily schedule and `workflow_dispatch`, queries every repo in `GITHUB_REPOS` for open,
+non-draft PRs via GraphQL, and fails (posting a table to the step summary) if any PR's combined
+`statusCheckRollup` is `FAILURE` or `ERROR` — a red run here is meant to be the notification itself,
+there is no separate alerting path. It only reads; it never comments, labels, or otherwise touches
+a PR.
+
+Two things it deliberately does not do, both because there is no verified mechanism to key on yet
+rather than because they were judged unimportant:
+
+- **No "on hold via the Dependency Dashboard" exclusion.** Renovate has no distinct, API-visible
+  state for a PR it is deliberately holding back — such a PR simply doesn't exist as an open PR
+  yet, so nothing here needs to special-case it. If Renovate-authored PRs turn out to be a real
+  source of noise once this has run for a while, that is the evidence to design a targeted
+  exclusion from, not a guess made up front.
+- **No pagination.** Only the first 100 open PRs per repo are scanned; a repo that exceeds that gets
+  a warning in the step summary rather than a silent truncation.
 
 ## Release Process
 
