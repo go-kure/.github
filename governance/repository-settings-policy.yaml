@@ -32,7 +32,19 @@ github_defaults:
   security:
     secret_scanning: enabled
     secret_scanning_push_protection: enabled
-    dependabot_security_updates: enabled
+    # Dependabot's own vulnerability-driven updates. Superseded org-wide by
+    # Renovate's vulnerabilityAlerts lane (renovate/shared.json:
+    # osvVulnerabilityAlerts + vulnerabilityAlerts.addLabels: ["security"]),
+    # which every repo extending the shared preset already has. Proof it's a
+    # real duplicate, not just a config-level overlap: go-kure/kure#742
+    # (Dependabot) and go-kure/kure#743 (Renovate [security]) opened as the
+    # same grpc bump within hours of each other; #743 was kept, #742 closed.
+    # Disabling here does not touch dependabot.yml presence/absence per repo —
+    # it only turns off the security-alert-driven auto-PR feature layered on
+    # top, which is a separate GitHub API surface
+    # (repos/{org}/{repo}/automated-security-fixes) from the .github/
+    # dependabot.yml config file some repos still carry for version updates.
+    dependabot_security_updates: disabled
   rulesets:
     main-protection:
       # go-kure.github.io is deliberately excluded. It is a GitHub Pages content
