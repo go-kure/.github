@@ -151,20 +151,33 @@ jobs:
             python3 - <<'EOF'
           import json
           with open("pr-ci-health-report.json") as f:
-              failing = json.load(f)
-          if not failing:
+              data = json.load(f)
+          failing = data["failing"]
+          query_errors = data["query_errors"]
+          if not failing and not query_errors:
               print("All open, non-draft PRs green (or none open).")
           else:
-              print(f"**{len(failing)} open PR(s) with failing/erroring checks:**")
-              print()
-              print("| Repo | PR | State | Title |")
-              print("|------|----|-------|-------|")
-              for p in failing:
-                  # PR titles are attacker-controllable (any external contributor sets one) and
-                  # land verbatim in a table cell — an unescaped `|` splits into extra columns
-                  # and corrupts the rendered table (go-kure/.github#141 review finding).
-                  title = p['title'].replace('|', '\\|')
-                  print(f"| `{p['repo']}` | [#{p['number']}]({p['url']}) | {p['state']} | {title} |")
+              # Coverage-incomplete is stated up front and unconditionally whenever
+              # query_errors is non-empty — never folded into an "all green" claim
+              # just because the findings array happens to be empty (go-kure/.github#141
+              # follow-up review finding: a query outage must not read as "no problems").
+              if query_errors:
+                  repos = ", ".join(f"`{r}`" for r in query_errors)
+                  print(f"**Coverage incomplete: {len(query_errors)} repo(s) could not be queried** — {repos}")
+                  print()
+              if failing:
+                  print(f"**{len(failing)} open PR(s) with failing/erroring checks:**")
+                  print()
+                  print("| Repo | PR | State | Title |")
+                  print("|------|----|-------|-------|")
+                  for p in failing:
+                      # PR titles are attacker-controllable (any external contributor sets one) and
+                      # land verbatim in a table cell — an unescaped `|` splits into extra columns
+                      # and corrupts the rendered table (go-kure/.github#141 review finding).
+                      title = p['title'].replace('|', '\\|')
+                      print(f"| `{p['repo']}` | [#{p['number']}]({p['url']}) | {p['state']} | {title} |")
+              elif query_errors:
+                  print("No failing PRs found among the repos that were queried.")
           EOF
             if grep -qE 'WARNING:|ERROR:' pr-ci-health-output.txt 2>/dev/null; then
               echo ""

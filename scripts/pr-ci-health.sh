@@ -84,6 +84,7 @@ query($owner: String!, $repo: String!) {
 
 failing_json="[]"
 query_error_count=0
+query_error_repos="[]"
 for repo in $GITHUB_REPOS; do
     # A failure here must not abort the loop: the report is only written
     # after it, so aborting mid-loop means no report at all and no repo
@@ -91,10 +92,15 @@ for repo in $GITHUB_REPOS; do
     # look identical to "there are failing PRs" (go-kure/.github#141
     # review finding). Record and move on instead; still exit non-zero at
     # the end, with a message that says "could not query" rather than
-    # "found a failing PR" so the two causes aren't confused.
+    # "found a failing PR" so the two causes aren't confused. The failed
+    # repo also goes into the JSON report itself (not just stderr), so the
+    # step-summary step — which only reads the JSON — can say "coverage
+    # incomplete" instead of misreporting "all green" on an empty findings
+    # array (go-kure/.github#141 follow-up review finding).
     resp=$(gh api graphql -f query="$QUERY" -F owner="$GITHUB_ORG" -F repo="$repo") || {
         echo "ERROR: GraphQL query failed for $GITHUB_ORG/$repo — this repo was not scanned" >&2
         query_error_count=$((query_error_count + 1))
+        query_error_repos=$(jq --arg repo "$repo" '. + [$repo]' <<< "$query_error_repos")
         continue
     }
 
@@ -117,7 +123,8 @@ done
 count=$(echo "$failing_json" | jq 'length')
 
 if [ "$JSON_MODE" = true ]; then
-    echo "$failing_json" > pr-ci-health-report.json
+    jq -n --argjson failing "$failing_json" --argjson query_errors "$query_error_repos" \
+        '{failing: $failing, query_errors: $query_errors}' > pr-ci-health-report.json
 fi
 
 if [ "$count" -eq 0 ] && [ "$query_error_count" -eq 0 ]; then
