@@ -160,13 +160,17 @@ jobs:
               print("| Repo | PR | State | Title |")
               print("|------|----|-------|-------|")
               for p in failing:
-                  print(f"| `{p['repo']}` | [#{p['number']}]({p['url']}) | {p['state']} | {p['title']} |")
+                  # PR titles are attacker-controllable (any external contributor sets one) and
+                  # land verbatim in a table cell — an unescaped `|` splits into extra columns
+                  # and corrupts the rendered table (go-kure/.github#141 review finding).
+                  title = p['title'].replace('|', '\\|')
+                  print(f"| `{p['repo']}` | [#{p['number']}]({p['url']}) | {p['state']} | {title} |")
           EOF
-            if grep -q 'WARNING:' pr-ci-health-output.txt 2>/dev/null; then
+            if grep -qE 'WARNING:|ERROR:' pr-ci-health-output.txt 2>/dev/null; then
               echo ""
-              echo "## Warnings"
+              echo "## Warnings / Errors"
               echo '```'
-              grep 'WARNING:' pr-ci-health-output.txt
+              grep -E 'WARNING:|ERROR:' pr-ci-health-output.txt
               echo '```'
             fi
             echo ""

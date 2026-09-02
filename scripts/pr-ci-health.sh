@@ -11,8 +11,10 @@
 #
 # Requires: gh CLI (authenticated), jq
 #
-# Exit: 1 if any open, non-draft PR has a FAILURE/ERROR statusCheckRollup
-# (a red run here is meant to be the notification); 0 otherwise.
+# Exit: 1 if any open, non-draft PR has a FAILURE/ERROR statusCheckRollup, or
+# if any repo's GraphQL query itself failed (coverage was incomplete — a
+# distinct ERROR-prefixed line says which, so the two causes aren't
+# confused); 0 otherwise. A red run here is meant to be the notification.
 #
 # Known gaps (see docs/standards.md, "PR CI Health" for the full writeup):
 #  - Drafts are excluded (isDraft). A "dependency-dashboard-gated" exclusion
@@ -81,10 +83,19 @@ query($owner: String!, $repo: String!) {
 }'
 
 failing_json="[]"
+query_error_count=0
 for repo in $GITHUB_REPOS; do
+    # A failure here must not abort the loop: the report is only written
+    # after it, so aborting mid-loop means no report at all and no repo
+    # after the failing one gets scanned — a query outage would silently
+    # look identical to "there are failing PRs" (go-kure/.github#141
+    # review finding). Record and move on instead; still exit non-zero at
+    # the end, with a message that says "could not query" rather than
+    # "found a failing PR" so the two causes aren't confused.
     resp=$(gh api graphql -f query="$QUERY" -F owner="$GITHUB_ORG" -F repo="$repo") || {
-        echo "ERROR: GraphQL query failed for $GITHUB_ORG/$repo" >&2
-        exit 1
+        echo "ERROR: GraphQL query failed for $GITHUB_ORG/$repo — this repo was not scanned" >&2
+        query_error_count=$((query_error_count + 1))
+        continue
     }
 
     has_next=$(echo "$resp" | jq -r '.data.repository.pullRequests.pageInfo.hasNextPage')
@@ -109,12 +120,17 @@ if [ "$JSON_MODE" = true ]; then
     echo "$failing_json" > pr-ci-health-report.json
 fi
 
-if [ "$count" -eq 0 ]; then
+if [ "$count" -eq 0 ] && [ "$query_error_count" -eq 0 ]; then
     echo "${GREEN}pr-ci-health: 0 open PR(s) with failing/erroring checks${RESET}"
 else
-    echo "${RED}pr-ci-health: $count open PR(s) with failing/erroring checks${RESET}"
-    echo "$failing_json" | jq -r --arg red "$RED" --arg reset "$RESET" \
-        '.[] | "  " + $red + .repo + "#" + (.number|tostring) + "  " + .state + $reset + "  " + .title + "  " + .url'
+    if [ "$count" -gt 0 ]; then
+        echo "${RED}pr-ci-health: $count open PR(s) with failing/erroring checks${RESET}"
+        echo "$failing_json" | jq -r --arg red "$RED" --arg reset "$RESET" \
+            '.[] | "  " + $red + .repo + "#" + (.number|tostring) + "  " + .state + $reset + "  " + .title + "  " + .url'
+    fi
+    if [ "$query_error_count" -gt 0 ]; then
+        echo "${RED}pr-ci-health: $query_error_count repo(s) could not be queried — coverage incomplete, see ERROR lines above${RESET}"
+    fi
 fi
 
-[ "$count" -eq 0 ]
+[ "$count" -eq 0 ] && [ "$query_error_count" -eq 0 ]
