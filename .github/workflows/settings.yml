@@ -144,10 +144,17 @@ jobs:
       - name: Post summary
         if: always()
         run: |
-          [ -f pr-ci-health-report.json ] || exit 0
           {
             echo "## PR CI Health"
             echo ""
+            # Scoped to just this block (not an early `exit 0` for the whole step,
+            # go-kure/.github#141 follow-up review finding): if the script aborted
+            # before writing the report — a job timeout, or an unhandled failure
+            # inside the loop — the Warnings / Errors section below must still run,
+            # since pr-ci-health-output.txt can hold real ERROR lines even when the
+            # JSON was never written. Silently exiting the whole step on a missing
+            # report would produce an empty summary despite captured errors.
+            if [ -f pr-ci-health-report.json ]; then
             python3 - <<'EOF'
           import json
           with open("pr-ci-health-report.json") as f:
@@ -179,7 +186,11 @@ jobs:
               elif query_errors:
                   print("No failing PRs found among the repos that were queried.")
           EOF
-            if grep -qE 'WARNING:|ERROR:' pr-ci-health-output.txt 2>/dev/null; then
+            else
+              echo "_Report file missing — the health-check script likely aborted before finishing;_"
+              echo "_see Warnings / Errors below (if any) and the job log._"
+            fi
+            if [ -f pr-ci-health-output.txt ] && grep -qE 'WARNING:|ERROR:' pr-ci-health-output.txt 2>/dev/null; then
               echo ""
               echo "## Warnings / Errors"
               echo '```'
