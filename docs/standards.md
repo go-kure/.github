@@ -373,7 +373,15 @@ org-wide default. A repo-only ruleset applies solely to the repo(s) that declare
 |-----------------------------------------------|-----------|
 | `security.secret_scanning`                    | `enabled` |
 | `security.secret_scanning_push_protection`     | `enabled` |
-| `security.dependabot_security_updates`         | `enabled` |
+| `security.dependabot_security_updates`         | `enabled` (overridden to `disabled` on `.github`, `kure`, `launcher`) |
+
+`dependabot_security_updates` stays `enabled` by default for `go-kure.github.io`, the org's one
+remaining Dependabot repo (see [Dependency Management](#dependency-management)) — it has no
+`renovate.json` and no other source of vulnerability alerts. The three repos that extend the
+shared Renovate preset override it to `disabled`: Renovate's `vulnerabilityAlerts` lane
+(`osvVulnerabilityAlerts` + `addLabels: ["security"]`) already covers them, proven duplicate by
+go-kure/kure#742 (Dependabot) and go-kure/kure#743 (Renovate `[security]`) opening for the same
+grpc bump within hours of each other.
 
 ### Rulesets (branch protection)
 
