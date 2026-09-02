@@ -206,6 +206,12 @@
       "repos": ["launcher"]
     },
     {
+      "name": "pin-impact-ack",
+      "color": "#006B75",
+      "description": "Acknowledges a reviewed go-kure/.github pin bump's blast-radius report; informational only",
+      "repos": ["kure", "launcher"]
+    },
+    {
       "name": "needs-human",
       "color": "#D93F0B",
       "description": "Renovate: update needs human review before merge",
@@ -215,6 +221,12 @@
       "name": "unattended",
       "color": "#0E8A16",
       "description": "Renovate: update eligible for automerge without review",
+      "repos": ["kure", "launcher", ".github"]
+    },
+    {
+      "name": "security",
+      "color": "#EE0701",
+      "description": "Renovate: update fixes a known vulnerability (vulnerabilityAlerts)",
       "repos": ["kure", "launcher", ".github"]
     }
   ]

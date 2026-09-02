@@ -51,16 +51,27 @@ so the settings audit doesn't require it org-wide.
 
 **Process labels** (no category prefix): `docs-skip` `#FBCA04` — maintainer-only PR label that bypasses the documentation-sync CI gate (see the Documentation Sync standard in [`../docs/standards.md`](../docs/standards.md)). Not for self-application. The colour is deliberately **not** the `area/` namespace purple it carried until 2026-08-28: a process label that repaints itself as a subsystem is unreadable in a label list, and the audit now rewrites live colour, so a wrong value here reaches every repo.
 
+`pin-impact-ack` `#006B75` — acknowledges that `check-pin-impact.sh`'s blast-radius report on a
+go-kure/.github pin bump was reviewed and the flagged change is the intended one. Unlike
+`docs-skip` it gates nothing: no script reads this label, it exists purely so a reviewer scanning
+a PR list can see the blast-radius finding was addressed rather than missed. Scoped to the two
+repos that carry the `pin-impact` gate (`kure`, `launcher`).
+
 **Repo-scoped labels.** A label in `labels.json` may carry an optional `repos` array
 (e.g. `docs-skip` → `["launcher"]`). The settings audit then requires that label only on
 the listed repos, and flags it as extra if it appears on any other repo. Labels without a
 `repos` field apply to every repo.
 
-**Renovate labels** (no category prefix): `needs-human`, `unattended` — applied by the
-shared Renovate preset ([`renovate/shared.json`](../renovate/shared.json)) to flag whether an
-update needs human review or is eligible for automerge. Scoped to
-`["kure", "launcher", ".github"]`, the repos that extend the shared preset (`.github` extends
-its own copy of the preset it hosts) — do not add them without `repos` scoping, since
+**Renovate labels** (no category prefix): `needs-human`, `unattended`, `security` — applied by
+the shared Renovate preset ([`renovate/shared.json`](../renovate/shared.json)). `needs-human`/
+`unattended` flag whether an update needs human review or is eligible for automerge; `security`
+is added on top of either verdict by `vulnerabilityAlerts.addLabels` when the update fixes a
+known vulnerability (go-kure/kure#743 is the first live example — go-kure/kure#742 was the
+Dependabot PR for the same bump it superseded). `security` is
+distinct from the `type/security` issue-classification label above: that one is a manually-applied
+`type/` value for issues, this one is bot-applied to PRs and never chosen by a person. All three
+scoped to `["kure", "launcher", ".github"]`, the repos that extend the shared preset (`.github`
+extends its own copy of the preset it hosts) — do not add them without `repos` scoping, since
 `go-kure.github.io` still carries no `renovate.json` and the daily settings audit would flag
 the labels as extra on it — deleted only if a maintainer later dispatches settings in `apply`
 mode (audit alone never deletes; see `scripts/github-settings.sh`'s label-reconciliation step).
