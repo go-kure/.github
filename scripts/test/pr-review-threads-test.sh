@@ -2556,6 +2556,16 @@ assert_eq "response class: usage-limit prose is backend-limit" "backend-limit" \
   "$(prt_response_class "You've reached your usage limit. Please try again later.")"
 assert_eq "response class: 'limit reached' variant is backend-limit" "backend-limit" \
   "$(prt_response_class "Claude AI usage limit reached|1755808200")"
+# The live 2026-09-04 outage string, VERBATIM — a paraphrase is exactly what
+# let this gap through the first time. Matched by the "session limit" phrase.
+assert_eq "response class: the observed session-limit notice is backend-limit" "backend-limit" \
+  "$(prt_response_class "You've hit your session limit · resets 10:10am (UTC)")"
+# The SHAPE match, asserted independently: the window word here is deliberately
+# NOT "session", so this can only pass via "limit · resets". Without a separate
+# case the two new alternatives would be covered by one assertion that passes
+# for either reason, and either could rot unnoticed.
+assert_eq "response class: an unseen window variant still matches on shape" "backend-limit" \
+  "$(prt_response_class "You've hit your weekly limit · resets Monday at 9am (UTC)")"
 assert_eq "response class: credit balance is backend-billing" "backend-billing" \
   "$(prt_response_class "Your credit balance is too low to access the Anthropic API")"
 assert_eq "response class: overloaded is backend-overloaded" "backend-overloaded" \
@@ -2587,7 +2597,8 @@ assert_eq "response shape: full diagnostic never contains the response text" "tr
 
 # Every class the function can emit is a member of the declared enum.
 prt_class_leak=false
-for prt_probe in "usage limit" "credit balance" "overloaded" "api key" "unknown model" \
+for prt_probe in "usage limit" "session limit" "limit · resets" "credit balance" "overloaded" \
+                 "api key" "unknown model" \
                  "context length" "i cannot" "nothing matches this at all"; do
   prt_got="$(prt_response_class "$prt_probe")"
   case " $PRT_RESPONSE_CLASSES " in

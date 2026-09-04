@@ -116,11 +116,30 @@ PRT_RESPONSE_CLASSES="backend-limit backend-billing backend-overloaded backend-a
 # message content — so it arrives here as "model output", not as the non-2xx
 # branch below that already logs a bounded body. `backend-limit` is the
 # first class for that reason.
+#
+# The literal observed live on 2026-09-04, when the whole org went red for
+# ~30 minutes, is:
+#
+#     You've hit your session limit · resets 10:10am (UTC)
+#
+# 53 bytes, HTTP 200, byte-identical from both proxy replicas and across
+# every repo and chunk until the window reset. It matched NONE of the
+# phrases on the original list, so the one outage this function was written
+# for was reported as `unrecognized` — and answering "which of the four
+# problems is it?" then took VPN access, a `kubectl exec` into a proxy pod,
+# a hand-made POST, and a sha256 to tie the reply back to the CI
+# fingerprint. Hence two additions: the observed literal, and `limit ·
+# resets` for the SHAPE of that notice family, so a variant naming a
+# different window does not need a second incident to teach us its wording.
+# The `·` is U+00B7 (bytes c2 b7); neither byte is in A-Z, so the `tr`
+# below leaves it intact and the match holds. (That multi-byte character is
+# also why the incident logged len=53 for a 52-CHARACTER string: the runner
+# has no UTF-8 locale, so `${#content}` counts bytes.)
 prt_response_class() {
   local lc c candidate
   lc="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
   case "$lc" in
-    *"usage limit"*|*"rate limit"*|*"too many requests"*|*"quota"*|*"limit reached"*) candidate='backend-limit' ;;
+    *"usage limit"*|*"rate limit"*|*"session limit"*|*"too many requests"*|*"quota"*|*"limit reached"*|*"limit · resets"*) candidate='backend-limit' ;;
     *"credit balance"*|*"billing"*|*"insufficient funds"*|*"payment"*)               candidate='backend-billing' ;;
     *"overloaded"*|*"capacity"*|*"temporarily unavailable"*|*"try again later"*)     candidate='backend-overloaded' ;;
     *"authentication"*|*"unauthorized"*|*"api key"*|*"forbidden"*|*"credentials"*)   candidate='backend-auth' ;;
