@@ -163,16 +163,7 @@ jobs:
           done
 
       - name: Run PR review threads
-        # PLACEHOLDER PIN — pending PR2. This PR changes delegate code under
-        # scripts/lib/prt/, so check-pin-bump.sh requires the pin to visibly
-        # move here; rebase-merge rewrites the SHA on landing, so no SHA known
-        # while this PR is open can be the final one. PR2 replaces the value
-        # below with this PR's real merged SHA on main, and must land
-        # IMMEDIATELY: until it does, every PR on kure and launcher fails to
-        # resolve this action. Previous real pin: 1a5f306c85090dce41d6b16d4f29cbdb58603a0c
-        # (go-kure/.github#128). See docs/standards.md, "Same-repo composite
-        # actions and the pin-bump procedure".
-        uses: go-kure/.github/.github/actions/pr-review-threads@1111111111111111111111111111111111111111 # placeholder pending PR2 — see docs/standards.md "GitHub Actions pinning"
+        uses: go-kure/.github/.github/actions/pr-review-threads@6320c1ecdd27ffe132c2ee64f84dff6f19486411 # go-kure/.github#145 merge SHA — see docs/standards.md "GitHub Actions pinning"
         with:
           # github-token / bot-login: GITHUB_TOKEN always gets viewerCanResolve:false
           # on threads it authors (GitHub rejects bot/App actors for
