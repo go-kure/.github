@@ -276,6 +276,22 @@ claude-max-proxy sidecar running on the host's Claude Max credentials, which has
 usage limits and returns **HTTP 200** with the limit notice as the message content, so it arrives
 as "model output" rather than through the non-2xx branch that already logs a bounded body.
 
+The notice observed live is `You've hit your session limit · resets HH:MMam (UTC)` — 53 bytes,
+byte-identical from both proxy replicas and across every repo and chunk until the window resets.
+On 2026-09-04 it matched none of `prt_response_class`'s phrases and so logged as
+`class=unrecognized`, which is the one answer the field exists to avoid: establishing that it was
+plain quota exhaustion took VPN access, a `kubectl exec` into a proxy pod, a hand-made POST to the
+wrapper, and a sha256 of the reply to tie it back to the CI fingerprint. `session limit` and the
+shape `limit · resets` are matched as of that date, the latter so a notice naming a different
+window is classified without a second incident to learn its wording.
+
+**Reading `class=backend-limit` in a job log: wait for the reset, do not investigate the proxy.**
+The reset time is in the notice itself, which the log deliberately does not carry — probe the
+backend once directly if you need it. Re-running before the window resets only re-hits the
+exhausted quota. Nothing in the repo, the PR, or the diff is implicated: the same fingerprint
+appearing on every chunk of unrelated PRs in different repos is the tell that the fault is
+account-wide.
+
 `class=` is a **closed enum**, not a substring of the response: every value it can print is a
 literal in `prt_response_class`'s case arms, and anything unmatched prints `unrecognized`, so an
 unanticipated message cannot leak a byte through it. The issue's own suggested first step — log
