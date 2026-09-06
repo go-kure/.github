@@ -60,11 +60,12 @@
 //     any dep exists for check 3's synthetic rule to re-enable, and a
 //     negative control must survive. Two invariants sit in front of the
 //     cases: a drift guard — for the plain top-level list and for every
-//     manager the installed renovate's own `:ignoreModulesAndTests`
-//     overrides, the effective resolved list still carries every inherited
-//     entry (ignorePaths is mergeable:false, so the preset restates those
-//     lists in full to add an entry, and this is what catches a restated
-//     copy drifting from the inherited one) — and a guarantee check: every
+//     manager either the installed renovate's own `:ignoreModulesAndTests`
+//     or the preset overrides, the effective resolved list still carries
+//     every effective inherited entry (ignorePaths is mergeable:false, so
+//     the preset restates those lists in full to add an entry, and this is
+//     what catches a restated copy drifting from the inherited one, or
+//     outliving the upstream override it restates) — and a guarantee check: every
 //     manager-level override present in the resolved preset, inherited or
 //     authored, plus the plain list, drops a testdata file at both depths
 //     (a newly inherited override for some other manager would otherwise
@@ -140,8 +141,10 @@ const { default: matchers } = await import(matchersModuleSpecifier);
 // internal presets only — no network for config:*/:* names), the per-manager config merge, and
 // the extraction-time file filter. Resolve a throwaway clone: resolveConfigPresets compiles
 // `extends` in place. It returns { config, visitedPresets } (config/presets/index.ts), and a
-// missing `config` here must be loud — `?? []` on the wrong hop would make every extraction
-// assertion below pass vacuously.
+// missing `config` here must be loud: `?? []` on the wrong hop would leave the drift guard
+// with nothing inherited to compare against (a vacuous pass) and fail every exclusion case with
+// a misleading empty-list diagnostic (filterIgnoredFiles keeps everything when the list is
+// empty), so the resolver's shape is asserted here instead of papered over.
 const presetsModuleSpecifier = moduleSpecifier.replace(
   /util\/package-rules\/index\.js$/,
   "config/presets/index.js",
@@ -408,18 +411,20 @@ const overrideManagersOf = (config) =>
   });
 // A manager with no override of its own: "the top-level list as a real run sees it".
 const PLAIN_MANAGER = "gomod";
-// Drift guard: for the plain list and for every manager the installed renovate's own
-// :ignoreModulesAndTests overrides, the effective resolved list must still carry every inherited
-// entry — the preset restates those lists in full to add one entry, and this is what catches a
-// restated copy drifting from the inherited one (or a restated override outliving the upstream
-// one it shadows: the inherited effective list then falls back to the top-level eight, and the
-// six-entry restated copy fails on test/ and tests/).
-for (const m of [PLAIN_MANAGER, ...overrideManagersOf(inheritedResolved)]) {
+// Drift guard: for the plain list and for every manager EITHER side overrides — the installed
+// renovate's own :ignoreModulesAndTests, or the preset — the effective resolved list must still
+// carry every entry of the effective inherited one. The preset restates those lists in full to
+// add one entry, and this is what catches a restated copy drifting from the inherited one.
+// Iterating the preset's overrides too, not only the inherited ones, is what catches a restated
+// override outliving the upstream one it shadows: the inherited effective list for that manager
+// then falls back to the top-level eight, and the six-entry restated copy fails on __tests__/,
+// test/ and tests/. Walking only the inherited side would skip that manager entirely.
+for (const m of new Set([PLAIN_MANAGER, ...overrideManagersOf(inheritedResolved), ...overrideManagersOf(resolvedPreset)])) {
   const inherited = effectiveIgnorePaths(inheritedResolved, m);
   const resolved = effectiveIgnorePaths(resolvedPreset, m);
   for (const p of inherited) {
     if (!resolved.includes(p)) {
-      console.error(`FAIL [extraction] effective ignorePaths for manager ${m} lacks inherited entry ${JSON.stringify(p)} — the preset's restated list has drifted from renovate's :ignoreModulesAndTests (installed effective list for ${m}: ${JSON.stringify(inherited)}, resolved: ${JSON.stringify(resolved)})`);
+      console.error(`FAIL [extraction] effective ignorePaths for manager ${m} lacks inherited entry ${JSON.stringify(p)} — the preset's restated list has drifted from renovate's :ignoreModulesAndTests, or the upstream override it restates is gone and the restated copy now shadows the top-level list on its own (installed effective list for ${m}: ${JSON.stringify(inherited)}, resolved: ${JSON.stringify(resolved)}); restate the current upstream list, or drop the override if upstream no longer has one`);
       failures++;
     }
   }
