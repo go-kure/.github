@@ -16,6 +16,16 @@
     "**/__fixtures__/**",
     "**/testdata/**"
   ],
+  "nuget": {
+    "ignorePaths": [
+      "**/node_modules/**",
+      "**/bower_components/**",
+      "**/vendor/**",
+      "**/examples/**",
+      "**/__fixtures__/**",
+      "**/testdata/**"
+    ]
+  },
   "labels": ["dependencies", "needs-human"],
   "timezone": "Europe/Brussels",
   "prConcurrentLimit": 8,
@@ -110,7 +120,7 @@
       "dependencyDashboardApproval": true
     },
     {
-      "description": "Go testdata trees hold fixtures, never dependencies, but Renovate's :ignoreModulesAndTests default (inherited via config:recommended) skips examples/, test/, tests/ and __fixtures__/ while leaving testdata/ in scope. A fixture that a default manager happens to match — e.g. a values.yaml with a placeholder image, which helm-values extracts — then draws a permanent 'Package lookup failures' block on the Dependency Dashboard, and one carrying a real image would draw a genuine bump PR rewriting the fixture away from its expected output. The guarantee is the top-level ignorePaths entry **/testdata/**, which drops the file at extraction so no dep is ever produced (ignorePaths is mergeable:false, so that list restates the inherited :ignoreModulesAndTests entries in full; the lane-policy test's drift guard fails if the installed Renovate's own list ever gains an entry this one lacks). This rule is the fallback for a consumer that sets its own ignorePaths — a consumer value replaces this preset's list rather than extending it — and thereby loses the testdata entry: enabled:false then makes Renovate skip the lookup, with no warning and no PR, while the dep still shows under the dashboard's detected dependencies. It is a fallback and not the guarantee because it does not survive a vulnerability alert: Renovate appends the alert's synthetic rule after every authored rule with force:{...vulnerabilityAlerts}, and force.enabled:true both clears the skipReason this rule set and overwrites enabled — verified on 44.14.10, 44.42.0 and 44.65.3, pinned by the lane-policy test's vulnerable-testdata case. **/testdata/** alone already matches a root-level testdata/ as well as a nested one (Renovate 44's matchRegexOrGlob lets a leading ** match zero segments — verified on the same three builds); the second spelling is deliberately redundant, so a future change to that anchoring cannot silently drop root-level trees, and the lane-policy test's root-level case pins the behaviour either way. It sits ahead of the automerge tail so the last-rule invariant on the final rule stays literal.",
+      "description": "Go testdata trees hold fixtures, never dependencies, but Renovate's :ignoreModulesAndTests default (inherited via config:recommended) skips examples/, test/, tests/ and __fixtures__/ while leaving testdata/ in scope. A fixture that a default manager happens to match — e.g. a values.yaml with a placeholder image, which helm-values extracts — then draws a permanent 'Package lookup failures' block on the Dependency Dashboard, and one carrying a real image would draw a genuine bump PR rewriting the fixture away from its expected output. The guarantee is the ignorePaths entry **/testdata/**, which drops the file at extraction so no dep is ever produced (ignorePaths is mergeable:false, so that list restates the inherited :ignoreModulesAndTests entries in full — and so does the nuget.ignorePaths block, because :ignoreModulesAndTests ships a nuget-level override that keeps test/ and tests/ in scope and getManagerConfig merges it over the top-level list, so without a restated copy the nuget manager would never see the testdata entry; the lane-policy test's drift guard fails if the installed Renovate's own lists ever gain an entry these lack, and its guarantee check fails if any manager-level override, inherited or authored, stops dropping testdata). This rule is the fallback for a consumer that sets its own ignorePaths — a consumer value replaces this preset's list rather than extending it — and thereby loses the testdata entry: enabled:false then makes Renovate skip the lookup, with no warning and no PR, while the dep still shows under the dashboard's detected dependencies. It is a fallback and not the guarantee because it does not survive a vulnerability alert: Renovate appends the alert's synthetic rule after every authored rule with force:{...vulnerabilityAlerts}, and force.enabled:true both clears the skipReason this rule set and overwrites enabled — verified on 44.14.10, 44.42.0 and 44.65.3, pinned by the lane-policy test's vulnerable-testdata case. **/testdata/** alone already matches a root-level testdata/ as well as a nested one (Renovate 44's matchRegexOrGlob lets a leading ** match zero segments — verified on the same three builds); the second spelling is deliberately redundant, so a future change to that anchoring cannot silently drop root-level trees, and the lane-policy test's root-level case pins the behaviour either way. It sits ahead of the automerge tail so the last-rule invariant on the final rule stays literal.",
       "matchFileNames": ["**/testdata/**", "testdata/**"],
       "enabled": false
     },

@@ -49,16 +49,27 @@
 //     of scope — a vulnerable dep in it would be looked up and PR'd anyway.
 //  4. Extraction — resolve the preset through renovate's own preset resolver
 //     (resolveConfigPresets, so `extends` is applied the way a real run
-//     applies it) and run its file filter (filterIgnoredFiles, the function
-//     getMatchingFiles() calls before any manager extracts) over every case
-//     that declares `expectExtracted`: a path the preset means to keep out
-//     of scope must be dropped here, before any dep exists for check 3's
-//     synthetic rule to re-enable, and a negative control must survive.
-//     Also asserts the resolved ignorePaths still carries every entry of the
-//     installed renovate's own `:ignoreModulesAndTests` list — ignorePaths
-//     is mergeable:false, so the preset restates that list in full to add
-//     an entry, and this is what catches the restated copy drifting from
-//     the inherited one.
+//     applies it), take the EFFECTIVE config per manager (getManagerConfig,
+//     the merge extract/index.js applies before getMatchingFiles — a
+//     manager-level `<manager>.ignorePaths` replaces the top-level list for
+//     that manager, and :ignoreModulesAndTests ships exactly such an
+//     override for nuget), and run renovate's file filter
+//     (filterIgnoredFiles, what getMatchingFiles() calls before any manager
+//     extracts) over every case that declares `expectExtracted`: a path
+//     the preset means to keep out of scope must be dropped here, before
+//     any dep exists for check 3's synthetic rule to re-enable, and a
+//     negative control must survive. Two invariants sit in front of the
+//     cases: a drift guard — for the plain top-level list and for every
+//     manager the installed renovate's own `:ignoreModulesAndTests`
+//     overrides, the effective resolved list still carries every inherited
+//     entry (ignorePaths is mergeable:false, so the preset restates those
+//     lists in full to add an entry, and this is what catches a restated
+//     copy drifting from the inherited one) — and a guarantee check: every
+//     manager-level override present in the resolved preset, inherited or
+//     authored, plus the plain list, drops a testdata file at both depths
+//     (a newly inherited override for some other manager would otherwise
+//     reopen the gap silently, since the drift guard only compares against
+//     what is inherited).
 //
 // Usage: node scripts/test/renovate-lane-policy-test.mjs [presetPath] [renovateModuleEntry]
 //   presetPath           default: renovate/shared.json
@@ -125,21 +136,39 @@ const matchersModuleSpecifier = moduleSpecifier.replace(
 );
 const { default: matchers } = await import(matchersModuleSpecifier);
 
-// Check 4's two entry points, same sibling-path trick: the preset resolver (applies `extends`,
-// internal presets only — no network for config:*/:* names) and the extraction-time file
-// filter. Resolve a throwaway clone: resolveConfigPresets compiles `extends` in place.
+// Check 4's three entry points, same sibling-path trick: the preset resolver (applies `extends`,
+// internal presets only — no network for config:*/:* names), the per-manager config merge, and
+// the extraction-time file filter. Resolve a throwaway clone: resolveConfigPresets compiles
+// `extends` in place. It returns { config, visitedPresets } (config/presets/index.ts), and a
+// missing `config` here must be loud — `?? []` on the wrong hop would make every extraction
+// assertion below pass vacuously.
 const presetsModuleSpecifier = moduleSpecifier.replace(
   /util\/package-rules\/index\.js$/,
   "config/presets/index.js",
+);
+const configModuleSpecifier = moduleSpecifier.replace(
+  /util\/package-rules\/index\.js$/,
+  "config/index.js",
 );
 const fileMatchModuleSpecifier = moduleSpecifier.replace(
   /util\/package-rules\/index\.js$/,
   "workers/repository/extract/file-match.js",
 );
 const { resolveConfigPresets } = await import(presetsModuleSpecifier);
+const { getManagerConfig } = await import(configModuleSpecifier);
 const { filterIgnoredFiles } = await import(fileMatchModuleSpecifier);
-const resolvedIgnorePaths = (await resolveConfigPresets(structuredClone(preset))).config.ignorePaths ?? [];
-const inheritedIgnorePaths = (await resolveConfigPresets({ extends: [":ignoreModulesAndTests"] })).config.ignorePaths ?? [];
+async function resolveOrDie(input, label) {
+  const resolved = await resolveConfigPresets(input);
+  if (!resolved || typeof resolved.config !== "object" || resolved.config === null) {
+    console.error(
+      `FATAL: resolveConfigPresets(${label}) returned ${JSON.stringify(Object.keys(resolved ?? {}))} — expected a { config, visitedPresets } wrapper; the installed renovate changed its resolver shape, check 4 cannot run`,
+    );
+    process.exit(1);
+  }
+  return resolved.config;
+}
+const resolvedPreset = await resolveOrDie(structuredClone(preset), "preset");
+const inheritedResolved = await resolveOrDie({ extends: [":ignoreModulesAndTests"] }, ":ignoreModulesAndTests");
 
 // Mirrors renovate's own (unexported) matchesRule from package-rules/index.js: run every
 // matcher in declaration order, treating an explicit falsy result as "no match" and
@@ -224,6 +253,13 @@ const MATRIX = [
   // globs and the ignorePaths entry are segment-anchored, and filterIgnoredFiles' substring
   // fallback (`file.includes(ignorePath)`) never matches a literal glob against a real path.
   { name: "gomod dep in a directory merely named like testdata (neither disabled nor dropped)", ruleIndices: [2, 14], input: { manager: "gomod", updateType: "patch", depName: "github.com/some/other", packageName: "github.com/some/other", packageFile: "pkg/testdata_helper/go.mod" }, expect: "unattended", expectEnabled: undefined, expectExtracted: true },
+  // nuget is the one manager :ignoreModulesAndTests overrides (nuget.ignorePaths, which keeps
+  // test/ and tests/ in scope), and getManagerConfig merges that override OVER the top-level
+  // list, so the top-level **/testdata/** never reaches nuget on its own — the preset restates
+  // nuget's list with the entry added. First case pins that; second pins that the restated copy
+  // kept renovate's own nuget exception (test/ still extracted) instead of silently widening it.
+  { name: "nuget project file in a root-level testdata fixture (dropped via the restated nuget override)", ruleIndices: [12], input: { manager: "nuget", updateType: "minor", depName: "Newtonsoft.Json", packageName: "Newtonsoft.Json", packageFile: "testdata/Fixture.csproj" }, expect: "needs-human", expectEnabled: false, expectExtracted: false },
+  { name: "nuget project file under test/ (renovate's own nuget exception, must survive)", ruleIndices: [], input: { manager: "nuget", updateType: "minor", depName: "Newtonsoft.Json", packageName: "Newtonsoft.Json", packageFile: "test/Foo.csproj" }, expect: "needs-human", expectEnabled: undefined, expectExtracted: true },
 ];
 
 // Vulnerability-alert cases: same MATRIX shape plus `vuln: true`, which
@@ -355,31 +391,69 @@ for (const c of VULN_MATRIX) {
   }
 }
 
-// Check 4 — extraction. Drift guard first: the preset restates the inherited ignorePaths list
-// (mergeable:false, so adding one entry means restating all of them), and the restated copy must
-// still carry every entry the installed renovate's own :ignoreModulesAndTests preset carries.
-for (const p of inheritedIgnorePaths) {
-  if (!resolvedIgnorePaths.includes(p)) {
-    console.error(`FAIL [extraction] resolved ignorePaths lacks inherited entry ${JSON.stringify(p)} — the preset's restated list has drifted from renovate's :ignoreModulesAndTests (installed list: ${JSON.stringify(inheritedIgnorePaths)})`);
+// Check 4 — extraction. Everything here runs on the EFFECTIVE per-manager config
+// (getManagerConfig, the merge extract/index.js applies before getMatchingFiles), never on the
+// top-level object: a `<manager>.ignorePaths` block replaces the top-level list for that manager
+// (ignorePaths is mergeable:false), so a top-level entry is in force only where no override
+// shadows it. :ignoreModulesAndTests ships such an override for nuget.
+const effectiveIgnorePaths = (config, manager) => getManagerConfig(config, manager).ignorePaths ?? [];
+// Managers whose config object carries its own ignorePaths — the overrides, discovered rather than
+// listed, so an override renovate adds upstream (or one authored here) is covered without editing
+// this file. packageRules is an array and vulnerabilityAlerts has no ignorePaths, so neither
+// qualifies; nuget does.
+const overrideManagersOf = (config) =>
+  Object.keys(config).filter((k) => {
+    const v = config[k];
+    return v !== null && typeof v === "object" && !Array.isArray(v) && Array.isArray(v.ignorePaths);
+  });
+// A manager with no override of its own: "the top-level list as a real run sees it".
+const PLAIN_MANAGER = "gomod";
+// Drift guard: for the plain list and for every manager the installed renovate's own
+// :ignoreModulesAndTests overrides, the effective resolved list must still carry every inherited
+// entry — the preset restates those lists in full to add one entry, and this is what catches a
+// restated copy drifting from the inherited one (or a restated override outliving the upstream
+// one it shadows: the inherited effective list then falls back to the top-level eight, and the
+// six-entry restated copy fails on test/ and tests/).
+for (const m of [PLAIN_MANAGER, ...overrideManagersOf(inheritedResolved)]) {
+  const inherited = effectiveIgnorePaths(inheritedResolved, m);
+  const resolved = effectiveIgnorePaths(resolvedPreset, m);
+  for (const p of inherited) {
+    if (!resolved.includes(p)) {
+      console.error(`FAIL [extraction] effective ignorePaths for manager ${m} lacks inherited entry ${JSON.stringify(p)} — the preset's restated list has drifted from renovate's :ignoreModulesAndTests (installed effective list for ${m}: ${JSON.stringify(inherited)}, resolved: ${JSON.stringify(resolved)})`);
+      failures++;
+    }
+  }
+}
+// Guarantee: every manager-level override present in the RESOLVED preset (inherited or authored),
+// plus the plain list, must drop a testdata file at both depths. The drift guard alone would let
+// a newly inherited override for some other manager reopen the gap silently, since it only
+// compares against what is inherited.
+const TESTDATA_PROBES = ["testdata/probe", "a/b/testdata/probe"];
+for (const m of [PLAIN_MANAGER, ...overrideManagersOf(resolvedPreset)]) {
+  const kept = filterIgnoredFiles(TESTDATA_PROBES, effectiveIgnorePaths(resolvedPreset, m));
+  if (kept.length !== 0) {
+    console.error(`FAIL [extraction] manager ${m} still extracts ${JSON.stringify(kept)} — its effective ignorePaths ${JSON.stringify(effectiveIgnorePaths(resolvedPreset, m))} lacks a testdata entry (a manager-level override shadows the top-level list; restate it with **/testdata/** added)`);
     failures++;
   }
 }
-// Then the behaviour, through the same filter a real run applies before any manager extracts:
-// a case with expectExtracted:false names a file the preset must drop, so no dep ever exists
-// for a package rule — authored or synthetic — to act on; expectExtracted:true is the control.
+// Then the cases, through the same filter a real run applies before any manager extracts, on
+// that case's manager: expectExtracted:false names a file the preset must drop, so no dep ever
+// exists for a package rule — authored or synthetic — to act on; expectExtracted:true is the
+// control.
 let extractionCases = 0;
 for (const c of [...MATRIX, ...VULN_MATRIX]) {
   if (!("expectExtracted" in c)) continue;
   extractionCases++;
-  const { packageFile } = c.input;
-  if (typeof packageFile !== "string") {
-    console.error(`FAIL [extraction] ${c.name}: declares expectExtracted but input has no packageFile`);
+  const { packageFile, manager } = c.input;
+  if (typeof packageFile !== "string" || typeof manager !== "string") {
+    console.error(`FAIL [extraction] ${c.name}: declares expectExtracted but input lacks packageFile or manager`);
     failures++;
     continue;
   }
-  const extracted = filterIgnoredFiles([packageFile], resolvedIgnorePaths).length === 1;
+  const effective = effectiveIgnorePaths(resolvedPreset, manager);
+  const extracted = filterIgnoredFiles([packageFile], effective).length === 1;
   if (extracted !== c.expectExtracted) {
-    console.error(`FAIL [extraction] ${c.name}: expected ${packageFile} extracted=${c.expectExtracted}, got ${extracted} (resolved ignorePaths: ${JSON.stringify(resolvedIgnorePaths)})`);
+    console.error(`FAIL [extraction] ${c.name}: expected ${packageFile} extracted=${c.expectExtracted} for manager ${manager}, got ${extracted} (effective ignorePaths: ${JSON.stringify(effective)})`);
     failures++;
   }
 }

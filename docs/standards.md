@@ -107,11 +107,15 @@ What it encodes:
   that reached package rules would be looked up and PR'd despite the rule (verified on Renovate
   44.14.10, 44.42.0 and 44.65.3; the lane-policy test pins it). `ignorePaths` is not mergeable —
   a value set in a preset or a consumer replaces the inherited list rather than extending it —
-  so the preset restates the inherited entries in full, and the lane-policy test fails if the
-  installed Renovate's own `:ignoreModulesAndTests` list ever carries an entry the restated copy
-  lacks. The rule is what still applies in a consumer whose own `ignorePaths` replaced the
-  preset's: `enabled: false` skips the lookup, with no warning and no PR, while the dependency
-  still appears under the dashboard's detected dependencies.
+  so the preset restates the inherited entries in full. `:ignoreModulesAndTests` also ships a
+  manager-level override, `nuget.ignorePaths` (it keeps `test/` and `tests/` in scope for NuGet),
+  and Renovate merges that over the top-level list for that manager, so the preset restates the
+  NuGet list too, with the same entry added; the lane-policy test fails if the installed
+  Renovate's own lists ever carry an entry the restated copies lack, and separately if any
+  manager-level override, inherited or authored, stops dropping a `testdata/` file. The rule is
+  what still applies in a consumer whose own `ignorePaths` replaced the preset's:
+  `enabled: false` skips the lookup, with no warning and no PR, while the dependency still
+  appears under the dashboard's detected dependencies.
 
 - **Lane labels** — every PR gets exactly one of `unattended` (Renovate merges it once checks
   pass — do not review, merge, or close it) or `needs-human` (blocked on a human). Set via
