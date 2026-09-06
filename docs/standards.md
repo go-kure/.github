@@ -113,9 +113,12 @@ What it encodes:
   NuGet list too, with the same entry added; the lane-policy test fails if the installed
   Renovate's own lists ever carry an entry the restated copies lack, and separately if any
   manager-level override, inherited or authored, stops dropping a `testdata/` file. The rule is
-  what still applies in a consumer whose own `ignorePaths` replaced the preset's:
-  `enabled: false` skips the lookup, with no warning and no PR, while the dependency still
-  appears under the dashboard's detected dependencies.
+  what still applies where a consumer's own list replaced the preset's: a consumer's top-level
+  `ignorePaths` replaces the top-level list for every manager without an override, and a
+  consumer's `nuget.ignorePaths` replaces the restated NuGet one (a top-level consumer value
+  leaves the preset's `nuget` block intact, since manager objects merge rather than replace).
+  There, `enabled: false` skips the lookup, with no warning and no PR, while the dependency
+  still appears under the dashboard's detected dependencies.
 
 - **Lane labels** — every PR gets exactly one of `unattended` (Renovate merges it once checks
   pass — do not review, merge, or close it) or `needs-human` (blocked on a human). Set via
