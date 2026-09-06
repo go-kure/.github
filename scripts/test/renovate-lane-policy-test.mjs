@@ -3,7 +3,7 @@
 // (Renovate merges it itself) or "needs-human" (blocked on a review). See
 // go-kure/.github#87.
 //
-// Three checks:
+// Four checks:
 //  1. Outcome — run renovate's own package-rules resolver (applyPackageRules)
 //     over a matrix of representative dependency-update paths, one per
 //     packageRules entry, over the full preset (so a top-level field the
@@ -42,6 +42,23 @@
 //     path in the whole preset that can silently blow the exactly-one-lane
 //     invariant or reintroduce a review gate a CVE fix must bypass — assert
 //     both, using the same synthetic-rule shape a real run constructs.
+//     The same `force` block also overwrites an authored `enabled: false`
+//     (mergeChildConfig spreads `force` over the merged result and
+//     applyPackageRules clears the skipReason the earlier rule set), which
+//     is why a packageRule can never be the guarantee that a path stays out
+//     of scope — a vulnerable dep in it would be looked up and PR'd anyway.
+//  4. Extraction — resolve the preset through renovate's own preset resolver
+//     (resolveConfigPresets, so `extends` is applied the way a real run
+//     applies it) and run its file filter (filterIgnoredFiles, the function
+//     getMatchingFiles() calls before any manager extracts) over every case
+//     that declares `expectExtracted`: a path the preset means to keep out
+//     of scope must be dropped here, before any dep exists for check 3's
+//     synthetic rule to re-enable, and a negative control must survive.
+//     Also asserts the resolved ignorePaths still carries every entry of the
+//     installed renovate's own `:ignoreModulesAndTests` list — ignorePaths
+//     is mergeable:false, so the preset restates that list in full to add
+//     an entry, and this is what catches the restated copy drifting from
+//     the inherited one.
 //
 // Usage: node scripts/test/renovate-lane-policy-test.mjs [presetPath] [renovateModuleEntry]
 //   presetPath           default: renovate/shared.json
@@ -107,6 +124,22 @@ const matchersModuleSpecifier = moduleSpecifier.replace(
   "util/package-rules/matchers.js",
 );
 const { default: matchers } = await import(matchersModuleSpecifier);
+
+// Check 4's two entry points, same sibling-path trick: the preset resolver (applies `extends`,
+// internal presets only — no network for config:*/:* names) and the extraction-time file
+// filter. Resolve a throwaway clone: resolveConfigPresets compiles `extends` in place.
+const presetsModuleSpecifier = moduleSpecifier.replace(
+  /util\/package-rules\/index\.js$/,
+  "config/presets/index.js",
+);
+const fileMatchModuleSpecifier = moduleSpecifier.replace(
+  /util\/package-rules\/index\.js$/,
+  "workers/repository/extract/file-match.js",
+);
+const { resolveConfigPresets } = await import(presetsModuleSpecifier);
+const { filterIgnoredFiles } = await import(fileMatchModuleSpecifier);
+const resolvedIgnorePaths = (await resolveConfigPresets(structuredClone(preset))).config.ignorePaths ?? [];
+const inheritedIgnorePaths = (await resolveConfigPresets({ extends: [":ignoreModulesAndTests"] })).config.ignorePaths ?? [];
 
 // Mirrors renovate's own (unexported) matchesRule from package-rules/index.js: run every
 // matcher in declaration order, treating an explicit falsy result as "no match" and
@@ -174,15 +207,23 @@ const MATRIX = [
   // redundant. The root-level case below is what pins the root-level behaviour if that anchoring
   // ever changes; it does not settle which spelling matched. The lane stays the top-level default
   // (needs-human) because the rule sets no labels and no other rule matches a helm-values dep.
-  // Origin: a placeholder image in a values.yaml fixture drew a permanent "Package lookup
-  // failures" block on a consumer's Dependency Dashboard (go-kure/launcher#301).
-  { name: "helm-values placeholder image in a nested Go testdata fixture (disabled, never looked up)", ruleIndices: [12], input: { manager: "helm-values", updateType: "minor", depName: "myregistry/app", packageName: "myregistry/app", packageFile: "pkg/cmd/tool/testdata/params/values.yaml" }, expect: "needs-human", expectEnabled: false },
-  { name: "helm-values placeholder image in a root-level testdata fixture (disabled, never looked up)", ruleIndices: [12], input: { manager: "helm-values", updateType: "minor", depName: "myregistry/app", packageName: "myregistry/app", packageFile: "testdata/values.yaml" }, expect: "needs-human", expectEnabled: false },
+  // In a real run neither file is ever extracted: the top-level ignorePaths drops them first
+  // (`expectExtracted: false`, check 4), and the rule is the fallback for a consumer whose own
+  // ignorePaths replaced the preset's list — so these two cases pin the fallback, and check 4
+  // pins the guarantee. Origin: a placeholder image in a values.yaml fixture drew a permanent
+  // "Package lookup failures" block on a consumer's Dependency Dashboard (go-kure/launcher#301).
+  { name: "helm-values placeholder image in a nested Go testdata fixture (disabled, never looked up)", ruleIndices: [12], input: { manager: "helm-values", updateType: "minor", depName: "myregistry/app", packageName: "myregistry/app", packageFile: "pkg/cmd/tool/testdata/params/values.yaml" }, expect: "needs-human", expectEnabled: false, expectExtracted: false },
+  { name: "helm-values placeholder image in a root-level testdata fixture (disabled, never looked up)", ruleIndices: [12], input: { manager: "helm-values", updateType: "minor", depName: "myregistry/app", packageName: "myregistry/app", packageFile: "testdata/values.yaml" }, expect: "needs-human", expectEnabled: false, expectExtracted: false },
   // Negative control for rule 12: the same dep outside any testdata tree must NOT be disabled.
   // `expectEnabled: undefined` with the key present opts into the assertion (key presence, same
   // convention as expectDashboardApproval) and pins the resolved value to "absent" — the preset
-  // sets no top-level enabled, so anything else here means the rule over-matched.
-  { name: "helm-values image outside testdata (rule 12 must not match)", ruleIndices: [], input: { manager: "helm-values", updateType: "minor", depName: "myregistry/app", packageName: "myregistry/app", packageFile: "charts/app/values.yaml" }, expect: "needs-human", expectEnabled: undefined },
+  // sets no top-level enabled, so anything else here means the rule over-matched. Also the
+  // negative control for check 4: the file must survive extraction.
+  { name: "helm-values image outside testdata (rule 12 must not match)", ruleIndices: [], input: { manager: "helm-values", updateType: "minor", depName: "myregistry/app", packageName: "myregistry/app", packageFile: "charts/app/values.yaml" }, expect: "needs-human", expectEnabled: undefined, expectExtracted: true },
+  // A directory whose name merely contains "testdata" is not a testdata tree: both the rule's
+  // globs and the ignorePaths entry are segment-anchored, and filterIgnoredFiles' substring
+  // fallback (`file.includes(ignorePath)`) never matches a literal glob against a real path.
+  { name: "gomod dep in a directory merely named like testdata (neither disabled nor dropped)", ruleIndices: [2, 14], input: { manager: "gomod", updateType: "patch", depName: "github.com/some/other", packageName: "github.com/some/other", packageFile: "pkg/testdata_helper/go.mod" }, expect: "unattended", expectEnabled: undefined, expectExtracted: true },
 ];
 
 // Vulnerability-alert cases: same MATRIX shape plus `vuln: true`, which
@@ -196,6 +237,13 @@ const MATRIX = [
 const VULN_MATRIX = [
   { name: "vulnerability alert on an automerging gomod patch (lane survives, still automerges)", ruleIndices: [2, 3, 14], input: { manager: "gomod", datasource: "go", updateType: "patch", depName: "k8s.io/api", packageName: "k8s.io/api" }, expect: "unattended", expectAutomerge: true },
   { name: "vulnerability alert on a dashboard-gated major (gate bypassed, lane still needs-human)", ruleIndices: [11], input: { manager: "gomod", datasource: "go", updateType: "major", depName: "github.com/some/other", packageName: "github.com/some/other" }, expect: "needs-human", expectDashboardApproval: false },
+  // Rule 12's enabled:false does NOT survive the synthetic rule: force.enabled:true clears the
+  // skipReason rule 12 set and overwrites enabled (verified on 44.14.10, 44.42.0 and 44.65.3,
+  // both the OSV and the GitHub-alert rule shapes). `expectEnabled: true` pins exactly that, so
+  // the reason ignorePaths carries the guarantee stays a tested fact rather than a comment — if
+  // this ever fails, renovate changed force precedence and the rule-12 description is stale.
+  // `expectExtracted: false` is the guarantee itself: the file never reaches package rules.
+  { name: "vulnerability alert on a gomod dep inside a testdata tree (force re-enables rule 12; extraction is what keeps it out)", ruleIndices: [2, 12, 14], input: { manager: "gomod", datasource: "go", updateType: "patch", depName: "github.com/some/vulnerable", packageName: "github.com/some/vulnerable", packageFile: "pkg/foo/testdata/mod/go.mod" }, expect: "unattended", expectEnabled: true, expectExtracted: false },
 ];
 
 let failures = 0;
@@ -300,6 +348,40 @@ for (const c of VULN_MATRIX) {
     console.error(`FAIL [vuln-outcome] ${c.name}: expected dependencyDashboardApproval=${c.expectDashboardApproval}, got ${result.dependencyDashboardApproval}`);
     failures++;
   }
+  // Key-presence opt-in and strict comparison, same as MATRIX's expectEnabled above.
+  if ("expectEnabled" in c && result.enabled !== c.expectEnabled) {
+    console.error(`FAIL [vuln-outcome] ${c.name}: expected enabled=${c.expectEnabled}, got ${result.enabled}`);
+    failures++;
+  }
+}
+
+// Check 4 — extraction. Drift guard first: the preset restates the inherited ignorePaths list
+// (mergeable:false, so adding one entry means restating all of them), and the restated copy must
+// still carry every entry the installed renovate's own :ignoreModulesAndTests preset carries.
+for (const p of inheritedIgnorePaths) {
+  if (!resolvedIgnorePaths.includes(p)) {
+    console.error(`FAIL [extraction] resolved ignorePaths lacks inherited entry ${JSON.stringify(p)} — the preset's restated list has drifted from renovate's :ignoreModulesAndTests (installed list: ${JSON.stringify(inheritedIgnorePaths)})`);
+    failures++;
+  }
+}
+// Then the behaviour, through the same filter a real run applies before any manager extracts:
+// a case with expectExtracted:false names a file the preset must drop, so no dep ever exists
+// for a package rule — authored or synthetic — to act on; expectExtracted:true is the control.
+let extractionCases = 0;
+for (const c of [...MATRIX, ...VULN_MATRIX]) {
+  if (!("expectExtracted" in c)) continue;
+  extractionCases++;
+  const { packageFile } = c.input;
+  if (typeof packageFile !== "string") {
+    console.error(`FAIL [extraction] ${c.name}: declares expectExtracted but input has no packageFile`);
+    failures++;
+    continue;
+  }
+  const extracted = filterIgnoredFiles([packageFile], resolvedIgnorePaths).length === 1;
+  if (extracted !== c.expectExtracted) {
+    console.error(`FAIL [extraction] ${c.name}: expected ${packageFile} extracted=${c.expectExtracted}, got ${extracted} (resolved ignorePaths: ${JSON.stringify(resolvedIgnorePaths)})`);
+    failures++;
+  }
 }
 
 const ruleCount = preset.packageRules.length;
@@ -347,4 +429,4 @@ if (failures > 0) {
   console.error(`\n${failures} failure(s).`);
   process.exit(1);
 }
-console.log(`renovate-lane-policy-test: OK (${MATRIX.length} matrix cases, ${VULN_MATRIX.length} vuln cases, ${ruleCount} packageRules all covered)`);
+console.log(`renovate-lane-policy-test: OK (${MATRIX.length} matrix cases, ${VULN_MATRIX.length} vuln cases, ${extractionCases} extraction cases, ${ruleCount} packageRules all covered)`);
