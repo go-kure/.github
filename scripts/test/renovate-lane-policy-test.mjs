@@ -15,7 +15,10 @@
 //     comparison alone would never catch it. A case may also set
 //     `expectDashboardApproval` to assert dependencyDashboardApproval
 //     directly (opt-in on key presence, not on the value — see the
-//     comparison below for why). Also asserts every packageRules index is
+//     comparison below for why), or `expectEnabled` to assert the resolved
+//     `enabled` value strictly (same opt-in; `undefined` with the key
+//     present asserts the value is absent, i.e. no enabled:false rule
+//     matched). Also asserts every packageRules index is
 //     exercised, so a new rule with no matrix case fails loudly instead of
 //     going unexercised — and, separately, that every hand-declared
 //     ruleIndices entry actually matches that case's input (via renovate's
@@ -128,22 +131,22 @@ const LANES = ["unattended", "needs-human"];
 // resolution in a real run. Omitting that default would silently skip every
 // matchPackageNames rule and pass for the wrong reason.
 const MATRIX = [
-  { name: "mise toolchain minor (e.g. hugo)", ruleIndices: [0, 12], input: { manager: "mise", updateType: "minor", depName: "hugo" }, expect: "unattended" },
-  { name: "mise toolchain patch", ruleIndices: [0, 12], input: { manager: "mise", updateType: "patch", depName: "yq" }, expect: "unattended" },
-  { name: "mise toolchain digest", ruleIndices: [0, 12], input: { manager: "mise", updateType: "digest", depName: "hugo" }, expect: "unattended" },
+  { name: "mise toolchain minor (e.g. hugo)", ruleIndices: [0, 13], input: { manager: "mise", updateType: "minor", depName: "hugo" }, expect: "unattended" },
+  { name: "mise toolchain patch", ruleIndices: [0, 13], input: { manager: "mise", updateType: "patch", depName: "yq" }, expect: "unattended" },
+  { name: "mise toolchain digest", ruleIndices: [0, 13], input: { manager: "mise", updateType: "digest", depName: "hugo" }, expect: "unattended" },
   { name: "mise toolchain major (excluded from the automerge group)", ruleIndices: [11], input: { manager: "mise", updateType: "major", depName: "hugo" }, expect: "needs-human" },
   { name: "go itself via mise (dashboard-gated, never automerged)", ruleIndices: [9], input: { manager: "mise", updateType: "minor", depName: "go" }, expect: "needs-human" },
   { name: "go itself via gomod (dashboard-gated, never automerged)", ruleIndices: [9], input: { manager: "gomod", updateType: "patch", depName: "go", packageName: "go" }, expect: "needs-human" },
   { name: "golang dockerfile tag (dashboard-gated, never automerged)", ruleIndices: [10], input: { manager: "dockerfile", updateType: "minor", depName: "golang", packageName: "golang" }, expect: "needs-human" },
   { name: "gomod minor, kubernetes (no automerge rule matches minor)", ruleIndices: [1, 3], input: { manager: "gomod", updateType: "minor", depName: "k8s.io/api", packageName: "k8s.io/api" }, expect: "needs-human" },
-  { name: "gomod patch, kubernetes (automerges)", ruleIndices: [2, 3, 13], input: { manager: "gomod", updateType: "patch", depName: "k8s.io/api", packageName: "k8s.io/api" }, expect: "unattended" },
-  { name: "gomod digest, sigs.k8s.io (automerges)", ruleIndices: [2, 4, 13], input: { manager: "gomod", updateType: "digest", depName: "sigs.k8s.io/controller-runtime", packageName: "sigs.k8s.io/controller-runtime" }, expect: "unattended" },
-  { name: "gomod patch, fluxcd (automerges)", ruleIndices: [2, 5, 13], input: { manager: "gomod", updateType: "patch", depName: "github.com/fluxcd/pkg/oci", packageName: "github.com/fluxcd/pkg/oci" }, expect: "unattended" },
-  { name: "gomod patch, cloudnative-pg (automerges)", ruleIndices: [2, 6, 13], input: { manager: "gomod", updateType: "patch", depName: "github.com/cloudnative-pg/machinery", packageName: "github.com/cloudnative-pg/machinery" }, expect: "unattended" },
-  // Deliberately does NOT declare 13 here: rule 13's own matchPackageNames excludes
+  { name: "gomod patch, kubernetes (automerges)", ruleIndices: [2, 3, 14], input: { manager: "gomod", updateType: "patch", depName: "k8s.io/api", packageName: "k8s.io/api" }, expect: "unattended" },
+  { name: "gomod digest, sigs.k8s.io (automerges)", ruleIndices: [2, 4, 14], input: { manager: "gomod", updateType: "digest", depName: "sigs.k8s.io/controller-runtime", packageName: "sigs.k8s.io/controller-runtime" }, expect: "unattended" },
+  { name: "gomod patch, fluxcd (automerges)", ruleIndices: [2, 5, 14], input: { manager: "gomod", updateType: "patch", depName: "github.com/fluxcd/pkg/oci", packageName: "github.com/fluxcd/pkg/oci" }, expect: "unattended" },
+  { name: "gomod patch, cloudnative-pg (automerges)", ruleIndices: [2, 6, 14], input: { manager: "gomod", updateType: "patch", depName: "github.com/cloudnative-pg/machinery", packageName: "github.com/cloudnative-pg/machinery" }, expect: "unattended" },
+  // Deliberately does NOT declare 14 here: rule 14's own matchPackageNames excludes
   // github.com/go-kure/**, so it never matches this case — that exclusion is the point being
-  // proven (needs-human survives despite sitting right next to the automerge rule). Rule 13's
-  // coverage comes from the four automerge cases below that it actually matches.
+  // proven (needs-human survives despite sitting right next to the automerge rule). Rule 14's
+  // coverage comes from the four automerge cases above that it actually matches.
   { name: "gomod patch, first-party go-kure (never automerged)", ruleIndices: [2, 7], input: { manager: "gomod", updateType: "patch", depName: "github.com/go-kure/kure", packageName: "github.com/go-kure/kure" }, expect: "needs-human" },
   { name: "gomod major, any dep (dashboard-gated, never automerged)", ruleIndices: [11], input: { manager: "gomod", updateType: "major", depName: "github.com/some/other", packageName: "github.com/some/other" }, expect: "needs-human", expectDashboardApproval: true },
   { name: "github-actions bump (never automerged)", ruleIndices: [8], input: { manager: "github-actions", updateType: "minor", depName: "actions/checkout", packageName: "actions/checkout" }, expect: "needs-human" },
@@ -164,6 +167,21 @@ const MATRIX = [
   // rule 9 — rule 11 never matches a non-major update at all — so this case actually requires
   // rule 9's own matchManagers widening, not just rule 11's.
   { name: "custom-manager depName go, minor (dedicated Go rule only — general gate never matches non-major)", ruleIndices: [9], input: { manager: "regex", updateType: "minor", depName: "go", packageName: "golang.org/dl" }, expect: "needs-human", expectDashboardApproval: true },
+  // Rule 12 (Go testdata fixtures are out of scope) matches on packageFile via matchFileNames —
+  // renovate's FileNamesMatcher reads `packageFile` (then `lockFiles`, absent here). The rule carries
+  // two glob spellings so it matches whether or not minimatch lets a leading `**` match zero
+  // segments; the nested and the root-level path together prove both shapes resolve to
+  // enabled:false without settling which spelling did it. The lane stays the top-level default
+  // (needs-human) because the rule sets no labels and no other rule matches a helm-values dep.
+  // Origin: a placeholder image in a values.yaml fixture drew a permanent "Package lookup
+  // failures" block on a consumer's Dependency Dashboard (go-kure/launcher#301).
+  { name: "helm-values placeholder image in a nested Go testdata fixture (disabled, never looked up)", ruleIndices: [12], input: { manager: "helm-values", updateType: "minor", depName: "myregistry/app", packageName: "myregistry/app", packageFile: "pkg/cmd/tool/testdata/params/values.yaml" }, expect: "needs-human", expectEnabled: false },
+  { name: "helm-values placeholder image in a root-level testdata fixture (disabled, never looked up)", ruleIndices: [12], input: { manager: "helm-values", updateType: "minor", depName: "myregistry/app", packageName: "myregistry/app", packageFile: "testdata/values.yaml" }, expect: "needs-human", expectEnabled: false },
+  // Negative control for rule 12: the same dep outside any testdata tree must NOT be disabled.
+  // `expectEnabled: undefined` with the key present opts into the assertion (key presence, same
+  // convention as expectDashboardApproval) and pins the resolved value to "absent" — the preset
+  // sets no top-level enabled, so anything else here means the rule over-matched.
+  { name: "helm-values image outside testdata (rule 12 must not match)", ruleIndices: [], input: { manager: "helm-values", updateType: "minor", depName: "myregistry/app", packageName: "myregistry/app", packageFile: "charts/app/values.yaml" }, expect: "needs-human", expectEnabled: undefined },
 ];
 
 // Vulnerability-alert cases: same MATRIX shape plus `vuln: true`, which
@@ -175,7 +193,7 @@ const MATRIX = [
 // major/toolchain-gate path proves the CVE bypasses that gate, not just
 // that a lane survived.
 const VULN_MATRIX = [
-  { name: "vulnerability alert on an automerging gomod patch (lane survives, still automerges)", ruleIndices: [2, 3, 13], input: { manager: "gomod", datasource: "go", updateType: "patch", depName: "k8s.io/api", packageName: "k8s.io/api" }, expect: "unattended", expectAutomerge: true },
+  { name: "vulnerability alert on an automerging gomod patch (lane survives, still automerges)", ruleIndices: [2, 3, 14], input: { manager: "gomod", datasource: "go", updateType: "patch", depName: "k8s.io/api", packageName: "k8s.io/api" }, expect: "unattended", expectAutomerge: true },
   { name: "vulnerability alert on a dashboard-gated major (gate bypassed, lane still needs-human)", ruleIndices: [11], input: { manager: "gomod", datasource: "go", updateType: "major", depName: "github.com/some/other", packageName: "github.com/some/other" }, expect: "needs-human", expectDashboardApproval: false },
 ];
 
@@ -217,6 +235,14 @@ for (const c of MATRIX) {
   // to `undefined` would pass) or fail a correctly-fixed preset outright.
   if ("expectDashboardApproval" in c && Boolean(result.dependencyDashboardApproval) !== Boolean(c.expectDashboardApproval)) {
     console.error(`FAIL [outcome] ${c.name}: expected dependencyDashboardApproval=${c.expectDashboardApproval}, got ${result.dependencyDashboardApproval}`);
+    failures++;
+  }
+  // Strict, not Boolean(): an enabled:false rule is the one whose whole effect is the literal
+  // false, and a case that expects the rule NOT to match pins the value to undefined — the
+  // preset sets no top-level enabled, so a Boolean() comparison could not tell "absent" from a
+  // regression that set it to false everywhere.
+  if ("expectEnabled" in c && result.enabled !== c.expectEnabled) {
+    console.error(`FAIL [outcome] ${c.name}: expected enabled=${c.expectEnabled}, got ${result.enabled}`);
     failures++;
   }
   // The lane label alone doesn't prove the behavior it names: a rule could keep the

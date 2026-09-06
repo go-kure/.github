@@ -94,6 +94,17 @@ What it encodes:
   covers gomod/npm/pypi/maven/… datasources; it does not cover `docker`, `dockerfile`,
   `github-actions`, `mise` or other non-package-manager pins.
 
+- **Go `testdata` trees are out of scope** — a `packageRules` entry matching `**/testdata/**`
+  (and `testdata/**`) with `enabled: false`. Renovate's inherited `:ignoreModulesAndTests`
+  default skips `examples/`, `test/`, `tests/` and `__fixtures__/` but not Go's `testdata/`, so
+  a fixture a default manager happens to match (a `values.yaml` with a placeholder image, via
+  `helm-values`) drew a permanent "Package lookup failures" block on a consumer's Dependency
+  Dashboard, and a fixture with a real image would draw a genuine bump PR rewriting it away
+  from its expected output. `enabled: false` skips the lookup entirely; the dependency still
+  appears under the dashboard's detected dependencies. Done as a rule rather than `ignorePaths`
+  because `ignorePaths` is not mergeable — any value set in a preset or a consumer replaces the
+  inherited list and drifts from it silently — while `packageRules` concatenate.
+
 - **Lane labels** — every PR gets exactly one of `unattended` (Renovate merges it once checks
   pass — do not review, merge, or close it) or `needs-human` (blocked on a human). Set via
   `labels`, never `addLabels`: `labels` is a scalar that the last matching rule overwrites, while
