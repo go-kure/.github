@@ -168,10 +168,11 @@ const MATRIX = [
   // rule 9's own matchManagers widening, not just rule 11's.
   { name: "custom-manager depName go, minor (dedicated Go rule only — general gate never matches non-major)", ruleIndices: [9], input: { manager: "regex", updateType: "minor", depName: "go", packageName: "golang.org/dl" }, expect: "needs-human", expectDashboardApproval: true },
   // Rule 12 (Go testdata fixtures are out of scope) matches on packageFile via matchFileNames —
-  // renovate's FileNamesMatcher reads `packageFile` (then `lockFiles`, absent here). The rule carries
-  // two glob spellings so it matches whether or not minimatch lets a leading `**` match zero
-  // segments; the nested and the root-level path together prove both shapes resolve to
-  // enabled:false without settling which spelling did it. The lane stays the top-level default
+  // renovate's FileNamesMatcher reads `packageFile` (then `lockFiles`, absent here). `**/testdata/**`
+  // alone matches both shapes on Renovate 44 (a leading `**` matches zero segments; verified on
+  // 44.14.10, 44.42.0 and 44.65.3), and the rule's second spelling `testdata/**` is deliberately
+  // redundant. The root-level case below is what pins the root-level behaviour if that anchoring
+  // ever changes; it does not settle which spelling matched. The lane stays the top-level default
   // (needs-human) because the rule sets no labels and no other rule matches a helm-values dep.
   // Origin: a placeholder image in a values.yaml fixture drew a permanent "Package lookup
   // failures" block on a consumer's Dependency Dashboard (go-kure/launcher#301).
