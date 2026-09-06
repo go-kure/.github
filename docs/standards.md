@@ -94,16 +94,24 @@ What it encodes:
   covers gomod/npm/pypi/maven/… datasources; it does not cover `docker`, `dockerfile`,
   `github-actions`, `mise` or other non-package-manager pins.
 
-- **Go `testdata` trees are out of scope** — a `packageRules` entry matching `**/testdata/**`
-  (and `testdata/**`) with `enabled: false`. Renovate's inherited `:ignoreModulesAndTests`
-  default skips `examples/`, `test/`, `tests/` and `__fixtures__/` but not Go's `testdata/`, so
-  a fixture a default manager happens to match (a `values.yaml` with a placeholder image, via
-  `helm-values`) drew a permanent "Package lookup failures" block on a consumer's Dependency
-  Dashboard, and a fixture with a real image would draw a genuine bump PR rewriting it away
-  from its expected output. `enabled: false` skips the lookup entirely; the dependency still
-  appears under the dashboard's detected dependencies. Done as a rule rather than `ignorePaths`
-  because `ignorePaths` is not mergeable — any value set in a preset or a consumer replaces the
-  inherited list and drifts from it silently — while `packageRules` concatenate.
+- **Go `testdata` trees are out of scope** — a top-level `ignorePaths` entry `**/testdata/**`
+  drops every file under a `testdata/` directory before any manager extracts it, backed by a
+  `packageRules` entry matching the same paths with `enabled: false`. Renovate's inherited
+  `:ignoreModulesAndTests` default skips `examples/`, `test/`, `tests/` and `__fixtures__/` but
+  not Go's `testdata/`, so a fixture a default manager happens to match (a `values.yaml` with a
+  placeholder image, via `helm-values`) drew a permanent "Package lookup failures" block on a
+  consumer's Dependency Dashboard, and a fixture with a real image would draw a genuine bump PR
+  rewriting it away from its expected output. `ignorePaths` is the guarantee and the rule is the
+  fallback, not the other way round: a vulnerability alert appends a synthetic rule after every
+  authored one whose `force` block sets `enabled: true`, so a vulnerable dependency in a fixture
+  that reached package rules would be looked up and PR'd despite the rule (verified on Renovate
+  44.14.10, 44.42.0 and 44.65.3; the lane-policy test pins it). `ignorePaths` is not mergeable —
+  a value set in a preset or a consumer replaces the inherited list rather than extending it —
+  so the preset restates the inherited entries in full, and the lane-policy test fails if the
+  installed Renovate's own `:ignoreModulesAndTests` list ever carries an entry the restated copy
+  lacks. The rule is what still applies in a consumer whose own `ignorePaths` replaced the
+  preset's: `enabled: false` skips the lookup, with no warning and no PR, while the dependency
+  still appears under the dashboard's detected dependencies.
 
 - **Lane labels** — every PR gets exactly one of `unattended` (Renovate merges it once checks
   pass — do not review, merge, or close it) or `needs-human` (blocked on a human). Set via
