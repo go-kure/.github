@@ -99,6 +99,11 @@
       "dependencyDashboardApproval": true
     },
     {
+      "description": "Go testdata trees hold fixtures, never dependencies, but Renovate's :ignoreModulesAndTests default (inherited via config:recommended) skips examples/, test/, tests/ and __fixtures__/ while leaving testdata/ in scope. A fixture that a default manager happens to match — e.g. a values.yaml with a placeholder image, which helm-values extracts — then draws a permanent 'Package lookup failures' block on the Dependency Dashboard, and one carrying a real image would draw a genuine bump PR rewriting the fixture away from its expected output. enabled:false makes Renovate skip the lookup entirely: no warning, no PR; the dep still shows under the dashboard's detected dependencies. A packageRule rather than ignorePaths on purpose: ignorePaths is mergeable:false, so any value set here or in a consumer replaces the inherited list and drifts from it silently, whereas packageRules concatenate and restate nothing. Both glob spellings deliberately — whichever way minimatch anchors a leading ** at the repo root, one of them matches a root-level testdata/ too. Position is not load-bearing (no rule in this preset or in any consumer sets enabled:true; a later such rule matching these paths would win); it sits ahead of the automerge tail so the last-rule invariant on the final rule stays literal.",
+      "matchFileNames": ["**/testdata/**", "testdata/**"],
+      "enabled": false
+    },
+    {
       "description": "Automerge: mise toolchain minor/patch/digest, excl. go. Kept as its own rule, not bolted onto the go-version gate rule, because automerge follows the same later-overwrites-earlier merge order as groupName — bolting it on would leak onto every matchPackageNames group above.",
       "matchManagers": ["mise"],
       "matchUpdateTypes": ["minor", "patch", "digest"],
