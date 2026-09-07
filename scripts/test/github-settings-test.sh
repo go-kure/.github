@@ -106,6 +106,23 @@ rm -f "$labels_scope_fixture"
 assert_eq "validate_policy exits non-zero on a labels-file repos: scope naming an unknown repo" "1" "$([ "$scope_rc" -ne 0 ] && echo 1 || echo 0)"
 assert_contains "validate_policy's error names the unknown label scope repo" "$scope_out" "unknown repo(s): nope-repo"
 
+# A misspelled github_repos key is never looked up and silently falls back
+# to github_defaults (round-7 finding); duplicate label names in a consumer
+# file would be POSTed twice (round-7 finding).
+typo_policy_json=$(jq '.github_repos.alpah = {has_discussions: true}' <<<"$POLICY_JSON")
+typo_out=$( (POLICY_JSON="$typo_policy_json" validate_policy) 2>&1 )
+typo_rc=$?
+assert_eq "validate_policy exits non-zero on a github_repos key naming an unknown repo" "1" "$([ "$typo_rc" -ne 0 ] && echo 1 || echo 0)"
+assert_contains "validate_policy's error names the unknown override key" "$typo_out" "unknown repo(s): alpah"
+
+dup_labels_fixture="$(mktemp)"
+printf '%s\n' '{"labels": [{"name": "area/x", "color": "#000000", "description": "d"}, {"name": "area/x", "color": "#111111", "description": "e"}]}' >"$dup_labels_fixture"
+dup_out=$( (LABELS_FILE="$dup_labels_fixture" validate_policy) 2>&1 )
+dup_rc=$?
+rm -f "$dup_labels_fixture"
+assert_eq "validate_policy exits non-zero on duplicate label names in the labels file" "1" "$([ "$dup_rc" -ne 0 ] && echo 1 || echo 0)"
+assert_contains "validate_policy's error names the duplicated label" "$dup_out" "duplicate label name(s): area/x"
+
 # ---- ruleset_applies scoping ----
 
 if ruleset_applies "kure" "$COPILOT"; then
@@ -445,7 +462,12 @@ covers_json=$(jq '.github_repos.kure.rulesets = {
     "Evaluate Main": {target: "branch", enforcement: "evaluate", conditions: {ref_name: {include: ["refs/heads/main"]}}, rules: {deletion: true}},
     "All But Main": {target: "branch", conditions: {ref_name: {include: ["~ALL"], exclude: ["refs/heads/main"]}}, rules: {deletion: true}},
     "All But Default": {target: "branch", conditions: {ref_name: {include: ["~ALL"], exclude: ["~DEFAULT_BRANCH"]}}, rules: {deletion: true}},
-    "No Rules": {target: "branch", conditions: {ref_name: {include: ["refs/heads/main"]}}, rules: {}}
+    "No Rules": {target: "branch", conditions: {ref_name: {include: ["refs/heads/main"]}}, rules: {}},
+    "False Rules": {target: "branch", conditions: {ref_name: {include: ["refs/heads/main"]}}, rules: {deletion: false}},
+    "Glob Include": {target: "branch", conditions: {ref_name: {include: ["refs/heads/ma*"]}}, rules: {deletion: true}},
+    "All But Glob": {target: "branch", conditions: {ref_name: {include: ["~ALL"], exclude: ["refs/heads/ma*"]}}, rules: {deletion: true}},
+    "All But Releases": {target: "branch", conditions: {ref_name: {include: ["~ALL"], exclude: ["refs/heads/release/*"]}}, rules: {deletion: true}},
+    "Dotted Near Miss": {target: "branch", conditions: {ref_name: {include: ["refs/heads/main.x"]}}, rules: {deletion: true}}
 }' <<<"$POLICY_JSON")
 
 # Stubbed like get_github_labels below: the live default branch is whatever
@@ -472,6 +494,15 @@ assert_eq "a disabled main ruleset next to an active one still covers (the activ
 assert_eq "~ALL with the default branch excluded does not cover main when the default branch is main" "1" "$(covers_rc "All But Default")"
 assert_eq "an active main ruleset that declares no rules restricts nothing and does not cover main" "1" "$(covers_rc "No Rules")"
 assert_eq "a rules-less main ruleset beside a real one still covers (the real one counts)" "0" "$(covers_rc "No Rules" "Main Literal")"
+assert_eq "a flag rule declared false is omitted from the payload and does not count as a rule" "1" "$(covers_rc "False Rules")"
+
+# Ref-name conditions are fnmatch patterns (round-7 finding): a glob that
+# matches main counts, in the include and in the exclude list; a glob that
+# does not match main is inert; regex metacharacters in a ref are literal.
+assert_eq "a glob include matching main covers main" "0" "$(covers_rc "Glob Include")"
+assert_eq "~ALL with a glob exclude matching main does not cover main" "1" "$(covers_rc "All But Glob")"
+assert_eq "~ALL with a glob exclude that does not match main still covers main" "0" "$(covers_rc "All But Releases")"
+assert_eq "a dotted near-miss (refs/heads/main.x) is literal and does not cover main" "1" "$(covers_rc "Dotted Near Miss")"
 
 # ~DEFAULT_BRANCH is resolved against the live repo, never assumed to be main
 # (go-kure/.github#154 round-4 finding): on a repo whose default branch is

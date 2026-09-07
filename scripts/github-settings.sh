@@ -481,6 +481,30 @@ validate_policy() {
         errors=$((errors + 1))
     fi
 
+    # 4c. github_repos keys too. A misspelled override key is never looked up
+    #     (the runtime lookup is exact), so the repo silently falls back to
+    #     github_defaults and --apply PATCHes the default value over the
+    #     intended override (go-kure/.github#154 review finding).
+    local bad_override_keys
+    bad_override_keys=$(jq -r --argjson known "$repo_list_json" '
+        [(.github_repos // {}) | keys[] | select(. as $r | $known | index($r) | not)] | unique | .[]
+    ' <<<"$POLICY_JSON")
+    if [ -n "$bad_override_keys" ]; then
+        echo -e "${RED}ERROR: github_repos declares override(s) for unknown repo(s): $bad_override_keys${NC}"
+        errors=$((errors + 1))
+    fi
+
+    # 4d. Duplicate names in the labels file. check-label-docs.sh refuses them
+    #     for this repo's own file, but a consumer's LABELS_FILE never passes
+    #     through that checker; audit_labels would create the label for the
+    #     first entry and POST it again for the second.
+    local dup_label_names
+    dup_label_names=$(jq -r '.labels | group_by(.name) | map(select(length > 1) | .[0].name) | join(", ")' "$LABELS_FILE")
+    if [ -n "$dup_label_names" ]; then
+        echo -e "${RED}ERROR: $LABELS_FILE declares duplicate label name(s): $dup_label_names${NC}"
+        errors=$((errors + 1))
+    fi
+
     # 5-6 only apply once a policy declares github_org: — skipped entirely
     # when absent, so the policy file stays valid mid-migration (before the
     # first --org --import) and for anyone who never uses --org.
@@ -701,13 +725,23 @@ ruleset_covers_main() {
     for name in "$@"; do
         [ "$(ruleset_field "$repo" "$name" target branch)" = "branch" ] || continue
         [ "$(ruleset_field "$repo" "$name" enforcement active)" = "active" ] || continue
-        ruleset_rules_json "$repo" "$name" | jq -e 'length > 0' >/dev/null || continue
+        # Judge the rules the API would actually receive, not the policy
+        # object: a flag rule declared `false` is omitted from the payload,
+        # so `rules: {deletion: false}` is non-empty in policy and empty on
+        # the wire.
+        build_ruleset_payload "$repo" "$name" | jq -e '.rules | length > 0' >/dev/null || continue
+        # Ref-name conditions are fnmatch patterns, so an entry matches main
+        # when its glob does (`refs/heads/ma*`), not only when it is the
+        # literal `refs/heads/main`. The two sentinels are resolved as above.
         if ruleset_conditions_json "$repo" "$name" \
             | jq -e --arg def "$default_branch" '
                 def uses_sentinel: index("~DEFAULT_BRANCH") != null;
-                def reaches_main:
-                    (index("refs/heads/main") // index("~ALL")) != null
-                    or ($def == "main" and uses_sentinel);
+                def glob_re: gsub("(?<c>[.+^${}()|\\[\\]\\\\])"; "\\\(.c)") | gsub("\\*"; ".*") | gsub("\\?"; ".");
+                def matches_main: . as $p |
+                    $p == "~ALL"
+                    or ($def == "main" and $p == "~DEFAULT_BRANCH")
+                    or (($p | startswith("~") | not) and ("refs/heads/main" | test("^" + ($p | glob_re) + "$")));
+                def reaches_main: (. // []) | any(matches_main);
                 if $def == "" and ((.ref_name.include | uses_sentinel) or (.ref_name.exclude | uses_sentinel))
                 then false
                 else (.ref_name.include | reaches_main) and (.ref_name.exclude | reaches_main | not)
