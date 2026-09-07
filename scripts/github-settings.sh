@@ -466,6 +466,21 @@ validate_policy() {
         errors=$((errors + 1))
     fi
 
+    # 4b. The same rule for the labels file's repos: scopes. A typo there is
+    #     worse than a ruleset typo: the label is silently not expected on the
+    #     repo it was meant for, and a live copy of it is then EXTRA and
+    #     deleted by the next --apply (go-kure/.github#154 review finding —
+    #     the file became consumer-supplied, so it is no longer reviewed by
+    #     the people who know the repo list).
+    local bad_label_repos
+    bad_label_repos=$(jq -r --argjson known "$repo_list_json" '
+        [.labels[] | select(.repos != null) | .repos[] | select(. as $r | $known | index($r) | not)] | unique | .[]
+    ' "$LABELS_FILE")
+    if [ -n "$bad_label_repos" ]; then
+        echo -e "${RED}ERROR: label repos: scope in $LABELS_FILE references unknown repo(s): $bad_label_repos${NC}"
+        errors=$((errors + 1))
+    fi
+
     # 5-6 only apply once a policy declares github_org: — skipped entirely
     # when absent, so the policy file stays valid mid-migration (before the
     # first --org --import) and for anyone who never uses --org.
@@ -673,9 +688,11 @@ repo_default_branch() {
 # makes the sentinel undecidable, so a ruleset using it in EITHER list is
 # treated as not covering main — an unknown include might protect another
 # branch, an unknown exclude might carve main back out (~ALL minus
-# ~DEFAULT_BRANCH). Both are the fail-closed side. Gates the
-# classic-protection migration in audit_rulesets: anything less would remove
-# protection without replacing it.
+# ~DEFAULT_BRANCH). Both are the fail-closed side. The ruleset must also
+# declare at least one rule: an active ruleset with `rules: {}` targets main
+# and restricts nothing, which is no replacement for classic protection.
+# Gates the classic-protection migration in audit_rulesets: anything less
+# would remove protection without replacing it.
 ruleset_covers_main() {
     local repo="$1"
     shift
@@ -684,6 +701,7 @@ ruleset_covers_main() {
     for name in "$@"; do
         [ "$(ruleset_field "$repo" "$name" target branch)" = "branch" ] || continue
         [ "$(ruleset_field "$repo" "$name" enforcement active)" = "active" ] || continue
+        ruleset_rules_json "$repo" "$name" | jq -e 'length > 0' >/dev/null || continue
         if ruleset_conditions_json "$repo" "$name" \
             | jq -e --arg def "$default_branch" '
                 def uses_sentinel: index("~DEFAULT_BRANCH") != null;

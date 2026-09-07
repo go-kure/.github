@@ -94,6 +94,18 @@ else
 fi
 assert_contains "validate_policy's error names the offending rule type" "$bogus_out" "bogus_type"
 
+# The labels file's repos: scopes are validated against the same governed
+# repo set as ruleset scopes (go-kure/.github#154 round-6 finding): a typo
+# there silently un-expects the label on the intended repo and lets --apply
+# delete a live copy as EXTRA.
+labels_scope_fixture="$(mktemp)"
+printf '%s\n' '{"labels": [{"name": "area/x", "color": "#000000", "description": "d", "repos": ["kure", "nope-repo"]}]}' >"$labels_scope_fixture"
+scope_out=$( (LABELS_FILE="$labels_scope_fixture" validate_policy) 2>&1 )
+scope_rc=$?
+rm -f "$labels_scope_fixture"
+assert_eq "validate_policy exits non-zero on a labels-file repos: scope naming an unknown repo" "1" "$([ "$scope_rc" -ne 0 ] && echo 1 || echo 0)"
+assert_contains "validate_policy's error names the unknown label scope repo" "$scope_out" "unknown repo(s): nope-repo"
+
 # ---- ruleset_applies scoping ----
 
 if ruleset_applies "kure" "$COPILOT"; then
@@ -378,7 +390,13 @@ assert_eq "with nothing set, the go-kure defaults still apply" \
 # A consumer's policy scopes rulesets to ITS repos; validate_policy must judge
 # them against the overridden GITHUB_REPOS_DEFAULT, not the go-kure set.
 consumer_scope_json=$(jq '.github_defaults.rulesets["main-protection"].repos = ["alpha"] | .github_defaults.rulesets[$c].repos = ["alpha"] | .github_repos = {}' --arg c "$COPILOT" <<<"$POLICY_JSON")
-consumer_scope_rc=$( (POLICY_JSON="$consumer_scope_json" GITHUB_REPOS_DEFAULT="alpha beta" GITHUB_REPOS="alpha" validate_policy) >/dev/null 2>&1; echo $? )
+# A consumer brings its own labels file too; its repos: scopes are judged
+# against the same overridden set (check 4b), so go-kure's file (scoped to
+# kure/launcher) would be — correctly — rejected here.
+consumer_labels_fixture="$(mktemp)"
+printf '%s\n' '{"labels": [{"name": "area/x", "color": "#000000", "description": "d", "repos": ["alpha"]}, {"name": "security", "color": "#000000", "description": "d"}]}' >"$consumer_labels_fixture"
+consumer_scope_rc=$( (POLICY_JSON="$consumer_scope_json" LABELS_FILE="$consumer_labels_fixture" GITHUB_REPOS_DEFAULT="alpha beta" GITHUB_REPOS="alpha" validate_policy) >/dev/null 2>&1; echo $? )
+rm -f "$consumer_labels_fixture"
 if [ "$consumer_scope_rc" -eq 0 ]; then
     echo "PASS: validate_policy accepts repos: scopes drawn from an overridden GITHUB_REPOS_DEFAULT"
     pass_count=$((pass_count + 1))
@@ -419,14 +437,15 @@ fi
 # unmanaged classic protection on --apply with nothing replacing it). ----
 
 covers_json=$(jq '.github_repos.kure.rulesets = {
-    "Main Literal": {target: "branch", conditions: {ref_name: {include: ["refs/heads/main"]}}, rules: {}},
-    "Default Branch": {target: "branch", conditions: {ref_name: {include: ["~DEFAULT_BRANCH"]}}, rules: {}},
-    "Dev Only": {target: "branch", conditions: {ref_name: {include: ["refs/heads/dev"]}}, rules: {}},
-    "Tags": {target: "tag", conditions: {ref_name: {include: ["refs/tags/*"]}}, rules: {}},
-    "Disabled Main": {target: "branch", enforcement: "disabled", conditions: {ref_name: {include: ["refs/heads/main"]}}, rules: {}},
-    "Evaluate Main": {target: "branch", enforcement: "evaluate", conditions: {ref_name: {include: ["refs/heads/main"]}}, rules: {}},
-    "All But Main": {target: "branch", conditions: {ref_name: {include: ["~ALL"], exclude: ["refs/heads/main"]}}, rules: {}},
-    "All But Default": {target: "branch", conditions: {ref_name: {include: ["~ALL"], exclude: ["~DEFAULT_BRANCH"]}}, rules: {}}
+    "Main Literal": {target: "branch", conditions: {ref_name: {include: ["refs/heads/main"]}}, rules: {deletion: true}},
+    "Default Branch": {target: "branch", conditions: {ref_name: {include: ["~DEFAULT_BRANCH"]}}, rules: {deletion: true}},
+    "Dev Only": {target: "branch", conditions: {ref_name: {include: ["refs/heads/dev"]}}, rules: {deletion: true}},
+    "Tags": {target: "tag", conditions: {ref_name: {include: ["refs/tags/*"]}}, rules: {deletion: true}},
+    "Disabled Main": {target: "branch", enforcement: "disabled", conditions: {ref_name: {include: ["refs/heads/main"]}}, rules: {deletion: true}},
+    "Evaluate Main": {target: "branch", enforcement: "evaluate", conditions: {ref_name: {include: ["refs/heads/main"]}}, rules: {deletion: true}},
+    "All But Main": {target: "branch", conditions: {ref_name: {include: ["~ALL"], exclude: ["refs/heads/main"]}}, rules: {deletion: true}},
+    "All But Default": {target: "branch", conditions: {ref_name: {include: ["~ALL"], exclude: ["~DEFAULT_BRANCH"]}}, rules: {deletion: true}},
+    "No Rules": {target: "branch", conditions: {ref_name: {include: ["refs/heads/main"]}}, rules: {}}
 }' <<<"$POLICY_JSON")
 
 # Stubbed like get_github_labels below: the live default branch is whatever
@@ -451,6 +470,8 @@ assert_eq "an evaluate-mode ruleset on main enforces nothing and does not cover 
 assert_eq "~ALL with main excluded again does not cover main" "1" "$(covers_rc "All But Main")"
 assert_eq "a disabled main ruleset next to an active one still covers (the active one counts)" "0" "$(covers_rc "Disabled Main" "Main Literal")"
 assert_eq "~ALL with the default branch excluded does not cover main when the default branch is main" "1" "$(covers_rc "All But Default")"
+assert_eq "an active main ruleset that declares no rules restricts nothing and does not cover main" "1" "$(covers_rc "No Rules")"
+assert_eq "a rules-less main ruleset beside a real one still covers (the real one counts)" "0" "$(covers_rc "No Rules" "Main Literal")"
 
 # ~DEFAULT_BRANCH is resolved against the live repo, never assumed to be main
 # (go-kure/.github#154 round-4 finding): on a repo whose default branch is
