@@ -165,5 +165,20 @@ clamped="$(run_adapter)"
 assert_eq "category: unknown value clamped to other" "other" \
   "$(jq -r '.findings[0].category' <<<"$clamped")"
 
+# --- a diff that splits into no chunk is a setup fault (exit 2), not an empty review ---
+# prt_split_diff answers `0` with exit 0 here, so the review loop never runs; without the
+# guard the adapter would exit 0 with `findings: []` from a reviewer that was never called.
+# A canned reply is staged deliberately: if a call were made, the assertions below would see
+# a populated document rather than an ambiguous empty one.
+reset_stub
+printf '%s' "$REVIEW_JSON" > "$STUB_DIR/reply-1"
+: > "$WORK/nochunk.diff"
+nochunk="$(STUB_DIR="$STUB_DIR" PRT_CURL="$WORK/curl-stub" PRT_PROXY_URL=http://stub \
+  bash "$ADAPTER" --diff "$WORK/nochunk.diff" --title "test PR" 2>"$WORK/err")"
+rc=$?
+assert_eq "no chunks: exit 2 (setup fault, not an exclusion)" "2" "$rc"
+assert_eq "no chunks: prints no findings document" "" "$nochunk"
+assert_eq "no chunks: made no proxy call" "0" "$(cat "$STUB_DIR/calls" 2>/dev/null || echo 0)"
+
 echo "passed: $pass_count, failed: $failures"
 [ "$failures" -eq 0 ]
