@@ -413,6 +413,31 @@ else
     failures=$((failures + 1))
 fi
 
+# ---- ruleset_covers_main: audit_rulesets migrates classic branch protection
+# away only when an applicable branch ruleset reaches main (go-kure/.github#154
+# review finding: a consumer policy with no such ruleset must not lose
+# unmanaged classic protection on --apply with nothing replacing it). ----
+
+covers_json=$(jq '.github_repos.kure.rulesets = {
+    "Main Literal": {target: "branch", conditions: {ref_name: {include: ["refs/heads/main"]}}, rules: {}},
+    "Default Branch": {target: "branch", conditions: {ref_name: {include: ["~DEFAULT_BRANCH"]}}, rules: {}},
+    "Dev Only": {target: "branch", conditions: {ref_name: {include: ["refs/heads/dev"]}}, rules: {}},
+    "Tags": {target: "tag", conditions: {ref_name: {include: ["refs/tags/*"]}}, rules: {}}
+}' <<<"$POLICY_JSON")
+
+# Echoes ruleset_covers_main's exit code for kure over the named rulesets.
+covers_rc() {
+    (POLICY_JSON="$covers_json" ruleset_covers_main "kure" "$@") >/dev/null 2>&1
+    echo $?
+}
+
+assert_eq "a branch ruleset including refs/heads/main covers main" "0" "$(covers_rc "Main Literal")"
+assert_eq "a branch ruleset including ~DEFAULT_BRANCH covers main" "0" "$(covers_rc "Default Branch")"
+assert_eq "a branch ruleset on another branch does not cover main" "1" "$(covers_rc "Dev Only")"
+assert_eq "a tag ruleset never covers main, whatever it includes" "1" "$(covers_rc "Tags")"
+assert_eq "no applicable ruleset at all does not cover main" "1" "$(covers_rc)"
+assert_eq "one covering ruleset among non-covering ones is enough" "0" "$(covers_rc "Tags" "Dev Only" "Main Literal")"
+
 # ---- print_summary: blocked (audit-only) org settings drift must be
 # reported separately from applied drift under --apply, not folded into the
 # "applied" count (nothing was actually written for a blocked key). ----
@@ -629,6 +654,20 @@ assert_contains "the declared target produces the RENAME line" "${result#*$'\t'}
 
 result="$(run_audit_labels_extra_fixture $'bug\x1fd73a4a\x1fdefault' "$RENAME_SCOPED_ELSEWHERE_FILE")"
 assert_eq "a target scoped to another repo does not shield the old name on this one" "1" "${result%%$'\t'*}"
+
+# A labels file that declares BOTH the rename source and its target (a
+# consumer standard keeping `bug` alongside `type/bug`) makes the source a
+# required label, not a legacy one: it must audit as OK and never be renamed
+# away, and the target is then plainly missing (created, not renamed onto).
+RENAME_BOTH_DECLARED_FILE="$drift_fixture_dir/labels-source-and-target.json"
+cat >"$RENAME_BOTH_DECLARED_FILE" <<'EOF'
+{"labels": [{"name": "bug", "color": "#D73A4A", "description": "default"}, {"name": "type/bug", "color": "#D73A4A", "description": "Something is broken"}]}
+EOF
+
+result="$(run_audit_labels_extra_fixture $'bug\x1fd73a4a\x1fdefault' "$RENAME_BOTH_DECLARED_FILE")"
+assert_eq "a rename source the labels file itself declares is not extra" "0" "${result%%$'\t'*}"
+assert_contains "the declared source audits as OK, not as a rename candidate" "${result#*$'\t'}" "OK: bug"
+assert_contains "its declared target is then MISSING rather than RENAME" "${result#*$'\t'}" "MISSING: type/bug"
 
 rm -rf "$drift_fixture_dir"
 trap - EXIT
