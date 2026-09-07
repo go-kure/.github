@@ -110,17 +110,26 @@ removed_lines() {
     git_r diff --unified=0 --no-color --no-renames --diff-filter=M \
         --src-prefix=a/ --dst-prefix=b/ "$fix^" "$fix" -- \
         | awk '
-            /^--- / { next }
-            /^\+\+\+ b\// { path = substr($0, 7); next }
+            # The header rules are position-gated, not pattern-gated. Inside a hunk every body
+            # line carries a +/- prefix, so a removed SQL or Lua comment `-- note` arrives as
+            # `--- note` and an added `++ b/x` as `+++ b/x`. Matching those as headers anywhere
+            # would swallow the removed line without advancing lineno -- shifting every later
+            # removed line in the hunk by one and blaming an innocent line -- or silently
+            # reassign path mid-file. `in_hunk` closes both: headers precede the first @@ of a
+            # file, body lines follow it, and `diff --git` reopens the header region.
+            /^diff --git / { in_hunk = 0; path = ""; next }
+            !in_hunk && /^--- / { next }
+            !in_hunk && /^\+\+\+ b\// { path = substr($0, 7); next }
             /^@@ / {
                 # @@ -old_start[,old_count] +new_start[,new_count] @@
                 match($0, /-[0-9]+(,[0-9]+)?/)
                 spec = substr($0, RSTART + 1, RLENGTH - 1)
                 n = split(spec, a, ",")
                 lineno = a[1] + 0
+                in_hunk = 1
                 next
             }
-            /^-/ { if (path != "") printf "%s\t%d\n", path, lineno; lineno++ }
+            in_hunk && /^-/ { if (path != "") printf "%s\t%d\n", path, lineno; lineno++ }
         '
 }
 

@@ -207,6 +207,7 @@ do_run() {
     local run_idx="$1"
     local matched=0 uncredited=0 denom=0 excluded=0
     local g repo checkout diff_file findings_file verdict_file rows child_rc
+    local v_matched v_uncredited
 
     for g in "${gold_files[@]}"; do
         repo=$(jq -r '.repo' "$g")
@@ -261,9 +262,28 @@ do_run() {
             continue
         fi
 
+        # Read both counts before touching any accumulator: the arithmetic cannot fail loudly
+        # on its own. An empty substitution makes `$((matched + ))` a syntax error that leaves
+        # `matched` at its old value, and a JSON `null` arrives as a bare word bash evaluates
+        # to 0 -- so a judge that exits 0 while writing an unusable verdict would understate
+        # recall as a miss from a document it never scored. `select(type == "number")` treats
+        # every non-number the same way, and any non-zero jq status (false, null, or a read
+        # error) lands in the same branch deliberately: all of them mean "no usable verdict".
+        # The denominator moves only after both reads succeed, so such a document leaves both
+        # sides of the fraction like every other exclusion.
+        v_matched=$(jq -er '.matched | select(type == "number")' "$verdict_file" 2>/dev/null) \
+            || v_matched=
+        v_uncredited=$(jq -er '.uncredited | select(type == "number")' "$verdict_file" 2>/dev/null) \
+            || v_uncredited=
+        if [ -z "$v_matched" ] || [ -z "$v_uncredited" ]; then
+            log "excluding $g: verdict file carries no numeric .matched/.uncredited"
+            excluded=$((excluded + 1))
+            continue
+        fi
+
         denom=$((denom + rows))
-        matched=$((matched + $(jq '.matched' "$verdict_file")))
-        uncredited=$((uncredited + $(jq '.uncredited' "$verdict_file")))
+        matched=$((matched + v_matched))
+        uncredited=$((uncredited + v_uncredited))
     done
 
     printf '%d\t%d\t%d\t%d' "$matched" "$uncredited" "$denom" "$excluded"
