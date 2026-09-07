@@ -58,7 +58,8 @@ a PR list can see the blast-radius finding was addressed rather than missed. Sco
 repos that carry the `pin-impact` gate (`kure`, `launcher`).
 
 **Repo-scoped labels.** A label in `labels.json` may carry an optional `repos` array
-(e.g. `docs-skip` → `["launcher"]`). The settings audit then requires that label only on
+(e.g. `docs-skip` → `["kure", "launcher"]`, the two repos whose CI runs the doc gate). The
+settings audit then requires that label only on
 the listed repos, and flags it as extra if it appears on any other repo. Labels without a
 `repos` field apply to every repo.
 
