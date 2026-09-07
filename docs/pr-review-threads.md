@@ -11,10 +11,16 @@ This is the design/operations reference the code cites but didn't yet have:
 
 ## Components
 
-- `.github/workflows/pr-review.yml` — the reusable workflow. Owns the job's inputs
-  (`pr_review_context`; `runs-on`, default `autops-kube-kure` — a caller in another org passes
-  its own runner label, which must still have in-cluster access to the review backend), and
-  the env defaults documented in its own header comment.
+- `.github/workflows/pr-review.yml` — the reusable workflow. Owns the job's required inputs
+  (`pr_review_context`), the runner (`autops-kube-kure`, in-cluster access to the review
+  backend), and the env defaults documented in its own header comment. It serves callers in
+  this org only: a called workflow can use self-hosted runners from the caller's context only
+  when it is owned by the same user or organization as the caller (GitHub docs, "Reuse
+  workflows" → "Self-hosted runners"), so a repo in another org calling this workflow would
+  queue forever waiting for a runner. Such a consumer owns its own reusable workflow (a copy of
+  this job, on its own runner label, with its own route to a review backend) that `uses:` the
+  `pr-review-threads` composite action below at a pinned SHA — actions run inside the caller's
+  job, so the runner restriction does not apply to them.
 - `.github/actions/pr-review-threads/action.yml` — a composite action, same repo. Binds its
   inputs to `PRT_*` env vars and execs the orchestrator script. Inputs never get interpolated
   into `run:` via `${{ }}` — untrusted strings (PR body, model output) go through `env:` only,

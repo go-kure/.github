@@ -488,7 +488,11 @@ covers_json=$(jq '.github_repos.kure.rulesets = {
     "All But Releases": {target: "branch", conditions: {ref_name: {include: ["~ALL"], exclude: ["refs/heads/release/*"]}}, rules: {deletion: true}},
     "Dotted Near Miss": {target: "branch", conditions: {ref_name: {include: ["refs/heads/main.x"]}}, rules: {deletion: true}},
     "Bracket Exclude": {target: "branch", conditions: {ref_name: {include: ["~ALL"], exclude: ["refs/heads/ma[!x]n"]}}, rules: {deletion: true}},
-    "Bracket Include": {target: "branch", conditions: {ref_name: {include: ["refs/heads/ma[i]n"]}}, rules: {deletion: true}}
+    "Bracket Include": {target: "branch", conditions: {ref_name: {include: ["refs/heads/ma[i]n"]}}, rules: {deletion: true}},
+    "Star Include": {target: "branch", conditions: {ref_name: {include: ["refs/*"]}}, rules: {deletion: true}},
+    "Double Star Include": {target: "branch", conditions: {ref_name: {include: ["refs/**"]}}, rules: {deletion: true}},
+    "Question Include": {target: "branch", conditions: {ref_name: {include: ["refs/heads/mai?"]}}, rules: {deletion: true}},
+    "All But Star": {target: "branch", conditions: {ref_name: {include: ["~ALL"], exclude: ["refs/*"]}}, rules: {deletion: true}}
 }' <<<"$POLICY_JSON")
 
 # Stubbed like get_github_labels below: the live default branch is whatever
@@ -529,6 +533,14 @@ assert_eq "a dotted near-miss (refs/heads/main.x) is literal and does not cover 
 # include with one is never trusted to reach it.
 assert_eq "~ALL with a bracket-expression exclude that matches main does not cover main" "1" "$(covers_rc "Bracket Exclude")"
 assert_eq "a bracket-expression include is not trusted to cover main" "1" "$(covers_rc "Bracket Include")"
+# A single `*` does not cross `/` in GitHub's fnmatch (round-9 finding), so
+# `refs/*` never reaches refs/heads/main as an include; only `**` does. On the
+# exclude side the same `*` is read as wide as possible, so `refs/*` counts as
+# possibly removing main. Both directions err towards "not covered".
+assert_eq "a single-star include (refs/*) is not trusted to reach main" "1" "$(covers_rc "Star Include")"
+assert_eq "a double-star include (refs/**) reaches main" "0" "$(covers_rc "Double Star Include")"
+assert_eq "a ? include matching one character of main covers main" "0" "$(covers_rc "Question Include")"
+assert_eq "~ALL with a single-star exclude (refs/*) is read as possibly removing main" "1" "$(covers_rc "All But Star")"
 
 # ~DEFAULT_BRANCH is resolved against the live repo, never assumed to be main
 # (go-kure/.github#154 round-4 finding): on a repo whose default branch is

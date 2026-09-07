@@ -755,21 +755,25 @@ ruleset_covers_main() {
         # Ref-name conditions are fnmatch patterns, so an entry matches main
         # when its glob does (`refs/heads/ma*`), not only when it is the
         # literal `refs/heads/main`. The two sentinels are resolved as above.
-        # Only `*` and `?` are translated; a bracket expression (`[!x]`,
-        # `[a-z]`) fails closed: it never counts as an include reaching main
-        # and always counts as an exclude that may remove main, so an
-        # unmodelled pattern can only keep classic protection, never drop it.
+        # Every translation errs towards "not covered": on the include side a
+        # single `*`/`?` stops at `/` (so `refs/*` is not trusted to reach
+        # `refs/heads/main`; only `**` crosses separators), on the exclude
+        # side they match anything (so `refs/*` counts as possibly removing
+        # main), and a bracket expression (`[!x]`, `[a-z]`) is never trusted
+        # on either side. An unmodelled or ambiguous pattern can therefore
+        # only keep classic protection, never drop it.
         if ruleset_conditions_json "$repo" "$name" \
             | jq -e --arg def "$default_branch" '
                 def uses_sentinel: index("~DEFAULT_BRANCH") != null;
                 def has_bracket: test("[\\[\\]]");
-                def glob_re: gsub("(?<c>[.+^${}()|\\[\\]\\\\])"; "\\\(.c)") | gsub("\\*"; ".*") | gsub("\\?"; ".");
-                def matches_main: . as $p |
+                def glob_re(star; qmark): gsub("(?<c>[.+^${}()|\\[\\]\\\\])"; "\\\(.c)")
+                    | gsub("\\*\\*"; "") | gsub("\\*"; star) | gsub("\\?"; qmark) | gsub(""; ".*");
+                def matches_main(star; qmark): . as $p |
                     $p == "~ALL"
                     or ($def == "main" and $p == "~DEFAULT_BRANCH")
-                    or (($p | startswith("~") | not) and ("refs/heads/main" | test("^" + ($p | glob_re) + "$")));
-                def include_reaches_main: (. // []) | any((has_bracket | not) and matches_main);
-                def exclude_may_remove_main: (. // []) | any(has_bracket or matches_main);
+                    or (($p | startswith("~") | not) and ("refs/heads/main" | test("^" + ($p | glob_re(star; qmark)) + "$")));
+                def include_reaches_main: (. // []) | any((has_bracket | not) and matches_main("[^/]*"; "[^/]"));
+                def exclude_may_remove_main: (. // []) | any(has_bracket or matches_main(".*"; "."));
                 if $def == "" and ((.ref_name.include | uses_sentinel) or (.ref_name.exclude | uses_sentinel))
                 then false
                 else (.ref_name.include | include_reaches_main) and (.ref_name.exclude | exclude_may_remove_main | not)
