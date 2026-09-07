@@ -203,7 +203,7 @@
       "name": "docs-skip",
       "color": "#FBCA04",
       "description": "Maintainer-only: bypass the documentation-sync CI gate",
-      "repos": ["launcher"]
+      "repos": ["kure", "launcher"]
     },
     {
       "name": "pin-impact-ack",
