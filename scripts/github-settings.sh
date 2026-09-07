@@ -670,9 +670,12 @@ repo_default_branch() {
 # is resolved against the live repo, never assumed: a consumer whose default
 # branch is not main would otherwise lose classic protection on main to a
 # ruleset that protects a different branch. An unreadable default branch
-# resolves the sentinel to "does not reach main", the fail-closed side. Gates
-# the classic-protection migration in audit_rulesets: anything less would
-# remove protection without replacing it.
+# makes the sentinel undecidable, so a ruleset using it in EITHER list is
+# treated as not covering main — an unknown include might protect another
+# branch, an unknown exclude might carve main back out (~ALL minus
+# ~DEFAULT_BRANCH). Both are the fail-closed side. Gates the
+# classic-protection migration in audit_rulesets: anything less would remove
+# protection without replacing it.
 ruleset_covers_main() {
     local repo="$1"
     shift
@@ -683,10 +686,14 @@ ruleset_covers_main() {
         [ "$(ruleset_field "$repo" "$name" enforcement active)" = "active" ] || continue
         if ruleset_conditions_json "$repo" "$name" \
             | jq -e --arg def "$default_branch" '
+                def uses_sentinel: index("~DEFAULT_BRANCH") != null;
                 def reaches_main:
                     (index("refs/heads/main") // index("~ALL")) != null
-                    or ($def == "main" and index("~DEFAULT_BRANCH") != null);
-                (.ref_name.include | reaches_main) and (.ref_name.exclude | reaches_main | not)
+                    or ($def == "main" and uses_sentinel);
+                if $def == "" and ((.ref_name.include | uses_sentinel) or (.ref_name.exclude | uses_sentinel))
+                then false
+                else (.ref_name.include | reaches_main) and (.ref_name.exclude | reaches_main | not)
+                end
             ' >/dev/null; then
             return 0
         fi
