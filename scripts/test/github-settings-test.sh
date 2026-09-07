@@ -420,7 +420,7 @@ assert_contains "validate_policy's scope-typo error names the offending repo" "$
 # above (which already fixed the globals) does not mask the default path. ----
 
 # shellcheck disable=SC2016 # single-quoted on purpose: the child bash expands these after sourcing, not this shell
-consumer_env=$(GITHUB_ORG=other-org GITHUB_REPOS_DEFAULT="alpha beta" LABELS_FILE=/x/labels.json POLICY_FILE=/x/policy.yaml \
+consumer_env=$(env -u GITHUB_REPOS GITHUB_ORG=other-org GITHUB_REPOS_DEFAULT="alpha beta" LABELS_FILE=/x/labels.json POLICY_FILE=/x/policy.yaml \
     bash -c 'source "$1" && printf "%s|%s|%s|%s|%s" "$GITHUB_ORG" "$GITHUB_REPOS_DEFAULT" "$GITHUB_REPOS" "$LABELS_FILE" "$POLICY_FILE"' _ "$ROOT/scripts/github-settings.sh")
 assert_eq "env overrides win for org, repo set, labels file and policy file; GITHUB_REPOS follows GITHUB_REPOS_DEFAULT" \
     "other-org|alpha beta|alpha beta|/x/labels.json|/x/policy.yaml" "$consumer_env"
