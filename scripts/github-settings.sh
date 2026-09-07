@@ -196,6 +196,20 @@ declare -A RULE_KIND=(
     [copilot_code_review]=passthrough
 )
 
+# Rule types that restrict a push to, or a merge into, the branch. Only these
+# count when a ruleset is judged as replacing classic branch protection
+# (ruleset_covers_main): copilot_code_review is review automation and blocks
+# nothing, so a ruleset carrying only that rule protects nothing. A new
+# RULE_TYPE_ORDER entry is added here only when it blocks a push or a merge.
+PROTECTIVE_RULE_TYPES=(
+    deletion
+    non_fast_forward
+    required_linear_history
+    pull_request
+    required_status_checks
+    merge_queue
+)
+
 # policy rule params -> API "parameters" object. Types not listed here pass
 # through unchanged ("."). Only required_status_checks needs a real remap:
 # policy uses {strict, contexts}, the API uses
@@ -480,10 +494,11 @@ validate_policy() {
         ([.labels[] |
             (.name | type == "string") and (.name | length > 0) and
             (.description | type == "string") and
-            (.color | type == "string") and (.color | test("^#[0-9A-Fa-f]{6}$"))
+            (.color | type == "string") and (.color | test("^#[0-9A-Fa-f]{6}$")) and
+            (.repos == null or ((.repos | type == "array") and ([.repos[] | type == "string"] | all)))
         ] | all)
     ' "$LABELS_FILE" >/dev/null 2>&1; then
-        echo -e "${RED}ERROR: $LABELS_FILE is malformed or declares no labels: .labels must be a non-empty array whose entries carry a name, a description and a #RRGGBB color${NC}"
+        echo -e "${RED}ERROR: $LABELS_FILE is malformed or declares no labels: .labels must be a non-empty array whose entries carry a name, a description, a #RRGGBB color and, if present, a repos list of strings${NC}"
         errors=$((errors + 1))
         labels_shape_ok=0
     fi
@@ -742,16 +757,20 @@ repo_default_branch() {
 ruleset_covers_main() {
     local repo="$1"
     shift
-    local name default_branch
+    local name default_branch protective_json
     default_branch=$(repo_default_branch "$repo")
+    protective_json=$(printf '%s\n' "${PROTECTIVE_RULE_TYPES[@]}" | jq -R . | jq -sc .)
     for name in "$@"; do
         [ "$(ruleset_field "$repo" "$name" target branch)" = "branch" ] || continue
         [ "$(ruleset_field "$repo" "$name" enforcement active)" = "active" ] || continue
         # Judge the rules the API would actually receive, not the policy
         # object: a flag rule declared `false` is omitted from the payload,
         # so `rules: {deletion: false}` is non-empty in policy and empty on
-        # the wire.
-        build_ruleset_payload "$repo" "$name" | jq -e '.rules | length > 0' >/dev/null || continue
+        # the wire. And judge them by kind: at least one emitted rule must be
+        # in PROTECTIVE_RULE_TYPES, or the ruleset protects nothing.
+        build_ruleset_payload "$repo" "$name" \
+            | jq -e --argjson prot "$protective_json" '[.rules[].type] | any(. as $t | $prot | index($t) != null)' >/dev/null \
+            || continue
         # Ref-name conditions are fnmatch patterns, so an entry matches main
         # when its glob does (`refs/heads/ma*`), not only when it is the
         # literal `refs/heads/main`. The two sentinels are resolved as above.
