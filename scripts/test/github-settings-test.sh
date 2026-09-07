@@ -176,6 +176,31 @@ sec_ok_json=$(jq '.github_repos.kure.security = {secret_scanning: "disabled", de
 sec_ok_rc=$( (POLICY_JSON="$sec_ok_json" validate_policy) >/dev/null 2>&1; echo $? )
 assert_eq "validate_policy accepts a per-repo security override that uses the enum" "0" "$sec_ok_rc"
 
+# A labels file that is non-empty but leaves one governed repo with no
+# applicable label (round-14 finding) reproduces the empty-file outcome for
+# that repo: every live label EXTRA, deleted by --apply unless in use.
+scoped_away_fixture="$(mktemp)"
+printf '%s\n' '{"labels": [{"name": "area/x", "color": "#000000", "description": "d", "repos": ["kure"]}]}' >"$scoped_away_fixture"
+scoped_away_out=$( (LABELS_FILE="$scoped_away_fixture" validate_policy) 2>&1 )
+scoped_away_rc=$?
+rm -f "$scoped_away_fixture"
+assert_eq "validate_policy exits non-zero on a labels file scoped away from a governed repo" "1" "$([ "$scoped_away_rc" -ne 0 ] && echo 1 || echo 0)"
+assert_contains "validate_policy's error names the repo left without labels" "$scoped_away_out" "no applicable label"
+assert_contains "and it is the unscoped repo, not the scoped one" "$scoped_away_out" "launcher"
+
+# A field inside a per-repo override that github_defaults does not declare
+# is never read (round-14 finding): the exact lookup misses it and the
+# default is applied instead of the intended override.
+field_typo_json=$(jq '.github_repos.kure.allow_merge_comit = true' <<<"$POLICY_JSON")
+field_typo_out=$( (POLICY_JSON="$field_typo_json" validate_policy) 2>&1 )
+field_typo_rc=$?
+assert_eq "validate_policy exits non-zero on a misspelled field inside a github_repos override" "1" "$([ "$field_typo_rc" -ne 0 ] && echo 1 || echo 0)"
+assert_contains "validate_policy's error names the repo and the unknown field" "$field_typo_out" "kure.allow_merge_comit"
+
+field_ok_json=$(jq '.github_repos.launcher.allow_merge_commit = true' <<<"$POLICY_JSON")
+field_ok_rc=$( (POLICY_JSON="$field_ok_json" validate_policy) >/dev/null 2>&1; echo $? )
+assert_eq "validate_policy accepts an override field that github_defaults declares" "0" "$field_ok_rc"
+
 # ---- ruleset_applies scoping ----
 
 if ruleset_applies "kure" "$COPILOT"; then

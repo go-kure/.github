@@ -518,6 +518,24 @@ validate_policy() {
         errors=$((errors + 1))
     fi
 
+    #     Per-repo form of the empty-file rule in 4a: a file whose entries are
+    #     all scoped away from one governed repo (`repos: []`, or only other
+    #     repos) leaves that repo with no expected label, so every live label
+    #     there is EXTRA and --apply deletes each one not attached to an issue
+    #     (go-kure/.github#154 round-14 finding). Every governed repo must
+    #     have at least one applicable label; a repo meant to carry none is
+    #     not a case this tool supports, by the same reasoning as 4a.
+    local unlabelled_repos=""
+    [ "$labels_shape_ok" -eq 1 ] && unlabelled_repos=$(jq -r --argjson known "$repo_list_json" '
+        [$known[] as $r
+         | select([.labels[] | (.repos == null) or (.repos | index($r) != null)] | any | not)
+         | $r] | .[]
+    ' "$LABELS_FILE")
+    if [ -n "$unlabelled_repos" ]; then
+        echo -e "${RED}ERROR: $LABELS_FILE leaves governed repo(s) with no applicable label (every live label there would be EXTRA and deleted by --apply): $(echo "$unlabelled_repos" | tr '\n' ' ')${NC}"
+        errors=$((errors + 1))
+    fi
+
     # 4c. github_repos keys too. A misspelled override key is never looked up
     #     (the runtime lookup is exact), so the repo silently falls back to
     #     github_defaults and --apply PATCHes the default value over the
@@ -528,6 +546,28 @@ validate_policy() {
     ' <<<"$POLICY_JSON")
     if [ -n "$bad_override_keys" ]; then
         echo -e "${RED}ERROR: github_repos declares override(s) for unknown repo(s): $bad_override_keys${NC}"
+        errors=$((errors + 1))
+    fi
+
+    #     And the fields inside each override: the runtime lookup is exact
+    #     there too, so `allow_merge_comit: true` under a repo is never read,
+    #     the repo falls back to github_defaults for the key that was meant,
+    #     and --apply PATCHes the default over the intended override
+    #     (go-kure/.github#154 round-14 finding). Check 2 already pins
+    #     github_defaults' keys to SETTING_KEYS plus the security and rulesets
+    #     containers, so "every override key exists in github_defaults" is the
+    #     closed set without a second list to keep in step.
+    local bad_override_fields
+    bad_override_fields=$(jq -r '
+        (.github_defaults | keys) as $known
+        | [(.github_repos // {}) | to_entries[]
+           | .key as $repo
+           | ((.value // {}) | keys[]) | select(. as $k | $known | index($k) | not)
+           | "\($repo).\(.)"]
+        | .[]
+    ' <<<"$POLICY_JSON")
+    if [ -n "$bad_override_fields" ]; then
+        echo -e "${RED}ERROR: github_repos override(s) carry field(s) github_defaults does not declare (never read; the default would be applied instead): $(echo "$bad_override_fields" | tr '\n' ' ')${NC}"
         errors=$((errors + 1))
     fi
 

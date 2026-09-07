@@ -416,12 +416,17 @@ Another organization can run `scripts/github-settings.sh` unchanged against its 
 run. The script's `--help` lists all five variables. This repository's own `settings.yml`
 sets none of them. A consumer's labels file never passes `check-label-docs.sh`, so the script
 validates its shape itself before touching anything: a non-empty `labels` array whose entries
-carry a name, a description and a `#RRGGBB` colour, no duplicate names, and `repos:` scopes
-naming only governed repos. An empty file in particular is refused rather than read as "delete
-every live label". The policy's `security:` blocks are validated the same way: only the three
-keys under "Security" below, each `enabled` or `disabled`, because the audit applies any other value as
-`disabled` — for `dependabot_security_updates` that is a live DELETE, so a typo is refused up
-front rather than applied.
+carry a name, a description and a `#RRGGBB` colour, no duplicate names, `repos:` scopes
+naming only governed repos, and every governed repo left with at least one applicable label.
+An empty file, or one scoped entirely away from a repo, is refused rather than read as "delete
+every live label there". The policy gets the same treatment: `github_repos` keys must be
+governed repos and the fields inside each override must exist in `github_defaults` (an
+unknown field is never read and the default would be applied instead), and `security:` blocks
+carry only the three keys under "Security" below, each `enabled` or `disabled`, because the
+audit applies any other value as `disabled` — for `dependabot_security_updates` that is a live
+DELETE, so a typo is refused up front rather than applied. These are targeted preflights for
+the mistakes that mutate something, not a schema for the policy file; go-kure/.github#161
+tracks closed-schema validation of every tier.
 
 A ruleset normally has a `github_defaults.rulesets` entry (optionally scoped to specific repos
 via `repos:`, per-repo fields overridden under `github_repos.<repo>.rulesets`). It can also be
