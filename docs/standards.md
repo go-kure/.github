@@ -217,6 +217,14 @@ like a third-party one. Reusable workflows (`go-kure/.github/.github/workflows/
 x.yml@main`) are exempt by GitHub's own rule and deliberately stay on `main`;
 `scripts/check-action-pins.sh` draws the same line.
 
+The exemption is go-kure-only by default. A consumer organization that publishes its
+own reusable workflows widens it by setting `FIRST_PARTY_WORKFLOW_RE` in the checker's
+environment — on the composite-action step (`env:`) or the local task — for example
+`'^(go-kure|acme)/[^/]+/\.github/workflows/[^@]+@'`. Composite actions are never
+matched by it, whatever the pattern. Because an override weakens a security check, the
+checker prints `NOTE: FIRST_PARTY_WORKFLOW_RE override in effect: <pattern>` on stderr
+whenever a non-default pattern is active, so a widened run is visible in the log.
+
 **Known gap:** Dependabot rewrites the trailing tag comment together with the SHA
 when it bumps a pin, but has documented edge cases where it resolves to an
 untagged branch-HEAD commit and leaves the comment stale

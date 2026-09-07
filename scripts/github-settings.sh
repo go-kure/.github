@@ -655,6 +655,24 @@ ruleset_applies() {
     ' <<<"$POLICY_JSON" >/dev/null
 }
 
+# True when at least one of the named rulesets (the caller passes the ones
+# applicable to `repo`) is a branch ruleset whose include list reaches main:
+# literally, via ~DEFAULT_BRANCH, or via ~ALL. Gates the classic-protection
+# migration in audit_rulesets.
+ruleset_covers_main() {
+    local repo="$1"
+    shift
+    local name
+    for name in "$@"; do
+        [ "$(ruleset_field "$repo" "$name" target branch)" = "branch" ] || continue
+        if ruleset_conditions_json "$repo" "$name" \
+            | jq -e '.ref_name.include | (index("refs/heads/main") // index("~DEFAULT_BRANCH") // index("~ALL")) != null' >/dev/null; then
+            return 0
+        fi
+    done
+    return 1
+}
+
 # Read a top-level ruleset field (target/enforcement) with per-repo override
 # falling back to default, falling back to `default_val` if declared nowhere.
 ruleset_field() {
@@ -946,14 +964,21 @@ audit_labels() {
             # unconditionally skipped by the extra-label loop, so nothing else
             # ever flags the orphaned old name. Surface it instead.
             local old_name="${REVERSE_RENAME_MAP[$name]:-}"
-            if [ -n "$old_name" ] && echo "$existing_labels" | grep -qx "$old_name"; then
+            if [ -n "$old_name" ] && echo "$existing_labels" | grep -qx "$old_name" \
+                && ! label_expected_on_repo "$old_name" "$repo"; then
                 echo -e "  ${YELLOW}DUPLICATE${NC}: $old_name coexists with $name — reconcile issues onto $name and delete $old_name manually (not automated: could drop issue associations)"
                 LABELS_DUPLICATE=$((LABELS_DUPLICATE + 1))
             fi
         else
-            # Check if there's a rename candidate
+            # Check if there's a rename candidate. A rename source is legacy
+            # only when the labels file does not itself expect it on this repo:
+            # a consumer standard may declare both `bug` and `type/bug`, and
+            # renaming `bug` away would then delete a required label
+            # (go-kure/.github#154 review finding). Same rule in the DUPLICATE
+            # and extra-label branches.
             local old_name="${REVERSE_RENAME_MAP[$name]:-}"
-            if [ -n "$old_name" ] && echo "$existing_labels" | grep -qx "$old_name"; then
+            if [ -n "$old_name" ] && echo "$existing_labels" | grep -qx "$old_name" \
+                && ! label_expected_on_repo "$old_name" "$repo"; then
                 # Rename candidate exists
                 LABELS_RENAMED=$((LABELS_RENAMED + 1))
                 if [ "$apply" = "true" ]; then
@@ -995,14 +1020,16 @@ audit_labels() {
     # Detect extra labels (in repo but not in standard, and not a rename candidate)
     while IFS= read -r existing_name; do
         [ -z "$existing_name" ] && continue
-        # Skip a rename candidate only while its target is expected on this
-        # repo — the case the rename branch above handles. When the target is
-        # not declared for this repo (a consumer's LABELS_FILE that omits
-        # type/bug, or scopes it elsewhere) the old name has no rename to wait
-        # for and falls through to the extra check below; before this guard it
-        # was neither renamed nor reported, stranded through every audit and
-        # apply (go-kure/.github#154 review finding).
+        # Skip a rename candidate only while it is legacy (not itself expected
+        # here) and its target is expected on this repo — the case the rename
+        # branch above handles. When the target is not declared for this repo
+        # (a consumer's LABELS_FILE that omits type/bug, or scopes it
+        # elsewhere) the old name has no rename to wait for and falls through
+        # to the extra check below; before this guard it was neither renamed
+        # nor reported, stranded through every audit and apply
+        # (go-kure/.github#154 review finding).
         if [[ -v LABEL_RENAME_MAP["$existing_name"] ]] \
+            && ! label_expected_on_repo "$existing_name" "$repo" \
             && label_expected_on_repo "${LABEL_RENAME_MAP[$existing_name]}" "$repo"; then
             continue
         fi
@@ -1377,15 +1404,6 @@ audit_rulesets() {
 
     echo -e "\n${BLUE}=== Rulesets (main): $GITHUB_ORG/$repo ===${NC}"
 
-    # Check for leftover classic branch protection
-    if gh api "repos/$GITHUB_ORG/$repo/branches/main/protection" --silent 2>/dev/null; then
-        RULESET_MISSING=$((RULESET_MISSING + 1))
-        echo -e "  ${YELLOW}LEGACY${NC}: Classic branch protection still exists (should be replaced by rulesets)"
-        if [ "$apply" = "true" ]; then
-            remove_classic_branch_protection "$repo"
-        fi
-    fi
-
     local -a all_names applicable_names
     mapfile -t all_names < <(ruleset_names)
     applicable_names=()
@@ -1393,6 +1411,25 @@ audit_rulesets() {
     for name in "${all_names[@]}"; do
         ruleset_applies "$repo" "$name" && applicable_names+=("$name")
     done
+
+    # Check for leftover classic branch protection. It is migrated away only
+    # when the policy installs a branch ruleset covering main on this repo;
+    # a policy that leaves main without one (empty map, tag rulesets only,
+    # main not included) would otherwise lose unmanaged classic protection
+    # on --apply with nothing replacing it (go-kure/.github#154 review
+    # finding). That case is reported, not counted as drift: the policy is
+    # not asking for anything on main.
+    if gh api "repos/$GITHUB_ORG/$repo/branches/main/protection" --silent 2>/dev/null; then
+        if ruleset_covers_main "$repo" "${applicable_names[@]}"; then
+            RULESET_MISSING=$((RULESET_MISSING + 1))
+            echo -e "  ${YELLOW}LEGACY${NC}: Classic branch protection still exists (should be replaced by rulesets)"
+            if [ "$apply" = "true" ]; then
+                remove_classic_branch_protection "$repo"
+            fi
+        else
+            echo -e "  ${YELLOW}SKIP${NC}: Classic branch protection kept — no policy ruleset targets main on this repo, so nothing would replace it"
+        fi
+    fi
 
     # Get existing rulesets. includes_parents=false excludes org-level rulesets that
     # apply here by inheritance — those are managed at the org level, not this repo's,
