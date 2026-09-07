@@ -40,7 +40,10 @@ fail() { echo "FAIL: $*" >&2; errors=$((errors + 1)); }
 # exempts them too — deliberately mirroring the policy rather than being
 # stricter than it. First-party *composite actions* are NOT exempt from
 # that policy and are NOT exempt here.
-FIRST_PARTY_WORKFLOW_RE='^go-kure/[^/]+/\.github/workflows/[^@]+@'
+# Overridable so a consumer org can admit its own reusable workflows at a
+# mutable ref (e.g. '^(go-kure|other-org)/[^/]+/\.github/workflows/[^@]+@');
+# the default stays go-kure-only, so nothing changes for this org's callers.
+FIRST_PARTY_WORKFLOW_RE="${FIRST_PARTY_WORKFLOW_RE:-^go-kure/[^/]+/\\.github/workflows/[^@]+@}"
 
 checked=0
 while IFS= read -r -d '' file; do
