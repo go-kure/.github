@@ -151,8 +151,9 @@ confirm_introduction() {
 #
 # Three shapes are recognised: a GitHub squash-merge subject ending in "(#123)", a GitHub
 # merge commit "Merge pull request #123 from ...", and GitLab's "See merge request grp/proj!123"
-# trailer. A repository that rebases without a trailer -- autops/wharf/meta does -- leaves no
-# reference in git at all, so the number is genuinely unavailable rather than merely unmatched.
+# trailer. A repository configured to rebase without emitting that trailer -- at least one of
+# the private GitLab repositories this harness was built against is -- leaves no reference in
+# git at all, so the number is genuinely unavailable rather than merely unmatched.
 #
 # That is NOT a reason to drop the row. The harness replays the diff base_sha..head_sha through
 # the reviewer; the number is provenance for whoever reads the gold file, never an input. Rows
