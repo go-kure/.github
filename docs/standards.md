@@ -221,9 +221,11 @@ The exemption is go-kure-only by default. A consumer organization that publishes
 own reusable workflows widens it by setting `FIRST_PARTY_WORKFLOW_RE` in the checker's
 environment — on the composite-action step (`env:`) or the local task — for example
 `'^(go-kure|acme)/[^/]+/\.github/workflows/[^@]+@'`. The pattern is consulted only for
-refs of the reusable-workflow shape (`owner/repo/.github/workflows/file@ref`), which is
-fixed in the checker, so it can only narrow *which* reusable workflows count as
-first-party — even a permissive `'^acme/'` cannot exempt a composite or plain action.
+refs of the reusable-workflow shape (`owner/repo/.github/workflows/file.yml@ref` — a
+`.yml`/`.yaml` file directly under `.github/workflows/`, since a composite action can live
+in any directory but only such a file can be a reusable workflow), which is fixed in the
+checker, so it can only narrow *which* reusable workflows count as first-party — even a
+permissive `'^acme/'` cannot exempt a composite or plain action.
 Because an override weakens a security check, the checker prints
 `NOTE: FIRST_PARTY_WORKFLOW_RE override in effect: <pattern>` on stderr whenever a
 non-default pattern is active, so a widened run is visible in the log.

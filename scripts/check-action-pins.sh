@@ -46,11 +46,14 @@ fail() { echo "FAIL: $*" >&2; errors=$((errors + 1)); }
 # The override can only ever narrow WHICH reusable workflows are first-party:
 # it is consulted solely for refs of the reusable-workflow shape below, so a
 # permissive pattern ('^acme/') still cannot exempt a composite or plain
-# action from that owner. An override widens a security check, so it is
-# never silent: the active pattern is printed whenever it differs from the
-# default, and a run under a weakened exemption is never indistinguishable
-# from a clean one.
-REUSABLE_WORKFLOW_SHAPE='^[^/@]+/[^/@]+/\.github/workflows/[^@]+@'
+# action from that owner. The shape requires a workflow FILE directly under
+# .github/workflows/ (a .yml/.yaml name, no further path segments): a
+# composite action can live in any directory, including
+# .github/workflows/<dir>, and only a file there can be a reusable workflow.
+# An override widens a security check, so it is never silent: the active
+# pattern is printed whenever it differs from the default, and a run under a
+# weakened exemption is never indistinguishable from a clean one.
+REUSABLE_WORKFLOW_SHAPE='^[^/@]+/[^/@]+/\.github/workflows/[^/@]+\.ya?ml@'
 DEFAULT_FIRST_PARTY_WORKFLOW_RE='^go-kure/[^/]+/\.github/workflows/[^@]+@'
 FIRST_PARTY_WORKFLOW_RE="${FIRST_PARTY_WORKFLOW_RE:-$DEFAULT_FIRST_PARTY_WORKFLOW_RE}"
 if [ "$FIRST_PARTY_WORKFLOW_RE" != "$DEFAULT_FIRST_PARTY_WORKFLOW_RE" ]; then
