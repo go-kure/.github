@@ -139,10 +139,14 @@ repo(s) that declare it.
 
 ### Environment variables
 
-`GITHUB_ORG` (default `go-kure`) and `GITHUB_REPOS` (default `.github kure launcher
-go-kure.github.io`, space-separated) override which org/repos every mode above targets —
-useful for testing against a fork or a subset of repos. `--all --apply` mutates every
-repo in this list, including `go-kure.github.io`.
+`GITHUB_ORG` (default `go-kure`) and `GITHUB_REPOS` (default `$GITHUB_REPOS_DEFAULT`, itself
+defaulting to `.github kure launcher go-kure.github.io`, space-separated) override which
+org/repos every mode above targets — useful for testing against a fork or a subset of repos.
+`--all --apply` mutates every repo in this list, including `go-kure.github.io`.
+`GITHUB_REPOS_DEFAULT`, `LABELS_FILE` and `POLICY_FILE` exist for a thin consumer org that runs
+this script from its own repo against its own policy and label files (`docs/standards.md`,
+"Repository Settings"). Scope validation checks `repos:` entries against `GITHUB_REPOS_DEFAULT`
+unioned with `GITHUB_REPOS`, so a consumer sets both, not just `GITHUB_REPOS`.
 
 ### Adding or changing labels
 
@@ -249,7 +253,7 @@ Reusable workflows have `on: workflow_call` in their trigger. Caller workflows (
 |----------|-----------------|---------|------------|----------------|
 | `auto-rebase.yml` | push to `main` (via `auto-rebase-caller.yml`) | Rebases all open PRs when main is updated | — | `AUTO_REBASE_PAT` |
 | `claude.yml` | PR/issue/comment events (via `claude-caller.yml`) | @claude AI assistant on PRs and issues | — | `CLAUDE_CODE_OAUTH_TOKEN` |
-| `pr-review.yml` | PR open/sync/reopen, drafts included (via `pr-review-caller.yml`; `ready_for_review` dropped once the rollout window closed — see `docs/pr-review-threads.md` § Draft PRs) | 2-pass AI code review via the `pr-review-threads` composite action; one resolvable, merge-gating PR review thread per finding (deduped by fingerprint, auto-resolved when fixed or judged a false positive). `pr-review.yml`'s own default `PR_REVIEW_THREADS_MODE` is now `enforce` (go-kure/.github#108), matching the org variable's live value since 2026-08-18. `pr-review / AI Code Review` is a required status check on kure/launcher only, deliberately excluded from `.github` — see `governance/repository-settings-policy.yaml` and `docs/standards.md` § Interim outage window | `pr_review_context` (string, optional) | `KURE_BOT_PAT` (optional — falls back to `github.token`, which can create but never resolve its own threads; see "Token and bot identity" in `docs/pr-review-threads.md`) |
+| `pr-review.yml` | PR open/sync/reopen, drafts included (via `pr-review-caller.yml`; `ready_for_review` dropped once the rollout window closed — see `docs/pr-review-threads.md` § Draft PRs) | 2-pass AI code review via the `pr-review-threads` composite action; one resolvable, merge-gating PR review thread per finding (deduped by fingerprint, auto-resolved when fixed or judged a false positive). `pr-review.yml`'s own default `PR_REVIEW_THREADS_MODE` is now `enforce` (go-kure/.github#108), matching the org variable's live value since 2026-08-18. `pr-review / AI Code Review` is a required status check on kure/launcher only, deliberately excluded from `.github` — see `governance/repository-settings-policy.yaml` and `docs/standards.md` § Interim outage window | `pr_review_context` (string, optional); `runs-on` (string, optional, default `autops-kube-kure` — a consumer org passes its own runner label, which must reach the in-cluster review backend) | `KURE_BOT_PAT` (optional — falls back to `github.token`, which can create but never resolve its own threads; see "Token and bot identity" in `docs/pr-review-threads.md`) |
 | `release-create.yml` | `workflow_dispatch` | Pre-flight CI gate + git-cliff tag creation | `type` (required), `scope`, `dry_run` | `KURE_BOT_APP_ID`, `KURE_BOT_APP_PRIVATE_KEY` |
 | `release-bump.yml` | `workflow_dispatch` | Bump `versions.env`/changelog without tagging a release | `scope` (required), `dry_run` | `KURE_BOT_APP_ID`, `KURE_BOT_APP_PRIVATE_KEY` |
 | `release-promote.yml` | `workflow_dispatch` | Promote a prerelease (beta → rc → stable) | `to` (required: `beta`\|`rc`\|`stable`), `dry_run` | `KURE_BOT_APP_ID`, `KURE_BOT_APP_PRIVATE_KEY` |
