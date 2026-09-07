@@ -121,10 +121,21 @@ done
 PRT_MODEL_DEADLINE_EPOCH=$(( $(date +%s) + PRT_MODEL_BUDGET_SECONDS ))
 export PRT_MODEL_DEADLINE_EPOCH
 
+# The three context files are validated HERE, not inside the command substitutions below.
+# `die` called from inside `$(...)` exits only the subshell: with `set -uo pipefail` and no
+# `-e`, the failed assignment's status goes unchecked and the run continues with an empty
+# context string -- a review silently missing its AGENTS.md, then scored as though it had it.
+# Proved on this host: `v=$(f /nonexistent)` where f calls die prints the message and the next
+# line still runs with v empty. `|| exit` at each call site would also work; validating up
+# front keeps the failure attached to the argument that caused it.
+for ctx_file in "$agents_file" "$claude_md_file" "$standards_file"; do
+    [ -z "$ctx_file" ] || [ -f "$ctx_file" ] || die "no such file: $ctx_file"
+done
+unset ctx_file
+
 read_optional() {
     local path="$1"
     [ -n "$path" ] || return 0
-    [ -f "$path" ] || die "no such file: $path"
     cat -- "$path"
 }
 
