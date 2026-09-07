@@ -11,9 +11,12 @@
 
 set -uo pipefail  # not -e: report every assertion, not just the first failure
 
+# Both of these are checked explicitly because `set -e` is off above: an unchecked failure
+# leaves the variable empty and every path built from it silently reroots at `/`.
 ROOT="${1:-.}"
-ROOT="$(cd "$ROOT" && pwd)"
+ROOT="$(cd "$ROOT" && pwd)" || { echo "no such directory: ${1:-.}" >&2; exit 2; }
 ADAPTER="$ROOT/scripts/eval/review-adapter.sh"
+[ -f "$ADAPTER" ] || { echo "not found: $ADAPTER" >&2; exit 2; }
 
 failures=0
 pass_count=0
@@ -28,7 +31,10 @@ assert_eq() {
   fi
 }
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/review-adapter-test.XXXXXX")"
+# Checked before the trap is installed, so a failed mktemp cannot leave the trap holding an
+# empty path -- and so no fixture below is written to `/sample.diff` or `/stub`.
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/review-adapter-test.XXXXXX")" \
+  || { echo "mktemp failed" >&2; exit 2; }
 trap 'rm -rf "$WORK"' EXIT
 
 cat > "$WORK/sample.diff" <<'DIFF'
