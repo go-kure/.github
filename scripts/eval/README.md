@@ -8,7 +8,7 @@ merge requests and belongs in a private repository alongside the checkouts it re
 
 ## The metric, and the one this construction cannot support
 
-The harness reports **gold-match recall** and a **count of unmatched findings**. It does not
+The harness reports **gold-match recall** and a **count of uncredited findings**. It does not
 report precision, and that is a decision, not an omission.
 
 The gold set is mined from commits that fixed a bug. It therefore contains only defects
@@ -17,9 +17,16 @@ fixed produces a finding that matches no gold row — and scoring that as a fals
 would mark the better reviewer down for finding more. Recall is sound under this
 construction. Precision is not, so it is never printed and the word is not used.
 
-The unmatched count is still reported, because unmatched volume is worth watching: a
-reviewer whose unmatched count triples while its recall stays flat is getting noisier. It
-is a signal for a human, never a gate. `compare.sh` prints it and does not gate on it.
+That count is still reported, because its volume is worth watching: a reviewer whose
+uncredited count triples while its recall stays flat is getting noisier. It is a signal for a
+human, never a gate. `compare.sh` prints it and does not gate on it.
+
+**It is called `uncredited`, not `unmatched`, and the difference is real.** Once a gold row is
+matched, `judge.sh` stops judging further findings against it — recall counts rows caught, not
+how many findings caught each — so a *second* finding describing that same row is never judged
+and lands in this count too. Calling the field "unmatched" would assert something the harness
+did not measure. Judging those extra pairs would spend model calls to refine a number that
+gates nothing, so the honest name is the cheaper correct answer.
 
 ## The pieces
 
@@ -62,6 +69,28 @@ routes every call through the Claude Code CLI on the Max subscription, and that 
 no temperature control. So neither **temperature 0** nor a **pinned judge model** can be
 enforced; `--judge-model` is recorded for provenance and not obeyed. The remaining control
 for judge variance is repetition, which is what `--runs` and the reported spread are for.
+
+## What happens when the reviewer fails on one document
+
+Two failure kinds reach `run.sh`, and they are not the same event.
+
+A missing `--checkout`, an unresolvable revision or an empty diff is a **setup fault**: it fails
+identically on every run, so continuing would silently measure a gold set the caller did not
+ask for. Those abort.
+
+A reviewer or judge that cannot produce a usable answer is the **backend being
+nondeterministic** — the property this harness exists to quantify. Measured on the first live
+subset run: of 12 documents, one came back with a finding the normalizer rejected and one lost
+its connection mid-run, and each aborted the whole three-run measurement. Over 43 documents
+times 3 runs, the chance of at least one such event approaches certainty, so an aborting
+harness would never produce the number it was built for.
+
+Such a document is **excluded from both sides of the fraction**, never scored as a miss.
+Counting its gold rows against the reviewer would repeat the error the adapter refuses to make
+when it exits 1 rather than emitting an empty finding set: *no signal is not no defects.* Each
+run therefore reports its own denominator and its exclusion count, and `--max-excluded`
+(default 0.15) refuses a run that lost more of the gold set than that — a result assembled from
+a shifting subset stops being comparable to one that read all of it.
 
 ## Why three runs, and why the spread gates
 

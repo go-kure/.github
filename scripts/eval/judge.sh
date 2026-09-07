@@ -24,12 +24,19 @@
 #
 # Input:  --findings  the adapter's document ({findings: [...]})
 #         --gold      one gold document ({repo, pr, head_sha, base_sha, gold: [...]})
-# Output: {gold_total, matched, recall, unmatched, pairs_judged, matches: [...]}
+# Output: {gold_total, matched, recall, uncredited, pairs_judged, matches: [...]}
 #
-# `unmatched` is a COUNT OF FINDINGS THAT MATCHED NO GOLD ROW, and it is deliberately not
+# `uncredited` is a COUNT OF FINDINGS NOT CREDITED WITH A MATCH, and it is deliberately not
 # called false positives. The gold set is mined from commits someone eventually fixed, so a
-# reviewer naming a real defect nobody ever filed is unmatched but correct. Reporting it as
+# reviewer naming a real defect nobody ever filed is uncredited but correct. Reporting it as
 # precision would punish the better reviewer. See eval/README.md.
+#
+# The name is "uncredited" rather than "unmatched" because the two are not the same set. Once
+# a gold row is matched, the loop below stops judging further pairs against it -- recall counts
+# rows caught, not how many findings caught each -- so a SECOND finding describing that same
+# row is never judged and lands here too. Calling that "matched no gold row" would be false;
+# judging it anyway would spend model calls to refine a number that gates nothing. The count is
+# a volume signal for a human, so the honest name is the cheaper correct answer.
 #
 # exit status
 #   0  judged (a zero-match result is a legitimate outcome)
@@ -188,7 +195,9 @@ while IFS=$'\t' read -r gi fi_idx; do
     [ -n "$gi" ] || continue
 
     # A gold row already matched needs no further pairs: recall counts rows caught, not
-    # how many findings caught each one.
+    # how many findings caught each one. The finding skipped here is therefore never credited
+    # and is counted in `uncredited` -- which is why that field is not named "unmatched"; see
+    # the header.
     case " $matched_gold " in *" $gi "*) continue ;; esac
 
     gold_text=$(jq -r --argjson i "$gi" '
@@ -213,7 +222,7 @@ while IFS=$'\t' read -r gi fi_idx; do
     if [ "$verdict" = true ]; then
         matched_gold="$matched_gold $gi"
         # One finding can legitimately catch two gold rows in the same file. Record it once,
-        # or the unmatched count below is decremented twice for a single finding and can go
+        # or the uncredited count below is decremented twice for a single finding and can go
         # negative on a small gold set.
         case " $matched_findings " in
             *" $fi_idx "*) ;;
@@ -237,22 +246,22 @@ fi
 
 n_matched=$(printf '%s' "$matched_gold" | wc -w)
 n_findings=$(jq '.findings | length' "$findings_file")
-n_unmatched=$n_findings
+n_uncredited=$n_findings
 for i in $matched_findings; do
-    [ -n "$i" ] && n_unmatched=$((n_unmatched - 1))
+    [ -n "$i" ] && n_uncredited=$((n_uncredited - 1))
 done
 
 result=$(jq -n \
     --argjson gold_total "$gold_total" \
     --argjson matched "$n_matched" \
     --argjson findings "$n_findings" \
-    --argjson unmatched "$n_unmatched" \
+    --argjson uncredited "$n_uncredited" \
     --argjson pairs "$pairs_judged" \
     --argjson matches "$matches" \
     --arg judge_model "$judge_model" \
     '{gold_total: $gold_total, findings: $findings, matched: $matched,
       recall: (if $gold_total == 0 then null else ($matched / $gold_total) end),
-      unmatched: $unmatched, pairs_judged: $pairs,
+      uncredited: $uncredited, pairs_judged: $pairs,
       judge_model_requested: $judge_model, matches: $matches}') \
     || die "cannot build result JSON"
 

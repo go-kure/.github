@@ -15,7 +15,7 @@
 # improvement costs one more measurement round, while accepting a fake one flips a default
 # engine on evidence that was never there.
 #
-# Both unmatched-finding counts are printed beside the verdict but do NOT enter it. They are
+# Both uncredited-finding counts are printed beside the verdict but do NOT enter it. They are
 # not precision (see run.sh's header): a reviewer that finds more real, never-filed defects
 # raises that count while getting better, so gating on it would select for silence.
 #
@@ -59,14 +59,14 @@ fi
 b_engine=$(jq -r '.engine' "$baseline")
 c_engine=$(jq -r '.engine' "$candidate")
 
-read -r b_r b_s b_u < <(jq -r '[.mean_r, .spread, .unmatched] | @tsv' "$baseline")
-read -r c_r c_s c_u < <(jq -r '[.mean_r, .spread, .unmatched] | @tsv' "$candidate")
+read -r b_r b_s b_u < <(jq -r '[.mean_r, .spread, .uncredited] | @tsv' "$baseline")
+read -r c_r c_s c_u < <(jq -r '[.mean_r, .spread, .uncredited] | @tsv' "$candidate")
 
 delta=$(jq -n --argjson a "$c_r" --argjson b "$b_r" '$a - $b')
 threshold=$(jq -n --argjson a "$b_s" --argjson b "$c_s" '$a + $b')
 
-printf '%-10s mean_r=%s spread=%s unmatched=%s\n' "$b_engine" "$b_r" "$b_s" "$b_u"
-printf '%-10s mean_r=%s spread=%s unmatched=%s\n' "$c_engine" "$c_r" "$c_s" "$c_u"
+printf '%-10s mean_r=%s spread=%s uncredited=%s\n' "$b_engine" "$b_r" "$b_s" "$b_u"
+printf '%-10s mean_r=%s spread=%s uncredited=%s\n' "$c_engine" "$c_r" "$c_s" "$c_u"
 printf 'delta=%s threshold=%s (spread %s + spread %s)\n' \
     "$delta" "$threshold" "$b_s" "$c_s"
 

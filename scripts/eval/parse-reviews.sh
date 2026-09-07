@@ -138,10 +138,19 @@ in_table {
     # the em dash, not on whitespace: a reason's own first word is not a status.
     status = status_cell
     reason = ""
-    idx = index(status_cell, "—")
-    if (idx > 0) {
-        status = trim(substr(status_cell, 1, idx - 1))
-        reason = trim(substr(status_cell, idx + 3))
+    if (status_cell ~ /—/) {
+        # Split with regex, never with index()+substr() arithmetic. The `substr(cell, idx + 3)`
+        # that stood here offset a CHARACTER index by the em dash's BYTE length: gawk in a
+        # UTF-8 locale makes index() and substr() character-based, so it skipped the dash plus
+        # two further characters and silently truncated the first characters of every reason.
+        # It was correct only under a byte-oriented awk such as mawk -- a defect whose presence
+        # depends on the interpreter rather than the data. This is the form VERIFY_AWK uses.
+        status = status_cell
+        sub(/—.*$/, "", status)
+        status = trim(status)
+        reason = status_cell
+        sub(/^[^—]*—[ \t]*/, "", reason)
+        reason = trim(reason)
     }
     # Strip emphasis and any parenthetical: "**rejected** (wrong premise)" is `rejected`.
     gsub(/\*/, "", status)

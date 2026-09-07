@@ -9,11 +9,11 @@
 #
 # WHAT THIS REPORTS, AND WHAT IT DELIBERATELY DOES NOT
 #
-# It reports GOLD-MATCH RECALL and a count of unmatched findings. It does not report
+# It reports GOLD-MATCH RECALL and a count of uncredited findings. It does not report
 # precision, and the missing metric is a property of the gold set rather than an omission.
 # The gold set is mined from commits that fixed a bug, so it contains only defects somebody
 # eventually filed. A reviewer that names a real defect nobody ever fixed produces an
-# unmatched finding, and scoring that as a false positive would punish the better reviewer
+# uncredited finding, and scoring that as a false positive would punish the better reviewer
 # and invert the Phase 2 comparison this harness exists to decide. Recall is sound under this
 # construction; precision is not, so it is not printed. See eval/README.md.
 #
@@ -21,7 +21,12 @@
 #   run.sh --gold '<glob>' --engine chat --runs 3 --max-spread <f> --out <file>
 #          --checkout <repo-name>=<path> [--readme <file>] [--assess]
 #
-# Per-run stdout is one line: `run=N R=<recall> matched=<n>/<gold_total> unmatched=<n>`.
+# Per-run stdout is one line:
+#   run=N R=<recall> matched=<n>/<denominator> uncredited=<n> excluded=<n>/<documents>
+#
+# The denominator is the gold rows of the documents that RETURNED a verdict this run, not the
+# whole gold set. A document the reviewer or judge could not produce a usable answer for is
+# excluded from both sides of the fraction rather than scored as a miss -- see do_run.
 # The summary line is `mean_r=<f> spread=<f> runs=<n>`.
 #
 # exit status
@@ -52,6 +57,8 @@ usage: run.sh --gold '<glob>' --engine <chat> --runs <n> --out <file>
   --checkout    map a gold document's `repo` to a local clone; repeatable
   --out         write the summary JSON here
   --max-spread  refuse (exit 3) when max(R) - min(R) exceeds this
+  --max-excluded  fraction of gold documents a run may lose to reviewer/judge failure
+                  before it stops being measurable (default 0.15)
   --readme      rewrite this file's `baseline mean_r=` line from the measured result
   --assess      also run the reviewer's assessment pass
 
@@ -65,6 +72,10 @@ engine=chat
 runs=0
 out_file=
 max_spread=
+# 0.15 is a ceiling on how much of the gold set may vanish before a run stops describing it,
+# not a target. Set from the first live subset: 1 document of 12 excluded is 0.083, so a
+# single flaky response stays inside the gate while a systemic backend fault does not.
+max_excluded=0.15
 readme_file=
 assess_flag=()
 declare -A checkouts=()
@@ -76,6 +87,7 @@ while [ $# -gt 0 ]; do
         --runs) runs=${2-}; shift 2 || die "--runs needs a value" ;;
         --out) out_file=${2-}; shift 2 || die "--out needs a value" ;;
         --max-spread) max_spread=${2-}; shift 2 || die "--max-spread needs a value" ;;
+        --max-excluded) max_excluded=${2-}; shift 2 || die "--max-excluded needs a value" ;;
         --readme) readme_file=${2-}; shift 2 || die "--readme needs a value" ;;
         --assess) assess_flag=(--assess); shift ;;
         --checkout)
@@ -105,11 +117,25 @@ case "$engine" in
     *) die "unknown engine: $engine" ;;
 esac
 
+# require_number NAME VALUE -- die unless VALUE is something jq will accept as a number.
+#
+# A `case` glob is NOT sufficient here, and the difference is a gate that fails open. The
+# pattern `''|*[!0-9.]*` admits `.5`, `1.2.3` and a bare `.`; `jq --argjson m .5` then aborts
+# with "Invalid JSON text" and prints nothing, so a later `[ "$(jq …)" = "true" ]` compares the
+# empty string, reads false, and the gate silently passes a result it exists to reject. The
+# only validator that agrees with the consumer is the consumer's own parser.
+require_number() {
+    jq -e -n --argjson v "$2" '(. // $v) | type == "number"' >/dev/null 2>&1 \
+        || die "$1 must be a number (got: $2)"
+}
+
 if [ -n "$max_spread" ]; then
-    case "$max_spread" in
-        ''|*[!0-9.]*) die "--max-spread must be a number" ;;
-    esac
+    require_number --max-spread "$max_spread"
 fi
+
+require_number --max-excluded "$max_excluded"
+jq -e -n --argjson m "$max_excluded" '$m >= 0 and $m <= 1' >/dev/null \
+    || die "--max-excluded is a fraction of the gold documents, so it must be within 0..1 (got $max_excluded)"
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd) || die "cannot resolve script dir"
 adapter="$here/review-adapter.sh"
@@ -157,10 +183,30 @@ trap 'rm -rf "$workdir"' EXIT
 # one run
 # ---------------------------------------------------------------------------
 
-# do_run RUN_INDEX -- prints "matched<TAB>unmatched"; returns 1 if any document failed.
+# do_run RUN_INDEX -- prints "matched<TAB>uncredited<TAB>denominator<TAB>excluded".
+# Returns 1 only on a setup fault; a model-side failure excludes one document instead.
+#
+# The two failure kinds are not the same event and must not share an exit path. A missing
+# --checkout, an unresolvable revision or an empty diff is deterministic: it fails identically
+# on every run, so continuing would measure a gold set the caller did not ask for. Those still
+# abort.
+#
+# A reviewer or judge failure is the backend being nondeterministic, which is the property this
+# harness exists to quantify. Measured on the first live subset run: one document in 12 came
+# back with a finding that normalize rejected, and one lost its connection mid-run -- and each
+# killed the whole three-run measurement, so the harness could not produce the number it was
+# built for. Over 43 documents times 3 runs the chance of at least one such event approaches
+# certainty.
+#
+# An excluded document leaves the DENOMINATOR as well as the numerator: scoring its gold rows
+# as missed would be the same error the adapter refuses to make when it exits 1 rather than
+# reporting an empty finding set -- "no signal" is not "no defects". Exclusions are counted and
+# reported per run, and --max-excluded gates the fraction, because a result assembled from a
+# shifting subset of the gold set stops being comparable to one that read all of it.
 do_run() {
     local run_idx="$1"
-    local matched=0 unmatched=0 g repo checkout diff_file findings_file verdict_file
+    local matched=0 uncredited=0 denom=0 excluded=0
+    local g repo checkout diff_file findings_file verdict_file rows
 
     for g in "${gold_files[@]}"; do
         repo=$(jq -r '.repo' "$g")
@@ -181,24 +227,29 @@ do_run() {
             || { log "cannot diff $base..$head in $checkout"; return 1; }
         [ -s "$diff_file" ] || { log "empty diff for $g"; return 1; }
 
+        rows=$(jq '.gold | length' "$g")
+
         findings_file="$workdir/run$run_idx-$(basename "$g" .json).findings.json"
         if ! "$adapter" --diff "$diff_file" --title "$title" --out "$findings_file" \
             "${assess_flag[@]}"; then
-            log "reviewer produced no usable findings for $g"
-            return 1
+            log "excluding $g: reviewer produced no usable findings"
+            excluded=$((excluded + 1))
+            continue
         fi
 
         verdict_file="$workdir/run$run_idx-$(basename "$g" .json).verdict.json"
         if ! "$judge" --findings "$findings_file" --gold "$g" --out "$verdict_file"; then
-            log "judge failed for $g"
-            return 1
+            log "excluding $g: judge produced no usable verdict"
+            excluded=$((excluded + 1))
+            continue
         fi
 
+        denom=$((denom + rows))
         matched=$((matched + $(jq '.matched' "$verdict_file")))
-        unmatched=$((unmatched + $(jq '.unmatched' "$verdict_file")))
+        uncredited=$((uncredited + $(jq '.uncredited' "$verdict_file")))
     done
 
-    printf '%d\t%d' "$matched" "$unmatched"
+    printf '%d\t%d\t%d\t%d' "$matched" "$uncredited" "$denom" "$excluded"
 }
 
 # ---------------------------------------------------------------------------
@@ -206,29 +257,49 @@ do_run() {
 # ---------------------------------------------------------------------------
 
 recalls=()
-unmatcheds=()
+uncrediteds=()
+excludeds=()
 
 for ((run = 1; run <= runs; run++)); do
     result=$(do_run "$run") || exit 1
-    matched=${result%%$'\t'*}
-    unmatched=${result##*$'\t'}
-    recall=$(jq -n --argjson m "$matched" --argjson t "$gold_total" '$m / $t')
+    IFS=$'\t' read -r matched uncredited denom excluded <<<"$result"
+
+    # Every document excluded leaves no denominator, so recall is undefined rather than zero.
+    # Dividing here would print 0 and read as "the reviewer found nothing", which is the one
+    # conclusion the data cannot support.
+    [ "$denom" -gt 0 ] || die "run $run: every gold document was excluded; nothing to measure"
+
+    excluded_frac=$(jq -n --argjson e "$excluded" --argjson n "${#gold_files[@]}" '$e / $n')
+    # Same three-way status handling as the --max-spread gate below: `if jq -e` alone folds a
+    # jq that aborted into the "within limit" branch, which is a gate that fails open.
+    jq -e -n --argjson f "$excluded_frac" --argjson m "$max_excluded" '$f > $m' >/dev/null
+    case $? in
+        0) die "run $run: excluded $excluded of ${#gold_files[@]} documents ($excluded_frac), over --max-excluded $max_excluded" ;;
+        1) ;;
+        *) die "run $run: could not compare exclusion fraction $excluded_frac against --max-excluded $max_excluded" ;;
+    esac
+
+    recall=$(jq -n --argjson m "$matched" --argjson t "$denom" '$m / $t')
     recalls+=("$recall")
-    unmatcheds+=("$unmatched")
-    printf 'run=%d R=%s matched=%d/%d unmatched=%d\n' \
-        "$run" "$recall" "$matched" "$gold_total" "$unmatched"
+    uncrediteds+=("$uncredited")
+    excludeds+=("$excluded")
+    printf 'run=%d R=%s matched=%d/%d uncredited=%d excluded=%d/%d\n' \
+        "$run" "$recall" "$matched" "$denom" "$uncredited" "$excluded" "${#gold_files[@]}"
 done
 
 summary=$(jq -n \
     --argjson r "$(printf '%s\n' "${recalls[@]}" | jq -sc '.')" \
-    --argjson u "$(printf '%s\n' "${unmatcheds[@]}" | jq -sc '.')" \
+    --argjson u "$(printf '%s\n' "${uncrediteds[@]}" | jq -sc '.')" \
+    --argjson e "$(printf '%s\n' "${excludeds[@]}" | jq -sc '.')" \
     '{mean_r: (($r | add) / ($r | length)),
       spread: (($r | max) - ($r | min)),
-      unmatched: (($u | add) / ($u | length))}')
+      uncredited: (($u | add) / ($u | length)),
+      excluded_max: ($e | max),
+      excluded_total: ($e | add)}')
 
 mean_r=$(jq -r '.mean_r' <<<"$summary")
 spread=$(jq -r '.spread' <<<"$summary")
-mean_unmatched=$(jq -r '.unmatched' <<<"$summary")
+mean_uncredited=$(jq -r '.uncredited' <<<"$summary")
 
 printf 'mean_r=%s spread=%s runs=%d\n' "$mean_r" "$spread" "$runs"
 
@@ -239,11 +310,11 @@ out_json=$(jq -n \
     --argjson runs "$runs" \
     --argjson mean_r "$mean_r" \
     --argjson spread "$spread" \
-    --argjson unmatched "$mean_unmatched" \
+    --argjson uncredited "$mean_uncredited" \
     --argjson gold_total "$gold_total" \
     --argjson per_run "$(printf '%s\n' "${recalls[@]}" | jq -sc '.')" \
     '{engine: $engine, gold_sha: $gold_sha, gold_tree: $gold_tree, gold_total: $gold_total,
-      runs: $runs, mean_r: $mean_r, spread: $spread, unmatched: $unmatched,
+      runs: $runs, mean_r: $mean_r, spread: $spread, uncredited: $uncredited,
       per_run_recall: $per_run}') || die "cannot build summary JSON"
 
 printf '%s\n' "$out_json" >"$out_file" || die "cannot write $out_file"
@@ -257,10 +328,19 @@ log "wrote $out_file"
 # already been written into the README as the quotable baseline. The JSON is written above
 # either way: that is the record of the measurement, including a failed one.
 if [ -n "$max_spread" ]; then
-    if [ "$(jq -n --argjson s "$spread" --argjson m "$max_spread" '$s > $m')" = "true" ]; then
-        log "spread $spread exceeds --max-spread $max_spread; this result is too noisy to quote"
-        exit 3
-    fi
+    # `jq -e` so a comparison that could not be evaluated exits non-zero instead of printing
+    # nothing: with `[ "$(jq …)" = "true" ]` an aborted jq compares the empty string, reads
+    # false, and the gate passes the result it exists to reject. Exit status 1 means "within
+    # spread"; anything else means jq itself failed, which is not a verdict.
+    jq -e -n --argjson s "$spread" --argjson m "$max_spread" '$s > $m' >/dev/null
+    case $? in
+        0)
+            log "spread $spread exceeds --max-spread $max_spread; this result is too noisy to quote"
+            exit 3
+            ;;
+        1) ;;
+        *) die "could not compare spread $spread against --max-spread $max_spread" ;;
+    esac
 fi
 
 # ---------------------------------------------------------------------------
