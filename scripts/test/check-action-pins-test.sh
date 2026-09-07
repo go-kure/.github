@@ -241,5 +241,13 @@ assert_rc "a permissive owner-only override never exempts that owner's composite
 assert_rc "a permissive owner-only override never exempts that owner's plain action @v1" 1 \
   "$(FIRST_PARTY_WORKFLOW_RE='^acme/' run_fixture "$(printf 'jobs:\n  a:\n    steps:\n      - uses: acme/setup-thing@v1')")"
 
+# A composite action may live under .github/workflows/<dir>; only a .yml/.yaml
+# file directly there can be a reusable workflow, so the shape requires one.
+assert_rc "a permissive owner-only override never exempts a composite action living under .github/workflows/<dir>" 1 \
+  "$(FIRST_PARTY_WORKFLOW_RE='^acme/' run_fixture "$(printf 'jobs:\n  a:\n    steps:\n      - uses: acme/tools/.github/workflows/helpers@main')")"
+
+assert_rc "a .yaml reusable workflow is admitted like a .yml one" 0 \
+  "$(FIRST_PARTY_WORKFLOW_RE='^acme/' run_fixture "$(printf 'jobs:\n  a:\n    uses: acme/tool/.github/workflows/ci.yaml@main')")"
+
 echo "passed: $pass_count, failed: $failures"
 [ "$failures" -eq 0 ]
