@@ -459,6 +459,8 @@ assert_eq "~DEFAULT_BRANCH does not cover main when the default branch is master
 assert_eq "a literal refs/heads/main include still covers main whatever the default branch" "0" "$(COVERS_DEFAULT_BRANCH=master covers_rc "Main Literal")"
 assert_eq "~ALL minus ~DEFAULT_BRANCH covers main when the default branch is master" "0" "$(COVERS_DEFAULT_BRANCH=master covers_rc "All But Default")"
 assert_eq "an unreadable default branch resolves ~DEFAULT_BRANCH to not-main (fail closed)" "1" "$(COVERS_DEFAULT_BRANCH='' covers_rc "Default Branch")"
+assert_eq "an unreadable default branch with ~DEFAULT_BRANCH excluded from ~ALL does not cover main (round-5: the exclude is undecidable too)" "1" "$(COVERS_DEFAULT_BRANCH='' covers_rc "All But Default")"
+assert_eq "an unreadable default branch leaves a literal refs/heads/main ruleset covering main" "0" "$(COVERS_DEFAULT_BRANCH='' covers_rc "Main Literal")"
 unset -f repo_default_branch
 
 # ---- print_summary: blocked (audit-only) org settings drift must be
