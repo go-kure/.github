@@ -422,7 +422,10 @@ covers_json=$(jq '.github_repos.kure.rulesets = {
     "Main Literal": {target: "branch", conditions: {ref_name: {include: ["refs/heads/main"]}}, rules: {}},
     "Default Branch": {target: "branch", conditions: {ref_name: {include: ["~DEFAULT_BRANCH"]}}, rules: {}},
     "Dev Only": {target: "branch", conditions: {ref_name: {include: ["refs/heads/dev"]}}, rules: {}},
-    "Tags": {target: "tag", conditions: {ref_name: {include: ["refs/tags/*"]}}, rules: {}}
+    "Tags": {target: "tag", conditions: {ref_name: {include: ["refs/tags/*"]}}, rules: {}},
+    "Disabled Main": {target: "branch", enforcement: "disabled", conditions: {ref_name: {include: ["refs/heads/main"]}}, rules: {}},
+    "Evaluate Main": {target: "branch", enforcement: "evaluate", conditions: {ref_name: {include: ["refs/heads/main"]}}, rules: {}},
+    "All But Main": {target: "branch", conditions: {ref_name: {include: ["~ALL"], exclude: ["refs/heads/main"]}}, rules: {}}
 }' <<<"$POLICY_JSON")
 
 # Echoes ruleset_covers_main's exit code for kure over the named rulesets.
@@ -437,6 +440,10 @@ assert_eq "a branch ruleset on another branch does not cover main" "1" "$(covers
 assert_eq "a tag ruleset never covers main, whatever it includes" "1" "$(covers_rc "Tags")"
 assert_eq "no applicable ruleset at all does not cover main" "1" "$(covers_rc)"
 assert_eq "one covering ruleset among non-covering ones is enough" "0" "$(covers_rc "Tags" "Dev Only" "Main Literal")"
+assert_eq "a disabled ruleset on main enforces nothing and does not cover it" "1" "$(covers_rc "Disabled Main")"
+assert_eq "an evaluate-mode ruleset on main enforces nothing and does not cover it" "1" "$(covers_rc "Evaluate Main")"
+assert_eq "~ALL with main excluded again does not cover main" "1" "$(covers_rc "All But Main")"
+assert_eq "a disabled main ruleset next to an active one still covers (the active one counts)" "0" "$(covers_rc "Disabled Main" "Main Literal")"
 
 # ---- print_summary: blocked (audit-only) org settings drift must be
 # reported separately from applied drift under --apply, not folded into the
