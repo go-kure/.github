@@ -43,7 +43,14 @@ fail() { echo "FAIL: $*" >&2; errors=$((errors + 1)); }
 # Overridable so a consumer org can admit its own reusable workflows at a
 # mutable ref (e.g. '^(go-kure|other-org)/[^/]+/\.github/workflows/[^@]+@');
 # the default stays go-kure-only, so nothing changes for this org's callers.
-FIRST_PARTY_WORKFLOW_RE="${FIRST_PARTY_WORKFLOW_RE:-^go-kure/[^/]+/\\.github/workflows/[^@]+@}"
+# An override widens a security check, so it is never silent: the active
+# pattern is printed whenever it differs from the default, and a run under a
+# weakened exemption is never indistinguishable from a clean one.
+DEFAULT_FIRST_PARTY_WORKFLOW_RE='^go-kure/[^/]+/\.github/workflows/[^@]+@'
+FIRST_PARTY_WORKFLOW_RE="${FIRST_PARTY_WORKFLOW_RE:-$DEFAULT_FIRST_PARTY_WORKFLOW_RE}"
+if [ "$FIRST_PARTY_WORKFLOW_RE" != "$DEFAULT_FIRST_PARTY_WORKFLOW_RE" ]; then
+  echo "NOTE: FIRST_PARTY_WORKFLOW_RE override in effect: $FIRST_PARTY_WORKFLOW_RE" >&2
+fi
 
 checked=0
 while IFS= read -r -d '' file; do

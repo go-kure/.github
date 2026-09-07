@@ -21,7 +21,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WHARF_DIR="$(dirname "$SCRIPT_DIR")"
+REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 
 # Default organization and repos (override via environment variables).
 # GITHUB_REPOS_DEFAULT stays fixed even when GITHUB_REPOS is narrowed to a
@@ -37,8 +37,8 @@ GITHUB_ORG="${GITHUB_ORG:-go-kure}"
 GITHUB_REPOS_DEFAULT="${GITHUB_REPOS_DEFAULT:-.github kure launcher go-kure.github.io}"
 GITHUB_REPOS="${GITHUB_REPOS:-$GITHUB_REPOS_DEFAULT}"
 
-LABELS_FILE="${LABELS_FILE:-$WHARF_DIR/standards/labels.json}"
-POLICY_FILE="${POLICY_FILE:-$WHARF_DIR/governance/repository-settings-policy.yaml}"
+LABELS_FILE="${LABELS_FILE:-$REPO_ROOT/standards/labels.json}"
+POLICY_FILE="${POLICY_FILE:-$REPO_ROOT/governance/repository-settings-policy.yaml}"
 CI_MODE=false
 JSON_OUTPUT=false
 
