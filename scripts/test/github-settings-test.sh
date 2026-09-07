@@ -150,6 +150,32 @@ rm -f "$repos_string_fixture"
 assert_eq "validate_policy exits non-zero on a repos: scope that is a string, not a list" "1" "$([ "$repos_string_rc" -ne 0 ] && echo 1 || echo 0)"
 assert_contains "validate_policy's error on a string repos: scope is the shape error, not a raw jq failure" "$repos_string_out" "is malformed"
 
+# security: values are a closed enum (round-13 finding): audit_security_settings
+# applies anything that is not exactly "enabled" as disabled, so a typo in a
+# consumer policy would DELETE automated security fixes instead of being
+# rejected. Checked on the defaults tier, on a per-repo override, for a YAML
+# boolean (`enabled: true` is not the string "enabled") and for a misspelled
+# key, which is never looked up.
+sec_typo_json=$(jq '.github_repos.kure.security.dependabot_security_updates = "enabeld"' <<<"$POLICY_JSON")
+sec_typo_out=$( (POLICY_JSON="$sec_typo_json" validate_policy) 2>&1 )
+sec_typo_rc=$?
+assert_eq "validate_policy exits non-zero on a misspelled security value in a per-repo override" "1" "$([ "$sec_typo_rc" -ne 0 ] && echo 1 || echo 0)"
+assert_contains "validate_policy's error names the offending security block" "$sec_typo_out" "github_repos.kure"
+
+sec_bool_json=$(jq '.github_defaults.security.secret_scanning = true' <<<"$POLICY_JSON")
+sec_bool_out=$( (POLICY_JSON="$sec_bool_json" validate_policy) 2>&1 )
+sec_bool_rc=$?
+assert_eq "validate_policy exits non-zero on a boolean security value in github_defaults" "1" "$([ "$sec_bool_rc" -ne 0 ] && echo 1 || echo 0)"
+assert_contains "validate_policy's error names the defaults security block" "$sec_bool_out" "github_defaults"
+
+sec_key_json=$(jq '.github_defaults.security.secret_scaning = "enabled"' <<<"$POLICY_JSON")
+sec_key_rc=$( (POLICY_JSON="$sec_key_json" validate_policy) >/dev/null 2>&1; echo $? )
+assert_eq "validate_policy exits non-zero on a misspelled security key" "1" "$([ "$sec_key_rc" -ne 0 ] && echo 1 || echo 0)"
+
+sec_ok_json=$(jq '.github_repos.kure.security = {secret_scanning: "disabled", dependabot_security_updates: "enabled"}' <<<"$POLICY_JSON")
+sec_ok_rc=$( (POLICY_JSON="$sec_ok_json" validate_policy) >/dev/null 2>&1; echo $? )
+assert_eq "validate_policy accepts a per-repo security override that uses the enum" "0" "$sec_ok_rc"
+
 # ---- ruleset_applies scoping ----
 
 if ruleset_applies "kure" "$COPILOT"; then

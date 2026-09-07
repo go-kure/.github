@@ -18,15 +18,14 @@
 #                               First-party COMPOSITE ACTIONS are not exempt.
 #
 # Known limitation: this is a line-anchored scan, not a YAML parser. A `run: |`
-# block scalar whose shell text happens to start a line with `uses:` (or
-# `steps:`) would be misdetected as an actions ref (or as opening a steps
-# block). Verified absent across every real workflow in this org today;
-# closing the gap unconditionally needs a YAML parser, which is out of scope
-# here. If a future script legitimately needs a `run:` line shaped like that,
-# indent it so it is not first-on-line, or extend this checker then. The
-# reusable-workflow exemption is applied only to job-level `uses:` (outside a
-# `steps:` block, tracked by indentation); a step-level ref is always an
-# action, whatever path it names.
+# block scalar whose shell text happens to start a line with `uses:` would be
+# misdetected as an actions ref. Verified absent across every real workflow in
+# this org today; closing the gap unconditionally needs a YAML parser, which is
+# out of scope here. If a future script legitimately needs a `run:` line shaped
+# like that, indent it so it is not first-on-line, or extend this checker then.
+# The reusable-workflow exemption is applied only to a job-level `uses:` — a
+# mapping entry outside any `- ` sequence item, tracked by indentation; a ref
+# inside a sequence item is always an action, whatever path it names.
 #
 # Usage: check-action-pins.sh [REPO_ROOT]
 # Exits non-zero and lists every unpinned reference.
@@ -67,13 +66,17 @@ fi
 checked=0
 while IFS= read -r -d '' file; do
   # The awk pass below emits one `<kind> <ref>` line per `uses:`: `job` for
-  # a ref outside any `steps:` block (a reusable-workflow call,
-  # jobs.<id>.uses) and `step` for one inside it (an action,
-  # jobs.<id>.steps[].uses). A `steps:` block is tracked by indentation: it
-  # opens at a `steps:` key and closes at the next non-blank, non-comment
-  # line indented no deeper than that key — except a `-` at the key's own
-  # indentation, which YAML allows as one of its items. Blank and comment
-  # lines never close it, so a column-0 comment between two steps is fine.
+  # a reusable-workflow call (jobs.<id>.uses, a plain mapping entry under a
+  # job) and `step` for an action (jobs.<id>.steps[].uses, an entry of a
+  # sequence item). The distinction is "inside a sequence item or not",
+  # tracked as a stack of `- ` item indentations: a non-blank, non-comment
+  # line indented no deeper than an item's dash leaves that item (a sibling
+  # dash at the same indentation starts the next one), a dash indented
+  # deeper opens a nested item. That is what the workflow schema guarantees
+  # — a job-level `uses:` never sits inside a sequence — and it does not
+  # depend on the key the list hangs off, so `steps: &shared` (an anchor),
+  # a list defined elsewhere and aliased into `steps:`, or a sequence under
+  # any other key all classify their `uses:` entries as steps.
   while read -r kind ref; do
     checked=$((checked + 1))
     case "$ref" in
@@ -95,8 +98,14 @@ while IFS= read -r -d '' file; do
       /^[ \t]*(#|$)/ { next }
       {
         ind = indent($0)
-        if (in_steps && (ind < steps_ind || (ind == steps_ind && $0 !~ /^[ \t]*-/))) in_steps = 0
-        if ($0 ~ /^[ \t]*steps:[ \t]*(#.*)?$/) { in_steps = 1; steps_ind = ind; next }
+        is_dash = ($0 ~ /^[ \t]*-([ \t]|$)/)
+        # Leave every item this line is not inside of: one whose dash is
+        # deeper than this line, or at the same indentation when this line
+        # is not itself a sibling dash.
+        while (depth > 0 && (item_ind[depth] > ind || (item_ind[depth] == ind && !is_dash))) depth--
+        # A dash deeper than the innermost open item (or with none open)
+        # opens a nested item; a sibling dash just replaces its predecessor.
+        if (is_dash && (depth == 0 || item_ind[depth] < ind)) { depth++; item_ind[depth] = ind }
         if ($0 !~ /^[ \t]*(-[ \t]+)?uses:[ \t]*[^ \t#]/) next
         # Strip a trailing `# comment` before matching so the `# v7`
         # provenance comment on a correct pin can never be read as part
@@ -107,7 +116,7 @@ while IFS= read -r -d '' file; do
         sub(/[ \t]+$/, "", ref)
         sub(/^["'\'']/, "", ref)
         sub(/["'\'']$/, "", ref)
-        kind = in_steps ? "step" : "job"
+        kind = depth > 0 ? "step" : "job"
         print kind, ref
       }
     ' "$file"

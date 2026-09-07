@@ -263,17 +263,26 @@ assert_rc "under an override, a step-level ref of reusable-workflow shape is not
 assert_rc "the same for a step written as - name: then uses: on the next line" 1 \
   "$(FIRST_PARTY_WORKFLOW_RE='^acme/' run_fixture "$(printf 'jobs:\n  a:\n    steps:\n      - name: helper\n        uses: acme/tools/.github/workflows/helper.yml@main')")"
 
-# The steps block is tracked by indentation: it closes at the next job, so a
-# job-level call after a job with steps is still exempt; a `-` at the key's own
-# indentation is one of its items; a column-0 comment inside it does not close it.
+# "Step" means "inside a `- ` sequence item", tracked by indentation, whatever
+# key the list hangs off: the item ends at the next job, so a job-level call
+# after a job with steps is still exempt; a `-` at the `steps:` key's own
+# indentation is one of its items; a column-0 comment inside the list does not
+# end it; an anchored `steps: &shared` (round-13 finding) is still a list; a
+# nested list inside a step (a `with:` value) does not end the step.
 assert_rc "a job-level reusable-workflow call after a job with steps is still exempt" 0 \
   "$(FIRST_PARTY_WORKFLOW_RE='^acme/' run_fixture "$(printf 'jobs:\n  a:\n    steps:\n      - uses: actions/checkout@%s # v7\n  b:\n    uses: acme/tool/.github/workflows/ci.yml@main' "$SHA")")"
 
 assert_rc "a step whose - sits at the steps: key's own indentation is still a step" 1 \
   "$(run_fixture "$(printf 'jobs:\n  a:\n    steps:\n    - uses: go-kure/.github/.github/workflows/ci.yml@main')")"
 
-assert_rc "a column-0 comment inside steps does not end the block" 1 \
+assert_rc "a column-0 comment inside steps does not end the list" 1 \
   "$(run_fixture "$(printf 'jobs:\n  a:\n    steps:\n      - run: echo hi\n# a comment at column 0\n      - uses: go-kure/.github/.github/workflows/ci.yml@main')")"
+
+assert_rc "a step under an anchored steps: &shared key is still a step" 1 \
+  "$(FIRST_PARTY_WORKFLOW_RE='^acme/' run_fixture "$(printf 'jobs:\n  a:\n    steps: &shared\n      - uses: acme/tools/.github/workflows/helper.yml@main\n  b:\n    steps: *shared')")"
+
+assert_rc "a step whose uses: follows a nested list in the same item is still a step" 1 \
+  "$(FIRST_PARTY_WORKFLOW_RE='^acme/' run_fixture "$(printf 'jobs:\n  a:\n    steps:\n      - name: helper\n        with:\n          things:\n            - one\n        uses: acme/tools/.github/workflows/helper.yml@main')")"
 
 echo "passed: $pass_count, failed: $failures"
 [ "$failures" -eq 0 ]
