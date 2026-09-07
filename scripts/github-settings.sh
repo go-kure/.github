@@ -542,6 +542,37 @@ validate_policy() {
         errors=$((errors + 1))
     fi
 
+    # 4e. security: blocks are closed enums. audit_security_settings compares
+    #     the live status against the declared string and, on --apply, treats
+    #     anything that is not exactly "enabled" as a request to turn the
+    #     setting off — for dependabot_security_updates that is a DELETE on
+    #     the automated-security-fixes endpoint, so a typo such as `enabeld`
+    #     in a consumer-supplied POLICY_FILE would silently disable it rather
+    #     than be rejected (go-kure/.github#154 round-13 finding). A
+    #     misspelled key is never looked up at all (same class as 4c). Every
+    #     security: block, defaults and per-repo, must therefore map only the
+    #     three known keys to "enabled" or "disabled".
+    local bad_security_blocks
+    bad_security_blocks=$(jq -r '
+        [
+            {path: "github_defaults", sec: .github_defaults.security},
+            ((.github_repos // {}) | to_entries[] | {path: ("github_repos." + .key), sec: .value.security})
+        ]
+        | map(select(.sec != null))
+        | map(select(
+            (.sec | type) != "object"
+            or ([.sec | to_entries[]
+                | (.key | IN("secret_scanning", "secret_scanning_push_protection", "dependabot_security_updates"))
+                  and (.value | IN("enabled", "disabled"))
+               ] | all | not)
+          ))
+        | .[].path
+    ' <<<"$POLICY_JSON")
+    if [ -n "$bad_security_blocks" ]; then
+        echo -e "${RED}ERROR: security: block(s) must map only secret_scanning, secret_scanning_push_protection and dependabot_security_updates to \"enabled\" or \"disabled\" (any other value would be applied as disabled): $(echo "$bad_security_blocks" | tr '\n' ' ')${NC}"
+        errors=$((errors + 1))
+    fi
+
     # 5-6 only apply once a policy declares github_org: — skipped entirely
     # when absent, so the policy file stays valid mid-migration (before the
     # first --org --import) and for anyone who never uses --org.

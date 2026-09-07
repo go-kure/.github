@@ -418,7 +418,10 @@ sets none of them. A consumer's labels file never passes `check-label-docs.sh`, 
 validates its shape itself before touching anything: a non-empty `labels` array whose entries
 carry a name, a description and a `#RRGGBB` colour, no duplicate names, and `repos:` scopes
 naming only governed repos. An empty file in particular is refused rather than read as "delete
-every live label".
+every live label". The policy's `security:` blocks are validated the same way: only the three
+keys under "Security" below, each `enabled` or `disabled`, because the audit applies any other value as
+`disabled` — for `dependabot_security_updates` that is a live DELETE, so a typo is refused up
+front rather than applied.
 
 A ruleset normally has a `github_defaults.rulesets` entry (optionally scoped to specific repos
 via `repos:`, per-repo fields overridden under `github_repos.<repo>.rulesets`). It can also be
