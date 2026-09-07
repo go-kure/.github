@@ -220,10 +220,13 @@ x.yml@main`) are exempt by GitHub's own rule and deliberately stay on `main`;
 The exemption is go-kure-only by default. A consumer organization that publishes its
 own reusable workflows widens it by setting `FIRST_PARTY_WORKFLOW_RE` in the checker's
 environment — on the composite-action step (`env:`) or the local task — for example
-`'^(go-kure|acme)/[^/]+/\.github/workflows/[^@]+@'`. Composite actions are never
-matched by it, whatever the pattern. Because an override weakens a security check, the
-checker prints `NOTE: FIRST_PARTY_WORKFLOW_RE override in effect: <pattern>` on stderr
-whenever a non-default pattern is active, so a widened run is visible in the log.
+`'^(go-kure|acme)/[^/]+/\.github/workflows/[^@]+@'`. The pattern is consulted only for
+refs of the reusable-workflow shape (`owner/repo/.github/workflows/file@ref`), which is
+fixed in the checker, so it can only narrow *which* reusable workflows count as
+first-party — even a permissive `'^acme/'` cannot exempt a composite or plain action.
+Because an override weakens a security check, the checker prints
+`NOTE: FIRST_PARTY_WORKFLOW_RE override in effect: <pattern>` on stderr whenever a
+non-default pattern is active, so a widened run is visible in the log.
 
 **Known gap:** Dependabot rewrites the trailing tag comment together with the SHA
 when it bumps a pin, but has documented edge cases where it resolves to an

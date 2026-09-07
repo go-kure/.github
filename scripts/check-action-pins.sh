@@ -43,9 +43,14 @@ fail() { echo "FAIL: $*" >&2; errors=$((errors + 1)); }
 # Overridable so a consumer org can admit its own reusable workflows at a
 # mutable ref (e.g. '^(go-kure|other-org)/[^/]+/\.github/workflows/[^@]+@');
 # the default stays go-kure-only, so nothing changes for this org's callers.
-# An override widens a security check, so it is never silent: the active
-# pattern is printed whenever it differs from the default, and a run under a
-# weakened exemption is never indistinguishable from a clean one.
+# The override can only ever narrow WHICH reusable workflows are first-party:
+# it is consulted solely for refs of the reusable-workflow shape below, so a
+# permissive pattern ('^acme/') still cannot exempt a composite or plain
+# action from that owner. An override widens a security check, so it is
+# never silent: the active pattern is printed whenever it differs from the
+# default, and a run under a weakened exemption is never indistinguishable
+# from a clean one.
+REUSABLE_WORKFLOW_SHAPE='^[^/@]+/[^/@]+/\.github/workflows/[^@]+@'
 DEFAULT_FIRST_PARTY_WORKFLOW_RE='^go-kure/[^/]+/\.github/workflows/[^@]+@'
 FIRST_PARTY_WORKFLOW_RE="${FIRST_PARTY_WORKFLOW_RE:-$DEFAULT_FIRST_PARTY_WORKFLOW_RE}"
 if [ "$FIRST_PARTY_WORKFLOW_RE" != "$DEFAULT_FIRST_PARTY_WORKFLOW_RE" ]; then
@@ -61,7 +66,7 @@ while IFS= read -r -d '' file; do
     case "$ref" in
       ./*|docker://*) continue ;;
     esac
-    if [[ "$ref" =~ $FIRST_PARTY_WORKFLOW_RE ]]; then continue; fi
+    if [[ "$ref" =~ $REUSABLE_WORKFLOW_SHAPE ]] && [[ "$ref" =~ $FIRST_PARTY_WORKFLOW_RE ]]; then continue; fi
     if [[ ! "$ref" =~ @[0-9a-f]{40}$ ]]; then
       fail "$(basename "$file"): unpinned action ref '$ref' (pin to a 40-char commit SHA, keep the tag as a trailing comment)"
     fi

@@ -656,17 +656,23 @@ ruleset_applies() {
 }
 
 # True when at least one of the named rulesets (the caller passes the ones
-# applicable to `repo`) is a branch ruleset whose include list reaches main:
-# literally, via ~DEFAULT_BRANCH, or via ~ALL. Gates the classic-protection
-# migration in audit_rulesets.
+# applicable to `repo`) actually protects main: a branch ruleset, enforcement
+# active (not disabled, not evaluate), whose include list reaches main —
+# literally, via ~DEFAULT_BRANCH, or via ~ALL — and whose exclude list does
+# not take it away again. Gates the classic-protection migration in
+# audit_rulesets: anything less would remove protection without replacing it.
 ruleset_covers_main() {
     local repo="$1"
     shift
     local name
     for name in "$@"; do
         [ "$(ruleset_field "$repo" "$name" target branch)" = "branch" ] || continue
+        [ "$(ruleset_field "$repo" "$name" enforcement active)" = "active" ] || continue
         if ruleset_conditions_json "$repo" "$name" \
-            | jq -e '.ref_name.include | (index("refs/heads/main") // index("~DEFAULT_BRANCH") // index("~ALL")) != null' >/dev/null; then
+            | jq -e '
+                def reaches_main: (index("refs/heads/main") // index("~DEFAULT_BRANCH") // index("~ALL")) != null;
+                (.ref_name.include | reaches_main) and (.ref_name.exclude | reaches_main | not)
+            ' >/dev/null; then
             return 0
         fi
     done

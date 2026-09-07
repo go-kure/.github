@@ -213,8 +213,11 @@ run_note_check() {
     out="$(env -u FIRST_PARTY_WORKFLOW_RE bash "$CHECKER" "$dir" 2>&1 >/dev/null)"
   fi
   rm -rf "$dir"
+  # With a pattern: the NOTE must name exactly that pattern. Without one: any
+  # NOTE at all is wrong, so match the prefix only — matching a placeholder
+  # the script can never print would make the no-override case vacuous.
   case "$out" in
-    *"NOTE: FIRST_PARTY_WORKFLOW_RE override in effect: ${re:-<none>}"*) echo 0 ;;
+    *"NOTE: FIRST_PARTY_WORKFLOW_RE override in effect:${re:+ $re}"*) echo 0 ;;
     *) echo 1 ;;
   esac
 }
@@ -224,6 +227,19 @@ assert_rc "an explicit FIRST_PARTY_WORKFLOW_RE override prints a NOTE naming the
 
 assert_rc "the default FIRST_PARTY_WORKFLOW_RE prints no override NOTE" 1 \
   "$(run_note_check '')"
+
+# The override narrows only the owner/repo portion. The reusable-workflow path
+# shape is fixed in the checker, so even a permissive pattern such as '^acme/'
+# admits reusable workflows and nothing else — a composite action from the
+# admitted owner stays subject to the SHA rule.
+assert_rc "a permissive owner-only override still admits that owner's reusable workflow @main" 0 \
+  "$(FIRST_PARTY_WORKFLOW_RE='^acme/' run_fixture "$(printf 'jobs:\n  a:\n    uses: acme/tool/.github/workflows/ci.yml@main')")"
+
+assert_rc "a permissive owner-only override never exempts that owner's composite action @main" 1 \
+  "$(FIRST_PARTY_WORKFLOW_RE='^acme/' run_fixture "$(printf 'jobs:\n  a:\n    steps:\n      - uses: acme/tool/.github/actions/build@main')")"
+
+assert_rc "a permissive owner-only override never exempts that owner's plain action @v1" 1 \
+  "$(FIRST_PARTY_WORKFLOW_RE='^acme/' run_fixture "$(printf 'jobs:\n  a:\n    steps:\n      - uses: acme/setup-thing@v1')")"
 
 echo "passed: $pass_count, failed: $failures"
 [ "$failures" -eq 0 ]
