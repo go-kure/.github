@@ -142,6 +142,14 @@ rm -f "$malformed_labels_fixture"
 assert_eq "validate_policy exits non-zero on a label entry without a colour" "1" "$([ "$malformed_rc" -ne 0 ] && echo 1 || echo 0)"
 assert_contains "validate_policy's error names the malformed labels file" "$malformed_out" "is malformed"
 
+repos_string_fixture="$(mktemp)"
+printf '%s\n' '{"labels": [{"name": "area/x", "color": "#000000", "description": "d", "repos": "kure"}]}' >"$repos_string_fixture"
+repos_string_out=$( (LABELS_FILE="$repos_string_fixture" validate_policy) 2>&1 )
+repos_string_rc=$?
+rm -f "$repos_string_fixture"
+assert_eq "validate_policy exits non-zero on a repos: scope that is a string, not a list" "1" "$([ "$repos_string_rc" -ne 0 ] && echo 1 || echo 0)"
+assert_contains "validate_policy's error on a string repos: scope is the shape error, not a raw jq failure" "$repos_string_out" "is malformed"
+
 # ---- ruleset_applies scoping ----
 
 if ruleset_applies "kure" "$COPILOT"; then
@@ -492,7 +500,9 @@ covers_json=$(jq '.github_repos.kure.rulesets = {
     "Star Include": {target: "branch", conditions: {ref_name: {include: ["refs/*"]}}, rules: {deletion: true}},
     "Double Star Include": {target: "branch", conditions: {ref_name: {include: ["refs/**"]}}, rules: {deletion: true}},
     "Question Include": {target: "branch", conditions: {ref_name: {include: ["refs/heads/mai?"]}}, rules: {deletion: true}},
-    "All But Star": {target: "branch", conditions: {ref_name: {include: ["~ALL"], exclude: ["refs/*"]}}, rules: {deletion: true}}
+    "All But Star": {target: "branch", conditions: {ref_name: {include: ["~ALL"], exclude: ["refs/*"]}}, rules: {deletion: true}},
+    "Copilot Only": {target: "branch", conditions: {ref_name: {include: ["refs/heads/main"]}}, rules: {copilot_code_review: {review_on_push: true, review_draft_pull_requests: false}}},
+    "Copilot Plus Deletion": {target: "branch", conditions: {ref_name: {include: ["refs/heads/main"]}}, rules: {copilot_code_review: {review_on_push: true, review_draft_pull_requests: false}, deletion: true}}
 }' <<<"$POLICY_JSON")
 
 # Stubbed like get_github_labels below: the live default branch is whatever
@@ -541,6 +551,11 @@ assert_eq "a single-star include (refs/*) is not trusted to reach main" "1" "$(c
 assert_eq "a double-star include (refs/**) reaches main" "0" "$(covers_rc "Double Star Include")"
 assert_eq "a ? include matching one character of main covers main" "0" "$(covers_rc "Question Include")"
 assert_eq "~ALL with a single-star exclude (refs/*) is read as possibly removing main" "1" "$(covers_rc "All But Star")"
+# Only a rule that blocks a push or a merge counts (round-10 finding): a
+# ruleset whose sole emitted rule is copilot_code_review is review automation
+# and replaces no branch protection.
+assert_eq "a main ruleset carrying only copilot_code_review does not cover main" "1" "$(covers_rc "Copilot Only")"
+assert_eq "copilot_code_review beside a protective rule still covers main" "0" "$(covers_rc "Copilot Plus Deletion")"
 
 # ~DEFAULT_BRANCH is resolved against the live repo, never assumed to be main
 # (go-kure/.github#154 round-4 finding): on a repo whose default branch is
