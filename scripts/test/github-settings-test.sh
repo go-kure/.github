@@ -813,6 +813,19 @@ assert_eq "a live name that only regex-matches the declared one is EXTRA" "1" "$
 assert_contains "the declared name is then plainly MISSING" "${result#*$'\t'}" "MISSING: release/1.0"
 assert_contains "and the near-miss live name is EXTRA" "${result#*$'\t'}" "EXTRA: release/1x0"
 
+# The live-name list is fed to grep with printf, never echo (go-kure/.github#154
+# round-12 finding): when the only live label is named `-n`, `echo "$list"`
+# treats it as an option and prints nothing, so the declared `-n` was reported
+# MISSING and --apply would have tried to create a label that already exists.
+OPTION_NAME_FILE="$drift_fixture_dir/labels-option-name.json"
+cat >"$OPTION_NAME_FILE" <<'EOF'
+{"labels": [{"name": "-n", "color": "#AABBCC", "description": "expected desc"}]}
+EOF
+
+result="$(run_audit_labels_extra_fixture $'-n\x1faabbcc\x1fexpected desc' "$OPTION_NAME_FILE")"
+assert_eq "a live label named -n is not EXTRA" "0" "${result%%$'\t'*}"
+assert_contains "and audits as OK against its declaration, not MISSING" "${result#*$'\t'}" "OK: -n"
+
 rm -rf "$drift_fixture_dir"
 trap - EXIT
 unset -f get_github_labels

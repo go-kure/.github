@@ -207,7 +207,11 @@ by this org's branch protection. First-party *composite action* refs
 Consumer repos run the same checker as a composite action — do not vendor a copy.
 Pin it like any other action. This organization publishes no tags on `.github`, so
 the ref is a `main` commit with `# main` as the trailing comment, and Dependabot
-cannot bump it — it is maintained by hand:
+cannot bump it — it is maintained by hand. The SHA below is an example of the
+shape, not a recommendation: it predates the `FIRST_PARTY_WORKFLOW_RE` override
+described further down, so a consumer that relies on the override must pin a
+`main` commit at or after the one that merged go-kure/.github#154 — take the
+current one from `gh api repos/go-kure/.github/commits/main --jq .sha`:
 
     uses: go-kure/.github/.github/actions/check-action-pins@1793023365e5af6923e9bb6b424fcea1dca1279e # main
 

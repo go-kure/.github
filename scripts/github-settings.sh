@@ -1059,7 +1059,7 @@ audit_labels() {
             continue
         fi
 
-        if echo "$existing_labels" | grep -qxF -- "$name"; then
+        if printf '%s\n' "$existing_labels" | grep -qxF -- "$name"; then
             # Compare metadata, not just the name — a name match alone used
             # to short-circuit as OK, so an edited color/description in
             # labels.json could never reach a repo where the label already
@@ -1095,7 +1095,7 @@ audit_labels() {
             # unconditionally skipped by the extra-label loop, so nothing else
             # ever flags the orphaned old name. Surface it instead.
             local old_name="${REVERSE_RENAME_MAP[$name]:-}"
-            if [ -n "$old_name" ] && echo "$existing_labels" | grep -qxF -- "$old_name" \
+            if [ -n "$old_name" ] && printf '%s\n' "$existing_labels" | grep -qxF -- "$old_name" \
                 && ! label_expected_on_repo "$old_name" "$repo"; then
                 echo -e "  ${YELLOW}DUPLICATE${NC}: $old_name coexists with $name — reconcile issues onto $name and delete $old_name manually (not automated: could drop issue associations)"
                 LABELS_DUPLICATE=$((LABELS_DUPLICATE + 1))
@@ -1108,7 +1108,7 @@ audit_labels() {
             # (go-kure/.github#154 review finding). Same rule in the DUPLICATE
             # and extra-label branches.
             local old_name="${REVERSE_RENAME_MAP[$name]:-}"
-            if [ -n "$old_name" ] && echo "$existing_labels" | grep -qxF -- "$old_name" \
+            if [ -n "$old_name" ] && printf '%s\n' "$existing_labels" | grep -qxF -- "$old_name" \
                 && ! label_expected_on_repo "$old_name" "$repo"; then
                 # Rename candidate exists
                 LABELS_RENAMED=$((LABELS_RENAMED + 1))
