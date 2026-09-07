@@ -147,10 +147,19 @@ Do A and B describe the same underlying issue?"
         parsed=$(jq -c '.' <<<"$parsed" 2>/dev/null || echo '')
     fi
     [ -n "$parsed" ] || return 1
+    # `.same` on a non-object -- a bare array, string or number -- makes jq ERROR rather than
+    # return null, so `same` is set to the empty string, never the "bad" sentinel below. An
+    # empty verdict then reads as "not a match" and the pair is silently scored as a miss,
+    # which is a judge failure disguised as a reviewer failure: it lowers recall on evidence
+    # that does not exist. Guard the type first, and check jq's own status, so an unusable
+    # answer reaches the caller as a failed call.
+    jq -e 'type == "object"' >/dev/null 2>&1 <<<"$parsed" || return 1
     same=$(jq -r 'if .same == true then "true" elif .same == false then "false" else "bad" end' \
-        <<<"$parsed")
-    [ "$same" = "bad" ] && return 1
-    printf '%s' "$same"
+        <<<"$parsed") || return 1
+    case "$same" in
+        true|false) printf '%s' "$same" ;;
+        *) return 1 ;;
+    esac
 }
 
 # The judge does not use prt_model_review: that function wraps its input in the code-review
