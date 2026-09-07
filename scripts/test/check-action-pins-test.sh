@@ -200,5 +200,30 @@ assert_rc "another org's reusable workflow @main passes under an explicit FIRST_
 assert_rc "the override does not exempt a composite action of the admitted org" 1 \
   "$(FIRST_PARTY_WORKFLOW_RE='^(go-kure|other-org)/[^/]+/\.github/workflows/[^@]+@' run_fixture "$(printf 'jobs:\n  a:\n    steps:\n      - uses: other-org/.github/.github/actions/x@main')")"
 
+# An override widens a security check, so the checker must say so out loud —
+# on stderr, next to any FAIL lines in a CI log. Runs the checker over an empty
+# repo with the given pattern (unset when empty) and echoes 0 when the NOTE
+# naming that exact pattern is on stderr, 1 otherwise.
+run_note_check() {
+  local re="$1" dir out
+  dir="$(mktemp -d)"
+  if [ -n "$re" ]; then
+    out="$(FIRST_PARTY_WORKFLOW_RE="$re" bash "$CHECKER" "$dir" 2>&1 >/dev/null)"
+  else
+    out="$(env -u FIRST_PARTY_WORKFLOW_RE bash "$CHECKER" "$dir" 2>&1 >/dev/null)"
+  fi
+  rm -rf "$dir"
+  case "$out" in
+    *"NOTE: FIRST_PARTY_WORKFLOW_RE override in effect: ${re:-<none>}"*) echo 0 ;;
+    *) echo 1 ;;
+  esac
+}
+
+assert_rc "an explicit FIRST_PARTY_WORKFLOW_RE override prints a NOTE naming the active pattern" 0 \
+  "$(run_note_check '^(go-kure|other-org)/[^/]+/\.github/workflows/[^@]+@')"
+
+assert_rc "the default FIRST_PARTY_WORKFLOW_RE prints no override NOTE" 1 \
+  "$(run_note_check '')"
+
 echo "passed: $pass_count, failed: $failures"
 [ "$failures" -eq 0 ]

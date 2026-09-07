@@ -371,7 +371,7 @@ assert_eq "env overrides win for org, repo set, labels file and policy file; GIT
 
 # shellcheck disable=SC2016 # single-quoted on purpose: same reason as above
 default_env=$(env -u GITHUB_ORG -u GITHUB_REPOS -u GITHUB_REPOS_DEFAULT -u LABELS_FILE -u POLICY_FILE \
-    bash -c 'source "$1" && printf "%s|%s|%s|%s" "$GITHUB_ORG" "$GITHUB_REPOS_DEFAULT" "${LABELS_FILE#"$WHARF_DIR"/}" "${POLICY_FILE#"$WHARF_DIR"/}"' _ "$ROOT/scripts/github-settings.sh")
+    bash -c 'source "$1" && printf "%s|%s|%s|%s" "$GITHUB_ORG" "$GITHUB_REPOS_DEFAULT" "${LABELS_FILE#"$REPO_ROOT"/}" "${POLICY_FILE#"$REPO_ROOT"/}"' _ "$ROOT/scripts/github-settings.sh")
 assert_eq "with nothing set, the go-kure defaults still apply" \
     "go-kure|.github kure launcher go-kure.github.io|standards/labels.json|governance/repository-settings-policy.yaml" "$default_env"
 
