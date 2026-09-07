@@ -206,7 +206,7 @@ trap 'rm -rf "$workdir"' EXIT
 do_run() {
     local run_idx="$1"
     local matched=0 uncredited=0 denom=0 excluded=0
-    local g repo checkout diff_file findings_file verdict_file rows
+    local g repo checkout diff_file findings_file verdict_file rows child_rc
 
     for g in "${gold_files[@]}"; do
         repo=$(jq -r '.repo' "$g")
@@ -229,16 +229,33 @@ do_run() {
 
         rows=$(jq '.gold | length' "$g")
 
+        # Both children reserve exit 2 for a setup fault (their own `die`) and exit 1 for "the
+        # backend gave me nothing usable". Only the second is an exclusion; folding exit 2 into
+        # it would let a deterministic harness fault -- a malformed diff, an unreadable gold
+        # file -- burn one exclusion per document and land as a shrunken denominator instead of
+        # an error, which is the same "no signal scored as no defects" mistake one level up.
         findings_file="$workdir/run$run_idx-$(basename "$g" .json).findings.json"
-        if ! "$adapter" --diff "$diff_file" --title "$title" --out "$findings_file" \
-            "${assess_flag[@]}"; then
+        child_rc=0
+        "$adapter" --diff "$diff_file" --title "$title" --out "$findings_file" \
+            "${assess_flag[@]}" || child_rc=$?
+        if [ "$child_rc" -ge 2 ]; then
+            log "setup fault from the reviewer adapter on $g (exit $child_rc)"
+            return 1
+        fi
+        if [ "$child_rc" -ne 0 ]; then
             log "excluding $g: reviewer produced no usable findings"
             excluded=$((excluded + 1))
             continue
         fi
 
         verdict_file="$workdir/run$run_idx-$(basename "$g" .json).verdict.json"
-        if ! "$judge" --findings "$findings_file" --gold "$g" --out "$verdict_file"; then
+        child_rc=0
+        "$judge" --findings "$findings_file" --gold "$g" --out "$verdict_file" || child_rc=$?
+        if [ "$child_rc" -ge 2 ]; then
+            log "setup fault from the judge on $g (exit $child_rc)"
+            return 1
+        fi
+        if [ "$child_rc" -ne 0 ]; then
             log "excluding $g: judge produced no usable verdict"
             excluded=$((excluded + 1))
             continue

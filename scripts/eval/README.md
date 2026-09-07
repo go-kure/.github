@@ -76,7 +76,11 @@ Two failure kinds reach `run.sh`, and they are not the same event.
 
 A missing `--checkout`, an unresolvable revision or an empty diff is a **setup fault**: it fails
 identically on every run, so continuing would silently measure a gold set the caller did not
-ask for. Those abort.
+ask for. Those abort. The distinction is carried in the exit code, not inferred: `review-adapter.sh`
+and `judge.sh` reserve **exit 2** for a setup fault and **exit 1** for "the backend gave me nothing
+usable", and `run.sh` aborts on the first and excludes on the second. Folding them together would
+let a deterministic fault spend one exclusion per document and arrive as a shrunken denominator
+rather than an error.
 
 A reviewer or judge that cannot produce a usable answer is the **backend being
 nondeterministic** — the property this harness exists to quantify. Measured on the first live

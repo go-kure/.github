@@ -261,10 +261,20 @@ done
 # emit
 # ---------------------------------------------------------------------------
 
+# Zero chunks is not an empty review, it is a diff with nothing in it: prt_split_diff returns
+# 0 chunks and exit 0 for an empty file (verified), so the loop body never runs, both counters
+# stay 0, and without this guard the adapter would print `findings: []` from a reviewer that
+# was never called -- the same "no signal scored as no defects" mistake the exit-1 path below
+# exists to prevent. Deterministic in the input rather than the backend being nondeterministic,
+# so it is a setup fault: exit 2, not the exit 1 a caller reads as "exclude this document".
+[ "$chunk_count" -gt 0 ] || die "diff produced no chunks; is $diff_file empty?"
+
 # Every chunk failing is "no signal", not "no defects" -- a run that scored this as a clean
 # empty review would report perfect precision and zero recall from a reviewer that never ran.
-if [ "$n_chunk_ok" -eq 0 ] && [ "$n_chunk_failed" -gt 0 ]; then
-    log "every chunk failed ($n_chunk_failed of $chunk_idx); no usable review"
+# Tested on n_chunk_ok alone, so a counted chunk that never reached the loop (a file vanishing
+# between the split and the glob) fails here too rather than emitting an empty review.
+if [ "$n_chunk_ok" -eq 0 ]; then
+    log "no chunk produced usable findings ($n_chunk_failed failed of $chunk_count); no usable review"
     exit 1
 fi
 
