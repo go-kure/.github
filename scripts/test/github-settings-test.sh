@@ -586,6 +586,50 @@ assert_eq "an empty/null live description is drift, not a crash" "0,1" "${result
 result="$(run_audit_labels_fixture $'test/foo\x1fAABBCC\x1fexpected desc')"
 assert_eq "an uppercase live color matches the uppercase standard" "1,0" "${result%%$'\t'*}"
 
+# ---------------------------------------------------------------------------
+# Rename-map keys vs a labels file that does not declare the target
+# (go-kure/.github#154 review finding). The extra-label loop used to skip every
+# LABEL_RENAME_MAP key unconditionally, so a consumer whose labels file omits
+# type/bug never saw a live `bug` label reported at all — not a rename
+# candidate, not extra. Same harness as above; echoes "LABELS_EXTRA\toutput".
+# ---------------------------------------------------------------------------
+run_audit_labels_extra_fixture() {
+    local live_row="$1" labels_file="$2" out_file
+    # shellcheck disable=SC2317 # invoked indirectly via audit_labels -> get_github_labels
+    get_github_labels() { printf '%s\n' "$live_row"; }
+    out_file="$(mktemp)"
+    # shellcheck disable=SC2034 # read by audit_labels() via global scope
+    LABELS_FILE="$labels_file"
+    LABELS_EXTRA=0
+    audit_labels "drift-test-repo" "false" >"$out_file" 2>&1
+    printf '%s\t%s' "$LABELS_EXTRA" "$(cat "$out_file")"
+    rm -f "$out_file"
+}
+
+RENAME_UNDECLARED_FILE="$drift_fixture_dir/labels-no-target.json"
+cat >"$RENAME_UNDECLARED_FILE" <<'EOF'
+{"labels": [{"name": "test/foo", "color": "#AABBCC", "description": "expected desc"}]}
+EOF
+RENAME_DECLARED_FILE="$drift_fixture_dir/labels-with-target.json"
+cat >"$RENAME_DECLARED_FILE" <<'EOF'
+{"labels": [{"name": "type/bug", "color": "#D73A4A", "description": "Something is broken"}]}
+EOF
+RENAME_SCOPED_ELSEWHERE_FILE="$drift_fixture_dir/labels-target-elsewhere.json"
+cat >"$RENAME_SCOPED_ELSEWHERE_FILE" <<'EOF'
+{"labels": [{"name": "type/bug", "color": "#D73A4A", "description": "Something is broken", "repos": ["some-other-repo"]}]}
+EOF
+
+result="$(run_audit_labels_extra_fixture $'bug\x1fd73a4a\x1fdefault' "$RENAME_UNDECLARED_FILE")"
+assert_eq "a rename-map key whose target the labels file omits is EXTRA" "1" "${result%%$'\t'*}"
+assert_contains "the stranded old name is printed as EXTRA" "${result#*$'\t'}" "EXTRA: bug"
+
+result="$(run_audit_labels_extra_fixture $'bug\x1fd73a4a\x1fdefault' "$RENAME_DECLARED_FILE")"
+assert_eq "a rename-map key whose target is declared stays a rename candidate, not extra" "0" "${result%%$'\t'*}"
+assert_contains "the declared target produces the RENAME line" "${result#*$'\t'}" "RENAME: bug -> type/bug"
+
+result="$(run_audit_labels_extra_fixture $'bug\x1fd73a4a\x1fdefault' "$RENAME_SCOPED_ELSEWHERE_FILE")"
+assert_eq "a target scoped to another repo does not shield the old name on this one" "1" "${result%%$'\t'*}"
+
 rm -rf "$drift_fixture_dir"
 trap - EXIT
 unset -f get_github_labels

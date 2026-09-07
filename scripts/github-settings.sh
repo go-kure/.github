@@ -837,6 +837,15 @@ build_reverse_rename_map() {
     done
 }
 
+# Is `name` declared in $LABELS_FILE for `repo` — present, and either unscoped
+# or carrying a "repos" list that names this repo?
+label_expected_on_repo() {
+    local name="$1" repo="$2"
+    jq -e --arg n "$name" --arg r "$repo" \
+        '.labels[] | select(.name == $n) | select((.repos // null) == null or (.repos | index($r) != null))' \
+        "$LABELS_FILE" > /dev/null 2>&1
+}
+
 # URL-encode a label name for use as a single path segment. safe='' is the
 # whole point: quote() defaults to safe='/', which leaves untouched the one
 # character every namespaced label here contains, making the call a no-op for
@@ -986,13 +995,20 @@ audit_labels() {
     # Detect extra labels (in repo but not in standard, and not a rename candidate)
     while IFS= read -r existing_name; do
         [ -z "$existing_name" ] && continue
-        # Skip rename candidates (handled by rename logic above)
-        if [[ -v LABEL_RENAME_MAP["$existing_name"] ]]; then
+        # Skip a rename candidate only while its target is expected on this
+        # repo — the case the rename branch above handles. When the target is
+        # not declared for this repo (a consumer's LABELS_FILE that omits
+        # type/bug, or scopes it elsewhere) the old name has no rename to wait
+        # for and falls through to the extra check below; before this guard it
+        # was neither renamed nor reported, stranded through every audit and
+        # apply (go-kure/.github#154 review finding).
+        if [[ -v LABEL_RENAME_MAP["$existing_name"] ]] \
+            && label_expected_on_repo "${LABEL_RENAME_MAP[$existing_name]}" "$repo"; then
             continue
         fi
         # A label is "expected" on this repo when it is in the standard AND either
         # has no "repos" scope or lists this repo. Anything else is extra.
-        if ! jq -e --arg n "$existing_name" --arg r "$repo" '.labels[] | select(.name == $n) | select((.repos // null) == null or (.repos | index($r) != null))' "$LABELS_FILE" > /dev/null 2>&1; then
+        if ! label_expected_on_repo "$existing_name" "$repo"; then
             LABELS_EXTRA=$((LABELS_EXTRA + 1))
             if [ "$apply" = "true" ]; then
                 local issue_count
