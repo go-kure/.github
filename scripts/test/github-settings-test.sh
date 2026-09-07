@@ -123,6 +123,25 @@ rm -f "$dup_labels_fixture"
 assert_eq "validate_policy exits non-zero on duplicate label names in the labels file" "1" "$([ "$dup_rc" -ne 0 ] && echo 1 || echo 0)"
 assert_contains "validate_policy's error names the duplicated label" "$dup_out" "duplicate label name(s): area/x"
 
+# An empty or malformed labels file must be refused before any mutation:
+# `{"labels": []}` makes every live label EXTRA and --apply deletes them all
+# (round-8 finding); an entry without a colour would fail at the API mid-apply.
+empty_labels_fixture="$(mktemp)"
+printf '%s\n' '{"labels": []}' >"$empty_labels_fixture"
+empty_out=$( (LABELS_FILE="$empty_labels_fixture" validate_policy) 2>&1 )
+empty_rc=$?
+rm -f "$empty_labels_fixture"
+assert_eq "validate_policy exits non-zero on a labels file declaring no labels" "1" "$([ "$empty_rc" -ne 0 ] && echo 1 || echo 0)"
+assert_contains "validate_policy's error names the empty labels file" "$empty_out" "declares no labels"
+
+malformed_labels_fixture="$(mktemp)"
+printf '%s\n' '{"labels": [{"name": "area/x", "description": "d"}]}' >"$malformed_labels_fixture"
+malformed_out=$( (LABELS_FILE="$malformed_labels_fixture" validate_policy) 2>&1 )
+malformed_rc=$?
+rm -f "$malformed_labels_fixture"
+assert_eq "validate_policy exits non-zero on a label entry without a colour" "1" "$([ "$malformed_rc" -ne 0 ] && echo 1 || echo 0)"
+assert_contains "validate_policy's error names the malformed labels file" "$malformed_out" "is malformed"
+
 # ---- ruleset_applies scoping ----
 
 if ruleset_applies "kure" "$COPILOT"; then
@@ -467,7 +486,9 @@ covers_json=$(jq '.github_repos.kure.rulesets = {
     "Glob Include": {target: "branch", conditions: {ref_name: {include: ["refs/heads/ma*"]}}, rules: {deletion: true}},
     "All But Glob": {target: "branch", conditions: {ref_name: {include: ["~ALL"], exclude: ["refs/heads/ma*"]}}, rules: {deletion: true}},
     "All But Releases": {target: "branch", conditions: {ref_name: {include: ["~ALL"], exclude: ["refs/heads/release/*"]}}, rules: {deletion: true}},
-    "Dotted Near Miss": {target: "branch", conditions: {ref_name: {include: ["refs/heads/main.x"]}}, rules: {deletion: true}}
+    "Dotted Near Miss": {target: "branch", conditions: {ref_name: {include: ["refs/heads/main.x"]}}, rules: {deletion: true}},
+    "Bracket Exclude": {target: "branch", conditions: {ref_name: {include: ["~ALL"], exclude: ["refs/heads/ma[!x]n"]}}, rules: {deletion: true}},
+    "Bracket Include": {target: "branch", conditions: {ref_name: {include: ["refs/heads/ma[i]n"]}}, rules: {deletion: true}}
 }' <<<"$POLICY_JSON")
 
 # Stubbed like get_github_labels below: the live default branch is whatever
@@ -503,6 +524,11 @@ assert_eq "a glob include matching main covers main" "0" "$(covers_rc "Glob Incl
 assert_eq "~ALL with a glob exclude matching main does not cover main" "1" "$(covers_rc "All But Glob")"
 assert_eq "~ALL with a glob exclude that does not match main still covers main" "0" "$(covers_rc "All But Releases")"
 assert_eq "a dotted near-miss (refs/heads/main.x) is literal and does not cover main" "1" "$(covers_rc "Dotted Near Miss")"
+# Bracket expressions are fnmatch too but are not translated; they fail closed
+# on both sides (round-8 finding): an exclude with one may remove main, an
+# include with one is never trusted to reach it.
+assert_eq "~ALL with a bracket-expression exclude that matches main does not cover main" "1" "$(covers_rc "Bracket Exclude")"
+assert_eq "a bracket-expression include is not trusted to cover main" "1" "$(covers_rc "Bracket Include")"
 
 # ~DEFAULT_BRANCH is resolved against the live repo, never assumed to be main
 # (go-kure/.github#154 round-4 finding): on a repo whose default branch is

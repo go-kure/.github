@@ -466,14 +466,36 @@ validate_policy() {
         errors=$((errors + 1))
     fi
 
+    # 4a. Labels file shape — the same preflight check-label-docs.sh applies
+    #     to this repo's own file, which a consumer's LABELS_FILE never passes
+    #     through. `{"labels": []}` is valid JSON that audit_labels turns into
+    #     "every live label is EXTRA", and --apply then deletes every label
+    #     not attached to an issue (go-kure/.github#154 round-8 finding). A
+    #     label missing name/description or with a malformed colour would
+    #     fail later, at the API, mid-apply. The remaining label checks are
+    #     skipped when the shape is wrong: they cannot iterate a non-array.
+    local labels_shape_ok=1
+    if ! jq -e '
+        (.labels | type == "array") and (.labels | length > 0) and
+        ([.labels[] |
+            (.name | type == "string") and (.name | length > 0) and
+            (.description | type == "string") and
+            (.color | type == "string") and (.color | test("^#[0-9A-Fa-f]{6}$"))
+        ] | all)
+    ' "$LABELS_FILE" >/dev/null 2>&1; then
+        echo -e "${RED}ERROR: $LABELS_FILE is malformed or declares no labels: .labels must be a non-empty array whose entries carry a name, a description and a #RRGGBB color${NC}"
+        errors=$((errors + 1))
+        labels_shape_ok=0
+    fi
+
     # 4b. The same rule for the labels file's repos: scopes. A typo there is
     #     worse than a ruleset typo: the label is silently not expected on the
     #     repo it was meant for, and a live copy of it is then EXTRA and
     #     deleted by the next --apply (go-kure/.github#154 review finding —
     #     the file became consumer-supplied, so it is no longer reviewed by
     #     the people who know the repo list).
-    local bad_label_repos
-    bad_label_repos=$(jq -r --argjson known "$repo_list_json" '
+    local bad_label_repos=""
+    [ "$labels_shape_ok" -eq 1 ] && bad_label_repos=$(jq -r --argjson known "$repo_list_json" '
         [.labels[] | select(.repos != null) | .repos[] | select(. as $r | $known | index($r) | not)] | unique | .[]
     ' "$LABELS_FILE")
     if [ -n "$bad_label_repos" ]; then
@@ -498,8 +520,8 @@ validate_policy() {
     #     for this repo's own file, but a consumer's LABELS_FILE never passes
     #     through that checker; audit_labels would create the label for the
     #     first entry and POST it again for the second.
-    local dup_label_names
-    dup_label_names=$(jq -r '.labels | group_by(.name) | map(select(length > 1) | .[0].name) | join(", ")' "$LABELS_FILE")
+    local dup_label_names=""
+    [ "$labels_shape_ok" -eq 1 ] && dup_label_names=$(jq -r '.labels | group_by(.name) | map(select(length > 1) | .[0].name) | join(", ")' "$LABELS_FILE")
     if [ -n "$dup_label_names" ]; then
         echo -e "${RED}ERROR: $LABELS_FILE declares duplicate label name(s): $dup_label_names${NC}"
         errors=$((errors + 1))
@@ -733,18 +755,24 @@ ruleset_covers_main() {
         # Ref-name conditions are fnmatch patterns, so an entry matches main
         # when its glob does (`refs/heads/ma*`), not only when it is the
         # literal `refs/heads/main`. The two sentinels are resolved as above.
+        # Only `*` and `?` are translated; a bracket expression (`[!x]`,
+        # `[a-z]`) fails closed: it never counts as an include reaching main
+        # and always counts as an exclude that may remove main, so an
+        # unmodelled pattern can only keep classic protection, never drop it.
         if ruleset_conditions_json "$repo" "$name" \
             | jq -e --arg def "$default_branch" '
                 def uses_sentinel: index("~DEFAULT_BRANCH") != null;
+                def has_bracket: test("[\\[\\]]");
                 def glob_re: gsub("(?<c>[.+^${}()|\\[\\]\\\\])"; "\\\(.c)") | gsub("\\*"; ".*") | gsub("\\?"; ".");
                 def matches_main: . as $p |
                     $p == "~ALL"
                     or ($def == "main" and $p == "~DEFAULT_BRANCH")
                     or (($p | startswith("~") | not) and ("refs/heads/main" | test("^" + ($p | glob_re) + "$")));
-                def reaches_main: (. // []) | any(matches_main);
+                def include_reaches_main: (. // []) | any((has_bracket | not) and matches_main);
+                def exclude_may_remove_main: (. // []) | any(has_bracket or matches_main);
                 if $def == "" and ((.ref_name.include | uses_sentinel) or (.ref_name.exclude | uses_sentinel))
                 then false
-                else (.ref_name.include | reaches_main) and (.ref_name.exclude | reaches_main | not)
+                else (.ref_name.include | include_reaches_main) and (.ref_name.exclude | exclude_may_remove_main | not)
                 end
             ' >/dev/null; then
             return 0

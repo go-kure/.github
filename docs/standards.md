@@ -408,7 +408,11 @@ Another organization can run `scripts/github-settings.sh` unchanged against its 
 (the consumer's full governed set — policy `repos:` scopes are validated against it),
 `LABELS_FILE` and `POLICY_FILE` in the environment. `GITHUB_REPOS` still narrows a single
 run. The script's `--help` lists all five variables. This repository's own `settings.yml`
-sets none of them.
+sets none of them. A consumer's labels file never passes `check-label-docs.sh`, so the script
+validates its shape itself before touching anything: a non-empty `labels` array whose entries
+carry a name, a description and a `#RRGGBB` colour, no duplicate names, and `repos:` scopes
+naming only governed repos. An empty file in particular is refused rather than read as "delete
+every live label".
 
 A ruleset normally has a `github_defaults.rulesets` entry (optionally scoped to specific repos
 via `repos:`, per-repo fields overridden under `github_repos.<repo>.rulesets`). It can also be
