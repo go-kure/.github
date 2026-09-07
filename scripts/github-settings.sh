@@ -655,22 +655,37 @@ ruleset_applies() {
     ' <<<"$POLICY_JSON" >/dev/null
 }
 
+# The repo's live default branch, empty when it cannot be read. Its own
+# function so the test suite can stub it the way it stubs get_github_labels.
+repo_default_branch() {
+    local repo="$1"
+    gh api "repos/$GITHUB_ORG/$repo" --jq '.default_branch // empty' 2>/dev/null || true
+}
+
 # True when at least one of the named rulesets (the caller passes the ones
 # applicable to `repo`) actually protects main: a branch ruleset, enforcement
 # active (not disabled, not evaluate), whose include list reaches main —
-# literally, via ~DEFAULT_BRANCH, or via ~ALL — and whose exclude list does
-# not take it away again. Gates the classic-protection migration in
-# audit_rulesets: anything less would remove protection without replacing it.
+# literally, via ~ALL, or via ~DEFAULT_BRANCH when the repo's default branch
+# IS main — and whose exclude list does not take it away again. The sentinel
+# is resolved against the live repo, never assumed: a consumer whose default
+# branch is not main would otherwise lose classic protection on main to a
+# ruleset that protects a different branch. An unreadable default branch
+# resolves the sentinel to "does not reach main", the fail-closed side. Gates
+# the classic-protection migration in audit_rulesets: anything less would
+# remove protection without replacing it.
 ruleset_covers_main() {
     local repo="$1"
     shift
-    local name
+    local name default_branch
+    default_branch=$(repo_default_branch "$repo")
     for name in "$@"; do
         [ "$(ruleset_field "$repo" "$name" target branch)" = "branch" ] || continue
         [ "$(ruleset_field "$repo" "$name" enforcement active)" = "active" ] || continue
         if ruleset_conditions_json "$repo" "$name" \
-            | jq -e '
-                def reaches_main: (index("refs/heads/main") // index("~DEFAULT_BRANCH") // index("~ALL")) != null;
+            | jq -e --arg def "$default_branch" '
+                def reaches_main:
+                    (index("refs/heads/main") // index("~ALL")) != null
+                    or ($def == "main" and index("~DEFAULT_BRANCH") != null);
                 (.ref_name.include | reaches_main) and (.ref_name.exclude | reaches_main | not)
             ' >/dev/null; then
             return 0
@@ -934,7 +949,7 @@ audit_labels() {
             continue
         fi
 
-        if echo "$existing_labels" | grep -qx "$name"; then
+        if echo "$existing_labels" | grep -qxF -- "$name"; then
             # Compare metadata, not just the name — a name match alone used
             # to short-circuit as OK, so an edited color/description in
             # labels.json could never reach a repo where the label already
@@ -970,7 +985,7 @@ audit_labels() {
             # unconditionally skipped by the extra-label loop, so nothing else
             # ever flags the orphaned old name. Surface it instead.
             local old_name="${REVERSE_RENAME_MAP[$name]:-}"
-            if [ -n "$old_name" ] && echo "$existing_labels" | grep -qx "$old_name" \
+            if [ -n "$old_name" ] && echo "$existing_labels" | grep -qxF -- "$old_name" \
                 && ! label_expected_on_repo "$old_name" "$repo"; then
                 echo -e "  ${YELLOW}DUPLICATE${NC}: $old_name coexists with $name — reconcile issues onto $name and delete $old_name manually (not automated: could drop issue associations)"
                 LABELS_DUPLICATE=$((LABELS_DUPLICATE + 1))
@@ -983,7 +998,7 @@ audit_labels() {
             # (go-kure/.github#154 review finding). Same rule in the DUPLICATE
             # and extra-label branches.
             local old_name="${REVERSE_RENAME_MAP[$name]:-}"
-            if [ -n "$old_name" ] && echo "$existing_labels" | grep -qx "$old_name" \
+            if [ -n "$old_name" ] && echo "$existing_labels" | grep -qxF -- "$old_name" \
                 && ! label_expected_on_repo "$old_name" "$repo"; then
                 # Rename candidate exists
                 LABELS_RENAMED=$((LABELS_RENAMED + 1))

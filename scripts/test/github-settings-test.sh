@@ -425,8 +425,14 @@ covers_json=$(jq '.github_repos.kure.rulesets = {
     "Tags": {target: "tag", conditions: {ref_name: {include: ["refs/tags/*"]}}, rules: {}},
     "Disabled Main": {target: "branch", enforcement: "disabled", conditions: {ref_name: {include: ["refs/heads/main"]}}, rules: {}},
     "Evaluate Main": {target: "branch", enforcement: "evaluate", conditions: {ref_name: {include: ["refs/heads/main"]}}, rules: {}},
-    "All But Main": {target: "branch", conditions: {ref_name: {include: ["~ALL"], exclude: ["refs/heads/main"]}}, rules: {}}
+    "All But Main": {target: "branch", conditions: {ref_name: {include: ["~ALL"], exclude: ["refs/heads/main"]}}, rules: {}},
+    "All But Default": {target: "branch", conditions: {ref_name: {include: ["~ALL"], exclude: ["~DEFAULT_BRANCH"]}}, rules: {}}
 }' <<<"$POLICY_JSON")
+
+# Stubbed like get_github_labels below: the live default branch is whatever
+# COVERS_DEFAULT_BRANCH says (main unless a test sets it; empty = unreadable).
+# shellcheck disable=SC2317 # invoked indirectly via ruleset_covers_main
+repo_default_branch() { printf '%s' "${COVERS_DEFAULT_BRANCH-main}"; }
 
 # Echoes ruleset_covers_main's exit code for kure over the named rulesets.
 covers_rc() {
@@ -444,6 +450,16 @@ assert_eq "a disabled ruleset on main enforces nothing and does not cover it" "1
 assert_eq "an evaluate-mode ruleset on main enforces nothing and does not cover it" "1" "$(covers_rc "Evaluate Main")"
 assert_eq "~ALL with main excluded again does not cover main" "1" "$(covers_rc "All But Main")"
 assert_eq "a disabled main ruleset next to an active one still covers (the active one counts)" "0" "$(covers_rc "Disabled Main" "Main Literal")"
+assert_eq "~ALL with the default branch excluded does not cover main when the default branch is main" "1" "$(covers_rc "All But Default")"
+
+# ~DEFAULT_BRANCH is resolved against the live repo, never assumed to be main
+# (go-kure/.github#154 round-4 finding): on a repo whose default branch is
+# something else, a ~DEFAULT_BRANCH ruleset protects that branch, not main.
+assert_eq "~DEFAULT_BRANCH does not cover main when the default branch is master" "1" "$(COVERS_DEFAULT_BRANCH=master covers_rc "Default Branch")"
+assert_eq "a literal refs/heads/main include still covers main whatever the default branch" "0" "$(COVERS_DEFAULT_BRANCH=master covers_rc "Main Literal")"
+assert_eq "~ALL minus ~DEFAULT_BRANCH covers main when the default branch is master" "0" "$(COVERS_DEFAULT_BRANCH=master covers_rc "All But Default")"
+assert_eq "an unreadable default branch resolves ~DEFAULT_BRANCH to not-main (fail closed)" "1" "$(COVERS_DEFAULT_BRANCH='' covers_rc "Default Branch")"
+unset -f repo_default_branch
 
 # ---- print_summary: blocked (audit-only) org settings drift must be
 # reported separately from applied drift under --apply, not folded into the
@@ -675,6 +691,20 @@ result="$(run_audit_labels_extra_fixture $'bug\x1fd73a4a\x1fdefault' "$RENAME_BO
 assert_eq "a rename source the labels file itself declares is not extra" "0" "${result%%$'\t'*}"
 assert_contains "the declared source audits as OK, not as a rename candidate" "${result#*$'\t'}" "OK: bug"
 assert_contains "its declared target is then MISSING rather than RENAME" "${result#*$'\t'}" "MISSING: type/bug"
+
+# Label names are compared literally, never as regexes (go-kure/.github#154
+# round-4 finding): a declared `release/1.0` must not be satisfied by a live
+# `release/1x0` — the old grep -x match then looked the metadata up under a
+# name that was never fetched and aborted the whole audit under set -u.
+REGEX_NAME_FILE="$drift_fixture_dir/labels-regex-name.json"
+cat >"$REGEX_NAME_FILE" <<'EOF'
+{"labels": [{"name": "release/1.0", "color": "#AABBCC", "description": "expected desc"}]}
+EOF
+
+result="$(run_audit_labels_extra_fixture $'release/1x0\x1faabbcc\x1fexpected desc' "$REGEX_NAME_FILE")"
+assert_eq "a live name that only regex-matches the declared one is EXTRA" "1" "${result%%$'\t'*}"
+assert_contains "the declared name is then plainly MISSING" "${result#*$'\t'}" "MISSING: release/1.0"
+assert_contains "and the near-miss live name is EXTRA" "${result#*$'\t'}" "EXTRA: release/1x0"
 
 rm -rf "$drift_fixture_dir"
 trap - EXIT
