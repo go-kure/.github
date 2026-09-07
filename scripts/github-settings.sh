@@ -27,12 +27,18 @@ WHARF_DIR="$(dirname "$SCRIPT_DIR")"
 # GITHUB_REPOS_DEFAULT stays fixed even when GITHUB_REPOS is narrowed to a
 # subset for a single run (e.g. GITHUB_REPOS=.github) — validate_policy uses
 # it so a partial run doesn't misreport policy-known repos as unknown.
+# It is itself overridable so another org can run this script unchanged
+# against its own repo set, labels file and policy file (a "thin consumer":
+# checks out this repo, points the three *_FILE/_DEFAULT variables at its
+# own files, sets GITHUB_ORG). Without the override, a consumer's every
+# `repos:` scope would be rejected by validate_policy as naming repos
+# outside the go-kure set.
 GITHUB_ORG="${GITHUB_ORG:-go-kure}"
-GITHUB_REPOS_DEFAULT=".github kure launcher go-kure.github.io"
+GITHUB_REPOS_DEFAULT="${GITHUB_REPOS_DEFAULT:-.github kure launcher go-kure.github.io}"
 GITHUB_REPOS="${GITHUB_REPOS:-$GITHUB_REPOS_DEFAULT}"
 
-LABELS_FILE="$WHARF_DIR/standards/labels.json"
-POLICY_FILE="$WHARF_DIR/governance/repository-settings-policy.yaml"
+LABELS_FILE="${LABELS_FILE:-$WHARF_DIR/standards/labels.json}"
+POLICY_FILE="${POLICY_FILE:-$WHARF_DIR/governance/repository-settings-policy.yaml}"
 CI_MODE=false
 JSON_OUTPUT=false
 
@@ -282,8 +288,14 @@ usage() {
     echo "  --json     Output machine-readable JSON summary"
     echo ""
     echo "Environment variables:"
-    echo "  GITHUB_ORG    GitHub organization (default: go-kure)"
-    echo "  GITHUB_REPOS  Space-separated list of GitHub repo names"
+    echo "  GITHUB_ORG            GitHub organization (default: go-kure)"
+    echo "  GITHUB_REPOS          Space-separated list of GitHub repo names for this run"
+    echo "  GITHUB_REPOS_DEFAULT  Full governed repo set (default: the go-kure repos);"
+    echo "                        policy repos: scopes are validated against"
+    echo "                        GITHUB_REPOS_DEFAULT + GITHUB_REPOS"
+    echo "  LABELS_FILE           Labels standard (default: standards/labels.json)"
+    echo "  POLICY_FILE           Settings policy (default: governance/repository-settings-policy.yaml)"
+    echo "  Set all four to run this script unchanged against another org's own files."
     echo ""
     echo "Examples:"
     echo "  $0 kure                    # Audit kure repo settings"

@@ -1,5 +1,8 @@
 # Automated PR review — reusable workflow.
 # Caller must provide: on: pull_request trigger and pr_review_context input.
+# Optional input `runs-on` (default autops-kube-kure) lets a caller in another
+# org run the job on its own runner scale set; the runner still needs
+# in-cluster access to the review backend below.
 #
 # Backend: claude-max-proxy (wende/claude-max-api-proxy), running as the
 # standalone `claude-proxy` Deployment at
@@ -113,6 +116,14 @@ on:
         type: string
         required: false
         default: ''
+      runs-on:
+        # A caller outside this org uses its own runner scale set; the label
+        # must still name a self-hosted runner with in-cluster access to the
+        # review backend (CCPROXY_URL below is a cluster-local Service).
+        description: 'Runner label; must reach the in-cluster review backend'
+        type: string
+        required: false
+        default: 'autops-kube-kure'
 
 concurrency:
   group: pr-review-threads-${{ github.repository }}-${{ github.event.pull_request.number }}
@@ -121,7 +132,7 @@ concurrency:
 jobs:
   pr-review:
     name: AI Code Review
-    runs-on: autops-kube-kure
+    runs-on: ${{ inputs.runs-on }}
     if: >-
       github.event.pull_request.head.repo.full_name == github.repository &&
       vars.PR_REVIEW_THREADS_MODE != 'off'

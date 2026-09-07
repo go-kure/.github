@@ -357,6 +357,36 @@ else
 fi
 assert_contains "validate_policy's scope-typo error names the offending repo" "$typo_out" "totally-bogus-repo"
 
+# ---- Thin-consumer overrides: GITHUB_REPOS_DEFAULT, LABELS_FILE and
+# POLICY_FILE are read from the environment at source time (the go-kure
+# values are only defaults), so another org can run the script unchanged
+# against its own files. Sourced in a fresh bash so this file's own sourcing
+# above (which already fixed the globals) does not mask the default path. ----
+
+# shellcheck disable=SC2016 # single-quoted on purpose: the child bash expands these after sourcing, not this shell
+consumer_env=$(GITHUB_ORG=other-org GITHUB_REPOS_DEFAULT="alpha beta" LABELS_FILE=/x/labels.json POLICY_FILE=/x/policy.yaml \
+    bash -c 'source "$1" && printf "%s|%s|%s|%s|%s" "$GITHUB_ORG" "$GITHUB_REPOS_DEFAULT" "$GITHUB_REPOS" "$LABELS_FILE" "$POLICY_FILE"' _ "$ROOT/scripts/github-settings.sh")
+assert_eq "env overrides win for org, repo set, labels file and policy file; GITHUB_REPOS follows GITHUB_REPOS_DEFAULT" \
+    "other-org|alpha beta|alpha beta|/x/labels.json|/x/policy.yaml" "$consumer_env"
+
+# shellcheck disable=SC2016 # single-quoted on purpose: same reason as above
+default_env=$(env -u GITHUB_ORG -u GITHUB_REPOS -u GITHUB_REPOS_DEFAULT -u LABELS_FILE -u POLICY_FILE \
+    bash -c 'source "$1" && printf "%s|%s|%s|%s" "$GITHUB_ORG" "$GITHUB_REPOS_DEFAULT" "${LABELS_FILE#"$WHARF_DIR"/}" "${POLICY_FILE#"$WHARF_DIR"/}"' _ "$ROOT/scripts/github-settings.sh")
+assert_eq "with nothing set, the go-kure defaults still apply" \
+    "go-kure|.github kure launcher go-kure.github.io|standards/labels.json|governance/repository-settings-policy.yaml" "$default_env"
+
+# A consumer's policy scopes rulesets to ITS repos; validate_policy must judge
+# them against the overridden GITHUB_REPOS_DEFAULT, not the go-kure set.
+consumer_scope_json=$(jq '.github_defaults.rulesets["main-protection"].repos = ["alpha"] | .github_defaults.rulesets[$c].repos = ["alpha"] | .github_repos = {}' --arg c "$COPILOT" <<<"$POLICY_JSON")
+consumer_scope_rc=$( (POLICY_JSON="$consumer_scope_json" GITHUB_REPOS_DEFAULT="alpha beta" GITHUB_REPOS="alpha" validate_policy) >/dev/null 2>&1; echo $? )
+if [ "$consumer_scope_rc" -eq 0 ]; then
+    echo "PASS: validate_policy accepts repos: scopes drawn from an overridden GITHUB_REPOS_DEFAULT"
+    pass_count=$((pass_count + 1))
+else
+    echo "FAIL: validate_policy should validate repos: scopes against the overridden GITHUB_REPOS_DEFAULT"
+    failures=$((failures + 1))
+fi
+
 # ---- ruleset_names / ruleset_applies: a ruleset declared only under
 # github_repos.<repo>.rulesets (no github_defaults counterpart — e.g. an
 # --import dump of an unmanaged live ruleset pasted as directed) must be

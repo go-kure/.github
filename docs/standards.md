@@ -392,6 +392,13 @@ outside `main-protection`: its default branch is written directly by the `kure` 
 `launcher` docs-deploy workflows and by its own sitemap job, and it runs none of the
 status checks that ruleset requires.
 
+Another organization can run `scripts/github-settings.sh` unchanged against its own files
+("thin consumer"): check out this repository, then set `GITHUB_ORG`, `GITHUB_REPOS_DEFAULT`
+(the consumer's full governed set — policy `repos:` scopes are validated against it),
+`LABELS_FILE` and `POLICY_FILE` in the environment. `GITHUB_REPOS` still narrows a single
+run. The script's `--help` lists all five variables. This repository's own `settings.yml`
+sets none of them.
+
 A ruleset normally has a `github_defaults.rulesets` entry (optionally scoped to specific repos
 via `repos:`, per-repo fields overridden under `github_repos.<repo>.rulesets`). It can also be
 declared **repo-only**, entirely under `github_repos.<repo>.rulesets` with no

@@ -181,5 +181,24 @@ assert_rc "ordinary run: block does not false-positive" 0 \
 
 assert_rc "repo with no .github/workflows directory at all passes" 0 "$(run_fixture '')"
 
+# FIRST_PARTY_WORKFLOW_RE is env-overridable so a consumer org can admit its
+# own reusable workflows at a mutable ref. The default must stay go-kure-only:
+# an override that widens the exemption is the caller's explicit choice.
+fixture_other_org_reusable_workflow() { cat <<'EOF'
+jobs:
+  a:
+    uses: other-org/.github/.github/workflows/ci.yml@main
+EOF
+}
+
+assert_rc "another org's reusable workflow @main fails by default" 1 \
+  "$(run_fixture "$(fixture_other_org_reusable_workflow)")"
+
+assert_rc "another org's reusable workflow @main passes under an explicit FIRST_PARTY_WORKFLOW_RE override" 0 \
+  "$(FIRST_PARTY_WORKFLOW_RE='^(go-kure|other-org)/[^/]+/\.github/workflows/[^@]+@' run_fixture "$(fixture_other_org_reusable_workflow)")"
+
+assert_rc "the override does not exempt a composite action of the admitted org" 1 \
+  "$(FIRST_PARTY_WORKFLOW_RE='^(go-kure|other-org)/[^/]+/\.github/workflows/[^@]+@' run_fixture "$(printf 'jobs:\n  a:\n    steps:\n      - uses: other-org/.github/.github/actions/x@main')")"
+
 echo "passed: $pass_count, failed: $failures"
 [ "$failures" -eq 0 ]
