@@ -17,12 +17,16 @@
 #                               exactly rather than inventing a stricter one.
 #                               First-party COMPOSITE ACTIONS are not exempt.
 #
-# Known limitation: this is a line-anchored grep, not a YAML parser. A `run: |`
-# block scalar whose shell text happens to start a line with `uses:` would be
-# misdetected as an actions ref. Verified absent across every real workflow in
-# this org today; closing the gap unconditionally needs a YAML parser, which is
-# out of scope here. If a future script legitimately needs a `run:` line shaped
-# like that, indent it so it is not first-on-line, or extend this checker then.
+# Known limitation: this is a line-anchored scan, not a YAML parser. A `run: |`
+# block scalar whose shell text happens to start a line with `uses:` (or
+# `steps:`) would be misdetected as an actions ref (or as opening a steps
+# block). Verified absent across every real workflow in this org today;
+# closing the gap unconditionally needs a YAML parser, which is out of scope
+# here. If a future script legitimately needs a `run:` line shaped like that,
+# indent it so it is not first-on-line, or extend this checker then. The
+# reusable-workflow exemption is applied only to job-level `uses:` (outside a
+# `steps:` block, tracked by indentation); a step-level ref is always an
+# action, whatever path it names.
 #
 # Usage: check-action-pins.sh [REPO_ROOT]
 # Exits non-zero and lists every unpinned reference.
@@ -62,21 +66,51 @@ fi
 
 checked=0
 while IFS= read -r -d '' file; do
-  # Strip a trailing `# comment` before matching so the `# v7` provenance
-  # comment on a correct pin can never be read as part of the ref.
-  while IFS= read -r ref; do
+  # The awk pass below emits one `<kind> <ref>` line per `uses:`: `job` for
+  # a ref outside any `steps:` block (a reusable-workflow call,
+  # jobs.<id>.uses) and `step` for one inside it (an action,
+  # jobs.<id>.steps[].uses). A `steps:` block is tracked by indentation: it
+  # opens at a `steps:` key and closes at the next non-blank, non-comment
+  # line indented no deeper than that key — except a `-` at the key's own
+  # indentation, which YAML allows as one of its items. Blank and comment
+  # lines never close it, so a column-0 comment between two steps is fine.
+  while read -r kind ref; do
     checked=$((checked + 1))
     case "$ref" in
       ./*|docker://*) continue ;;
     esac
-    if [[ "$ref" =~ $REUSABLE_WORKFLOW_SHAPE ]] && [[ "$ref" =~ $FIRST_PARTY_WORKFLOW_RE ]]; then continue; fi
+    # The reusable-workflow exemption applies to job-level calls only. A step
+    # can never call a reusable workflow, so a step-level ref that merely
+    # looks like one (`acme/tools/.github/workflows/helper.yml@main` used as
+    # an action) is an action and stays subject to the SHA rule — otherwise
+    # the exemption could be claimed by pointing an action ref at a path of
+    # the right shape.
+    if [ "$kind" = job ] && [[ "$ref" =~ $REUSABLE_WORKFLOW_SHAPE ]] && [[ "$ref" =~ $FIRST_PARTY_WORKFLOW_RE ]]; then continue; fi
     if [[ ! "$ref" =~ @[0-9a-f]{40}$ ]]; then
       fail "$(basename "$file"): unpinned action ref '$ref' (pin to a 40-char commit SHA, keep the tag as a trailing comment)"
     fi
   done < <(
-    grep -hoE '^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]*[^#]+' "$file" \
-      | sed -E 's/^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]*//; s/[[:space:]]+$//; s/^["'"'"']//; s/["'"'"']$//' \
-      || true
+    awk '
+      function indent(s) { match(s, /^[ \t]*/); return RLENGTH }
+      /^[ \t]*(#|$)/ { next }
+      {
+        ind = indent($0)
+        if (in_steps && (ind < steps_ind || (ind == steps_ind && $0 !~ /^[ \t]*-/))) in_steps = 0
+        if ($0 ~ /^[ \t]*steps:[ \t]*(#.*)?$/) { in_steps = 1; steps_ind = ind; next }
+        if ($0 !~ /^[ \t]*(-[ \t]+)?uses:[ \t]*[^ \t#]/) next
+        # Strip a trailing `# comment` before matching so the `# v7`
+        # provenance comment on a correct pin can never be read as part
+        # of the ref.
+        ref = $0
+        sub(/^[ \t]*(-[ \t]+)?uses:[ \t]*/, "", ref)
+        sub(/#.*$/, "", ref)
+        sub(/[ \t]+$/, "", ref)
+        sub(/^["'\'']/, "", ref)
+        sub(/["'\'']$/, "", ref)
+        kind = in_steps ? "step" : "job"
+        print kind, ref
+      }
+    ' "$file"
   )
 done < <(find "$ROOT/.github" -type f \( -name '*.yml' -o -name '*.yaml' \) -print0 2>/dev/null)
 

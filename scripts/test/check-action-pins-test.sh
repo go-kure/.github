@@ -249,5 +249,31 @@ assert_rc "a permissive owner-only override never exempts a composite action liv
 assert_rc "a .yaml reusable workflow is admitted like a .yml one" 0 \
   "$(FIRST_PARTY_WORKFLOW_RE='^acme/' run_fixture "$(printf 'jobs:\n  a:\n    uses: acme/tool/.github/workflows/ci.yaml@main')")"
 
+# The exemption is for reusable-workflow CALLS (jobs.<id>.uses), never for a
+# step. A step cannot call a reusable workflow, so a step-level ref that names
+# a path of the reusable-workflow shape is an action and must be SHA-pinned —
+# with the default pattern and under an override alike, and in both step
+# spellings (`- uses:` and `- name:` followed by `uses:`).
+assert_rc "a first-party reusable-workflow path used as a step action is not exempt" 1 \
+  "$(run_fixture "$(printf 'jobs:\n  a:\n    steps:\n      - uses: go-kure/.github/.github/workflows/ci.yml@main')")"
+
+assert_rc "under an override, a step-level ref of reusable-workflow shape is not exempt" 1 \
+  "$(FIRST_PARTY_WORKFLOW_RE='^acme/' run_fixture "$(printf 'jobs:\n  a:\n    steps:\n      - uses: acme/tools/.github/workflows/helper.yml@main')")"
+
+assert_rc "the same for a step written as - name: then uses: on the next line" 1 \
+  "$(FIRST_PARTY_WORKFLOW_RE='^acme/' run_fixture "$(printf 'jobs:\n  a:\n    steps:\n      - name: helper\n        uses: acme/tools/.github/workflows/helper.yml@main')")"
+
+# The steps block is tracked by indentation: it closes at the next job, so a
+# job-level call after a job with steps is still exempt; a `-` at the key's own
+# indentation is one of its items; a column-0 comment inside it does not close it.
+assert_rc "a job-level reusable-workflow call after a job with steps is still exempt" 0 \
+  "$(FIRST_PARTY_WORKFLOW_RE='^acme/' run_fixture "$(printf 'jobs:\n  a:\n    steps:\n      - uses: actions/checkout@%s # v7\n  b:\n    uses: acme/tool/.github/workflows/ci.yml@main' "$SHA")")"
+
+assert_rc "a step whose - sits at the steps: key's own indentation is still a step" 1 \
+  "$(run_fixture "$(printf 'jobs:\n  a:\n    steps:\n    - uses: go-kure/.github/.github/workflows/ci.yml@main')")"
+
+assert_rc "a column-0 comment inside steps does not end the block" 1 \
+  "$(run_fixture "$(printf 'jobs:\n  a:\n    steps:\n      - run: echo hi\n# a comment at column 0\n      - uses: go-kure/.github/.github/workflows/ci.yml@main')")"
+
 echo "passed: $pass_count, failed: $failures"
 [ "$failures" -eq 0 ]
