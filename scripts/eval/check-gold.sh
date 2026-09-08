@@ -183,11 +183,21 @@ for g in "${gold_files[@]}"; do
     # corpus-wide "outside the reviewed diff" and sends the reader to rebuild gold that is fine.
     # Neither shape is reachable from the builder, and both are one hand-edit away.
     #
-    # `^` and not `^1`: they mean the same first parent, and `^` is what build-gold.sh writes.
-    # A root commit has no parent, so build-gold.sh drops that candidate before emitting -- a
-    # document claiming one is malformed here rather than resolvable, and rev-parse below fails
-    # closed.
-    want_base=$(git -C "$checkout" rev-parse --verify --quiet "$head^" || true)
+    # Read the parent out of head's own commit object (`rev-list --parents -n 1`) rather than
+    # resolving `head^`. Output is `<head> <parent>...`: field 2 is the first parent, empty for
+    # a root commit. build-gold.sh drops a root-commit candidate before emitting, so a document
+    # claiming one is malformed -- reported as a violation with <none>. It is never silently
+    # equal to $base, which the resolvability check above has already proven non-empty.
+    #
+    # Both forms give the same answer on a full checkout; this one also gives it on a shallow
+    # one, where `head^` fails because the PARENT OBJECT is absent while head's own object still
+    # records its parent ids. That distinction does not currently change any outcome -- measured
+    # on a `--depth 1` clone, the loop above dies exit 2 naming base_sha before reaching here,
+    # because in a valid corpus base_sha IS that missing parent. It matters because the two
+    # readings fail on different things: `head^` conflates "no parent" with "parent not fetched",
+    # and this check's whole job is to distinguish a bad corpus from a bad checkout. Not relying
+    # on a coincidence of the check above costs one command.
+    want_base=$(git -C "$checkout" rev-list --parents -n 1 "$head" | cut -d' ' -f2)
     if [ "$want_base" != "$(git -C "$checkout" rev-parse --verify "$base")" ]; then
         printf 'base_sha is not head_sha^ (%s vs %s): %s\n' \
             "$base" "${want_base:-<none>}" "$(basename -- "$g")"
