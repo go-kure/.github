@@ -138,7 +138,10 @@ for g in "${gold_files[@]}"; do
     # review title -- a prompt without the introducing commit's subject, measured against rows
     # whose prompts have one. Same class as the span check below: build-gold.sh cannot emit it,
     # a hand-edited or externally generated corpus can, and nothing else looks.
-    if ! jq -e '(.intro_title | type) == "string" and (.intro_title | length) > 0' "$g" >/dev/null 2>&1; then
+    # Non-blank, not merely non-empty: "   " has length 3 and is not a commit subject. It would
+    # reach the reviewer verbatim as the review title -- neither the real one nor the neutral
+    # constant -- because run.sh's fallback tests the same way this does.
+    if ! jq -e '(.intro_title | type) == "string" and (.intro_title | test("\\S"))' "$g" >/dev/null 2>&1; then
         printf 'no intro_title (run.sh would review it under a neutral title): %s\n' "$g"
         violations=$((violations + 1))
     fi
