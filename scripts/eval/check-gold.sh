@@ -159,6 +159,27 @@ for g in "${gold_files[@]}"; do
     while IFS=$'\t' read -r file lo hi; do
         [ -n "$file" ] || continue
         rows_total=$((rows_total + 1))
+
+        # Shape before content. span_outside_diff counts the lines of lo..hi that the diff does
+        # not add, so a reversed or non-numeric span makes its loop run zero times, leave the
+        # counter at 0, and report the row as INSIDE the reviewed diff -- a preflight passing
+        # precisely the rows it exists to catch. The row then reaches the judge as a nonsensical
+        # range and sits in the denominator while being unmatchable, depressing recall.
+        # build-gold.sh cannot emit one (its span collapse is ordered by construction), so this
+        # guards a hand-edited or externally produced corpus, whose shape nothing else checks.
+        # The comma is always present, so an empty endpoint shows up as a leading or trailing one
+        # rather than as an empty word -- hence `,*|*,` and no `''` arm.
+        case "$lo,$hi" in
+            *[!0-9,]*|,*|*,) bad_span=1 ;;
+            *) bad_span=0 ;;
+        esac
+        if [ "$bad_span" = 1 ] || [ "$lo" -lt 1 ] || [ "$hi" -lt "$lo" ]; then
+            printf 'malformed span: %s -> %s:%s-%s (want 1 <= lo <= hi)\n' \
+                "$(basename -- "$g")" "$file" "$lo" "$hi"
+            violations=$((violations + 1))
+            continue
+        fi
+
         outside=$(span_outside_diff "$checkout" "$base" "$head" "$file" "$lo" "$hi")
         if [ "${outside:-0}" -gt 0 ]; then
             printf 'row outside the reviewed diff: %s -> %s:%s-%s (%s of %s lines; %s..%s)\n' \
