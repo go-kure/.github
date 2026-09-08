@@ -3,7 +3,8 @@
 #
 #   check-gold.sh --gold '<glob>' --checkout <repo-name>=<path> [--checkout ...]
 #
-# Two invariants, both of which have been violated in practice by a corpus that looked fine:
+# Three invariants, the first two of which have been violated in practice by a corpus that
+# looked fine:
 #
 #   1. Every row carries `confirmed: true` and every document carries a non-empty `intro_title`.
 #      A document without one has no leak-free review title available, so run.sh would fall back
@@ -23,11 +24,15 @@
 #      on a line the commit really did add and then runs on over lines belonging to other
 #      commits. Both defects are fixed in build-gold.sh; this asserts the result.
 #
+#   3. base_sha is head_sha's first parent -- the reviewed diff is the introducing commit
+#      itself, which is what makes invariant 2 a meaningful test rather than a tautology
+#      satisfiable by widening the diff. Rationale in full at the check.
+#
 # Reports every violation rather than stopping at the first: a corpus is rebuilt as a unit, so
 # the useful output is the full count, not the earliest example.
 #
 # exit status
-#   0  every document and row satisfies both invariants
+#   0  every document and row satisfies all three invariants
 #   1  at least one violation (each is printed)
 #   2  usage or environment error
 
@@ -168,6 +173,26 @@ for g in "${gold_files[@]}"; do
             die "$checkout cannot resolve $rev (from $(basename -- "$g")); is the checkout shallow or stale?"
         fi
     done
+
+    # base_sha must be head_sha's first parent, because that identity is what makes the rows
+    # measurable at all. build-gold.sh derives it exactly that way -- the reviewed diff IS the
+    # introducing commit -- and every gold row is a line that commit introduced. Widen base_sha
+    # to an older ancestor and the reviewed diff still contains those lines, so the hunk check
+    # below still passes, while the reviewer is now shown unrelated changes it is scored against
+    # nothing for; narrow or move it sideways and the rows fall outside, which reports as a
+    # corpus-wide "outside the reviewed diff" and sends the reader to rebuild gold that is fine.
+    # Neither shape is reachable from the builder, and both are one hand-edit away.
+    #
+    # `^` and not `^1`: they mean the same first parent, and `^` is what build-gold.sh writes.
+    # A root commit has no parent, so build-gold.sh drops that candidate before emitting -- a
+    # document claiming one is malformed here rather than resolvable, and rev-parse below fails
+    # closed.
+    want_base=$(git -C "$checkout" rev-parse --verify --quiet "$head^" || true)
+    if [ "$want_base" != "$(git -C "$checkout" rev-parse --verify "$base")" ]; then
+        printf 'base_sha is not head_sha^ (%s vs %s): %s\n' \
+            "$base" "${want_base:-<none>}" "$(basename -- "$g")"
+        violations=$((violations + 1))
+    fi
 
     while IFS=$'\t' read -r ok file lo hi; do
         rows_total=$((rows_total + 1))

@@ -374,14 +374,22 @@ not what the gate reads.
 ## Typical use
 
 ```sh
-# 1. build gold rows from a repository's fix history (private destination)
+# 1. build gold rows from a repository's fix history (private destination). One invocation per
+#    repository, all into the same --out: the refusal and --replace are both scoped to the
+#    --repo-name being built, so a second repository neither refuses nor clears the first.
+#    --replace rebuilds one repository's share of a shared corpus, never the whole corpus.
 ./build-gold.sh --repo ../../that-repo --repo-name group/that-repo \
+                --out "$EVAL/gold" --max-fixes 200
+./build-gold.sh --repo ../../other-repo --repo-name group/other-repo \
                 --out "$EVAL/gold" --max-fixes 200
 
 # 2. verify the corpus is measurable BEFORE paying for a run: this is the only check that
 #    every gold span is inside the reviewed diff, and a row outside it is a guaranteed miss
-#    that no reviewer can score against
-./check-gold.sh --gold "$EVAL/gold/*.json" --checkout group/that-repo=../../that-repo
+#    that no reviewer can score against. One --checkout per repository the corpus spans; a
+#    document whose repo has no mapping is an invocation error, not a corpus defect.
+./check-gold.sh --gold "$EVAL/gold/*.json" \
+                --checkout group/that-repo=../../that-repo \
+                --checkout group/other-repo=../../other-repo
 
 # 3. measure the shipped reviewer, three times, writing the baseline
 #    (both model passes run by default; --no-assess measures the review call alone, which is

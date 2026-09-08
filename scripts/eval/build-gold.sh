@@ -38,7 +38,9 @@ usage: build-gold.sh --repo <path> --repo-name <owner/name> --out <dir>
   --grep        subject pattern selecting fix commits (default: ^fix(\(|:| ))
   --include     ERE a gold file path must match (default: source extensions)
   --max-span    drop a gold row wider than this many lines (default: 20)
-  --replace     clear existing *.json from --out first (required to rebuild in place)
+  --replace     clear --out's existing documents FOR THIS --repo-name first (required to
+                rebuild in place). Other repositories' documents are never touched, so a
+                corpus spanning several is built by running this once per repository.
 
 exit status
   0  gold rows written
@@ -132,9 +134,34 @@ flock -n 9 || die "another build-gold.sh is building $out_dir; wait for it or us
 # both the refusal and the deletion, and then the writes would go through the link anyway --
 # leaving the previous sweep's files beside the new ones for run.sh's glob to measure as one
 # corpus. -H follows the command-line argument only, which is exactly the path in question.
+#
+# Scoped to THIS repository's documents, by the `.repo` each one carries. The stale-candidate
+# hazard described above is real within a repository and does not exist between two: a corpus
+# spans several repositories, their documents share no slug, and a sweep of one says nothing
+# about another's. Judging the directory as a whole made a multi-repo corpus unbuildable --
+# the second --repo-name refused, and --replace cleared the first one's documents.
+#
+# By content and not by filename prefix: the slug is the repo name with `/` and space replaced
+# by `-` (see the emitter below), so `go-kure/kure` and a `go-kure/kure-tools` would produce
+# `go-kure-kure-*` and `go-kure-kure-tools-*`, and a prefix glob for the first matches the
+# second. `.repo` is the field the emitter actually wrote; nothing has to be inferred from it.
+# A document with no readable `.repo` is treated as another repository's -- left alone rather
+# than swept, since deleting what cannot be identified is the one unrecoverable choice here.
+#
+# One jq per file rather than one batched call: a batched jq aborts on the first unparseable
+# input, and the files it had not reached yet would read as "not ours" -- the same silent
+# under-sweep this function exists to prevent, in the other direction.
+repo_docs() {
+    find -H "$out_dir" -maxdepth 1 -name '*.json' -print0 |
+        while IFS= read -r -d '' f; do
+            [ "$(jq -r '.repo // empty' "$f" 2>/dev/null)" = "$repo_name" ] || continue
+            printf '%s\0' "$f"
+        done
+}
+
 out_dir_dirty=false
-if [ -n "$(find -H "$out_dir" -maxdepth 1 -name '*.json' -print -quit)" ]; then
-    [ "$replace" = true ] || die "$out_dir already holds gold documents; pass --replace to rebuild it, or use an empty directory"
+if [ -n "$(repo_docs | tr -d '\0')" ]; then
+    [ "$replace" = true ] || die "$out_dir already holds gold documents for $repo_name; pass --replace to rebuild them, or use an empty directory"
     out_dir_dirty=true
 fi
 
@@ -575,12 +602,17 @@ mkdir -p "$staging" || die "cannot create $staging"
 trap 'rm -rf "$work" "$staging"' EXIT
 
 written=0
+# The names this run installs, recorded here because the install consumes them: a partially
+# failed `mv` leaves the moved ones out of the staging directory, so afterwards there is no
+# other list of what landed. restore_and_die below removes exactly these and nothing else.
+staged_names=()
 while read -r doc; do
     [ -n "$doc" ] || continue
     slug=$(printf '%s' "$doc" | jq -r '
         (.repo | gsub("[/ ]"; "-")) + "-"
         + (if .pr == null then (.head_sha[0:12]) else ("pr" + (.pr | tostring)) end)')
     printf '%s\n' "$doc" | jq . >"$staging/$slug.json" || die "cannot write $staging/$slug.json"
+    staged_names+=("$slug.json")
     written=$((written + 1))
 done < <(jq -s -c '
     group_by(.repo + "@" + .head_sha)
@@ -606,8 +638,13 @@ backup="$out_dir/.superseded.$$"
 # land first, so the caller gets the old corpus whole rather than mixed with part of the new
 # one. If the restore itself fails, say where the documents actually are -- a message naming a
 # directory the caller can move back by hand is worth more than a tidy one that loses them.
+#
+# By staged NAME, not by a `.repo` sweep: a document this install half-wrote has no readable
+# `.repo` to match on, and every other repository's documents must survive untouched.
 restore_and_die() {
-    find -H "$out_dir" -maxdepth 1 -name '*.json' -delete
+    for n in "${staged_names[@]}"; do
+        rm -f -- "$out_dir/$n"
+    done
     if find -H "$backup" -maxdepth 1 -name '*.json' -exec mv -t "$out_dir" -- {} +; then
         rmdir "$backup" 2>/dev/null
         die "$1; restored the previous corpus"
@@ -617,9 +654,9 @@ restore_and_die() {
 
 if [ "$out_dir_dirty" = true ]; then
     mkdir -p "$backup" || die "cannot create $backup; $out_dir is unchanged"
-    find -H "$out_dir" -maxdepth 1 -name '*.json' -exec mv -t "$backup" -- {} + ||
+    repo_docs | xargs -0 -r mv -t "$backup" -- ||
         restore_and_die "cannot move the previous gold documents aside"
-    log "--replace: moved the previous gold documents aside"
+    log "--replace: moved the previous $repo_name documents aside"
 fi
 
 if ! mv -- "$staging"/*.json "$out_dir/"; then
