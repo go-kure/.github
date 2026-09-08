@@ -243,6 +243,7 @@ for chunk_file in "$chunk_dir"/chunk-*.diff; do
         else
             assess_json=$(parse_or_salvage "$assess_raw")
             assess_parse_rc=$?
+            retry_transport_fault=0
 
             # The review call's no-retry policy above does NOT extend to this one, and the
             # difference is the DIRECTION of the error, not a preference. A lost review response
@@ -266,6 +267,7 @@ for chunk_file in "$chunk_dir"/chunk-*.diff; do
                     # would mislabel it.
                     log "chunk $chunk_idx: assess call failed on retry (exit $assess_rc)"
                     prt_mark_degraded "chunk $chunk_idx: assess transport failure on retry"
+                    retry_transport_fault=1
                     assess_parse_rc=1
                 else
                     assess_json=$(parse_or_salvage "$assess_raw")
@@ -275,7 +277,14 @@ for chunk_file in "$chunk_dir"/chunk-*.diff; do
 
             if [ "$assess_parse_rc" -eq 1 ]; then
                 log "chunk $chunk_idx: assess unusable after retry; findings stay unverdicted"
-                prt_mark_degraded "chunk $chunk_idx: unparseable assess response after retry"
+                # One degraded record per chunk, and the accurate one. The transport branch above
+                # already wrote its own, then set assess_parse_rc=1 to reach this block -- so
+                # writing unconditionally here both duplicated that record and relabelled a
+                # transport fault as a parse fault, which is exactly the distinction that branch's
+                # comment says must be preserved. The log line above is true of either outcome and
+                # stays unconditional.
+                [ "$retry_transport_fault" -eq 1 ] \
+                    || prt_mark_degraded "chunk $chunk_idx: unparseable assess response after retry"
             else
                 # prt_join_assessment returns the findings unchanged (rc 1) on a bad
                 # `.assessments` shape, so its output is usable either way.
