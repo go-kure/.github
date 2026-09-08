@@ -200,6 +200,24 @@ gold_tree=$(
 workdir=$(mktemp -d "${TMPDIR:-/tmp}/eval-run.XXXXXX") || die "mktemp failed"
 trap 'rm -rf "$workdir"' EXIT
 
+# normalise_path DIR TARGET -- collapse TARGET, taken relative to DIR, into a plain tree path.
+# Git paths are always /-separated, never absolute and never carry a trailing slash, so plain
+# text collapsing of "." and ".." is sufficient; a ".." that would escape the root is clamped,
+# which is also what git itself refuses to store.
+normalise_path() {
+    printf '%s\n' "${1:+$1/}$2" | awk -F/ '{
+        n = 0
+        for (i = 1; i <= NF; i++) {
+            if ($i == "" || $i == ".") continue
+            if ($i == "..") { if (n > 0) n--; continue }
+            parts[++n] = $i
+        }
+        out = ""
+        for (i = 1; i <= n; i++) out = out (i > 1 ? "/" : "") parts[i]
+        print out
+    }'
+}
+
 # show_blob CHECKOUT REV PATH -- print PATH's contents at REV, following in-tree symlinks.
 #
 # `git show <rev>:<path>` on a symlink prints the LINK TARGET, not the file: a repository whose
@@ -208,41 +226,46 @@ trap 'rm -rf "$workdir"' EXIT
 # harness feeds a one-line path where the shipped reviewer gets a whole standards document --
 # and it fails silently, because a 12-byte context file is still a context file.
 #
+# PATH is walked one component at a time, because a symlink is just as likely to sit in a
+# DIRECTORY component as at the leaf. Git stores `.claude -> config` as a link blob, so no tree
+# path `.claude/CLAUDE.md` exists at all and a whole-path lookup returns nothing -- silently
+# dropping a context file that production's `cat` reads straight through the link. Resolving
+# only the leaf would leave that case measuring a reviewer given less than the shipped one gets.
+#
 # Bounded rather than recursive: a symlink cycle in a historical tree would otherwise hang the
 # run, and no legitimate case needs more than a hop or two. Returns 1 if the path does not
 # resolve to a regular blob, leaving the caller to treat the context as absent.
 show_blob() {
     local checkout="$1" rev="$2" path="$3"
-    local hops=0 mode target dir
+    local hops=0 mode target comp resolved='' rest="$path"
 
-    while [ "$hops" -lt 4 ]; do
-        mode=$(git -C "$checkout" ls-tree "$rev" -- "$path" 2>/dev/null | awk '{print $1; exit}')
-        [ -n "$mode" ] || return 1
-        [ "$mode" = 120000 ] || { git -C "$checkout" show "$rev:$path" 2>/dev/null; return; }
+    while [ -n "$rest" ]; do
+        comp=${rest%%/*}
+        if [ "$comp" = "$rest" ]; then rest=''; else rest=${rest#*/}; fi
+        { [ -n "$comp" ] && [ "$comp" != "." ]; } || continue
+        resolved=${resolved:+$resolved/}$comp
 
-        target=$(git -C "$checkout" show "$rev:$path" 2>/dev/null) || return 1
-        case "$target" in
-            /*) return 1 ;;  # absolute link: nothing in the tree to resolve it against
-        esac
-        dir=$(dirname -- "$path")
-        [ "$dir" = "." ] && dir=""
-        # Normalise ../ and ./ against the link's own directory; git paths are always /-separated
-        # and never contain a trailing slash, so plain text collapsing is sufficient here.
-        path=$(printf '%s\n' "${dir:+$dir/}$target" | awk -F/ '{
-            n = 0
-            for (i = 1; i <= NF; i++) {
-                if ($i == "" || $i == ".") continue
-                if ($i == "..") { if (n > 0) n--; continue }
-                parts[++n] = $i
-            }
-            out = ""
-            for (i = 1; i <= n; i++) out = out (i > 1 ? "/" : "") parts[i]
-            print out
-        }')
-        [ -n "$path" ] || return 1
-        hops=$((hops + 1))
+        while :; do
+            mode=$(git -C "$checkout" ls-tree "$rev" -- "$resolved" 2>/dev/null | awk '{print $1; exit}')
+            [ -n "$mode" ] || return 1
+            [ "$mode" = 120000 ] || break
+
+            hops=$((hops + 1))
+            [ "$hops" -lt 8 ] || return 1
+            target=$(git -C "$checkout" show "$rev:$resolved" 2>/dev/null) || return 1
+            case "$target" in
+                /*) return 1 ;;  # absolute link: nothing in the tree to resolve it against
+            esac
+            resolved=$(normalise_path "$(dirname -- "$resolved" | sed 's/^\.$//')" "$target")
+            [ -n "$resolved" ] || return 1
+        done
     done
-    return 1
+
+    # A tree, a gitlink or an empty walk is not a context file; only a regular blob is.
+    case "$mode" in
+        100644 | 100755) git -C "$checkout" show "$rev:$resolved" 2>/dev/null ;;
+        *) return 1 ;;
+    esac
 }
 
 # ---------------------------------------------------------------------------

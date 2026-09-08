@@ -110,8 +110,14 @@ mkdir -p "$out_dir" || die "cannot create $out_dir"
 # with no corpus at all and nothing to fall back on -- destroying the old measurement inputs to
 # produce none. The new documents are staged in the work directory and swapped in only once at
 # least one exists.
+#
+# -H because --out may be a symlink to the real corpus directory, and a bare `find` neither
+# follows nor descends a symlink named on the command line: it would report no documents, skip
+# both the refusal and the deletion, and then the writes would go through the link anyway --
+# leaving the previous sweep's files beside the new ones for run.sh's glob to measure as one
+# corpus. -H follows the command-line argument only, which is exactly the path in question.
 out_dir_dirty=false
-if [ -n "$(find "$out_dir" -maxdepth 1 -name '*.json' -print -quit)" ]; then
+if [ -n "$(find -H "$out_dir" -maxdepth 1 -name '*.json' -print -quit)" ]; then
     [ "$replace" = true ] || die "$out_dir already holds gold documents; pass --replace to rebuild it, or use an empty directory"
     out_dir_dirty=true
 fi
@@ -401,7 +407,7 @@ done < <(jq -s -c '
 # The swap. Everything above this line is recoverable; this is the only step that touches the
 # caller's corpus, and it runs only now that a complete replacement exists on disk.
 if [ "$out_dir_dirty" = true ]; then
-    find "$out_dir" -maxdepth 1 -name '*.json' -delete || die "cannot clear $out_dir"
+    find -H "$out_dir" -maxdepth 1 -name '*.json' -delete || die "cannot clear $out_dir"
     log "--replace: cleared the previous gold documents from $out_dir"
 fi
 mv -- "$staging"/*.json "$out_dir/" || die "cannot move staged documents into $out_dir"
