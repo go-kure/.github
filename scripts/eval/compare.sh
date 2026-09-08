@@ -19,8 +19,10 @@
 # not precision (see run.sh's header): a reviewer that finds more real, never-filed defects
 # raises that count while getting better, so gating on it would select for silence.
 #
-# Both files must have measured the SAME gold tree. A comparison across two different gold
-# sets is not a comparison, and it is otherwise invisible in the numbers.
+# Both files must have measured the SAME gold tree AND been given the SAME standards document.
+# A comparison across two different gold sets is not a comparison, and neither is one across two
+# standards revisions -- both are invisible in the numbers, which is why they are checked here
+# rather than left to whoever reads the output.
 #
 # exit status
 #   0  the candidate wins by more than the combined spread
@@ -55,6 +57,19 @@ if [ "$b_tree" != "$c_tree" ]; then
     die "different gold trees ($b_tree vs $c_tree); these results are not comparable"
 fi
 [ "$b_tree" != "unknown" ] || die "gold_tree is unknown in at least one result; cannot prove comparability"
+
+# The gold set is only half of what a number depends on. The other half is the standards doc the
+# reviewer was given: a rule absent from PROJECT STANDARDS forces every finding citing it to
+# FALSE_POSITIVE (`lib/prt/model.sh:253-256`), which this harness filters out before judging, so
+# two runs over an identical gold tree can differ in recall alone because one read the pinned
+# revision and the other fell back to an edited working tree. Digest, not label: the fallback and
+# the pin carry the same path and different bytes, so a path comparison would pass both.
+b_std=$(jq -r '.standards_sha // "unknown"' "$baseline")
+c_std=$(jq -r '.standards_sha // "unknown"' "$candidate")
+if [ "$b_std" != "$c_std" ]; then
+    die "different standards documents ($(jq -r '.standards_source // "?"' "$baseline") ${b_std:0:12} vs $(jq -r '.standards_source // "?"' "$candidate") ${c_std:0:12}); these results are not comparable"
+fi
+[ "$b_std" != "unknown" ] || die "standards_sha is missing from at least one result; re-measure with a run.sh that records it"
 
 b_engine=$(jq -r '.engine' "$baseline")
 c_engine=$(jq -r '.engine' "$candidate")

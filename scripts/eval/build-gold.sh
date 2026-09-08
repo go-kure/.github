@@ -152,7 +152,7 @@ git_r() { git -C "$repo" "$@"; }
 # nothing -- a clean exit reporting zero candidates, indistinguishable from a repo with no fixes.
 removed_lines() {
     local fix="$1"
-    git_r diff --unified=0 --inter-hunk-context=0 --no-color --no-ext-diff --no-renames --diff-filter=M \
+    git_r diff --unified=0 --inter-hunk-context=0 --no-color --no-ext-diff --no-textconv --no-renames --diff-filter=M \
         --src-prefix=a/ --dst-prefix=b/ "$fix^" "$fix" -- \
         | awk '
             # The header rules are position-gated, not pattern-gated. Inside a hunk every body
@@ -207,7 +207,7 @@ removed_lines() {
 # introduction instead.
 blame_range() {
     local parent="$1" path="$2" start="$3" end="$4"
-    git_r blame --porcelain -w -L "$start,$end" "$parent" -- "$path" 2>/dev/null \
+    git_r blame --porcelain -w --no-textconv -L "$start,$end" "$parent" -- "$path" 2>/dev/null \
         | awk '/^[0-9a-f]{40} / { print $1 "\t" $2 "\t" $3 }'
 }
 
@@ -223,7 +223,7 @@ blame_range() {
 confirm_introduction() {
     local sha="$1" path="$2" text="$3"
     [ -n "$text" ] || return 1
-    git_r show --format= --unified=0 --no-color --no-ext-diff --src-prefix=a/ --dst-prefix=b/ "$sha" -- "$path" 2>/dev/null \
+    git_r show --format= --unified=0 --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ "$sha" -- "$path" 2>/dev/null \
         | WANT="+$text" awk '$0 == ENVIRON["WANT"] { found = 1; exit } END { exit found ? 0 : 1 }'
 }
 
