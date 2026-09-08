@@ -99,7 +99,7 @@ span_outside_diff() {
     # UNCHANGED lines between the two changes. This parser marks the whole range as added, so
     # every one of those lines passes an invariant that exists to reject exactly them -- a
     # permissive oracle that reports a clean corpus and cannot be told apart from a real one.
-    git -C "$checkout" diff --no-color --no-ext-diff -U0 --inter-hunk-context=0 "$base" "$head" -- "$file" 2>/dev/null |
+    git -C "$checkout" diff --no-color --no-ext-diff --no-textconv -U0 --inter-hunk-context=0 "$base" "$head" -- "$file" 2>/dev/null |
         awk -v lo="$lo" -v hi="$hi" '
             /^@@/ {
                 match($0, /\+[0-9]+(,[0-9]+)?/)

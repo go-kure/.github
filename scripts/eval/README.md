@@ -73,8 +73,38 @@ reviewer under measurement sees `docs/standards.md` **as of that pin**, not as o
    of git rather than the tree;
 3. the working tree's copy, with a warning — the fallback when the pinned commit is not fetched.
 
-A measurement taken under 3 is not comparable to one taken under 2 whenever the two differ. The
-log line says which one ran; record it beside the number.
+A measurement taken under 3 is not comparable to one taken under 2 whenever the two differ, so
+neither the log line nor the operator's memory is relied on for that: the summary records the
+resolved digest and `compare.sh` enforces it. See "The number depends on the standards document"
+below.
+
+## The checkout is allowed to lie about its own bytes
+
+Every git read here is a claim about a coordinate space — a line number in a blob — and a
+repository's own `.gitattributes` can change what git prints without changing the blob. Two
+settings do it, they are independent, and each has produced a wrong number in this harness:
+
+- an **external diff driver** replaces the patch entirely, so the output carries no `@@` headers
+  and every hunk parser reads it as "no hunks" — silence, not an error;
+- a **textconv filter** transforms the content before diffing, so line numbers refer to the
+  transformed text while `git blame` and `git show <rev>:<path>` still speak in the real blob's.
+  Measured on a fixture whose filter duplicates every line, the same one-line change reports
+  `@@ -5,2` with the filter and `@@ -3` without it. `--no-ext-diff` does **not** disable it; they
+  are separate switches.
+
+So every `git diff` and every patch-form `git show` in this harness passes **both**
+`--no-ext-diff` and `--no-textconv`, and `git blame` passes `--no-textconv` explicitly even though
+its default is already off — the pairing is the invariant, and a default is not a statement of
+intent. Blob-form `git show <rev>:<path>` is raw regardless (verified), so it needs neither.
+
+A symlink is the same class of problem one level up. `git show` on one prints the link target
+rather than the file, while production reads the working tree with `cat` and follows it
+(`pr-review-threads.sh:250-253`), so `run.sh` walks the path component by component and resolves
+links itself. A target that climbs above the repository root — a root `AGENTS.md -> ../shared.md`
+— makes the harness **refuse** the context rather than clamp the `..` at the root: clamping
+resolves it to an unrelated in-repository `shared.md` and feeds the reviewer a document production
+never showed it. Absent context is visible as a shorter prompt; wrong context is not visible at
+all.
 
 ## Run `check-gold.sh` before spending a run
 
@@ -171,6 +201,27 @@ ceiling, the chunker truncates its body, records `REVIEW_INCOMPLETE` and still r
 chunk; the model answers it, so `chunks_failed` stays `0` while the discarded tail is diff the
 reviewer never received. `run.sh` therefore also excludes any document whose adapter output
 carries a non-empty `incomplete` array.
+
+**`--max-excluded` is a fraction of gold ROWS, not of documents.** Rows are what the denominator
+is made of, and they are not spread evenly across documents: the mining yields one row for a
+one-line fix and a dozen for a refactor. A document-count ceiling therefore does not bound how
+much of the corpus a run may lose. Worked case, run against both versions of the gate: a 2-document
+corpus holding 1 and 9 rows, with the 9-row document excluded, is `0.5` by documents — inside a
+`0.6` ceiling, so the run passes and prints a recall computed over **one** of ten gold rows — and
+`0.9` by rows, which the ceiling refuses. Each run's line reports both (`excluded=1/2 docs=9/10
+rows`) and the summary carries `excluded_rows_max`.
+
+## The number depends on the standards document, so both are recorded
+
+`run.sh` writes `standards_sha` (a digest of the bytes actually forwarded) and `standards_source`
+(`pin:<sha>`, `worktree`, `override:<name>`, or `none`) into the summary, and `compare.sh` refuses
+two results whose digests differ, exactly as it refuses two different gold trees.
+
+Neither check is redundant with the other. The pinned arm and the working-tree fallback name the
+same path, so only a digest separates them; and a run that found no standards document at all
+digests as the literal `none`, which is a positive statement rather than a missing key — a reviewer
+given no `PROJECT STANDARDS` assesses every standards-violation finding as `FALSE_POSITIVE`, and
+that run must not be quietly compared against one that had the document.
 
 ## The reviewer is scored on what it publishes
 

@@ -223,9 +223,17 @@ trap 'rm -rf "$workdir"' EXIT
 # did that number see" is not recoverable from the output afterwards.
 repo_root="$here/../.."
 standards_file=
+# Which arm resolved it, recorded in the summary JSON alongside a digest of the bytes. Without
+# both, two results are indistinguishable when they read different documents: the pinned arm and
+# the working-tree fallback differ by exactly the edit under review, and compare.sh could
+# otherwise declare a fallback run and a pinned run comparable because their gold_tree matches.
+# The digest is the authority (it detects an edited working tree under an unchanged label); the
+# source string is what makes a mismatch readable when it fires.
+standards_source=none
 if [ -n "$standards_override" ]; then
     standards_file=$standards_override
     [ -f "$standards_file" ] || die "no standards doc at $standards_file"
+    standards_source="override:$(basename -- "$standards_file")"
     log "standards: $standards_file (--standards)"
 else
     standards_pin=$(awk 'match($0, /pr-review-threads@[0-9a-f]{40}/) {
@@ -235,6 +243,7 @@ else
         git -C "$repo_root" cat-file -e "$standards_pin:docs/standards.md" 2>/dev/null; then
         standards_file="$workdir/standards.md"
         if git -C "$repo_root" show "$standards_pin:docs/standards.md" >"$standards_file" 2>/dev/null; then
+            standards_source="pin:$standards_pin"
             log "standards: docs/standards.md at the pinned action ${standards_pin:0:8}"
         else
             standards_file=
@@ -243,6 +252,7 @@ else
     if [ -z "$standards_file" ]; then
         standards_file="$repo_root/docs/standards.md"
         if [ -f "$standards_file" ]; then
+            standards_source=worktree
             log "warning: reading docs/standards.md from the working tree, not the action pin${standards_pin:+ ($standards_pin unavailable -- fetch it for a faithful measurement)}"
         else
             log "warning: no standards doc found; standards-violation findings will assess as FALSE_POSITIVE"
@@ -250,16 +260,35 @@ else
     fi
 fi
 
+# Digest the bytes actually forwarded, not the path they came from. A missing doc digests as the
+# literal string `none` rather than being omitted: an absent key would read as "an older run that
+# did not record this" and compare.sh would have to guess, whereas `none` is a positive statement
+# that the reviewer got no standards at all -- a condition that forces every standards-violation
+# finding to FALSE_POSITIVE and so is precisely what must not be silently compared against a run
+# that had one.
+standards_sha=none
+if [ -n "$standards_file" ] && [ -f "$standards_file" ]; then
+    standards_sha=$(sha256sum <"$standards_file") || die "cannot digest $standards_file"
+    standards_sha=${standards_sha%% *}
+fi
+
 # normalise_path DIR TARGET -- collapse TARGET, taken relative to DIR, into a plain tree path.
 # Git paths are always /-separated, never absolute and never carry a trailing slash, so plain
-# text collapsing of "." and ".." is sufficient; a ".." that would escape the root is clamped,
-# which is also what git itself refuses to store.
+# text collapsing of "." and ".." is sufficient.
+#
+# A ".." that would escape the repository root FAILS (exit 1, no output). Clamping it at the root
+# -- the obvious reading, and what this did first -- silently rewrites what the link means: a root
+# `AGENTS.md -> ../shared.md` names a file OUTSIDE the checkout, which production's `cat` follows
+# (`pr-review-threads.sh:250-253`) and which git cannot store as a tree entry; clamped it becomes
+# `shared.md`, so the harness would read an unrelated in-repository file of that name and feed the
+# reviewer a document production never showed it. Wrong context is worse than absent context,
+# because absent context is at least visible as a shorter prompt.
 normalise_path() {
     printf '%s\n' "${1:+$1/}$2" | awk -F/ '{
         n = 0
         for (i = 1; i <= NF; i++) {
             if ($i == "" || $i == ".") continue
-            if ($i == "..") { if (n > 0) n--; continue }
+            if ($i == "..") { if (n == 0) exit 1; n--; continue }
             parts[++n] = $i
         }
         out = ""
@@ -315,7 +344,10 @@ show_blob() {
         # forever.
         parent=$(dirname -- "$resolved")
         [ "$parent" = "." ] && parent=''
-        target=$(normalise_path "$parent" "$target")
+        # Non-zero means the target escapes the repository root; empty means it collapsed to
+        # nothing. Both are "no in-tree file here", and both must return rather than fall through
+        # -- `set -o pipefail` (line 38) is what carries awk's exit 1 out of the substitution.
+        target=$(normalise_path "$parent" "$target") || return 1
         [ -n "$target" ] || return 1
         rest=$target${rest:+/$rest}
         resolved=''
@@ -386,7 +418,7 @@ do_run() {
         # --src-prefix/--dst-prefix explicitly: a user's diff.noprefix=true otherwise emits
         # headers the chunker's file-boundary split cannot see, silently collapsing the whole
         # diff into one record.
-        git -C "$checkout" diff --no-color --no-ext-diff --src-prefix=a/ --dst-prefix=b/ "$base" "$head" \
+        git -C "$checkout" diff --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ "$base" "$head" \
             >"$diff_file" 2>/dev/null \
             || { log "cannot diff $base..$head in $checkout"; return 1; }
         [ -s "$diff_file" ] || { log "empty diff for $g"; return 1; }
@@ -551,6 +583,7 @@ do_run() {
 recalls=()
 uncrediteds=()
 excludeds=()
+excluded_row_counts=()
 
 for ((run = 1; run <= runs; run++)); do
     result=$(do_run "$run") || exit 1
@@ -561,33 +594,45 @@ for ((run = 1; run <= runs; run++)); do
     # conclusion the data cannot support.
     [ "$denom" -gt 0 ] || die "run $run: every gold document was excluded; nothing to measure"
 
-    excluded_frac=$(jq -n --argjson e "$excluded" --argjson n "${#gold_files[@]}" '$e / $n')
+    # Gate on ROWS, not documents. Gold rows are not spread evenly: the mining yields one row for
+    # a one-line fix and a dozen for a refactor, so a single excluded document can carry a large
+    # share of the measured defects. Counting documents, 1 of 12 is 0.083 and passes; if that one
+    # held 40 of 91 rows the run just measured half the corpus and reported a recall over the
+    # rest as though it described the whole. Rows are what the denominator is made of, so rows are
+    # what the ceiling has to be expressed in. `denom` is the rows of the documents that survived,
+    # hence gold_total - denom is exactly the rows this run lost.
+    excluded_rows=$((gold_total - denom))
+    excluded_frac=$(jq -n --argjson e "$excluded_rows" --argjson n "$gold_total" '$e / $n')
     # Same three-way status handling as the --max-spread gate below: `if jq -e` alone folds a
     # jq that aborted into the "within limit" branch, which is a gate that fails open.
     jq -e -n --argjson f "$excluded_frac" --argjson m "$max_excluded" '$f > $m' >/dev/null
     case $? in
-        0) die "run $run: excluded $excluded of ${#gold_files[@]} documents ($excluded_frac), over --max-excluded $max_excluded" ;;
+        0) die "run $run: excluded $excluded_rows of $gold_total gold rows ($excluded_frac, from $excluded of ${#gold_files[@]} documents), over --max-excluded $max_excluded" ;;
         1) ;;
         *) die "run $run: could not compare exclusion fraction $excluded_frac against --max-excluded $max_excluded" ;;
     esac
+    excluded_row_counts+=("$excluded_rows")
 
     recall=$(jq -n --argjson m "$matched" --argjson t "$denom" '$m / $t')
     recalls+=("$recall")
     uncrediteds+=("$uncredited")
     excludeds+=("$excluded")
-    printf 'run=%d R=%s matched=%d/%d uncredited=%d excluded=%d/%d\n' \
-        "$run" "$recall" "$matched" "$denom" "$uncredited" "$excluded" "${#gold_files[@]}"
+    printf 'run=%d R=%s matched=%d/%d uncredited=%d excluded=%d/%d docs=%d/%d rows\n' \
+        "$run" "$recall" "$matched" "$denom" "$uncredited" \
+        "$excluded" "${#gold_files[@]}" "$excluded_rows" "$gold_total"
 done
 
 summary=$(jq -n \
     --argjson r "$(printf '%s\n' "${recalls[@]}" | jq -sc '.')" \
     --argjson u "$(printf '%s\n' "${uncrediteds[@]}" | jq -sc '.')" \
     --argjson e "$(printf '%s\n' "${excludeds[@]}" | jq -sc '.')" \
+    --argjson x "$(printf '%s\n' "${excluded_row_counts[@]}" | jq -sc '.')" \
     '{mean_r: (($r | add) / ($r | length)),
       spread: (($r | max) - ($r | min)),
       uncredited: (($u | add) / ($u | length)),
       excluded_max: ($e | max),
-      excluded_total: ($e | add)}')
+      excluded_total: ($e | add),
+      excluded_rows_max: ($x | max)}')
 
 mean_r=$(jq -r '.mean_r' <<<"$summary")
 spread=$(jq -r '.spread' <<<"$summary")
@@ -599,6 +644,8 @@ out_json=$(jq -n \
     --arg engine "$engine" \
     --arg gold_sha "$gold_sha" \
     --arg gold_tree "$gold_tree" \
+    --arg standards_sha "$standards_sha" \
+    --arg standards_source "$standards_source" \
     --argjson runs "$runs" \
     --argjson mean_r "$mean_r" \
     --argjson spread "$spread" \
@@ -606,6 +653,7 @@ out_json=$(jq -n \
     --argjson gold_total "$gold_total" \
     --argjson per_run "$(printf '%s\n' "${recalls[@]}" | jq -sc '.')" \
     '{engine: $engine, gold_sha: $gold_sha, gold_tree: $gold_tree, gold_total: $gold_total,
+      standards_sha: $standards_sha, standards_source: $standards_source,
       runs: $runs, mean_r: $mean_r, spread: $spread, uncredited: $uncredited,
       per_run_recall: $per_run}') || die "cannot build summary JSON"
 
