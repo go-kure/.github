@@ -56,6 +56,12 @@ This is not hypothetical — the harness did exactly that on its first full run,
 documents, and the resulting baseline was withdrawn. A document with no `intro_title` (any corpus
 built before the field existed) gets a neutral constant, never the note.
 
+`note` therefore carries the whole defect description the judge sees, so `check-gold.sh` requires
+it to be a non-blank string, with the same weight it gives `file` and `lines`. A row whose note is
+null reaches the judge as `Defect: null`, cannot pair with any finding, and sits in the denominator
+as a guaranteed miss — a corpus that silently measures lower recall. `build-gold.sh` always writes
+one; the check guards a hand-edited corpus.
+
 **Known approximation: `intro_title` is a commit subject, production passes a PR title.** The
 shipped reviewer fetches the pull request and forwards `.title`; the miner has only git, so it
 records the introducing commit's subject. The two coincide for a squash merge (GitHub composes
@@ -346,6 +352,16 @@ noise floor recorded for that gold set.
 `compare.sh` applies the same discipline to a comparison: a candidate wins only when its
 mean recall clears the baseline's by more than **both** spreads added together, and only
 when both results measured the same gold tree.
+
+It also requires both results to have scored the **same rows**, not merely the same corpus.
+Recall is `matched/denom`, and an excluded document leaves both sides of that fraction — so a
+candidate that cannot answer on the hardest documents is not scored 0 on them, it stops being
+asked. A baseline at 70/100 and a candidate that dropped those 15 rows and scored 70/85 read as
+0.70 against 0.82, a 0.12 "win" that is entirely the shrunken denominator, and both can have zero
+spread. `--max-excluded` does not close this: it caps how much of the corpus one run may drop, not
+whether two runs dropped the same part. So `run.sh` records `excluded_docs` — the sorted union
+over its runs of the documents it did not measure — and `compare.sh` refuses when the two sets
+differ.
 
 ## Typical use
 

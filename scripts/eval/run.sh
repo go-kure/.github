@@ -550,6 +550,9 @@ show_blob() {
 do_run() {
     local run_idx="$1"
     local matched=0 uncredited=0 denom=0 excluded=0
+    # WHICH documents were excluded, not just how many. A count cannot answer the question
+    # compare.sh has to ask -- see the coverage gate there.
+    local -a excluded_docs=()
     local g repo checkout diff_file findings_file judge_input verdict_file rows child_rc
     local chunks_failed agents_file claude_md_file
     local -a context_flag
@@ -661,6 +664,7 @@ do_run() {
         if [ "$child_rc" -ne 0 ]; then
             log "excluding $g: reviewer produced no usable findings"
             excluded=$((excluded + 1))
+            excluded_docs+=("${g#"${corpus_root%/}"/}")
             continue
         fi
 
@@ -677,6 +681,7 @@ do_run() {
         if [ "$chunks_failed" -gt 0 ]; then
             log "excluding $g: $chunks_failed of $(jq -r '.chunks // 0' "$findings_file") chunks produced no usable review"
             excluded=$((excluded + 1))
+            excluded_docs+=("${g#"${corpus_root%/}"/}")
             continue
         fi
 
@@ -691,6 +696,7 @@ do_run() {
         if [ "$n_incomplete" -gt 0 ]; then
             log "excluding $g: the diff was truncated before review ($n_incomplete marker(s))"
             excluded=$((excluded + 1))
+            excluded_docs+=("${g#"${corpus_root%/}"/}")
             continue
         fi
 
@@ -732,6 +738,7 @@ do_run() {
         if [ "$child_rc" -ne 0 ]; then
             log "excluding $g: judge produced no usable verdict"
             excluded=$((excluded + 1))
+            excluded_docs+=("${g#"${corpus_root%/}"/}")
             continue
         fi
 
@@ -751,6 +758,7 @@ do_run() {
         if [ -z "$v_matched" ] || [ -z "$v_uncredited" ]; then
             log "excluding $g: verdict file carries no numeric .matched/.uncredited"
             excluded=$((excluded + 1))
+            excluded_docs+=("${g#"${corpus_root%/}"/}")
             continue
         fi
 
@@ -759,7 +767,16 @@ do_run() {
         uncredited=$((uncredited + v_uncredited))
     done
 
-    printf '%d\t%d\t%d\t%d' "$matched" "$uncredited" "$denom" "$excluded"
+    # The document list rides in a fifth field as compact JSON: it is the one field whose values
+    # come from the filesystem, so no character-delimited join is safe against a path that
+    # contains the delimiter, while `jq -c` cannot emit a tab and the record stays readable by
+    # the same `IFS=$'\t' read` as before.
+    local docs_json='[]'
+    if [ "${#excluded_docs[@]}" -gt 0 ]; then
+        docs_json=$(printf '%s\n' "${excluded_docs[@]}" | jq -Rsc 'split("\n") | map(select(. != ""))') ||
+            die "cannot record the excluded-document list"
+    fi
+    printf '%d\t%d\t%d\t%d\t%s' "$matched" "$uncredited" "$denom" "$excluded" "$docs_json"
 }
 
 # ---------------------------------------------------------------------------
@@ -770,10 +787,11 @@ recalls=()
 uncrediteds=()
 excludeds=()
 excluded_row_counts=()
+excluded_doc_lists=()
 
 for ((run = 1; run <= runs; run++)); do
     result=$(do_run "$run") || exit 1
-    IFS=$'\t' read -r matched uncredited denom excluded <<<"$result"
+    IFS=$'\t' read -r matched uncredited denom excluded excluded_docs_json <<<"$result"
 
     # Every document excluded leaves no denominator, so recall is undefined rather than zero.
     # Dividing here would print 0 and read as "the reviewer found nothing", which is the one
@@ -798,6 +816,7 @@ for ((run = 1; run <= runs; run++)); do
         *) die "run $run: could not compare exclusion fraction $excluded_frac against --max-excluded $max_excluded" ;;
     esac
     excluded_row_counts+=("$excluded_rows")
+    excluded_doc_lists+=("$excluded_docs_json")
 
     recall=$(jq -n --argjson m "$matched" --argjson t "$denom" '$m / $t')
     recalls+=("$recall")
@@ -829,6 +848,13 @@ mean_uncredited=$(jq -r '.uncredited' <<<"$summary")
 excluded_docs_max=$(jq -r '.excluded_max' <<<"$summary")
 excluded_rows_max=$(jq -r '.excluded_rows_max' <<<"$summary")
 
+# The UNION over runs, sorted and deduplicated: the set of gold documents this result did not
+# measure. Union rather than intersection because a document excluded in even one run already
+# moved that run's denominator, and mean_r averages the runs. Sorted so two results that
+# excluded the same documents compare equal whatever order the runs hit them in.
+excluded_docs_union=$(printf '%s\n' "${excluded_doc_lists[@]}" | jq -sc 'add // [] | unique') ||
+    die "cannot summarise the excluded-document lists"
+
 printf 'mean_r=%s spread=%s runs=%d\n' "$mean_r" "$spread" "$runs"
 
 out_json=$(jq -n \
@@ -847,11 +873,13 @@ out_json=$(jq -n \
     --argjson gold_docs "${#gold_files[@]}" \
     --argjson excluded_docs_max "$excluded_docs_max" \
     --argjson excluded_rows_max "$excluded_rows_max" \
+    --argjson excluded_docs "$excluded_docs_union" \
     --argjson per_run "$(printf '%s\n' "${recalls[@]}" | jq -sc '.')" \
     '{engine: $engine, gold_sha: $gold_sha, gold_tree: $gold_tree, gold_total: $gold_total,
       standards_sha: $standards_sha, standards_source: $standards_source,
       context_sha: $context_sha, assess: $assess, gold_docs: $gold_docs,
       excluded_docs_max: $excluded_docs_max, excluded_rows_max: $excluded_rows_max,
+      excluded_docs: $excluded_docs,
       runs: $runs, mean_r: $mean_r, spread: $spread, uncredited: $uncredited,
       per_run_recall: $per_run}') || die "cannot build summary JSON"
 
