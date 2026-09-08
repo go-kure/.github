@@ -291,29 +291,46 @@ log "scanned $n_fixes fix commits; $(wc -l <"$candidates") blame candidates"
 # confirmation and emission
 # ---------------------------------------------------------------------------
 
-# Collapse to one row per (introducing sha, file, fix commit), keeping BOTH line spans: the
-# span in the introducing commit (orig, columns 3) for the gold row, and the span in the fix's
-# parent (final, column 4) for reading the faulty text. Tracking one and deriving the other is
-# not possible -- intervening commits shift them by different amounts per line.
-sort -u "$candidates" | awk -F'\t' '
+# Collapse to one row per CONTIGUOUS RUN of lines sharing an (introducing sha, file, fix
+# commit), keeping BOTH line spans: the span in the introducing commit (orig, column 3) for the
+# gold row, and the span in the fix's parent (final, column 4) for reading the faulty text.
+# Tracking one and deriving the other is not possible -- intervening commits shift them by
+# different amounts per line.
+#
+# Per run, not per key: several commits routinely interleave inside one blamed range, so a
+# single commit's lines are not one block. Real case, versions.yaml at ee027242^: b5e10f79
+# introduced exactly two lines, orig 124 and orig 129, with three other commits' lines sitting
+# between them. min..max over the whole key records [124,129] -- a six-line span for a two-line
+# contribution, claiming four lines b5e10f79 never wrote. Two consequences, both silent: the
+# --max-span drop test measures the inflated width and keeps rewrites it was meant to reject,
+# and the gold row asks the reviewer to flag lines whose defect belongs to a different commit,
+# scoring a correct review as a partial miss. Splitting on a gap in orig gives [124,124] and
+# [129,129], each an interval the commit genuinely owns.
+#
+# Sorted by key then numeric orig so a run is detectable in one pass; the run's first record
+# carries the smallest orig, which keeps flo paired with olo below.
+sort -u -t"$(printf '\t')" -k1,1 -k2,2 -k5,5 -k6,6 -k3,3n "$candidates" | awk -F'\t' '
     {
-        key = $1 "\t" $2 "\t" $5 "\t" $6
-        if (!(key in olo) || $3 + 0 < olo[key]) {
-            olo[key] = $3 + 0
+        k = $1 "\t" $2 "\t" $5 "\t" $6
+        # A gap of more than one line ends the run, as does a change of key. An exact repeat of
+        # orig does neither -- it is the same line reached twice, not a new interval.
+        if (k != key || $3 + 0 > ohi + 1) {
+            if (key != "") printf "%s\t%d\t%d\t%d\n", key, olo, ohi, flo
+            key = k
+            olo = $3 + 0
+            ohi = $3 + 0
             # PAIRED with olo, never minimised on its own. The two columns are line numbers in
             # different revisions and blame does not guarantee they rise together: where the
             # parent of the fix reordered lines, the smallest orig line and the smallest final
             # line belong to DIFFERENT rows. Minimising each separately then reads the text at
             # flo for a line the gold row does not name, so confirm_introduction validates
-            # evidence belonging to some other line.
-            flo[key] = $4 + 0
+            # evidence belonging to some other line. Sorting by orig puts that pairing here.
+            flo = $4 + 0
+        } else if ($3 + 0 > ohi) {
+            ohi = $3 + 0
         }
-        if (!(key in ohi) || $3 + 0 > ohi[key]) ohi[key] = $3 + 0
     }
-    END {
-        for (k in olo)
-            printf "%s\t%d\t%d\t%d\n", k, olo[k], ohi[k], flo[k]
-    }
+    END { if (key != "") printf "%s\t%d\t%d\t%d\n", key, olo, ohi, flo }
 ' >"$work/spans.tsv"
 
 : >"$work/gold.ndjson"

@@ -63,13 +63,17 @@ built before the field existed) gets a neutral constant, never the note.
 ```
 
 It asserts every row is `confirmed`, every document has an `intro_title`, and — the one that
-matters — that **every gold row's line falls inside a hunk the reviewed diff actually adds**.
+matters — that **every line of every gold row falls inside a hunk the reviewed diff actually
+adds**.
 
 A row pointing outside that diff is a defect no reviewer could ever match, and it is invisible
 in the output: recall simply comes out low, which is what a reviewer under test is expected to
 produce anyway. On the first corpus this harness built, **26 of 63 rows (41%) pointed outside
 the reviewed diff** because blame's post-fix line number was stored where the introducing
 commit's was needed. Both line numbers are now carried separately.
+
+The check reads the whole span, not its first line, because a row can start on a line the
+commit did add and then run on over lines it did not — see the next section.
 
 ## Why the gold set needs confirming
 
@@ -80,6 +84,18 @@ adds that exact line text, and drops and counts everything else. It also drops r
 source files and rows whose blame span is wider than `--max-span`: a wide span means the fix
 rewrote a block rather than repairing a located defect, so the "faulty line" is an artefact
 of the rewrite's boundaries.
+
+**A row is one contiguous run of lines, not one commit's whole footprint in a file.** Several
+commits routinely interleave inside a blamed range, so collapsing a commit's lines to
+`min..max` records a hull over other people's code. In `versions.yaml` at one kure fix, a
+commit that introduced exactly two lines — 124 and 129, with three other commits' lines between
+them — was recorded as `[124,129]`, claiming four lines it never wrote; another was recorded as
+`[69,80]` for seven lines of actual contribution. Both effects are silent: `--max-span` measures
+the inflated width and keeps rewrites it was meant to drop, and the row asks the reviewer to
+flag code whose defect belongs to a different commit. Emitting one row per contiguous run fixes
+both, and yields **more** gold, not less — on one 12-fix slice of kure, 22 rows across 19
+documents became 60 rows across 22, because narrower spans clear `--max-span` where the hull
+did not.
 
 `run.sh` refuses to measure against any gold row not carrying `confirmed: true`.
 
