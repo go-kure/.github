@@ -362,10 +362,14 @@ when both results measured the same gold tree.
 # 3. measure the shipped reviewer, three times, writing the baseline
 #    (both model passes run by default; --no-assess measures the review call alone, which is
 #     not the shipped product, and compare.sh refuses to compare the two)
-#    --context is NOT optional dressing: copy the string verbatim out of that repository's own
-#    .github/workflows/pr-review.yml (`pr_review_context:`), because production puts it in both
-#    prompts. Omit it and the recipe measures a prompt production never sends. One per repo the
-#    corpus spans; run.sh logs any repo left unmapped.
+#    --context is NOT optional dressing: copy the `pr_review_context:` string verbatim, because
+#    production puts it in both prompts. Read it off the workflow that CALLS pr-review.yml, never
+#    off pr-review.yml itself -- in a consumer repo the caller is usually that repo's own
+#    .github/workflows/pr-review.yml, but in this repository it is pr-review-caller.yml, since
+#    here pr-review.yml IS the reusable workflow and declares an empty default. Copying that empty
+#    default measures a prompt production never sends, and run.sh cannot warn about it: the
+#    unmapped-repo line fires on a MISSING --context, not on one mapped to "". One per repo the
+#    corpus spans.
 PRT_PROXY_URL=http://localhost:3456 \
 ./run.sh --gold "$EVAL/gold/*.json" --engine chat --runs 3 \
          --checkout group/that-repo=../../that-repo \
