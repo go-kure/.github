@@ -146,6 +146,29 @@ reports `chunks_failed` and `run.sh` excludes any document with a non-zero count
 denominator to the reviewed chunks would be better and is not available: chunks are byte ranges
 of a diff, gold rows are file/line pairs in a revision, and nothing maps one to the other.
 
+**Truncation is the same event with a zero failure count.** When one hunk alone exceeds the hard
+ceiling, the chunker truncates its body, records `REVIEW_INCOMPLETE` and still returns a usable
+chunk; the model answers it, so `chunks_failed` stays `0` while the discarded tail is diff the
+reviewer never received. `run.sh` therefore also excludes any document whose adapter output
+carries a non-empty `incomplete` array.
+
+## The reviewer is scored on what it publishes
+
+Two suppressions sit between a finding and a human, and both are unconditional in production, so
+the harness applies both before judging:
+
+- **`FALSE_POSITIVE`** — the assess pass discards these before they become threads. Crediting one
+  would score a defect against a reviewer whose own second pass had already withdrawn it.
+- **`collision`** — `prt_assign_ordinals` sets this on *every* member of a group sharing a file
+  and a category, and the decide table's first row returns `NONE` for each. Nothing publishes
+  them.
+
+Filtering one and not the other measures neither the engine nor the product. The consequence is
+worth stating plainly: an engine emitting several findings per file and category scores lower
+here. That is a real property of the delivered system — those findings are withheld today — not
+a scoring artefact. An engine meant to be judged *before* the thread lifecycle needs a flag and a
+paragraph here, not a silent removal of the filter.
+
 Such a document is **excluded from both sides of the fraction**, never scored as a miss.
 Counting its gold rows against the reviewer would repeat the error the adapter refuses to make
 when it exits 1 rather than emitting an empty finding set: *no signal is not no defects.* Each
