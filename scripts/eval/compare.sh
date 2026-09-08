@@ -93,6 +93,25 @@ if [ "$b_assess" != "$c_assess" ]; then
 fi
 [ "$b_assess" != "unknown" ] || die "assess is missing from at least one result; re-measure with a run.sh that records it"
 
+# Identical inputs are still not enough: the two results must also have SCORED the same rows.
+# Recall is matched/denom, and run.sh builds denom from the documents that survived
+# (`run.sh:757`) -- an excluded document leaves both sides of the fraction. So a candidate that
+# fails to answer on the corpus's hardest documents does not score 0 on them, it stops being
+# asked: baseline 70/100 = 0.70 against a candidate that excluded those same 15 rows and scored
+# 70/85 = 0.82, both with zero spread, and the verdict below reads a 0.12 win. `--max-excluded`
+# does not close this -- it caps how much of the corpus a run may drop (0.15 by default), it
+# does not require two runs to drop the SAME part.
+#
+# Compare the sets, not the counts: two results can each exclude three documents and have
+# measured different rows. `excluded_docs` is the sorted union over runs, so equality here means
+# both results scored the same denominator out of the same gold tree.
+b_excl=$(jq -cS '.excluded_docs // "unknown"' "$baseline")
+c_excl=$(jq -cS '.excluded_docs // "unknown"' "$candidate")
+if [ "$b_excl" != "$c_excl" ]; then
+    die "different scoring coverage (excluded $b_excl vs $c_excl); these results measured different rows and are not comparable"
+fi
+[ "$b_excl" != '"unknown"' ] || die "excluded_docs is missing from at least one result; re-measure with a run.sh that records it"
+
 b_engine=$(jq -r '.engine' "$baseline")
 c_engine=$(jq -r '.engine' "$candidate")
 

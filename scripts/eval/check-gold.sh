@@ -224,10 +224,17 @@ for g in "${gold_files[@]}"; do
             violations=$((violations + 1))
         fi
     done < <(jq -r '
+        # .note is validated with the same weight as .file and .lines because the judge gives it
+        # the same weight: it is interpolated as the gold rows entire defect description
+        # (judge.sh:217-219). A row whose note is null or blank reaches the judge as
+        # "Defect: null" and can never pair, so it sits in the denominator as a guaranteed miss
+        # -- the preflight passing a row that silently depresses recall. build-gold.sh always
+        # writes the fix commit subject here, so this guards a hand-edited corpus.
         .gold[] |
         if (.file | type) == "string" and (.file | length) > 0
            and (.lines | type) == "array" and (.lines | length) == 2
            and all(.lines[]; type == "number")
+           and (.note | type) == "string" and (.note | test("\\S"))
         then "ok\t\(.file)\t\(.lines[0])\t\(.lines[1])"
         else "bad\t\(tojson)"
         end' "$g")
