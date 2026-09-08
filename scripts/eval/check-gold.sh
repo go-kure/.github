@@ -183,21 +183,28 @@ for g in "${gold_files[@]}"; do
     # corpus-wide "outside the reviewed diff" and sends the reader to rebuild gold that is fine.
     # Neither shape is reachable from the builder, and both are one hand-edit away.
     #
-    # Read the parent out of head's own commit object (`rev-list --parents -n 1`) rather than
-    # resolving `head^`. Output is `<head> <parent>...`: field 2 is the first parent, empty for
-    # a root commit. build-gold.sh drops a root-commit candidate before emitting, so a document
-    # claiming one is malformed -- reported as a violation with <none>. It is never silently
-    # equal to $base, which the resolvability check above has already proven non-empty.
+    # Read the first parent out of head's own commit OBJECT. `cat-file commit` is the only form
+    # that survives a shallow checkout, and a shallow checkout reaches here: fetch head at depth
+    # 1 and then fetch base_sha by sha, and both revisions resolve, so the loop above passes.
+    # Head is still a shallow boundary. Measured in exactly that checkout:
     #
-    # Both forms give the same answer on a full checkout; this one also gives it on a shallow
-    # one, where `head^` fails because the PARENT OBJECT is absent while head's own object still
-    # records its parent ids. That distinction does not currently change any outcome -- measured
-    # on a `--depth 1` clone, the loop above dies exit 2 naming base_sha before reaching here,
-    # because in a valid corpus base_sha IS that missing parent. It matters because the two
-    # readings fail on different things: `head^` conflates "no parent" with "parent not fetched",
-    # and this check's whole job is to distinguish a bad corpus from a bad checkout. Not relying
-    # on a coincidence of the check above costs one command.
-    want_base=$(git -C "$checkout" rev-list --parents -n 1 "$head" | cut -d' ' -f2)
+    #   rev-parse --verify head^          -> fails
+    #   rev-list --parents -n 1 head      -> "<head>" alone; grafted, the parents are not shown,
+    #                                        and `cut` without -s passes a delimiter-free line
+    #                                        through unchanged, so field 2 IS the head
+    #   cat-file commit head | awk parent -> the correct parent
+    #
+    # The first two would report a false corpus violation -- exit 1, "rebuild the gold" -- on a
+    # corpus that is correct, which is the misclassification the loop above exists to prevent.
+    # The graft hides history from traversal; it does not rewrite the object, and the parent id
+    # is a header inside it.
+    #
+    # Stop at the blank line: it ends the headers, and a commit MESSAGE line may begin with the
+    # word "parent". Empty means a root commit -- build-gold.sh drops those before emitting, so a
+    # document claiming one is malformed and is reported with <none>. Never silently equal to
+    # $base, which the resolvability check above has already proven non-empty.
+    want_base=$(git -C "$checkout" cat-file commit "$head" |
+        awk '/^$/ { exit } /^parent /  { print $2; exit }')
     if [ "$want_base" != "$(git -C "$checkout" rev-parse --verify "$base")" ]; then
         printf 'base_sha is not head_sha^ (%s vs %s): %s\n' \
             "$base" "${want_base:-<none>}" "$(basename -- "$g")"

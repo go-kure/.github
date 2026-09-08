@@ -383,6 +383,10 @@ not what the gate reads.
 #    repository, all into the same --out: the refusal and --replace are both scoped to the
 #    --repo-name being built, so a second repository neither refuses nor clears the first.
 #    --replace rebuilds one repository's share of a shared corpus, never the whole corpus.
+#    Two exceptions, both refusals rather than surprises: a document already in --out that
+#    carries no readable `.repo` (remove or repair it), and two repositories whose names slug
+#    to the same filename -- `acme/widgets-api` and `acme-widgets/api` both become
+#    `acme-widgets-api`, so with one PR number they claim one file. Give that one its own --out.
 ./build-gold.sh --repo ../../that-repo --repo-name group/that-repo \
                 --out "$EVAL/gold" --max-fixes 200
 ./build-gold.sh --repo ../../other-repo --repo-name group/other-repo \
