@@ -56,6 +56,18 @@ This is not hypothetical — the harness did exactly that on its first full run,
 documents, and the resulting baseline was withdrawn. A document with no `intro_title` (any corpus
 built before the field existed) gets a neutral constant, never the note.
 
+**Known approximation: `intro_title` is a commit subject, production passes a PR title.** The
+shipped reviewer fetches the pull request and forwards `.title`; the miner has only git, so it
+records the introducing commit's subject. The two coincide for a squash merge (GitHub composes
+that subject from the PR title) and diverge for a rebased or multi-commit PR. Closing the gap
+needs a forge call per row, which the miner deliberately does not make — it runs offline and
+against private GitLab repositories where the PR number is not recoverable from git at all. On
+the repositories mined so far that limitation is total rather than partial: `pr_for_commit`
+recognises a squash subject, a merge-commit subject and a GitLab `See merge request` trailer, and
+**none of the last 50 subjects in either mined repository is any of the three**, so all 43
+documents of the first corpus carry `pr: null`. A PR-title lookup would therefore change no row
+of it. Revisit if a squash-merging repository is ever added to the mining set.
+
 ## The standards doc is read at the revision production reads it at
 
 `PROJECT STANDARDS` is part of the reviewer's system prompt, and a rule that is absent from it
@@ -210,6 +222,19 @@ corpus holding 1 and 9 rows, with the 9-row document excluded, is `0.5` by docum
 `0.6` ceiling, so the run passes and prints a recall computed over **one** of ten gold rows — and
 `0.9` by rows, which the ceiling refuses. Each run's line reports both (`excluded=1/2 docs=9/10
 rows`) and the summary carries `excluded_rows_max`.
+
+## A measurement holds the corpus still while it reads it
+
+`build-gold.sh --replace` cannot swap atomically — it moves the previous documents aside and
+installs the new ones one at a time — so a measurement starting mid-swap matches fewer files and
+reports a recall over whatever subset existed at that instant. Nothing fails: the run's own
+`gold_tree` faithfully digests the partial corpus, which is a wrong number carrying correct
+provenance.
+
+`run.sh` therefore takes a **shared** lock on each corpus directory's `.build.lock` — the same
+file `build-gold.sh` locks exclusively — and holds it for the whole run, then re-expands the glob
+and refuses if the match set moved while the locks were being taken. Builders were already
+serialised against each other; this is the reader half.
 
 ## The number depends on the standards document, so both are recorded
 
