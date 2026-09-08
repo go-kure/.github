@@ -247,6 +247,14 @@ fixture the exact comparison had rejected. Confirmation therefore requires the c
 whitespace-equivalent line **and not also remove one**; a genuine introduction has no counterpart
 to remove.
 
+Which way they agree depends on the file. In Python and YAML — both in the default include set —
+indentation is syntax, so a whitespace-only edit is a real edit: reindenting moves a statement
+between scopes or a key between mappings. `-w` is documented as ignoring exactly that, so on a fix
+that repairs an indentation bug it walks *past* the commit that broke the file, and the row's
+`head_sha` then names a diff from before the defect existed. `check-gold.sh` cannot catch it — the
+span genuinely is inside that older diff. For those extensions both settings go exact instead. The
+invariant is that they agree, not that they ignore whitespace.
+
 ## A measurement holds the corpus still while it reads it
 
 `build-gold.sh --replace` cannot swap atomically — it moves the previous documents aside and
@@ -278,7 +286,12 @@ Two suppressions sit between a finding and a human, and both are unconditional i
 the harness applies both before judging:
 
 - **`FALSE_POSITIVE`** — the assess pass discards these before they become threads. Crediting one
-  would score a defect against a reviewer whose own second pass had already withdrawn it.
+  would score a defect against a reviewer whose own second pass had already withdrawn it. **The
+  assessment pass therefore runs by default**: production loops it over every chunk
+  unconditionally, so a single-pass measurement inflates recall for the same reviewer while the
+  filter above sits there as a no-op with nothing to announce it. `--no-assess` exists for
+  measuring the review call in isolation; the result records `assess: false` and `compare.sh`
+  refuses to compare it against an assessed one.
 - **`collision`** — `prt_assign_ordinals` sets this on *every* member of a group sharing a file
   and a category, and the decide table's first row returns `NONE` for each. Nothing publishes
   them.
@@ -316,6 +329,8 @@ when both results measured the same gold tree.
                 --out "$EVAL/gold" --max-fixes 200
 
 # 2. measure the shipped reviewer, three times, writing the baseline
+#    (both model passes run by default; --no-assess measures the review call alone, which is
+#     not the shipped product, and compare.sh refuses to compare the two)
 PRT_PROXY_URL=http://localhost:3456 \
 ./run.sh --gold "$EVAL/gold/*.json" --engine chat --runs 3 \
          --checkout group/that-repo=../../that-repo \

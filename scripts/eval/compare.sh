@@ -19,9 +19,10 @@
 # not precision (see run.sh's header): a reviewer that finds more real, never-filed defects
 # raises that count while getting better, so gating on it would select for silence.
 #
-# Both files must have measured the SAME gold tree AND been given the SAME standards document.
-# A comparison across two different gold sets is not a comparison, and neither is one across two
-# standards revisions -- both are invisible in the numbers, which is why they are checked here
+# Both files must have measured the SAME gold tree, been given the SAME standards document, and
+# run the SAME number of model passes. A comparison across two different gold sets is not a
+# comparison, and neither is one across two standards revisions or across an assessed and an
+# unassessed run -- all three are invisible in the numbers, which is why they are checked here
 # rather than left to whoever reads the output.
 #
 # exit status
@@ -70,6 +71,17 @@ if [ "$b_std" != "$c_std" ]; then
     die "different standards documents ($(jq -r '.standards_source // "?"' "$baseline") ${b_std:0:12} vs $(jq -r '.standards_source // "?"' "$candidate") ${c_std:0:12}); these results are not comparable"
 fi
 [ "$b_std" != "unknown" ] || die "standards_sha is missing from at least one result; re-measure with a run.sh that records it"
+
+# The third input to a number is how many passes it measured. Production always assesses
+# (`pr-review-threads.sh:507-518`) and never publishes a FALSE_POSITIVE, so an unassessed run
+# credits findings the shipped pipeline withdraws -- a strictly higher recall for the same
+# reviewer. Comparing one against an assessed run reads that gap as an engine difference.
+b_assess=$(jq -r 'if has("assess") then (.assess | tostring) else "unknown" end' "$baseline")
+c_assess=$(jq -r 'if has("assess") then (.assess | tostring) else "unknown" end' "$candidate")
+if [ "$b_assess" != "$c_assess" ]; then
+    die "one result assessed and the other did not (assess=$b_assess vs assess=$c_assess); these results are not comparable"
+fi
+[ "$b_assess" != "unknown" ] || die "assess is missing from at least one result; re-measure with a run.sh that records it"
 
 b_engine=$(jq -r '.engine' "$baseline")
 c_engine=$(jq -r '.engine' "$candidate")

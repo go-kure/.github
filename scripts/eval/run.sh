@@ -19,7 +19,7 @@
 #
 # usage
 #   run.sh --gold '<glob>' --engine chat --runs 3 --max-spread <f> --out <file>
-#          --checkout <repo-name>=<path> [--readme <file>] [--assess]
+#          --checkout <repo-name>=<path> [--readme <file>] [--no-assess]
 #
 # Per-run stdout is one line:
 #   run=N R=<recall> matched=<n>/<denom> uncredited=<n> excluded=<n>/<docs> docs=<n>/<rows> rows
@@ -53,7 +53,7 @@ log() { printf '%s: %s\n' "$PROG" "$*" >&2; }
 usage() {
     cat <<'EOF'
 usage: run.sh --gold '<glob>' --engine <chat> --runs <n> --out <file>
-              --checkout <repo-name>=<path> [--max-spread <f>] [--readme <file>] [--assess]
+              --checkout <repo-name>=<path> [--max-spread <f>] [--readme <file>] [--no-assess]
 
   --gold        glob matching the gold documents (quote it; this script expands it)
   --engine      chat (the shipped diff-only reviewer). service arrives with Phase 2b.
@@ -68,7 +68,9 @@ usage: run.sh --gold '<glob>' --engine <chat> --runs <n> --out <file>
   --readme      rewrite this file's `baseline mean_r=` line from the measured result
   --standards   org standards doc to forward; default is docs/standards.md at the SHA the
                 shipped workflow pins its action to, which is what production reads
-  --assess      also run the reviewer's assessment pass
+  --no-assess   skip the reviewer's assessment pass. Measures the review call alone, which is
+                NOT the shipped product; the result records assess:false and compare.sh
+                refuses to compare it against an assessed one
 
 exit status
   0  measured      1  a run failed      2  usage error      3  spread too wide
@@ -91,7 +93,15 @@ max_spread=
 max_excluded=0.15
 readme_file=
 standards_override=
-assess_flag=()
+# Assessment is ON by default, because production always runs it: pr-review-threads.sh:507-518
+# loops over every chunk unconditionally, and reconcile.sh never publishes a FALSE_POSITIVE. A
+# single-pass measurement therefore credits the reviewer with findings its own second pass would
+# have withdrawn, and the filter further down -- which drops FALSE_POSITIVE precisely to avoid
+# that -- becomes a no-op with nothing to say so. The flag used to be opt-in and the documented
+# baseline command omitted it, so the number that Phase 2 is judged against measured half the
+# shipped pipeline.
+assess=true
+assess_flag=(--assess)
 declare -A checkouts=()
 
 while [ $# -gt 0 ]; do
@@ -104,7 +114,7 @@ while [ $# -gt 0 ]; do
         --max-excluded) max_excluded=${2-}; shift 2 || die "--max-excluded needs a value" ;;
         --readme) readme_file=${2-}; shift 2 || die "--readme needs a value" ;;
         --standards) standards_override=${2-}; shift 2 || die "--standards needs a value" ;;
-        --assess) assess_flag=(--assess); shift ;;
+        --no-assess) assess=false; assess_flag=(); shift ;;
         --checkout)
             case "${2-}" in
                 *=*) checkouts["${2%%=*}"]="${2#*=}" ;;
@@ -529,8 +539,8 @@ do_run() {
         # pr-review-threads.sh resolves PRT_STANDARDS_FILE relative to its own script dir, not
         # the target repo, because the standards live here and apply to every consumer.
         #
-        # Omitting it silently deletes findings rather than merely weakening the prompt, and
-        # only in combination with --assess: the assess prompt is instructed to mark a
+        # Omitting it silently deletes findings rather than merely weakening the prompt, and it
+        # does so through the assessment pass, which runs by default: the assess prompt marks a
         # standards-violation finding FALSE_POSITIVE when the rule it cites is absent from the
         # standards section, and the filter added alongside this then drops it before judging.
         # With no standards supplied, every rule is absent, so a whole finding category can be
@@ -587,8 +597,8 @@ do_run() {
         # FALSE_POSITIVE: the production path suppresses these before they ever become threads
         # (pr-review-threads.sh), so crediting one here would score a defect against a reviewer
         # whose own second pass had already discarded it -- flattering the two-pass config for
-        # findings it withheld. Without --assess no verdicts exist and that arm is a no-op,
-        # which is why the filter is unconditional rather than branching on the flag.
+        # findings it withheld. Under --no-assess no verdicts exist and that arm is a silent
+        # no-op, which is why assessment is the default and the result records which it was.
         #
         # collision: prt_assign_ordinals sets it on EVERY member of a group sharing a file and a
         # category (finding.sh, `collision: ($glen > 1)`), and reconcile.sh's row 1 returns NONE
@@ -724,6 +734,7 @@ out_json=$(jq -n \
     --arg gold_tree "$gold_tree" \
     --arg standards_sha "$standards_sha" \
     --arg standards_source "$standards_source" \
+    --argjson assess "$assess" \
     --argjson runs "$runs" \
     --argjson mean_r "$mean_r" \
     --argjson spread "$spread" \
@@ -735,7 +746,7 @@ out_json=$(jq -n \
     --argjson per_run "$(printf '%s\n' "${recalls[@]}" | jq -sc '.')" \
     '{engine: $engine, gold_sha: $gold_sha, gold_tree: $gold_tree, gold_total: $gold_total,
       standards_sha: $standards_sha, standards_source: $standards_source,
-      gold_docs: $gold_docs,
+      assess: $assess, gold_docs: $gold_docs,
       excluded_docs_max: $excluded_docs_max, excluded_rows_max: $excluded_rows_max,
       runs: $runs, mean_r: $mean_r, spread: $spread, uncredited: $uncredited,
       per_run_recall: $per_run}') || die "cannot build summary JSON"
