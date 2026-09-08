@@ -9,14 +9,19 @@
 #      A document without one has no leak-free review title available, so run.sh would fall back
 #      to a neutral constant and quietly measure something different from the rest of the set.
 #
-#   2. Every gold row's first line falls inside a hunk the REVIEWED diff (base_sha..head_sha)
+#   2. EVERY line of every gold row falls inside a hunk the REVIEWED diff (base_sha..head_sha)
 #      actually adds. This is the one that matters. A gold row is a claim that a reviewer of
-#      that diff should have flagged that line, so a line the diff never touches is a row no
+#      that diff should have flagged those lines, so a line the diff never touches is a row no
 #      reviewer could ever match and every run scores it as a miss. It is invisible in the
 #      output -- recall just comes out low, which is exactly what a reviewer under test is
 #      expected to produce. Measured on the first corpus built by this harness: 26 of 63 rows,
 #      41%, pointed outside the diff, because the blame parser kept the line number from the
 #      fix's parent revision rather than from the introducing commit.
+#
+#      Checking the whole span rather than its first line catches the second, independent way
+#      a row goes wrong: a span collapsed as min..max across non-contiguous blame runs starts
+#      on a line the commit really did add and then runs on over lines belonging to other
+#      commits. Both defects are fixed in build-gold.sh; this asserts the result.
 #
 # Reports every violation rather than stopping at the first: a corpus is rebuilt as a unit, so
 # the useful output is the full count, not the earliest example.
@@ -71,26 +76,39 @@ while IFS= read -r line; do
 done < <(compgen -G "$gold_glob" || true)
 [ "${#gold_files[@]}" -gt 0 ] || die "no gold documents matched: $gold_glob"
 
-# Is LINE inside a hunk this diff adds? Reads the "+start,count" side of each @@ header. -U0 so
-# a line only counts when the diff genuinely touches it rather than merely printing it as
-# context -- with context lines a row several lines away from any change would pass.
-line_in_diff() {
-    local checkout="$1" base="$2" head="$3" file="$4" line="$5"
+# How many lines of LO..HI does this diff NOT add? Reads the "+start,count" side of each @@
+# header. -U0 so a line only counts when the diff genuinely touches it rather than merely
+# printing it as context -- with context lines a row several lines away from any change would
+# pass.
+#
+# The WHOLE span, not just its first line. A span is a claim about every line in it, and a
+# checked-first-line-only test passes a row whose remaining lines belong to someone else --
+# which is exactly what a min..max collapse over non-contiguous blame runs produces. Real case,
+# versions.yaml at ee027242^: one commit's two lines, orig 124 and 129, recorded as [124,129]
+# with three other commits' lines in between. Line 124 is inside the diff, so the old test
+# passed it while four fifths of the span named code that commit never wrote.
+span_outside_diff() {
+    local checkout="$1" base="$2" head="$3" file="$4" lo="$5" hi="$6"
     # --no-color because a checkout with color.ui=always emits ANSI escapes before every @@,
     # which the matcher below then never recognises -- turning "no hunks found" into "every row
     # is outside the diff" and condemning a perfectly good corpus. The other machine-parsed
     # diffs in this harness already pass it.
-    git -C "$checkout" diff --no-color -U0 "$base" "$head" -- "$file" 2>/dev/null | awk -v L="$line" '
-        /^@@/ {
-            match($0, /\+[0-9]+(,[0-9]+)?/)
-            spec = substr($0, RSTART + 1, RLENGTH - 1)
-            n = split(spec, a, ",")
-            start = a[1] + 0
-            count = (n > 1 ? a[2] + 0 : 1)
-            if (L >= start && L < start + count) found = 1
-        }
-        END { exit found ? 0 : 1 }
-    '
+    git -C "$checkout" diff --no-color -U0 "$base" "$head" -- "$file" 2>/dev/null |
+        awk -v lo="$lo" -v hi="$hi" '
+            /^@@/ {
+                match($0, /\+[0-9]+(,[0-9]+)?/)
+                spec = substr($0, RSTART + 1, RLENGTH - 1)
+                n = split(spec, a, ",")
+                start = a[1] + 0
+                count = (n > 1 ? a[2] + 0 : 1)
+                for (i = start; i < start + count; i++) added[i] = 1
+            }
+            END {
+                out = 0
+                for (l = lo + 0; l <= hi + 0; l++) if (!(l in added)) out++
+                print out
+            }
+        '
 }
 
 violations=0
@@ -132,16 +150,18 @@ for g in "${gold_files[@]}"; do
         fi
     done
 
-    while IFS=$'\t' read -r file line; do
+    while IFS=$'\t' read -r file lo hi; do
         [ -n "$file" ] || continue
         rows_total=$((rows_total + 1))
-        if ! line_in_diff "$checkout" "$base" "$head" "$file" "$line"; then
-            printf 'row outside the reviewed diff: %s -> %s:%s (%s..%s)\n' \
-                "$(basename -- "$g")" "$file" "$line" "${base:0:8}" "${head:0:8}"
+        outside=$(span_outside_diff "$checkout" "$base" "$head" "$file" "$lo" "$hi")
+        if [ "${outside:-0}" -gt 0 ]; then
+            printf 'row outside the reviewed diff: %s -> %s:%s-%s (%s of %s lines; %s..%s)\n' \
+                "$(basename -- "$g")" "$file" "$lo" "$hi" \
+                "$outside" "$((hi - lo + 1))" "${base:0:8}" "${head:0:8}"
             rows_outside=$((rows_outside + 1))
             violations=$((violations + 1))
         fi
-    done < <(jq -r '.gold[] | "\(.file)\t\(.lines[0])"' "$g")
+    done < <(jq -r '.gold[] | "\(.file)\t\(.lines[0])\t\(.lines[1])"' "$g")
 done
 
 printf '%s: %d documents, %d rows, %d rows outside the reviewed diff\n' \
