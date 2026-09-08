@@ -344,31 +344,6 @@ if [ -n "$standards_file" ] && [ -f "$standards_file" ]; then
     standards_sha=${standards_sha%% *}
 fi
 
-# normalise_path DIR TARGET -- collapse TARGET, taken relative to DIR, into a plain tree path.
-# Git paths are always /-separated, never absolute and never carry a trailing slash, so plain
-# text collapsing of "." and ".." is sufficient.
-#
-# A ".." that would escape the repository root FAILS (exit 1, no output). Clamping it at the root
-# -- the obvious reading, and what this did first -- silently rewrites what the link means: a root
-# `AGENTS.md -> ../shared.md` names a file OUTSIDE the checkout, which production's `cat` follows
-# (`pr-review-threads.sh:250-253`) and which git cannot store as a tree entry; clamped it becomes
-# `shared.md`, so the harness would read an unrelated in-repository file of that name and feed the
-# reviewer a document production never showed it. Wrong context is worse than absent context,
-# because absent context is at least visible as a shorter prompt.
-normalise_path() {
-    printf '%s\n' "${1:+$1/}$2" | awk -F/ '{
-        n = 0
-        for (i = 1; i <= NF; i++) {
-            if ($i == "" || $i == ".") continue
-            if ($i == "..") { if (n == 0) exit 1; n--; continue }
-            parts[++n] = $i
-        }
-        out = ""
-        for (i = 1; i <= n; i++) out = out (i > 1 ? "/" : "") parts[i]
-        print out
-    }'
-}
-
 # show_blob CHECKOUT REV PATH -- print PATH's contents at REV, following in-tree symlinks.
 #
 # `git show <rev>:<path>` on a symlink prints the LINK TARGET, not the file: a repository whose
@@ -383,17 +358,43 @@ normalise_path() {
 # dropping a context file that production's `cat` reads straight through the link. Resolving
 # only the leaf would leave that case measuring a reviewer given less than the shipped one gets.
 #
+# `..` is resolved BY THE WALK, in traversal order, never collapsed lexically beforehand. The two
+# disagree whenever a cancelled component does not exist or is not a directory: production's `cat`
+# hands `missing/../real.md` to the kernel, which stats `missing`, gets ENOENT and reads nothing,
+# while a lexical collapse yields `real.md` and reads it -- the harness feeding the reviewer a
+# document the shipped one never sees. Walking it component by component is the same order the
+# kernel uses, and it costs nothing extra here because every component is already looked up.
+#
+# A `..` that would leave the repository root FAILS rather than clamping at it. Clamping silently
+# rewrites what the link means: a root `AGENTS.md -> ../shared.md` names a file OUTSIDE the
+# checkout, which production's `cat` follows (`pr-review-threads.sh:250-253`) and which git cannot
+# store as a tree entry; clamped it becomes `shared.md`, so the harness would read an unrelated
+# in-repository file of that name. Wrong context is worse than absent context, because absent
+# context is at least visible as a shorter prompt.
+#
 # Bounded rather than recursive: a symlink cycle in a historical tree would otherwise hang the
 # run, and no legitimate case needs more than a hop or two. Returns 1 if the path does not
 # resolve to a regular blob, leaving the caller to treat the context as absent.
 show_blob() {
     local checkout="$1" rev="$2" path="$3"
-    local hops=0 mode target comp parent resolved='' rest="$path"
+    local hops=0 mode='' target comp parent resolved='' rest="$path"
 
     while [ -n "$rest" ]; do
         comp=${rest%%/*}
         if [ "$comp" = "$rest" ]; then rest=''; else rest=${rest#*/}; fi
         { [ -n "$comp" ] && [ "$comp" != "." ]; } || continue
+
+        if [ "$comp" = ".." ]; then
+            # Nothing to leave means the link escapes the repository root; leaving something that
+            # is not a tree is the kernel's ENOTDIR. `mode` is the component just resolved, so it
+            # is set whenever `resolved` is non-empty.
+            [ -n "$resolved" ] || return 1
+            [ "$mode" = 040000 ] || return 1
+            if [ "${resolved%/*}" = "$resolved" ]; then resolved=''; else resolved=${resolved%/*}; fi
+            mode=040000
+            continue
+        fi
+
         resolved=${resolved:+$resolved/}$comp
 
         mode=$(git -C "$checkout" ls-tree "$rev" -- "$resolved" 2>/dev/null | awk '{print $1; exit}')
@@ -414,15 +415,15 @@ show_blob() {
         # them the same per-component resolution the original path got, to any depth. The hop
         # budget spans the whole walk, so a cycle still terminates rather than re-queueing
         # forever.
-        parent=$(dirname -- "$resolved")
-        [ "$parent" = "." ] && parent=''
-        # Non-zero means the target escapes the repository root; empty means it collapsed to
-        # nothing. Both are "no in-tree file here", and both must return rather than fall through
-        # -- `set -o pipefail` (line 38) is what carries awk's exit 1 out of the substitution.
-        target=$(normalise_path "$parent" "$target") || return 1
-        [ -n "$target" ] || return 1
-        rest=$target${rest:+/$rest}
+        parent=$resolved
+        if [ "${parent%/*}" = "$parent" ]; then parent=''; else parent=${parent%/*}; fi
+        # Spliced in raw, `..` and all: the walk above resolves those against the tree in order.
+        # Re-walking the parent components is safe and costs a few `ls-tree` calls -- any symlink
+        # among them would have restarted the walk when it was first reached, so everything in
+        # `parent` is a plain tree entry by construction.
+        rest=${parent:+$parent/}$target${rest:+/$rest}
         resolved=''
+        mode=''
     done
 
     # A tree, a gitlink or an empty walk is not a context file; only a regular blob is.

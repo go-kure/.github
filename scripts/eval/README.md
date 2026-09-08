@@ -118,6 +118,13 @@ resolves it to an unrelated in-repository `shared.md` and feeds the reviewer a d
 never showed it. Absent context is visible as a shorter prompt; wrong context is not visible at
 all.
 
+The same rule decides how `..` is resolved: **in traversal order, against the tree, never collapsed
+as text first**. The two readings part company whenever a cancelled component does not exist or is
+not a directory. `AGENTS.md -> missing/../real.md` is the case — the kernel stats `missing` for
+production's `cat`, gets ENOENT and reads nothing, while a lexical collapse yields `real.md` and
+reads it. Walking it is the same order the kernel uses and costs nothing extra, because every
+component is already being looked up to find the links in the first place.
+
 ## Run `check-gold.sh` before spending a run
 
 ```sh

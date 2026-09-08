@@ -167,12 +167,17 @@ for g in "${gold_files[@]}"; do
         # range and sits in the denominator while being unmatchable, depressing recall.
         # build-gold.sh cannot emit one (its span collapse is ordered by construction), so this
         # guards a hand-edited or externally produced corpus, whose shape nothing else checks.
-        # The comma is always present, so an empty endpoint shows up as a leading or trailing one
-        # rather than as an empty word -- hence `,*|*,` and no `''` arm.
-        case "$lo,$hi" in
-            *[!0-9,]*|,*|*,) bad_span=1 ;;
-            *) bad_span=0 ;;
-        esac
+        # Each endpoint on its own, never the pair joined by a comma. Joining them makes the
+        # separator indistinguishable from a comma INSIDE an endpoint, so `["1,2", "2"]` reads as
+        # well-formed; `[ "1,2" -lt 1 ]` then fails its own syntax rather than the comparison, the
+        # branch below is not taken, and awk's `lo+0` silently measures the row as 1..2 -- the
+        # preflight passing exactly the shape it exists to reject.
+        bad_span=0
+        for endpoint in "$lo" "$hi"; do
+            case "$endpoint" in
+                '' | *[!0-9]*) bad_span=1 ;;
+            esac
+        done
         if [ "$bad_span" = 1 ] || [ "$lo" -lt 1 ] || [ "$hi" -lt "$lo" ]; then
             printf 'malformed span: %s -> %s:%s-%s (want 1 <= lo <= hi)\n' \
                 "$(basename -- "$g")" "$file" "$lo" "$hi"
