@@ -574,11 +574,12 @@ do_run() {
         # title of the pre-fix diff tells the reviewer the answer and measures how well it can
         # copy a hint, which is not recall. A gold set built before intro_title existed has no
         # leak-free title available, so it gets a neutral constant rather than a silent fallback
-        # to the note. Blank counts as missing: `//` alone only catches null and absent, so an
-        # empty intro_title would review the diff under an empty title -- neither the real one
-        # nor the neutral constant, and different from what check-gold.sh's own
-        # `(.intro_title // "") != ""` guard calls acceptable.
-        title=$(jq -r 'if (.intro_title // "") == "" then "change under review" else .intro_title end' "$g")
+        # to the note. Blank counts as missing, and blank means no non-whitespace character, not
+        # merely the empty string: `"   "` has length 3, is not a commit subject, and would review
+        # the diff under three spaces -- neither the real title nor the neutral constant. The type
+        # test comes first because `test` on a number is an error, not a false.
+        title=$(jq -r 'if (.intro_title | type) == "string" and (.intro_title | test("\\S"))
+                       then .intro_title else "change under review" end' "$g")
 
         diff_file="$workdir/run$run_idx-$(basename "$g" .json).diff"
         # --src-prefix/--dst-prefix explicitly: a user's diff.noprefix=true otherwise emits
