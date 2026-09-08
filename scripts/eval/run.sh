@@ -171,6 +171,42 @@ done < <(compgen -G "$gold_glob" || true)
 
 [ "${#gold_files[@]}" -gt 0 ] || die "no gold documents matched: $gold_glob"
 
+# Hold a SHARED lock on every corpus directory for the whole run.
+#
+# build-gold.sh takes an EXCLUSIVE lock on `<corpus>/.build.lock`, which serialises builder
+# against builder but says nothing about a reader. Its --replace swap cannot be atomic -- the
+# previous documents are moved aside and the new ones installed one by one -- so a measurement
+# starting mid-swap sees an empty or half-installed corpus. That does not fail: the glob simply
+# matches fewer files, and the run reports a recall over whatever subset existed at that instant,
+# with a gold_tree that faithfully digests it. A wrong number with correct provenance.
+#
+# The fds are deliberately never closed: they are released when the script exits, which is
+# exactly how long the corpus has to stay still, since each run re-reads every document.
+command -v flock >/dev/null 2>&1 || die "flock is required"
+declare -A corpus_dirs=()
+for g in "${gold_files[@]}"; do
+    d=$(dirname -- "$g")
+    [ -z "${corpus_dirs[$d]:-}" ] || continue
+    corpus_dirs[$d]=1
+    # Opened for append rather than read so the lock exists even for a corpus that build-gold.sh
+    # never wrote; an absent lock file would otherwise mean a build could create one and start
+    # swapping while this run believed it had nothing to wait for.
+    exec {lock_fd}>>"$d/.build.lock" || die "cannot open the build lock in $d"
+    flock -s -w 600 "$lock_fd" \
+        || die "timed out waiting for a build to finish in $d; it holds $d/.build.lock"
+done
+
+# Re-expand and compare. The window between the glob above and the locks just taken is small but
+# real, and it is the one a --replace swap would land in. Comparing the two expansions is what
+# turns a silently shrunken corpus into an error.
+gold_recheck=()
+while IFS= read -r line; do
+    [ -n "$line" ] && gold_recheck+=("$line")
+done < <(compgen -G "$gold_glob" || true)
+if [ "${gold_files[*]}" != "${gold_recheck[*]}" ]; then
+    die "the gold corpus changed while this run was starting (${#gold_files[@]} documents, then ${#gold_recheck[@]}); a build was in progress -- re-run it"
+fi
+
 # Every row must carry `confirmed: true`. A blame candidate that was never confirmed accuses
 # whichever commit last touched the line, which may be a reformat; measuring recall against
 # it measures nothing.
@@ -197,6 +233,30 @@ log "${#gold_files[@]} gold documents, $gold_total gold rows, engine=$engine, ru
 #
 # Sorted by path so the value does not depend on glob expansion order, and the path is included
 # in the digest so moving a document between files is a different corpus.
+#
+# The path recorded is relative to the corpus root -- the longest directory prefix common to
+# every matched file -- not the basename and not the absolute path. Each of the other two is
+# wrong in one direction. A basename cannot tell `a/x.json` from `b/x.json`, so a glob spanning
+# subdirectories digests two different selections identically and compare.sh calls them
+# comparable; an absolute path makes the digest depend on where the repository happens to be
+# checked out, so the same corpus measured on two machines would refuse to compare. When every
+# file sits in one directory the relative path IS the basename, so the value is unchanged from
+# the single-directory case this has always been used for.
+gold_abs=()
+for g in "${gold_files[@]}"; do
+    a=$(realpath -e -- "$g") || die "cannot resolve gold path: $g"
+    gold_abs+=("$a")
+done
+corpus_root=$(printf '%s\n' "${gold_abs[@]}" | awk -F/ '
+    NR == 1 { n = NF - 1; for (i = 1; i <= n; i++) p[i] = $i; next }
+    {
+        if (NF - 1 < n) n = NF - 1
+        for (i = 1; i <= n; i++) if ($i != p[i]) { n = i - 1; break }
+    }
+    END { out = ""; for (i = 1; i <= n; i++) if (p[i] != "") out = out "/" p[i]; print out }
+') || die "cannot determine the corpus root"
+[ -n "$corpus_root" ] || corpus_root=/
+
 gold_dir=$(cd -- "$(dirname -- "${gold_files[0]}")" && pwd)
 gold_sha=$(git -C "$gold_dir" rev-parse HEAD 2>/dev/null || echo unknown)
 #
@@ -206,9 +266,10 @@ gold_sha=$(git -C "$gold_dir" rev-parse HEAD 2>/dev/null || echo unknown)
 # trailing `cut`. The corpus would then be stamped with a gold_tree digesting a blank where a
 # document should have been, and two runs that read different bytes would compare as equal.
 gold_digests=$(
-    for g in "${gold_files[@]}"; do
-        h=$(sha256sum <"$g") || exit 1
-        printf '%s  %s\n' "${h%% *}" "$(basename -- "$g")"
+    for a in "${gold_abs[@]}"; do
+        h=$(sha256sum <"$a") || exit 1
+        rel=${a#"${corpus_root%/}"/}
+        printf '%s  %s\n' "${h%% *}" "$rel"
     done
 ) || die "cannot digest the gold corpus"
 gold_tree=$(printf '%s\n' "$gold_digests" | LC_ALL=C sort | sha256sum | cut -d' ' -f1) ||
@@ -648,6 +709,11 @@ summary=$(jq -n \
 mean_r=$(jq -r '.mean_r' <<<"$summary")
 spread=$(jq -r '.spread' <<<"$summary")
 mean_uncredited=$(jq -r '.uncredited' <<<"$summary")
+# Carried into the persisted JSON, not left in this shell variable. A recall figure is only
+# interpretable next to how much of the corpus produced it, and the run lines that print the
+# exclusions scroll past -- the file is what a later reader, and compare.sh, actually have.
+excluded_docs_max=$(jq -r '.excluded_max' <<<"$summary")
+excluded_rows_max=$(jq -r '.excluded_rows_max' <<<"$summary")
 
 printf 'mean_r=%s spread=%s runs=%d\n' "$mean_r" "$spread" "$runs"
 
@@ -662,9 +728,14 @@ out_json=$(jq -n \
     --argjson spread "$spread" \
     --argjson uncredited "$mean_uncredited" \
     --argjson gold_total "$gold_total" \
+    --argjson gold_docs "${#gold_files[@]}" \
+    --argjson excluded_docs_max "$excluded_docs_max" \
+    --argjson excluded_rows_max "$excluded_rows_max" \
     --argjson per_run "$(printf '%s\n' "${recalls[@]}" | jq -sc '.')" \
     '{engine: $engine, gold_sha: $gold_sha, gold_tree: $gold_tree, gold_total: $gold_total,
       standards_sha: $standards_sha, standards_source: $standards_source,
+      gold_docs: $gold_docs,
+      excluded_docs_max: $excluded_docs_max, excluded_rows_max: $excluded_rows_max,
       runs: $runs, mean_r: $mean_r, spread: $spread, uncredited: $uncredited,
       per_run_recall: $per_run}') || die "cannot build summary JSON"
 
