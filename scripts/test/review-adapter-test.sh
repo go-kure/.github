@@ -75,6 +75,14 @@ n=$(cat "$STUB_DIR/calls" 2>/dev/null || echo 0)
 n=$((n + 1))
 printf '%s\n' "$n" > "$STUB_DIR/calls"
 
+# Per-call transport fault: STUB_DIR/exit-N holds the exit status for call N. STUB_EXIT above is
+# all-or-nothing and cannot express "the retry alone fails", which is the case that decides
+# whether a chunk gets one accurate degraded record or two contradictory ones.
+if [ -f "$STUB_DIR/exit-$n" ]; then
+  echo "${STUB_HTTP:-000}"
+  exit "$(cat "$STUB_DIR/exit-$n")"
+fi
+
 reply="$STUB_DIR/reply-$n"
 [ -f "$reply" ] || reply="$STUB_DIR/reply-1"
 
@@ -88,9 +96,11 @@ mkdir -p "$STUB_DIR"
 
 REVIEW_JSON='{"findings":[{"file":"handler.go","category":"unchecked-err","line":11,"severity":"high","issue":"err is discarded","fix":"return err"}]}'
 
-# reset_stub — clear the call counter and every canned reply from the last case.
+# reset_stub — clear the call counter and every canned reply and per-call fault from the last
+# case. A leftover exit-N would fail an unrelated later case's Nth call, which reads as that
+# case's own defect.
 reset_stub() {
-  rm -f "$STUB_DIR"/reply-* "$STUB_DIR/calls"
+  rm -f "$STUB_DIR"/reply-* "$STUB_DIR"/exit-* "$STUB_DIR/calls"
 }
 
 run_adapter() {
@@ -160,6 +170,25 @@ assert_eq "assess retry: verdict stays null after the bound" "null" \
   "$(jq -r '.findings[0].verdict' <<<"$unverdicted")"
 assert_eq "assess retry: the exhausted bound is recorded as degradation" "true" \
   "$(jq -r '[.degraded[] | test("after retry")] | any' <<<"$unverdicted")"
+
+# A transport fault ON the retry is a different outcome from a second unparseable body, and the
+# degraded list is what an operator reads to tell them apart. Recording both for one chunk is a
+# duplicate whose second entry is false.
+reset_stub
+printf '%s' "$REVIEW_JSON" > "$STUB_DIR/reply-1"
+printf 'not JSON\n' > "$STUB_DIR/reply-2"
+# BOTH curl attempts of the retry, not just the first: prt_model_assess makes its own
+# short-backoff second attempt (model.sh:376-377), so faulting only call 3 lets call 4 answer
+# with reply-1 and the adapter never reaches the transport branch at all.
+printf '7\n' > "$STUB_DIR/exit-3"
+printf '7\n' > "$STUB_DIR/exit-4"
+faulted="$(run_adapter --assess)"
+assert_eq "assess retry: a transport fault is recorded once, not twice" "1" \
+  "$(jq '[.degraded[] | select(test("assess"))] | length' <<<"$faulted")"
+assert_eq "assess retry: recorded as a transport fault, not a parse fault" "true" \
+  "$(jq -r '[.degraded[] | test("assess transport failure on retry")] | any' <<<"$faulted")"
+assert_eq "assess retry: transport fault leaves the finding unverdicted" "null" \
+  "$(jq -r '.findings[0].verdict' <<<"$faulted")"
 
 # --- prose-wrapped JSON is salvaged, not lost ---
 reset_stub
