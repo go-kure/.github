@@ -76,7 +76,11 @@ done < <(compgen -G "$gold_glob" || true)
 # context -- with context lines a row several lines away from any change would pass.
 line_in_diff() {
     local checkout="$1" base="$2" head="$3" file="$4" line="$5"
-    git -C "$checkout" diff -U0 "$base" "$head" -- "$file" 2>/dev/null | awk -v L="$line" '
+    # --no-color because a checkout with color.ui=always emits ANSI escapes before every @@,
+    # which the matcher below then never recognises -- turning "no hunks found" into "every row
+    # is outside the diff" and condemning a perfectly good corpus. The other machine-parsed
+    # diffs in this harness already pass it.
+    git -C "$checkout" diff --no-color -U0 "$base" "$head" -- "$file" 2>/dev/null | awk -v L="$line" '
         /^@@/ {
             match($0, /\+[0-9]+(,[0-9]+)?/)
             spec = substr($0, RSTART + 1, RLENGTH - 1)
@@ -115,6 +119,18 @@ for g in "${gold_files[@]}"; do
 
     base=$(jq -r '.base_sha' "$g")
     head=$(jq -r '.head_sha' "$g")
+
+    # An unresolvable revision is an environment fault, not a bad corpus, and the two demand
+    # opposite responses: one says fix the checkout, the other says rebuild the gold. Without
+    # this check a shallow or stale checkout fails every `git diff` below, each row reads as
+    # "outside the reviewed diff", and the script reports a corpus-wide defect -- exiting 1 and
+    # prompting a rebuild that would not have helped. Checked once per document rather than per
+    # row, since both revisions are document-level.
+    for rev in "$base" "$head"; do
+        if ! git -C "$checkout" rev-parse --verify --quiet "$rev^{commit}" >/dev/null; then
+            die "$checkout cannot resolve $rev (from $(basename -- "$g")); is the checkout shallow or stale?"
+        fi
+    done
 
     while IFS=$'\t' read -r file line; do
         [ -n "$file" ] || continue

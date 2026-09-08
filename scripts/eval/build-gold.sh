@@ -287,9 +287,17 @@ log "scanned $n_fixes fix commits; $(wc -l <"$candidates") blame candidates"
 sort -u "$candidates" | awk -F'\t' '
     {
         key = $1 "\t" $2 "\t" $5 "\t" $6
-        if (!(key in olo) || $3 + 0 < olo[key]) olo[key] = $3 + 0
+        if (!(key in olo) || $3 + 0 < olo[key]) {
+            olo[key] = $3 + 0
+            # PAIRED with olo, never minimised on its own. The two columns are line numbers in
+            # different revisions and blame does not guarantee they rise together: where the
+            # parent of the fix reordered lines, the smallest orig line and the smallest final
+            # line belong to DIFFERENT rows. Minimising each separately then reads the text at
+            # flo for a line the gold row does not name, so confirm_introduction validates
+            # evidence belonging to some other line.
+            flo[key] = $4 + 0
+        }
         if (!(key in ohi) || $3 + 0 > ohi[key]) ohi[key] = $3 + 0
-        if (!(key in flo) || $4 + 0 < flo[key]) flo[key] = $4 + 0
     }
     END {
         for (k in olo)
