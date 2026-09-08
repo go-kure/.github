@@ -237,7 +237,7 @@ normalise_path() {
 # resolve to a regular blob, leaving the caller to treat the context as absent.
 show_blob() {
     local checkout="$1" rev="$2" path="$3"
-    local hops=0 mode target comp resolved='' rest="$path"
+    local hops=0 mode target comp parent resolved='' rest="$path"
 
     while [ -n "$rest" ]; do
         comp=${rest%%/*}
@@ -245,20 +245,30 @@ show_blob() {
         { [ -n "$comp" ] && [ "$comp" != "." ]; } || continue
         resolved=${resolved:+$resolved/}$comp
 
-        while :; do
-            mode=$(git -C "$checkout" ls-tree "$rev" -- "$resolved" 2>/dev/null | awk '{print $1; exit}')
-            [ -n "$mode" ] || return 1
-            [ "$mode" = 120000 ] || break
+        mode=$(git -C "$checkout" ls-tree "$rev" -- "$resolved" 2>/dev/null | awk '{print $1; exit}')
+        [ -n "$mode" ] || return 1
+        [ "$mode" = 120000 ] || continue
 
-            hops=$((hops + 1))
-            [ "$hops" -lt 8 ] || return 1
-            target=$(git -C "$checkout" show "$rev:$resolved" 2>/dev/null) || return 1
-            case "$target" in
-                /*) return 1 ;;  # absolute link: nothing in the tree to resolve it against
-            esac
-            resolved=$(normalise_path "$(dirname -- "$resolved" | sed 's/^\.$//')" "$target")
-            [ -n "$resolved" ] || return 1
-        done
+        hops=$((hops + 1))
+        [ "$hops" -lt 16 ] || return 1
+        target=$(git -C "$checkout" show "$rev:$resolved" 2>/dev/null) || return 1
+        case "$target" in
+            /*) return 1 ;;  # absolute link: nothing in the tree to resolve it against
+        esac
+
+        # Re-queue the target rather than adopting it as an already-resolved prefix: a target
+        # may itself traverse a link (`.claude -> alias/subdir` with `alias -> real`), and
+        # treating it as one settled path looks `alias/subdir` up whole, finds no such tree
+        # entry, and drops the context file. Pushing its components back onto the walk gives
+        # them the same per-component resolution the original path got, to any depth. The hop
+        # budget spans the whole walk, so a cycle still terminates rather than re-queueing
+        # forever.
+        parent=$(dirname -- "$resolved")
+        [ "$parent" = "." ] && parent=''
+        target=$(normalise_path "$parent" "$target")
+        [ -n "$target" ] || return 1
+        rest=$target${rest:+/$rest}
+        resolved=''
     done
 
     # A tree, a gitlink or an empty walk is not a context file; only a regular blob is.
@@ -316,8 +326,11 @@ do_run() {
         # title of the pre-fix diff tells the reviewer the answer and measures how well it can
         # copy a hint, which is not recall. A gold set built before intro_title existed has no
         # leak-free title available, so it gets a neutral constant rather than a silent fallback
-        # to the note.
-        title=$(jq -r '.intro_title // "change under review"' "$g")
+        # to the note. Blank counts as missing: `//` alone only catches null and absent, so an
+        # empty intro_title would review the diff under an empty title -- neither the real one
+        # nor the neutral constant, and different from what check-gold.sh's own
+        # `(.intro_title // "") != ""` guard calls acceptable.
+        title=$(jq -r 'if (.intro_title // "") == "" then "change under review" else .intro_title end' "$g")
 
         diff_file="$workdir/run$run_idx-$(basename "$g" .json).diff"
         # --src-prefix/--dst-prefix explicitly: a user's diff.noprefix=true otherwise emits

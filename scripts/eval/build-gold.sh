@@ -396,11 +396,24 @@ fi
 # Merge rows introduced by the same change into one document. Grouping is on head_sha, not
 # on `pr`: the PR number is optional (see pr_for_commit), and grouping on a null would collapse
 # every reference-less change in the repo into a single document.
-# Staged in the work directory, not written straight into $out_dir: the swap below has to be
-# the first thing that touches the caller's corpus, so a failure anywhere above leaves it as it
-# was rather than half-replaced.
-staging="$work/out"
+# Staged, not written straight into $out_dir: the swap below has to be the first thing that
+# touches the caller's corpus, so a failure anywhere above leaves it as it was rather than
+# half-replaced.
+#
+# Staged INSIDE $out_dir rather than in $work, because $work lives under TMPDIR and the two can
+# be on different filesystems. A cross-device `mv` is a copy followed by an unlink, not a
+# rename: it can exhaust space or fail on a bad sector halfway through, after the deletion below
+# has already removed the previous corpus -- destroying the old documents to install a partial
+# new set, which is the exact failure the staging exists to prevent. Inside the destination
+# every move is a same-filesystem rename, which cannot fail for space.
+#
+# The name is dot-prefixed and pid-suffixed so it never matches the *.json globs above or
+# run.sh's gold glob, and two concurrent builds into one directory cannot collide.
+staging="$out_dir/.staging.$$"
+rm -rf "$staging"
 mkdir -p "$staging" || die "cannot create $staging"
+# Swept on every exit path from here on, including a die between this line and the swap.
+trap 'rm -rf "$work" "$staging"' EXIT
 
 written=0
 while read -r doc; do
@@ -423,10 +436,40 @@ done < <(jq -s -c '
 
 # The swap. Everything above this line is recoverable; this is the only step that touches the
 # caller's corpus, and it runs only now that a complete replacement exists on disk.
+#
+# The old documents are moved aside rather than deleted, and restored if any install fails. The
+# renames are same-filesystem and so cannot fail for space, but a read-only remount or a
+# permissions change between the probe at the top of the script and here still can, and the one
+# outcome that must not happen is a caller left with neither corpus.
+backup="$out_dir/.superseded.$$"
+
+# Put the previous corpus back and abort with REASON. Clears whatever the failed install did
+# land first, so the caller gets the old corpus whole rather than mixed with part of the new
+# one. If the restore itself fails, say where the documents actually are -- a message naming a
+# directory the caller can move back by hand is worth more than a tidy one that loses them.
+restore_and_die() {
+    find -H "$out_dir" -maxdepth 1 -name '*.json' -delete
+    if find -H "$backup" -maxdepth 1 -name '*.json' -exec mv -t "$out_dir" -- {} +; then
+        rmdir "$backup" 2>/dev/null
+        die "$1; restored the previous corpus"
+    fi
+    die "$1, AND the previous corpus could not be restored; it is in $backup"
+}
+
 if [ "$out_dir_dirty" = true ]; then
-    find -H "$out_dir" -maxdepth 1 -name '*.json' -delete || die "cannot clear $out_dir"
-    log "--replace: cleared the previous gold documents from $out_dir"
+    mkdir -p "$backup" || die "cannot create $backup; $out_dir is unchanged"
+    find -H "$out_dir" -maxdepth 1 -name '*.json' -exec mv -t "$backup" -- {} + ||
+        restore_and_die "cannot move the previous gold documents aside"
+    log "--replace: moved the previous gold documents aside"
 fi
-mv -- "$staging"/*.json "$out_dir/" || die "cannot move staged documents into $out_dir"
+
+if ! mv -- "$staging"/*.json "$out_dir/"; then
+    [ "$out_dir_dirty" = true ] || die "cannot install the staged documents into $out_dir"
+    restore_and_die "cannot install the staged documents into $out_dir"
+fi
+
+if [ "$out_dir_dirty" = true ]; then
+    rm -rf "$backup" || log "warning: cannot remove $backup"
+fi
 
 log "wrote $written documents to $out_dir ($n_no_pr rows carried no PR/MR reference)"
