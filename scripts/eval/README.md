@@ -137,9 +137,14 @@ component is already being looked up to find the links in the first place.
 ./check-gold.sh --gold 'eval/gold/*.json' --checkout go-kure/kure=<path>
 ```
 
-It asserts every row is `confirmed`, every document has an `intro_title`, and — the one that
-matters — that **every line of every gold row falls inside a hunk the reviewed diff actually
-adds**.
+It asserts every row is `confirmed`, every document has an `intro_title`, that `base_sha` is
+`head_sha`'s first parent, and — the one that matters — that **every line of every gold row
+falls inside a hunk the reviewed diff actually adds**.
+
+The parent check is what keeps the containment check from being satisfiable by widening the
+diff: a `base_sha` moved back to an older ancestor still contains every gold span, so
+containment passes, while the reviewer is shown unrelated changes it is scored against nothing
+for. `build-gold.sh` always derives `base_sha` that way; a hand-edited corpus can say otherwise.
 
 A row pointing outside that diff is a defect no reviewer could ever match, and it is invisible
 in the output: recall simply comes out low, which is what a reviewer under test is expected to

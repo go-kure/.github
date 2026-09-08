@@ -625,6 +625,23 @@ done < <(jq -s -c '
 
 [ "$written" -gt 0 ] || die "no documents were staged; leaving $out_dir untouched"
 
+# The slug is not injective across repositories: `gsub("[/ ]"; "-")` maps `acme/widgets-api` and
+# `acme-widgets/api` to the same `acme-widgets-api`, so with the same PR number they claim one
+# filename. Scoping the sweep by `.repo` means the other repository's document is deliberately
+# NOT moved aside -- correct on its own terms -- and the install below would then overwrite it
+# in place, dropping gold rows from a repository this run was never asked to touch, with nothing
+# in the output saying so. Refuse instead, before anything has been moved: a corpus that cannot
+# hold both is a naming problem for a human, not a merge for this script to attempt.
+#
+# Checked here rather than at the top because the staged names are not known until the emission
+# loop has run; nothing has been touched yet either way.
+for n in "${staged_names[@]}"; do
+    [ -e "$out_dir/$n" ] || continue
+    owner=$(jq -r '.repo // empty' "$out_dir/$n" 2>/dev/null)
+    [ "$owner" = "$repo_name" ] ||
+        die "$out_dir/$n already belongs to ${owner:-an unreadable document}, not $repo_name; two repositories slug to the same filename -- give this one its own --out"
+done
+
 # The swap. Everything above this line is recoverable; this is the only step that touches the
 # caller's corpus, and it runs only now that a complete replacement exists on disk.
 #
