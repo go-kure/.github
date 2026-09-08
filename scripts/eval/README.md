@@ -223,6 +223,23 @@ corpus holding 1 and 9 rows, with the 9-row document excluded, is `0.5` by docum
 `0.9` by rows, which the ceiling refuses. Each run's line reports both (`excluded=1/2 docs=9/10
 rows`) and the summary carries `excluded_rows_max`.
 
+## Blame and confirmation must agree about whitespace
+
+`blame` runs with `-w` on purpose: without it a reformat between introduction and fix is credited
+as the introducer, and the harness ends up reviewing a whitespace diff for a defect it does not
+contain. Confirmation then compares the fix-parent's text against the introducing commit's added
+lines — and if that comparison is whitespace-*sensitive* while blame's is not, every re-indented
+line is dropped as unconfirmed. Silently, and biased toward code nobody has reformatted. On a
+12-fix slice of one repository that cost **14 of 16** unconfirmed drops: 91 rows became 105 across
+20 → 21 documents once the two agreed.
+
+Relaxing the comparison is not sufficient on its own, and the control case is the reason. A
+reformat shows its line as both removed and added, differing only in indentation, so under a
+whitespace-insensitive comparison "it appears as an addition" stops rejecting it — measured, on a
+fixture the exact comparison had rejected. Confirmation therefore requires the commit to add a
+whitespace-equivalent line **and not also remove one**; a genuine introduction has no counterpart
+to remove.
+
 ## A measurement holds the corpus still while it reads it
 
 `build-gold.sh --replace` cannot swap atomically — it moves the previous documents aside and

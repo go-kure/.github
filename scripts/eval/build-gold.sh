@@ -211,12 +211,28 @@ blame_range() {
         | awk '/^[0-9a-f]{40} / { print $1 "\t" $2 "\t" $3 }'
 }
 
-# confirm_introduction SHA PATH TEXT -- true when SHA's own diff adds exactly TEXT.
+# confirm_introduction SHA PATH TEXT -- true when SHA's own diff adds TEXT, up to whitespace.
 #
-# This is the check that turns a blame candidate into gold. A reformat that merely
-# re-indented the line shows the line as both removed and added with different leading
-# whitespace, so comparing the trimmed added text against the trimmed faulty text would
-# accept it; we compare the exact text and require it to appear as an addition.
+# This is the check that turns a blame candidate into gold: blame names the commit that last
+# touched a line, and this asserts that commit actually ADDED it. TEXT is read from the fix's
+# parent, a different revision, so the comparison is a genuine cross-check rather than a
+# restatement of what blame already said.
+#
+# Whitespace-insensitive, because blame_range above passes `-w` and the two must agree. When a
+# line is re-indented between its introduction and the fix, `-w` correctly walks past the
+# formatting commit to the real introducer -- but that introducer's diff contains the
+# PRE-reindent spelling, while TEXT carries the post-reindent one. An exact comparison then
+# fails for every such line, and the row is dropped as unconfirmed: silently, and biased toward
+# code nobody has reformatted. Two settings that disagree about whitespace cannot both be right;
+# `-w` is the one that has a reason (see blame_range), so this follows it.
+#
+# Relaxing the comparison alone would reopen what the exact check was guarding, so the guard is
+# restated directly instead of relied on as a side effect. A reformat shows the line as BOTH
+# removed and added, differing only in indentation -- under a whitespace-insensitive comparison
+# both sides match, so "it appears as an addition" stops rejecting it. Measured: a control case
+# that the exact check rejected was confirmed once the comparison was loosened and nothing else
+# changed. A commit therefore confirms only when it adds a whitespace-equivalent line and does
+# NOT also remove one; a genuine introduction adds the line with no counterpart to remove.
 # The wanted text travels through the environment, never through `awk -v`: a -v assignment
 # processes escape sequences, so a faulty line containing a backslash -- a regex, a printf
 # format, a Windows path -- would be compared in corrupted form and silently fail to confirm.
@@ -224,7 +240,14 @@ confirm_introduction() {
     local sha="$1" path="$2" text="$3"
     [ -n "$text" ] || return 1
     git_r show --format= --unified=0 --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ "$sha" -- "$path" 2>/dev/null \
-        | WANT="+$text" awk '$0 == ENVIRON["WANT"] { found = 1; exit } END { exit found ? 0 : 1 }'
+        | WANT="$text" awk '
+            function squash(s) { gsub(/[ \t]+/, "", s); return s }
+            BEGIN { want = squash(ENVIRON["WANT"]); if (want == "") exit 1 }
+            /^(\+\+\+|---)/ { next }
+            /^\+/ { if (squash(substr($0, 2)) == want) added = 1; next }
+            /^-/  { if (squash(substr($0, 2)) == want) removed = 1 }
+            END { exit (added && !removed) ? 0 : 1 }
+        '
 }
 
 # pr_for_commit SHA -- the pull/merge request number, or empty when none is recoverable.
