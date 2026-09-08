@@ -328,7 +328,12 @@ when both results measured the same gold tree.
 ./build-gold.sh --repo ../../that-repo --repo-name group/that-repo \
                 --out "$EVAL/gold" --max-fixes 200
 
-# 2. measure the shipped reviewer, three times, writing the baseline
+# 2. verify the corpus is measurable BEFORE paying for a run: this is the only check that
+#    every gold span is inside the reviewed diff, and a row outside it is a guaranteed miss
+#    that no reviewer can score against
+./check-gold.sh --gold "$EVAL/gold/*.json" --checkout group/that-repo=../../that-repo
+
+# 3. measure the shipped reviewer, three times, writing the baseline
 #    (both model passes run by default; --no-assess measures the review call alone, which is
 #     not the shipped product, and compare.sh refuses to compare the two)
 PRT_PROXY_URL=http://localhost:3456 \
@@ -336,7 +341,7 @@ PRT_PROXY_URL=http://localhost:3456 \
          --checkout group/that-repo=../../that-repo \
          --max-spread 0.05 --out "$EVAL/baseline.json" --readme "$EVAL/README.md"
 
-# 3. later, compare a candidate reviewer against it
+# 4. later, compare a candidate reviewer against it
 ./compare.sh "$EVAL/baseline.json" "$EVAL/candidate.json"
 ```
 

@@ -243,7 +243,20 @@ blame_range() {
 #
 # Whitespace-insensitive exactly where blame_range passes `-w`, because the two must agree; for a
 # whitespace-sensitive path both go exact instead, so a reindent is attributed to the commit that
-# performed it rather than walked past. When a
+# performed it rather than walked past.
+#
+# Insensitive at the EDGES only -- leading and trailing runs -- never interior. Interior spacing
+# can carry meaning in any language, not just the indentation-sensitive ones: `"a b"` becoming
+# `"ab"` is a whitespace-only edit that changes a string literal, and a `-w` blame walks straight
+# past it to the older, correct addition. Squashing all whitespace out of the comparison then
+# CONFIRMS that older commit, and check-gold.sh cannot object because its diff really did add the
+# line. Comparing interior spacing exactly turns that case into a dropped row instead of a wrongly
+# attributed one -- the conservative failure, and the only one available without parsing every
+# language. Edge whitespace stays ignored because that is the reformat class `-w` exists for:
+# reindentation, and trailing-space trimming, neither of which changes a token in any format in
+# the default include set.
+#
+# When a
 # line is re-indented between its introduction and the fix, `-w` correctly walks past the
 # formatting commit to the real introducer -- but that introducer's diff contains the
 # PRE-reindent spelling, while TEXT carries the post-reindent one. An exact comparison then
@@ -268,7 +281,12 @@ confirm_introduction() {
     ws_sensitive "$path" && exact=1
     git_r show --format= --unified=0 --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ "$sha" -- "$path" 2>/dev/null \
         | WANT="$text" EXACT="$exact" awk '
-            function squash(s) { if (exact) return s; gsub(/[ \t]+/, "", s); return s }
+            function squash(s) {
+                if (exact) return s
+                sub(/^[ \t]+/, "", s)
+                sub(/[ \t]+$/, "", s)
+                return s
+            }
             BEGIN {
                 exact = (ENVIRON["EXACT"] == "1")
                 want = squash(ENVIRON["WANT"])

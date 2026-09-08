@@ -217,7 +217,9 @@ for chunk_file in "$chunk_dir"/chunk-*.diff; do
     # No retry here, deliberately, and it is not an oversight: CI retries once because a
     # transient failure costs a whole PR its review, while the harness runs the same config
     # >=3 times by construction and reports the spread. A silent retry would hide exactly the
-    # variance the noise floor is meant to measure.
+    # variance the noise floor is meant to measure. The assessment call below DOES retry, and
+    # the asymmetry is argued there: losing a review response lowers recall visibly, losing an
+    # assessment response raises it invisibly.
     if [ "$parse_rc" -eq 1 ] || [ "$norm_rc" -eq 1 ]; then
         log "chunk $chunk_idx: no usable findings (parse_rc=$parse_rc norm_rc=$norm_rc)"
         prt_mark_degraded "chunk $chunk_idx: unusable review response"
@@ -241,9 +243,39 @@ for chunk_file in "$chunk_dir"/chunk-*.diff; do
         else
             assess_json=$(parse_or_salvage "$assess_raw")
             assess_parse_rc=$?
+
+            # The review call's no-retry policy above does NOT extend to this one, and the
+            # difference is the DIRECTION of the error, not a preference. A lost review response
+            # costs findings: recall goes down, and the spread the harness already reports shows
+            # it. A lost assessment response leaves its findings unverdicted, and an unverdicted
+            # finding survives run.sh's FALSE_POSITIVE filter -- so it pushes recall UP, silently,
+            # in a way no number of repeats reveals. Production gets two chances at a parseable
+            # assessment (salvage, then a bounded-to-1 retry, pr-review-threads.sh:540-583), so a
+            # single-chance harness reaches the unverdicted state more often than the pipeline it
+            # is measuring. Bounded to one retry for the same reason production bounds it.
             if [ "$assess_parse_rc" -eq 1 ]; then
-                log "chunk $chunk_idx: assess response unparseable; findings stay unverdicted"
-                prt_mark_degraded "chunk $chunk_idx: unparseable assess response"
+                log "chunk $chunk_idx: assess response unparseable; retrying once (production does)"
+                assess_rc=0
+                assess_raw=$(prt_model_assess "$PRT_PROXY_URL" "$PRT_ASSESS_MODEL" \
+                    "$PRT_ASSESS_MAX_TOKENS" "$chunk_diff" "$chunk_findings" "$pr_title" \
+                    "$project_context" "$project_agents" "$project_claude_md" \
+                    "$project_standards") || assess_rc=$?
+                if [ "$assess_rc" -ne 0 ]; then
+                    # A transport fault on the retry is a distinct outcome from a second
+                    # unparseable body; production reports them separately and collapsing them
+                    # would mislabel it.
+                    log "chunk $chunk_idx: assess call failed on retry (exit $assess_rc)"
+                    prt_mark_degraded "chunk $chunk_idx: assess transport failure on retry"
+                    assess_parse_rc=1
+                else
+                    assess_json=$(parse_or_salvage "$assess_raw")
+                    assess_parse_rc=$?
+                fi
+            fi
+
+            if [ "$assess_parse_rc" -eq 1 ]; then
+                log "chunk $chunk_idx: assess unusable after retry; findings stay unverdicted"
+                prt_mark_degraded "chunk $chunk_idx: unparseable assess response after retry"
             else
                 # prt_join_assessment returns the findings unchanged (rc 1) on a bad
                 # `.assessments` shape, so its output is usable either way.
