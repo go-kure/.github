@@ -848,11 +848,19 @@ mean_uncredited=$(jq -r '.uncredited' <<<"$summary")
 excluded_docs_max=$(jq -r '.excluded_max' <<<"$summary")
 excluded_rows_max=$(jq -r '.excluded_rows_max' <<<"$summary")
 
-# The UNION over runs, sorted and deduplicated: the set of gold documents this result did not
-# measure. Union rather than intersection because a document excluded in even one run already
-# moved that run's denominator, and mean_r averages the runs. Sorted so two results that
-# excluded the same documents compare equal whatever order the runs hit them in.
-excluded_docs_union=$(printf '%s\n' "${excluded_doc_lists[@]}" | jq -sc 'add // [] | unique') ||
+# Coverage, PER RUN and not merged across runs. mean_r is the mean of matched_i/denom_i over the
+# runs, so what has to match between two results is the multiset of per-run denominators -- and a
+# union cannot express that. A baseline that excluded hard.json in one repetition of three and a
+# candidate that excluded it in all three produce the identical union, while the candidate's mean
+# is taken over two more shrunken denominators: exactly the inflated recall the coverage gate
+# exists to reject, passing the gate. Each run's list is sorted so the comparison does not depend
+# on the order the documents were visited in.
+excluded_per_run=$(printf '%s\n' "${excluded_doc_lists[@]}" | jq -sc 'map(sort)') ||
+    die "cannot summarise the excluded-document lists"
+
+# The union stays, as the readable one-glance summary of what a result did not measure. It is not
+# what compare.sh gates on -- see above.
+excluded_docs_union=$(jq -nc --argjson r "$excluded_per_run" '$r | add // [] | unique') ||
     die "cannot summarise the excluded-document lists"
 
 printf 'mean_r=%s spread=%s runs=%d\n' "$mean_r" "$spread" "$runs"
@@ -874,12 +882,13 @@ out_json=$(jq -n \
     --argjson excluded_docs_max "$excluded_docs_max" \
     --argjson excluded_rows_max "$excluded_rows_max" \
     --argjson excluded_docs "$excluded_docs_union" \
+    --argjson excluded_per_run "$excluded_per_run" \
     --argjson per_run "$(printf '%s\n' "${recalls[@]}" | jq -sc '.')" \
     '{engine: $engine, gold_sha: $gold_sha, gold_tree: $gold_tree, gold_total: $gold_total,
       standards_sha: $standards_sha, standards_source: $standards_source,
       context_sha: $context_sha, assess: $assess, gold_docs: $gold_docs,
       excluded_docs_max: $excluded_docs_max, excluded_rows_max: $excluded_rows_max,
-      excluded_docs: $excluded_docs,
+      excluded_docs: $excluded_docs, excluded_per_run: $excluded_per_run,
       runs: $runs, mean_r: $mean_r, spread: $spread, uncredited: $uncredited,
       per_run_recall: $per_run}') || die "cannot build summary JSON"
 

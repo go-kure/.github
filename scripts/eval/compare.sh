@@ -103,14 +103,22 @@ fi
 # does not require two runs to drop the SAME part.
 #
 # Compare the sets, not the counts: two results can each exclude three documents and have
-# measured different rows. `excluded_docs` is the sorted union over runs, so equality here means
-# both results scored the same denominator out of the same gold tree.
-b_excl=$(jq -cS '.excluded_docs // "unknown"' "$baseline")
-c_excl=$(jq -cS '.excluded_docs // "unknown"' "$candidate")
+# measured different rows.
+#
+# And compare them PER RUN, never merged. mean_r is the mean of matched_i/denom_i over the
+# repetitions, so what must match is the multiset of per-run denominators. A union cannot express
+# that: a baseline that excluded hard.json in one run of three and a candidate that excluded it in
+# all three share the identical union, while the candidate's mean is taken over two more shrunken
+# denominators -- the same inflated recall this gate exists to reject, one level down.
+#
+# `map(sort) | sort` compares the multiset: within a run the visit order is irrelevant, and
+# between runs only how many repetitions dropped which documents matters, not which repetition.
+b_excl=$(jq -cS 'if has("excluded_per_run") then (.excluded_per_run | map(sort) | sort) else "unknown" end' "$baseline")
+c_excl=$(jq -cS 'if has("excluded_per_run") then (.excluded_per_run | map(sort) | sort) else "unknown" end' "$candidate")
 if [ "$b_excl" != "$c_excl" ]; then
-    die "different scoring coverage (excluded $b_excl vs $c_excl); these results measured different rows and are not comparable"
+    die "different scoring coverage (excluded per run $b_excl vs $c_excl); these results measured different rows and are not comparable"
 fi
-[ "$b_excl" != '"unknown"' ] || die "excluded_docs is missing from at least one result; re-measure with a run.sh that records it"
+[ "$b_excl" != '"unknown"' ] || die "excluded_per_run is missing from at least one result; re-measure with a run.sh that records it"
 
 b_engine=$(jq -r '.engine' "$baseline")
 c_engine=$(jq -r '.engine' "$candidate")
