@@ -104,11 +104,16 @@ mkdir -p "$out_dir" || die "cannot create $out_dir"
 # history itself and the dropped candidates' files stay behind, where run.sh's gold glob picks
 # them up as if they were current -- a corpus that is part one sweep and part another, with
 # nothing on disk saying so. Refuse rather than silently merge; --replace is the explicit opt-in.
+#
+# REFUSE here, DELETE at the end. The mining between this point and the emission loop can die
+# on a bad revision or confirm zero rows, and clearing the directory now would leave the caller
+# with no corpus at all and nothing to fall back on -- destroying the old measurement inputs to
+# produce none. The new documents are staged in the work directory and swapped in only once at
+# least one exists.
+out_dir_dirty=false
 if [ -n "$(find "$out_dir" -maxdepth 1 -name '*.json' -print -quit)" ]; then
     [ "$replace" = true ] || die "$out_dir already holds gold documents; pass --replace to rebuild it, or use an empty directory"
-    find "$out_dir" -maxdepth 1 -name '*.json' -delete \
-        || die "cannot clear $out_dir"
-    log "--replace: cleared existing gold documents from $out_dir"
+    out_dir_dirty=true
 fi
 
 git_r() { git -C "$repo" "$@"; }
@@ -368,13 +373,19 @@ fi
 # Merge rows introduced by the same change into one document. Grouping is on head_sha, not
 # on `pr`: the PR number is optional (see pr_for_commit), and grouping on a null would collapse
 # every reference-less change in the repo into a single document.
+# Staged in the work directory, not written straight into $out_dir: the swap below has to be
+# the first thing that touches the caller's corpus, so a failure anywhere above leaves it as it
+# was rather than half-replaced.
+staging="$work/out"
+mkdir -p "$staging" || die "cannot create $staging"
+
 written=0
 while read -r doc; do
     [ -n "$doc" ] || continue
     slug=$(printf '%s' "$doc" | jq -r '
         (.repo | gsub("[/ ]"; "-")) + "-"
         + (if .pr == null then (.head_sha[0:12]) else ("pr" + (.pr | tostring)) end)')
-    printf '%s\n' "$doc" | jq . >"$out_dir/$slug.json" || die "cannot write $out_dir/$slug.json"
+    printf '%s\n' "$doc" | jq . >"$staging/$slug.json" || die "cannot write $staging/$slug.json"
     written=$((written + 1))
 done < <(jq -s -c '
     group_by(.repo + "@" + .head_sha)
@@ -384,5 +395,15 @@ done < <(jq -s -c '
            gold: (map(.gold[]) | unique_by(.file + ":" + (.lines | tostring)))})
     | .[]
 ' "$work/gold.ndjson")
+
+[ "$written" -gt 0 ] || die "no documents were staged; leaving $out_dir untouched"
+
+# The swap. Everything above this line is recoverable; this is the only step that touches the
+# caller's corpus, and it runs only now that a complete replacement exists on disk.
+if [ "$out_dir_dirty" = true ]; then
+    find "$out_dir" -maxdepth 1 -name '*.json' -delete || die "cannot clear $out_dir"
+    log "--replace: cleared the previous gold documents from $out_dir"
+fi
+mv -- "$staging"/*.json "$out_dir/" || die "cannot move staged documents into $out_dir"
 
 log "wrote $written documents to $out_dir ($n_no_pr rows carried no PR/MR reference)"

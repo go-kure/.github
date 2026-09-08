@@ -109,13 +109,13 @@ for g in "${gold_files[@]}"; do
         violations=$((violations + 1))
     fi
 
+    # An absent mapping is an invocation fault, exactly like the unresolvable revision below --
+    # the caller forgot a flag, the corpus is fine. Counting it as a violation would exit 1 and
+    # say "rebuild the gold", which is both wrong and expensive, and it would contradict the
+    # exit-2 contract this script documents.
     repo=$(jq -r '.repo' "$g")
     checkout=${checkouts[$repo]:-}
-    if [ -z "$checkout" ]; then
-        printf 'no --checkout for repo %s (gold: %s)\n' "$repo" "$g"
-        violations=$((violations + 1))
-        continue
-    fi
+    [ -n "$checkout" ] || die "no --checkout for repo $repo (needed by $(basename -- "$g"))"
 
     base=$(jq -r '.base_sha' "$g")
     head=$(jq -r '.head_sha' "$g")
