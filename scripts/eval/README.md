@@ -247,6 +247,16 @@ fixture the exact comparison had rejected. Confirmation therefore requires the c
 whitespace-equivalent line **and not also remove one**; a genuine introduction has no counterpart
 to remove.
 
+It must do so for **every line of the span**, not the first. A gold row is one claim about a run of
+lines, so evidence covering part of it is no evidence: a first line that was merely reindented
+confirms against the older commit while an adjacent line whose *interior* whitespace a later commit
+changed is walked past by `-w` and credited to that same older commit. Measured on a two-line
+JavaScript span — one commit adds `const label = "a b";`, a later one tightens it to `"ab"`, the
+fix touches both — the row was written naming a commit that never wrote the line it points at, and
+`check-gold.sh` could not object, because that commit's diff does add both lines. The interior-exact
+comparison above already rejects that line; it was simply never asked about it. One unconfirmed line
+now fails the whole row.
+
 Which way they agree depends on the file. In Python and YAML — both in the default include set —
 indentation is syntax, so a whitespace-only edit is a real edit: reindenting moves a statement
 between scopes or a key between mappings. `-w` is documented as ignoring exactly that, so on a fix

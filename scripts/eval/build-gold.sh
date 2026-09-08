@@ -234,12 +234,23 @@ blame_range() {
         | awk '/^[0-9a-f]{40} / { print $1 "\t" $2 "\t" $3 }'
 }
 
-# confirm_introduction SHA PATH TEXT -- true when SHA's own diff adds TEXT, up to whitespace.
+# confirm_introduction SHA PATH TEXT -- true when SHA's own diff adds EVERY line of TEXT, up to
+# whitespace, and removes none of them. TEXT is newline-separated: one entry per line of the span.
 #
 # This is the check that turns a blame candidate into gold: blame names the commit that last
 # touched a line, and this asserts that commit actually ADDED it. TEXT is read from the fix's
 # parent, a different revision, so the comparison is a genuine cross-check rather than a
 # restatement of what blame already said.
+#
+# EVERY line, because a gold row is a claim about its whole span and the span is a run of lines,
+# not one line. Checking only the first let a two-line row be confirmed by evidence covering half
+# of it: a first line that was merely reindented confirms against the older commit, while an
+# adjacent second line whose INTERIOR whitespace a later commit changed is walked past by `-w` and
+# attributed to that same older commit. Measured on a `.js` two-line span -- commit C adds
+# `const label = "a b";`, commit D tightens it to `"ab"`, the fix touches both lines -- the row
+# was written naming C, which never wrote the line in the form the row points at, and
+# check-gold.sh cannot object because C's diff does add both lines. The interior-exact comparison
+# below already rejects that line on its own; it simply was never asked about it.
 #
 # Whitespace-insensitive exactly where blame_range passes `-w`, because the two must agree; for a
 # whitespace-sensitive path both go exact instead, so a reindent is attributed to the commit that
@@ -289,8 +300,16 @@ confirm_introduction() {
             }
             BEGIN {
                 exact = (ENVIRON["EXACT"] == "1")
-                want = squash(ENVIRON["WANT"])
-                if (want == "") exit 1
+                # One entry per line of the span. A blank entry is unconfirmable, so it fails the
+                # whole row rather than being skipped -- `bad` rather than a bare `exit 1`,
+                # because an exit in BEGIN still runs END, whose own exit would override it.
+                n = split(ENVIRON["WANT"], raw, "\n")
+                for (i = 1; i <= n; i++) {
+                    w = squash(raw[i])
+                    if (w == "") { bad = 1; exit 1 }
+                    want[w] = 1
+                }
+                if (n == 0) { bad = 1; exit 1 }
             }
             # Position-gated exactly as removed_lines already gates its own headers, and for the
             # reason its comment gives: `+++` and `---` are file headers only BEFORE the first @@
@@ -305,9 +324,16 @@ confirm_introduction() {
             /^diff --git / { in_hunk = 0; next }
             !in_hunk && /^(--- |\+\+\+ )/ { next }
             /^@@ / { in_hunk = 1; next }
-            in_hunk && /^\+/ { if (squash(substr($0, 2)) == want) added = 1; next }
-            in_hunk && /^-/  { if (squash(substr($0, 2)) == want) removed = 1 }
-            END { exit (added && !removed) ? 0 : 1 }
+            in_hunk && /^\+/ { w = squash(substr($0, 2)); if (w in want) added[w] = 1; next }
+            in_hunk && /^-/  { w = squash(substr($0, 2)); if (w in want) removed[w] = 1 }
+            END {
+                if (bad) exit 1
+                # Every wanted line added by this commit, and none of them also removed. One
+                # unconfirmed line fails the row: a span is a single claim, so partial evidence
+                # for it is no evidence.
+                for (w in want) if (!(w in added) || (w in removed)) exit 1
+                exit 0
+            }
         '
 }
 
@@ -426,27 +452,33 @@ sort -u -t"$(printf '\t')" -k1,1 -k2,2 -k5,5 -k6,6 -k3,3n "$candidates" | awk -F
         # A gap of more than one line ends the run, as does a change of key. An exact repeat of
         # orig does neither -- it is the same line reached twice, not a new interval.
         if (k != key || $3 + 0 > ohi + 1) {
-            if (key != "") printf "%s\t%d\t%d\t%d\n", key, olo, ohi, flo
+            if (key != "") printf "%s\t%d\t%d\t%s\n", key, olo, ohi, flist
             key = k
             olo = $3 + 0
             ohi = $3 + 0
-            # PAIRED with olo, never minimised on its own. The two columns are line numbers in
-            # different revisions and blame does not guarantee they rise together: where the
-            # parent of the fix reordered lines, the smallest orig line and the smallest final
-            # line belong to DIFFERENT rows. Minimising each separately then reads the text at
-            # flo for a line the gold row does not name, so confirm_introduction validates
-            # evidence belonging to some other line. Sorting by orig puts that pairing here.
-            flo = $4 + 0
+            # EVERY paired final line, comma-joined, not just the first. Confirmation has to read
+            # the text of each line the span claims, and the two columns cannot be derived from
+            # one another (see the pairing note below), so the whole list travels with the row.
+            flist = $4 + 0
+            # Its first element stays PAIRED with olo, never minimised on its own. The two columns
+            # are line numbers in different revisions and blame does not guarantee they rise
+            # together: where the parent of the fix reordered lines, the smallest orig line and
+            # the smallest final line belong to DIFFERENT rows. Minimising each separately then
+            # reads the text at that number for a line the gold row does not name, so
+            # confirm_introduction validates evidence belonging to some other line. Sorting by
+            # orig puts that pairing here, and appending in that order keeps the rest of the list
+            # paired too.
         } else if ($3 + 0 > ohi) {
             ohi = $3 + 0
+            flist = flist "," ($4 + 0)
         }
     }
-    END { if (key != "") printf "%s\t%d\t%d\t%d\n", key, olo, ohi, flo }
+    END { if (key != "") printf "%s\t%d\t%d\t%s\n", key, olo, ohi, flist }
 ' >"$work/spans.tsv"
 
 : >"$work/gold.ndjson"
 
-while IFS=$'\t' read -r sha path fix parent lo hi flo; do
+while IFS=$'\t' read -r sha path fix parent lo hi flist; do
     [ -n "$sha" ] || continue
 
     if ! printf '%s\n' "$path" | grep -Eq -- "$include_re"; then
@@ -459,11 +491,26 @@ while IFS=$'\t' read -r sha path fix parent lo hi flo; do
         continue
     fi
 
-    # Confirm against the first line of the span as it stood at the fix's parent -- so the
-    # PARENT-relative span (flo), never the introducing-commit span (lo) that the gold row
-    # carries. Reading `${lo}p` out of `$parent:$path` picks whatever line happens to sit at
-    # that offset in a different revision of the file.
-    text=$(git_r show "$parent:$path" 2>/dev/null | sed -n "${flo}p")
+    # Confirm against EVERY line of the span as it stood at the fix's parent -- so the
+    # PARENT-relative line numbers (flist), never the introducing-commit span (lo..hi) that the
+    # gold row carries. Reading `${lo}p` out of `$parent:$path` would pick whatever line happens
+    # to sit at that offset in a different revision of the file.
+    #
+    # The blob is read once and all wanted lines pulled out of it in one pass, rather than once
+    # per line: a span may hold up to --max-span lines and this loop runs per candidate.
+    #
+    # awk exits non-zero when it printed fewer lines than were asked for, which is a span naming
+    # a line past the end of the file at that revision -- unconfirmable, and silently so if the
+    # short result were simply handed on, since confirm_introduction would then check a subset
+    # and pass. Counted with a `seen` guard so a repeated line number is asked for once.
+    text=$(git_r show "$parent:$path" 2>/dev/null | awk -v list="$flist" '
+        BEGIN {
+            n = split(list, a, ",")
+            for (i = 1; i <= n; i++) if (!(a[i] in seen)) { seen[a[i]] = 1; want[a[i] + 0] = 1; need++ }
+        }
+        (FNR in want) { print; got++ }
+        END { exit (need > 0 && got == need) ? 0 : 1 }
+    ') || text=
     if ! confirm_introduction "$sha" "$path" "$text"; then
         n_dropped_unconfirmed=$((n_dropped_unconfirmed + 1))
         continue
