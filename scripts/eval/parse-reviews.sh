@@ -89,7 +89,7 @@ function csv(s) {
 function trim(s) {
     sub(/^[ \t]+/, "", s)
     sub(/[ \t]+$/, "", s)
-    # Undo the escaped-pipe protection applied per record (see LEDGER_AWK's BEGIN). Harmless
+    # Undo the escaped-pipe protection applied per record (see LEDGER_AWK's record rule). Harmless
     # for the other programs sharing this prelude: they never introduce the sentinel, and
     # \001 is not a character a Markdown ledger can otherwise contain.
     gsub(/\001/, "|", s)
@@ -114,9 +114,32 @@ BEGIN { FS = "|"; in_table = 0 }
 # indexing does not save us here: the header row rarely contains an escape, so the columns are
 # mapped correctly and only the data rows slide. Protect the escapes before the split, and
 # restore them in trim() as each cell is read. Assigning to $0 is what forces the re-split.
+#
+# Only an ODD run of backslashes escapes the pipe that follows it. `\\|` is an escaped backslash
+# ending the cell, then a REAL delimiter; a blanket gsub(/\\\|/, ...) protects that pipe too,
+# fuses the two cells and shifts every later column by one -- the same silent mislabelling this
+# protection exists to prevent, just triggered by the opposite input. Ledger `rule` cells end in
+# a path or a regex often enough for it to matter. The escaping backslash is markup, so it is
+# dropped with the pipe it escapes; every other backslash is content and survives.
+function protect_pipes(s,   i, n, c, run, out) {
+    n = length(s)
+    run = ""
+    out = ""
+    for (i = 1; i <= n; i++) {
+        c = substr(s, i, 1)
+        if (c == "\\") { run = run c; continue }
+        if (c == "|" && length(run) % 2 == 1)
+            out = out substr(run, 1, length(run) - 1) "\001"
+        else
+            out = out run c
+        run = ""
+    }
+    return out run
+}
+
 {
-    _line = $0
-    if (gsub(/\\\|/, "\001", _line)) $0 = _line
+    _line = protect_pipes($0)
+    if (_line != $0) $0 = _line
 }
 
 function header_row(  i, name, found_id, found_status) {

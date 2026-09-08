@@ -60,6 +60,8 @@ usage: run.sh --gold '<glob>' --engine <chat> --runs <n> --out <file>
   --max-excluded  fraction of gold documents a run may lose to reviewer/judge failure
                   before it stops being measurable (default 0.15)
   --readme      rewrite this file's `baseline mean_r=` line from the measured result
+  --standards   org standards doc to forward; default is docs/standards.md at the SHA the
+                shipped workflow pins its action to, which is what production reads
   --assess      also run the reviewer's assessment pass
 
 exit status
@@ -77,6 +79,7 @@ max_spread=
 # single flaky response stays inside the gate while a systemic backend fault does not.
 max_excluded=0.15
 readme_file=
+standards_override=
 assess_flag=()
 declare -A checkouts=()
 
@@ -89,6 +92,7 @@ while [ $# -gt 0 ]; do
         --max-spread) max_spread=${2-}; shift 2 || die "--max-spread needs a value" ;;
         --max-excluded) max_excluded=${2-}; shift 2 || die "--max-excluded needs a value" ;;
         --readme) readme_file=${2-}; shift 2 || die "--readme needs a value" ;;
+        --standards) standards_override=${2-}; shift 2 || die "--standards needs a value" ;;
         --assess) assess_flag=(--assess); shift ;;
         --checkout)
             case "${2-}" in
@@ -142,13 +146,6 @@ adapter="$here/review-adapter.sh"
 judge="$here/judge.sh"
 [ -x "$adapter" ] || die "not executable: $adapter"
 [ -x "$judge" ] || die "not executable: $judge"
-
-# Same path the shipped action resolves PRT_STANDARDS_FILE to: relative to the script, in THIS
-# repository, not the reviewed checkout. Warn rather than die when it is missing -- the harness
-# is still useful without it, but not knowing it was absent is how a category of findings
-# silently stops being measured (see the forwarding below).
-standards_file="$here/../../docs/standards.md"
-[ -f "$standards_file" ] || log "warning: no standards doc at $standards_file; standards-violation findings will assess as FALSE_POSITIVE"
 
 # ---------------------------------------------------------------------------
 # gold inputs
@@ -208,6 +205,50 @@ gold_tree=$(printf '%s\n' "$gold_digests" | LC_ALL=C sort | sha256sum | cut -d' 
 
 workdir=$(mktemp -d "${TMPDIR:-/tmp}/eval-run.XXXXXX") || die "mktemp failed"
 trap 'rm -rf "$workdir"' EXIT
+
+# The standards doc, at the revision the SHIPPED workflow reads it from -- which is not this
+# working tree.
+#
+# The action resolves standards-file relative to its OWN checkout, and the workflow pins that
+# action to a SHA (.github/workflows/pr-review.yml). So production reads docs/standards.md as
+# of the pin, while an unqualified read here takes whatever is checked out, including work in
+# progress. The difference is not cosmetic: a rule absent from PROJECT STANDARDS forces every
+# finding citing it to FALSE_POSITIVE (lib/prt/model.sh), and this harness now filters those
+# before judging -- so an edit to standards.md on this branch silently moves measured recall
+# without touching the reviewer at all. Two runs meant to differ only by engine would differ by
+# their standards doc instead.
+#
+# Resolution order: --standards wins; otherwise the blob at the pinned SHA; otherwise the
+# working tree, with a warning naming what was used. Each arm logs, because "which standards
+# did that number see" is not recoverable from the output afterwards.
+repo_root="$here/../.."
+standards_file=
+if [ -n "$standards_override" ]; then
+    standards_file=$standards_override
+    [ -f "$standards_file" ] || die "no standards doc at $standards_file"
+    log "standards: $standards_file (--standards)"
+else
+    standards_pin=$(awk 'match($0, /pr-review-threads@[0-9a-f]{40}/) {
+                             print substr($0, RSTART + 18, 40); exit }' \
+                    "$repo_root/.github/workflows/pr-review.yml" 2>/dev/null)
+    if [ -n "$standards_pin" ] &&
+        git -C "$repo_root" cat-file -e "$standards_pin:docs/standards.md" 2>/dev/null; then
+        standards_file="$workdir/standards.md"
+        if git -C "$repo_root" show "$standards_pin:docs/standards.md" >"$standards_file" 2>/dev/null; then
+            log "standards: docs/standards.md at the pinned action ${standards_pin:0:8}"
+        else
+            standards_file=
+        fi
+    fi
+    if [ -z "$standards_file" ]; then
+        standards_file="$repo_root/docs/standards.md"
+        if [ -f "$standards_file" ]; then
+            log "warning: reading docs/standards.md from the working tree, not the action pin${standards_pin:+ ($standards_pin unavailable -- fetch it for a faithful measurement)}"
+        else
+            log "warning: no standards doc found; standards-violation findings will assess as FALSE_POSITIVE"
+        fi
+    fi
+fi
 
 # normalise_path DIR TARGET -- collapse TARGET, taken relative to DIR, into a plain tree path.
 # Git paths are always /-separated, never absolute and never carry a trailing slash, so plain
@@ -345,7 +386,7 @@ do_run() {
         # --src-prefix/--dst-prefix explicitly: a user's diff.noprefix=true otherwise emits
         # headers the chunker's file-boundary split cannot see, silently collapsing the whole
         # diff into one record.
-        git -C "$checkout" diff --no-color --src-prefix=a/ --dst-prefix=b/ "$base" "$head" \
+        git -C "$checkout" diff --no-color --no-ext-diff --src-prefix=a/ --dst-prefix=b/ "$base" "$head" \
             >"$diff_file" 2>/dev/null \
             || { log "cannot diff $base..$head in $checkout"; return 1; }
         [ -s "$diff_file" ] || { log "empty diff for $g"; return 1; }
