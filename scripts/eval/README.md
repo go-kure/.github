@@ -280,13 +280,21 @@ digests as the literal `none`, which is a positive statement rather than a missi
 given no `PROJECT STANDARDS` assesses every standards-violation finding as `FALSE_POSITIVE`, and
 that run must not be quietly compared against one that had the document.
 
-The same argument covers the project-context string. Production forwards a per-repository value
-into both the review and the assess prompt (the workflow's `pr_review_context` input reaches the
-script as `PRT_PROJECT_CONTEXT`), so `run.sh` takes `--context`, records `context_sha`, and
-`compare.sh` gates on it. Note that the flag is not merely optional: the adapter defaults the
-value from `PRT_PROJECT_CONTEXT` in its own environment, so `run.sh` passes `--context` on every
-invocation — with the empty string when none was given — rather than letting whatever the
-operator's shell exports enter the prompt unrecorded.
+The same argument covers the project-context string, with one extra turn. Production forwards a
+value into both the review and the assess prompt (each consumer's `pr_review_context` input reaches
+the script as `PRT_PROJECT_CONTEXT`), and that value is **per repository** — the three live
+consumers describe a Go library, a CLI package manager and this workflows repo, and none of the
+three strings would be right for the other two. So `--context` is a repeatable `repo=string`
+mapping, matching `--checkout`, applied per gold document; `context_sha` digests the whole sorted
+mapping rather than any one entry, because a single-entry digest would call two runs comparable
+while a second repository's prompt differed between them.
+
+Neither is the flag merely optional. The adapter defaults the value from `PRT_PROJECT_CONTEXT` in
+its own environment, so `run.sh` passes `--context` on every invocation — with the empty string for
+a repo the mapping does not name — rather than letting whatever the operator's shell exports enter
+the prompt unrecorded. A repo with no mapping is logged once, since not every repository a gold
+document names has a self-hosted reviewer and an empty context can be the truthful value; what is
+never acceptable is silence, because a forgotten flag reads exactly like a repo that has none.
 
 ## The reviewer is scored on what it publishes
 

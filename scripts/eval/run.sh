@@ -68,9 +68,10 @@ usage: run.sh --gold '<glob>' --engine <chat> --runs <n> --out <file>
   --readme      rewrite this file's `baseline mean_r=` line from the measured result
   --standards   org standards doc to forward; default is docs/standards.md at the SHA the
                 shipped workflow pins its action to, which is what production reads
-  --context     the per-repository project-context string production forwards as
-                PRT_PROJECT_CONTEXT; empty by default, and NEVER inherited from the
-                environment. Its digest is recorded and compare.sh gates on it
+  --context     map a gold document's `repo` to the project-context string that repository's
+                own workflow passes production as PRT_PROJECT_CONTEXT; repeatable, empty for
+                any repo not named, and NEVER inherited from the environment. The whole
+                mapping's digest is recorded and compare.sh gates on it
   --no-assess   skip the reviewer's assessment pass. Measures the review call alone, which is
                 NOT the shipped product; the result records assess:false and compare.sh
                 refuses to compare it against an assessed one
@@ -105,9 +106,14 @@ standards_override=
 # shipped pipeline.
 assess=true
 assess_flag=(--assess)
-# Not defaulted from PRT_PROJECT_CONTEXT on purpose -- see the --context forward in do_run. An
-# inherited value would enter both prompts and be recorded nowhere.
-project_context=
+# Keyed by repo, exactly like `checkouts`, because the value IS per repository: each consumer
+# passes its own `pr_review_context` to the reusable workflow, and the three live ones differ
+# (a Go library, a CLI package manager, this workflows repo). A corpus spanning two of them
+# reviewed under one string measures at least one under a prompt production never sends.
+# Never defaulted from PRT_PROJECT_CONTEXT -- see the --context forward in do_run. An inherited
+# value would enter both prompts and be recorded nowhere.
+declare -A contexts=()
+declare -A context_warned=()
 declare -A checkouts=()
 
 while [ $# -gt 0 ]; do
@@ -121,7 +127,13 @@ while [ $# -gt 0 ]; do
         --readme) readme_file=${2-}; shift 2 || die "--readme needs a value" ;;
         --standards) standards_override=${2-}; shift 2 || die "--standards needs a value" ;;
         --no-assess) assess=false; assess_flag=(); shift ;;
-        --context) project_context=${2-}; shift 2 || die "--context needs a value" ;;
+        --context)
+            case "${2-}" in
+                *=*) contexts["${2%%=*}"]="${2#*=}" ;;
+                *) die "--context wants <repo-name>=<string>, got: ${2-}" ;;
+            esac
+            shift 2 || die "--context needs a value"
+            ;;
         --checkout)
             case "${2-}" in
                 *=*) checkouts["${2%%=*}"]="${2#*=}" ;;
@@ -367,9 +379,18 @@ fi
 # over the same gold tree with different context strings are not comparable, and nothing in the
 # numbers shows it -- so it is digested here for the same reason the standards doc is. `none`
 # rather than an absent key, so an older result and an explicitly empty one stay distinguishable.
+#
+# The WHOLE mapping is digested, not one string: with a per-repo map, a digest of any single entry
+# would call two runs comparable while a second repository's prompt differed between them. Sorted
+# and NUL-delimited so the digest depends on the mapping's content alone -- not on flag order, and
+# not on a separator that could appear inside a repo name or a context string.
 context_sha=none
-if [ -n "$project_context" ]; then
-    context_sha=$(printf '%s' "$project_context" | sha256sum) || die "cannot digest --context"
+if [ "${#contexts[@]}" -gt 0 ]; then
+    context_sha=$(
+        while IFS= read -r -d '' repo; do
+            printf '%s\0%s\0' "$repo" "${contexts[$repo]}"
+        done < <(printf '%s\0' "${!contexts[@]}" | sort -z) | sha256sum
+    ) || die "cannot digest --context"
     context_sha=${context_sha%% *}
 fi
 
@@ -419,7 +440,20 @@ show_blob() {
     while [ -n "$rest" ]; do
         comp=${rest%%/*}
         if [ "$comp" = "$rest" ]; then rest=''; else rest=${rest#*/}; fi
-        { [ -n "$comp" ] && [ "$comp" != "." ]; } || continue
+        [ -n "$comp" ] || continue
+
+        if [ "$comp" = "." ]; then
+            # `.` asserts that what precedes it is a DIRECTORY, exactly as a trailing separator
+            # does one line up: the kernel's stat("real.md/.") is ENOTDIR, and production's
+            # `[ -f ]` rejects the path before reading it. Skipping every `.` unconditionally
+            # kept the already-resolved regular-file mode and then emitted that blob, so a
+            # historical link `AGENTS.md -> real.md/.` handed the reviewer a document production
+            # never opens -- the same defect as the trailing separator, one component earlier.
+            # An empty `resolved` is the repository root, which IS a directory, so a leading
+            # `./AGENTS.md` stays legal.
+            [ -z "$resolved" ] || [ "$mode" = 040000 ] || return 1
+            continue
+        fi
 
         if [ "$comp" = ".." ]; then
             # Nothing to leave means the link escapes the repository root; leaving something that
@@ -575,13 +609,28 @@ do_run() {
         # assessed away and scored as a miss against a reviewer that named it correctly.
         [ -f "$standards_file" ] && context_flag+=(--standards "$standards_file")
 
+        # This document's OWN repository's context, not a run-wide one: production gives each
+        # consumer the string that consumer passes to the reusable workflow, so a corpus spanning
+        # two of them must too.
+        #
         # ALWAYS passed, even empty. The adapter defaults this from PRT_PROJECT_CONTEXT
         # (review-adapter.sh:69), so leaving it off does not mean "no context" -- it means
         # whatever the operator's shell happens to export, entering both the review and the
         # assess prompt (pr-review-threads.sh:329,518) and changing the findings without
         # appearing anywhere in the result. Passing it explicitly is what makes context_sha
-        # below a true statement about the run rather than a guess.
-        context_flag+=(--context "$project_context")
+        # above a true statement about the run rather than a guess.
+        #
+        # An unmapped repo is logged rather than fatal: not every repo a gold document names has
+        # a self-hosted reviewer, so an empty context can be the truthful value. Silence is what
+        # is not acceptable -- a forgotten --context reads exactly like a repo that has none.
+        # Once per repo for the whole measurement, not once per document per run: a 12-document
+        # corpus over 3 runs would otherwise print the same line 36 times, which is how a real
+        # warning stops being read.
+        if [ -z "${contexts[$repo]+set}" ] && [ -z "${context_warned[$repo]+set}" ]; then
+            context_warned[$repo]=1
+            log "no --context for repo $repo; reviewing it with an empty project context"
+        fi
+        context_flag+=(--context "${contexts[$repo]:-}")
 
         findings_file="$workdir/run$run_idx-$(basename "$g" .json).findings.json"
         child_rc=0
