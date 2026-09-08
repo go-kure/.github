@@ -278,6 +278,20 @@ if [ "$n_chunk_ok" -eq 0 ]; then
     exit 1
 fi
 
+# Re-assign ordinals across the WHOLE review, the way the shipped reviewer does. In the loop
+# above the assignment is per chunk, because the assess round-trip needs a fingerprint to key
+# its verdicts on before the next chunk exists. Left at that, an oversized file split across
+# chunks yields two findings with the same file/category carrying the same unsuffixed fp and
+# `collision: false`, while production -- which aggregates first and assigns once -- gives them
+# distinct ordinals and flags the collision. Identity is what the reconcile table matches
+# threads on, so a harness that assigns it differently is not measuring the shipped pipeline.
+#
+# Dropping fp/collision first is what makes this a re-assignment rather than a no-op: the
+# function recomputes fp_base from file and category and re-groups, so it is safe to re-run,
+# and any verdict joined in above rides along on the row untouched.
+all_findings=$(prt_assign_ordinals "$(jq -c 'map(del(.fp, .collision))' <<<"$all_findings")") \
+    || die "cannot assign fingerprints across the aggregated review"
+
 to_json_array() {
     local file="$1"
     [ -s "$file" ] || { printf '[]'; return 0; }
@@ -287,13 +301,24 @@ to_json_array() {
 incomplete=$(to_json_array "${PRT_INCOMPLETE_FILE:-/dev/null}")
 degraded=$(to_json_array "${PRT_DEGRADED_FILE:-/dev/null}")
 
+# chunks_failed is the caller's exclusion signal, and it must be a count rather than the
+# degraded list's length: `degraded` also collects malformed-findings-dropped notes from chunks
+# that otherwise succeeded, so its length answers "was anything imperfect", not "did part of
+# this diff go unreviewed". Only the second decides whether the document's gold rows can be
+# scored -- a gold row sitting in a chunk the model never answered for is a reviewer that did
+# not run, not a reviewer that missed something, and scoring it as a miss biases recall down by
+# exactly the failure rate the harness exists to tolerate. Exiting 1 here would be wrong the
+# other way: the findings from the chunks that DID succeed are real, and the caller decides.
 result=$(jq -n \
     --arg engine chat \
     --argjson chunks "$chunk_count" \
+    --argjson chunks_ok "$n_chunk_ok" \
+    --argjson chunks_failed "$n_chunk_failed" \
     --argjson findings "$all_findings" \
     --argjson incomplete "$incomplete" \
     --argjson degraded "$degraded" \
-    '{engine: $engine, chunks: $chunks, findings: $findings,
+    '{engine: $engine, chunks: $chunks, chunks_ok: $chunks_ok,
+      chunks_failed: $chunks_failed, findings: $findings,
       incomplete: $incomplete, degraded: $degraded}') \
     || die "cannot build result JSON"
 

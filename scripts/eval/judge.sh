@@ -24,7 +24,7 @@
 #
 # Input:  --findings  the adapter's document ({findings: [...]})
 #         --gold      one gold document ({repo, pr, head_sha, base_sha, gold: [...]})
-# Output: {gold_total, matched, recall, uncredited, pairs_judged, matches: [...]}
+# Output: {gold_total, matched, recall, uncredited, judge_calls, matches: [...]}
 #
 # `uncredited` is a COUNT OF FINDINGS NOT CREDITED WITH A MATCH, and it is deliberately not
 # called false positives. The gold set is mined from commits someone eventually fixed, so a
@@ -197,7 +197,12 @@ log "$gold_total gold rows, $(jq '.findings | length' "$findings_file") findings
 matches='[]'
 matched_gold=''
 matched_findings=''
-pairs_judged=0
+# Model calls, not candidate pairs -- the two differ and the name has to say which. A pair whose
+# first-order verdict is true costs two calls (the position swap below), a false one costs one,
+# so this counter reads 2 or 1 for the same single pair depending on the answer. As
+# `pairs_judged` it looked like a workload constant while actually varying with the verdict, and
+# anyone dividing cost by it got a number that moved with the reviewer's quality.
+judge_calls=0
 call_failed=0
 
 while IFS=$'\t' read -r gi fi_idx; do
@@ -220,11 +225,11 @@ while IFS=$'\t' read -r gi fi_idx; do
     # Both orders. Order 1 first: if it says no, order 2 cannot change the outcome (both
     # must agree), so the second call is skipped -- half the judge cost on non-matches.
     v1=$(judge_once "$finding_text" "$gold_text") || { call_failed=1; break; }
-    pairs_judged=$((pairs_judged + 1))
+    judge_calls=$((judge_calls + 1))
     verdict=false
     if [ "$v1" = "true" ]; then
         v2=$(judge_once "$gold_text" "$finding_text") || { call_failed=1; break; }
-        pairs_judged=$((pairs_judged + 1))
+        judge_calls=$((judge_calls + 1))
         [ "$v2" = "true" ] && verdict=true
     fi
 
@@ -265,12 +270,12 @@ result=$(jq -n \
     --argjson matched "$n_matched" \
     --argjson findings "$n_findings" \
     --argjson uncredited "$n_uncredited" \
-    --argjson pairs "$pairs_judged" \
+    --argjson pairs "$judge_calls" \
     --argjson matches "$matches" \
     --arg judge_model "$judge_model" \
     '{gold_total: $gold_total, findings: $findings, matched: $matched,
       recall: (if $gold_total == 0 then null else ($matched / $gold_total) end),
-      uncredited: $uncredited, pairs_judged: $pairs,
+      uncredited: $uncredited, judge_calls: $pairs,
       judge_model_requested: $judge_model, matches: $matches}') \
     || die "cannot build result JSON"
 

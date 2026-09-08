@@ -37,7 +37,39 @@ gates nothing, so the honest name is the cheaper correct answer.
 | `judge.sh` | Decides which gold rows a set of findings caught |
 | `run.sh` | Repeats the whole measurement N times and reports mean recall and spread |
 | `compare.sh` | Decides whether one result beats another by more than their combined noise |
+| `check-gold.sh` | Asserts a corpus is measurable before a run is spent on it |
 | `parse-reviews.sh` | Turns a corpus of adjudicated review ledgers into one CSV |
+
+## The reviewer must never be told the answer
+
+A gold document records both the **introducing** commit and the **fix** that repaired it, and
+only one of them may reach the reviewer.
+
+`intro_title` is the introducing commit's own subject and is what `run.sh` passes as the review
+title — what a reviewer of that change would genuinely have seen. `note` is the fix commit's
+subject and stays server-side, for the judge and for whoever reads the corpus. Because the mining
+selects on `--grep '^fix'`, `note` names the defect by construction: `fix(nats):
+reply.replyWithError not s.replyWithError in bootstrap.render schema-version rejection` is a real
+one. Passing it as the title of the pre-fix diff measures how well a model can act on a hint.
+
+This is not hypothetical — the harness did exactly that on its first full run, on all 43
+documents, and the resulting baseline was withdrawn. A document with no `intro_title` (any corpus
+built before the field existed) gets a neutral constant, never the note.
+
+## Run `check-gold.sh` before spending a run
+
+```sh
+check-gold.sh --gold 'eval/gold/*.json' --checkout go-kure/kure=<path>
+```
+
+It asserts every row is `confirmed`, every document has an `intro_title`, and — the one that
+matters — that **every gold row's line falls inside a hunk the reviewed diff actually adds**.
+
+A row pointing outside that diff is a defect no reviewer could ever match, and it is invisible
+in the output: recall simply comes out low, which is what a reviewer under test is expected to
+produce anyway. On the first corpus this harness built, **26 of 63 rows (41%) pointed outside
+the reviewed diff** because blame's post-fix line number was stored where the introducing
+commit's was needed. Both line numbers are now carried separately.
 
 ## Why the gold set needs confirming
 
@@ -88,6 +120,15 @@ subset run: of 12 documents, one came back with a finding the normalizer rejecte
 its connection mid-run, and each aborted the whole three-run measurement. Over 43 documents
 times 3 runs, the chance of at least one such event approaches certainty, so an aborting
 harness would never produce the number it was built for.
+
+**Partial failure counts as failure.** A diff split into several chunks can have one chunk come
+back unusable while another succeeds; the adapter still exits 0, because the findings it did get
+are real. But the document's gold rows are judged as a whole, so a row sitting in the chunk that
+never got an answer would be scored as a miss by a reviewer that never read it — the same error
+one level down, biased by exactly the failure rate this section exists to tolerate. The adapter
+reports `chunks_failed` and `run.sh` excludes any document with a non-zero count. Restricting the
+denominator to the reviewed chunks would be better and is not available: chunks are byte ranges
+of a diff, gold rows are file/line pairs in a revision, and nothing maps one to the other.
 
 Such a document is **excluded from both sides of the fraction**, never scored as a miss.
 Counting its gold rows against the reviewer would repeat the error the adapter refuses to make
