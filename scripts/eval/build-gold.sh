@@ -292,9 +292,21 @@ confirm_introduction() {
                 want = squash(ENVIRON["WANT"])
                 if (want == "") exit 1
             }
-            /^(\+\+\+|---)/ { next }
-            /^\+/ { if (squash(substr($0, 2)) == want) added = 1; next }
-            /^-/  { if (squash(substr($0, 2)) == want) removed = 1 }
+            # Position-gated exactly as removed_lines already gates its own headers, and for the
+            # reason its comment gives: `+++` and `---` are file headers only BEFORE the first @@
+            # of a file. Matching them anywhere swallowed body lines that merely begin that way --
+            # a C or C++ `++i;` is added as `+++i;` and `--i;` is removed as `---i;`, and those
+            # extensions are in the default include set. The added case never set `added`, so a
+            # valid pre-increment defect was dropped as unconfirmed and vanished from the gold set;
+            # the removed case never set `removed`, which is worse, because `added && !removed`
+            # then confirms a line the same commit also deleted. A removed line reading `-- note`
+            # renders as `--- note`, so requiring the trailing space of a header is necessary but
+            # not sufficient -- hence in_hunk, the same fix already applied to the sibling parser.
+            /^diff --git / { in_hunk = 0; next }
+            !in_hunk && /^(--- |\+\+\+ )/ { next }
+            /^@@ / { in_hunk = 1; next }
+            in_hunk && /^\+/ { if (squash(substr($0, 2)) == want) added = 1; next }
+            in_hunk && /^-/  { if (squash(substr($0, 2)) == want) removed = 1 }
             END { exit (added && !removed) ? 0 : 1 }
         '
 }

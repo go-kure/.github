@@ -352,9 +352,14 @@ when both results measured the same gold tree.
 # 3. measure the shipped reviewer, three times, writing the baseline
 #    (both model passes run by default; --no-assess measures the review call alone, which is
 #     not the shipped product, and compare.sh refuses to compare the two)
+#    --context is NOT optional dressing: copy the string verbatim out of that repository's own
+#    .github/workflows/pr-review.yml (`pr_review_context:`), because production puts it in both
+#    prompts. Omit it and the recipe measures a prompt production never sends. One per repo the
+#    corpus spans; run.sh logs any repo left unmapped.
 PRT_PROXY_URL=http://localhost:3456 \
 ./run.sh --gold "$EVAL/gold/*.json" --engine chat --runs 3 \
          --checkout group/that-repo=../../that-repo \
+         --context "group/that-repo=<pr_review_context from that repo's workflow>" \
          --max-spread 0.05 --out "$EVAL/baseline.json" --readme "$EVAL/README.md"
 
 # 4. later, compare a candidate reviewer against it

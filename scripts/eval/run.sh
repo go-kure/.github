@@ -425,6 +425,24 @@ fi
 # Bounded rather than recursive: a symlink cycle in a historical tree would otherwise hang the
 # run, and no legitimate case needs more than a hop or two. Returns 1 if the path does not
 # resolve to a regular blob, leaving the caller to treat the context as absent.
+# is_traversable MODE -- true when a `.` or `..` may step through a component of this mode.
+#
+# A tree, obviously. A GITLINK (160000) too, and that is the non-obvious half: an uninitialised
+# submodule is still a real, empty DIRECTORY in a working tree -- git creates it during checkout
+# -- so production's `cat sub/../real.md` reads the file (verified: `[ -f sub/../real.md ]` is
+# true in a fresh clone with the submodule unfetched, which is what actions/checkout produces by
+# default). Rejecting 160000 here would drop context the shipped reviewer receives, which is the
+# same silent divergence the `.` and trailing-separator checks exist to close, in the opposite
+# direction. Traversal only: the final-mode test below still admits regular blobs alone, so a
+# gitlink named AS the context file remains absent -- correctly, since its contents are not in
+# this tree and the checked-out directory is empty.
+is_traversable() {
+    case "$1" in
+        040000 | 160000) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 show_blob() {
     local checkout="$1" rev="$2" path="$3"
     local hops=0 mode='' target comp parent resolved='' rest="$path"
@@ -451,7 +469,7 @@ show_blob() {
             # never opens -- the same defect as the trailing separator, one component earlier.
             # An empty `resolved` is the repository root, which IS a directory, so a leading
             # `./AGENTS.md` stays legal.
-            [ -z "$resolved" ] || [ "$mode" = 040000 ] || return 1
+            [ -z "$resolved" ] || is_traversable "$mode" || return 1
             continue
         fi
 
@@ -460,7 +478,7 @@ show_blob() {
             # is not a tree is the kernel's ENOTDIR. `mode` is the component just resolved, so it
             # is set whenever `resolved` is non-empty.
             [ -n "$resolved" ] || return 1
-            [ "$mode" = 040000 ] || return 1
+            is_traversable "$mode" || return 1
             if [ "${resolved%/*}" = "$resolved" ]; then resolved=''; else resolved=${resolved%/*}; fi
             mode=040000
             continue
