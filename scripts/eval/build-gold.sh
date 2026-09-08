@@ -159,6 +159,21 @@ repo_docs() {
         done
 }
 
+# Everything below scopes by `.repo`, so a document that cannot state one is invisible to all of
+# it: the dirty check does not see it, --replace does not sweep it, and the build ends "wrote N
+# documents" exit 0 over a directory run.sh then refuses to read (it globs every *.json and
+# aborts on the first it cannot parse). A successful-looking rebuild producing an unusable
+# corpus is the one outcome worth a refusal, so identify the whole directory before mining
+# rather than discovering it at the swap.
+#
+# Before the mining, not after: the alternative wastes a full history sweep to arrive at the
+# same refusal. The file is preserved either way -- the caller is told to remove or repair it,
+# because this script does not delete what it cannot identify.
+while IFS= read -r -d '' f; do
+    jq -e '(.repo | type) == "string" and (.repo | length) > 0' "$f" >/dev/null 2>&1 ||
+        die "$f carries no readable .repo; every document in $out_dir must name its repository -- remove or repair that one, then re-run"
+done < <(find -H "$out_dir" -maxdepth 1 -name '*.json' -print0)
+
 out_dir_dirty=false
 if [ -n "$(repo_docs | tr -d '\0')" ]; then
     [ "$replace" = true ] || die "$out_dir already holds gold documents for $repo_name; pass --replace to rebuild them, or use an empty directory"
@@ -635,11 +650,12 @@ done < <(jq -s -c '
 #
 # Checked here rather than at the top because the staged names are not known until the emission
 # loop has run; nothing has been touched yet either way.
-# The unreadable case gets its own message. It is the same refusal -- this script does not
-# delete what it cannot identify, here any more than in repo_docs -- but the remedy is the
-# opposite one, and a collision message would send the caller to rename a repository or split
-# the corpus when what is actually there is one corrupt file to remove. Refusing with the wrong
-# reason is worse than refusing: it is a refusal the caller cannot act on.
+# The unreadable case keeps its own message even though the preflight at the top now refuses
+# every unidentifiable document before mining. That preflight makes this branch reachable only
+# for a file that appeared during the run; the flock rules out another builder, but not a human.
+# Kept because the remedy is the opposite one: a collision message would send the caller to
+# rename a repository or split the corpus when what is there is one corrupt file to remove, and
+# a refusal the caller cannot act on is worse than the refusal.
 for n in "${staged_names[@]}"; do
     [ -e "$out_dir/$n" ] || continue
     owner=$(jq -r '.repo // empty' "$out_dir/$n" 2>/dev/null)
