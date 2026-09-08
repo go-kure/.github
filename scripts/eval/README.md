@@ -359,9 +359,17 @@ candidate that cannot answer on the hardest documents is not scored 0 on them, i
 asked. A baseline at 70/100 and a candidate that dropped those 15 rows and scored 70/85 read as
 0.70 against 0.82, a 0.12 "win" that is entirely the shrunken denominator, and both can have zero
 spread. `--max-excluded` does not close this: it caps how much of the corpus one run may drop, not
-whether two runs dropped the same part. So `run.sh` records `excluded_docs` — the sorted union
-over its runs of the documents it did not measure — and `compare.sh` refuses when the two sets
-differ.
+whether two runs dropped the same part. So `run.sh` records `excluded_per_run` — the documents it
+did not measure, per repetition — and `compare.sh` refuses when the two do not match.
+
+**Per repetition, not merged across them.** `mean_r` is the mean of `matched/denom` over the runs,
+so what has to match is the multiset of per-run denominators. A union cannot express that: a
+baseline that dropped one hard document in a single repetition of three and a candidate that
+dropped it in all three share the identical union, while the candidate's mean is taken over two
+more shrunken denominators — the same inflated recall, one level down. The comparison sorts within
+each run and across runs, so it is insensitive to visit order and to which repetition dropped what,
+and sensitive only to how many did. `excluded_docs` is kept alongside as the readable union; it is
+not what the gate reads.
 
 ## Typical use
 
