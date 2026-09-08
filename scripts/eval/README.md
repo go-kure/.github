@@ -56,6 +56,26 @@ This is not hypothetical — the harness did exactly that on its first full run,
 documents, and the resulting baseline was withdrawn. A document with no `intro_title` (any corpus
 built before the field existed) gets a neutral constant, never the note.
 
+## The standards doc is read at the revision production reads it at
+
+`PROJECT STANDARDS` is part of the reviewer's system prompt, and a rule that is absent from it
+forces every finding citing that rule to `FALSE_POSITIVE` (`lib/prt/model.sh:253-256`). So the
+revision of `docs/standards.md` the harness forwards is not a detail — it moves recall, silently,
+through the publication filter below.
+
+Production does not read the working tree. `pr-review.yml` pins the composite action to a SHA and
+the action resolves `standards-file` inside its own pinned checkout (`action.yml:72-78`), so the
+reviewer under measurement sees `docs/standards.md` **as of that pin**, not as of your branch.
+`run.sh` resolves it the same way, in this order:
+
+1. `--standards <path>` if given (an explicit A/B of a proposed standards change);
+2. `docs/standards.md` at the SHA `.github/workflows/pr-review.yml` pins its action to, read out
+   of git rather than the tree;
+3. the working tree's copy, with a warning — the fallback when the pinned commit is not fetched.
+
+A measurement taken under 3 is not comparable to one taken under 2 whenever the two differ. The
+log line says which one ran; record it beside the number.
+
 ## Run `check-gold.sh` before spending a run
 
 ```sh
