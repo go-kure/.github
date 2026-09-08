@@ -130,6 +130,37 @@ assert_eq "assess: verdict joined by fp" "FALSE_POSITIVE" \
   "$(jq -r '.findings[0].verdict' <<<"$assessed")"
 assert_eq "assess: two proxy calls made" "2" "$(cat "$STUB_DIR/calls")"
 
+# --- an unparseable assessment is retried once, exactly as production does ---
+#
+# The asymmetry with the review call above is deliberate and argued in the adapter: a lost
+# review response lowers recall, which the reported spread exposes, while a lost assessment
+# leaves its findings unverdicted -- and an unverdicted finding survives run.sh's
+# FALSE_POSITIVE filter, so recall goes UP with nothing to announce it. Without this retry the
+# harness credits findings the shipped two-pass pipeline suppresses.
+reset_stub
+printf '%s' "$REVIEW_JSON" > "$STUB_DIR/reply-1"
+printf 'The assessment is: it all looks fine to me.\n' > "$STUB_DIR/reply-2"
+jq -nc --arg fp "$fp" \
+  '{assessments: [{fp: $fp, verdict: "FALSE_POSITIVE", reasoning: "recovered on retry"}]}' \
+  > "$STUB_DIR/reply-3"
+retried="$(run_adapter --assess)"
+assert_eq "assess retry: verdict recovered on the second call" "FALSE_POSITIVE" \
+  "$(jq -r '.findings[0].verdict' <<<"$retried")"
+assert_eq "assess retry: three proxy calls made" "3" "$(cat "$STUB_DIR/calls")"
+
+# Bounded to one, as production bounds it: a second unparseable body leaves the finding
+# unverdicted rather than calling again.
+reset_stub
+printf '%s' "$REVIEW_JSON" > "$STUB_DIR/reply-1"
+printf 'still not JSON\n' > "$STUB_DIR/reply-2"
+printf 'still not JSON either\n' > "$STUB_DIR/reply-3"
+unverdicted="$(run_adapter --assess)"
+assert_eq "assess retry: bounded to one" "3" "$(cat "$STUB_DIR/calls")"
+assert_eq "assess retry: verdict stays null after the bound" "null" \
+  "$(jq -r '.findings[0].verdict' <<<"$unverdicted")"
+assert_eq "assess retry: the exhausted bound is recorded as degradation" "true" \
+  "$(jq -r '[.degraded[] | test("after retry")] | any' <<<"$unverdicted")"
+
 # --- prose-wrapped JSON is salvaged, not lost ---
 reset_stub
 printf 'Here is my review:\n%s\nHope that helps.\n' "$REVIEW_JSON" > "$STUB_DIR/reply-1"
