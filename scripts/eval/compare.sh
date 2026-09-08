@@ -76,6 +76,16 @@ fi
 # (`pr-review-threads.sh:507-518`) and never publishes a FALSE_POSITIVE, so an unassessed run
 # credits findings the shipped pipeline withdraws -- a strictly higher recall for the same
 # reviewer. Comparing one against an assessed run reads that gap as an engine difference.
+# Same argument one input further along: production forwards a per-repository project-context
+# string into both model calls (`action.yml:105` -> PRT_PROJECT_CONTEXT), so two runs given
+# different context strings were given different prompts.
+b_ctx=$(jq -r '.context_sha // "unknown"' "$baseline")
+c_ctx=$(jq -r '.context_sha // "unknown"' "$candidate")
+if [ "$b_ctx" != "$c_ctx" ]; then
+    die "different project contexts (${b_ctx:0:12} vs ${c_ctx:0:12}); these results are not comparable"
+fi
+[ "$b_ctx" != "unknown" ] || die "context_sha is missing from at least one result; re-measure with a run.sh that records it"
+
 b_assess=$(jq -r 'if has("assess") then (.assess | tostring) else "unknown" end' "$baseline")
 c_assess=$(jq -r 'if has("assess") then (.assess | tostring) else "unknown" end' "$candidate")
 if [ "$b_assess" != "$c_assess" ]; then
