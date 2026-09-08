@@ -22,7 +22,11 @@
 #          --checkout <repo-name>=<path> [--readme <file>] [--assess]
 #
 # Per-run stdout is one line:
-#   run=N R=<recall> matched=<n>/<denominator> uncredited=<n> excluded=<n>/<documents>
+#   run=N R=<recall> matched=<n>/<denom> uncredited=<n> excluded=<n>/<docs> docs=<n>/<rows> rows
+#
+# Both exclusion units are printed because they are not interchangeable: exclusion happens per
+# document, but --max-excluded gates the row fraction, which is the one that bounds how much of
+# the corpus the recall actually describes.
 #
 # The denominator is the gold rows of the documents that RETURNED a verdict this run, not the
 # whole gold set. A document the reviewer or judge could not produce a usable answer for is
@@ -57,8 +61,10 @@ usage: run.sh --gold '<glob>' --engine <chat> --runs <n> --out <file>
   --checkout    map a gold document's `repo` to a local clone; repeatable
   --out         write the summary JSON here
   --max-spread  refuse (exit 3) when max(R) - min(R) exceeds this
-  --max-excluded  fraction of gold documents a run may lose to reviewer/judge failure
-                  before it stops being measurable (default 0.15)
+  --max-excluded  fraction of gold ROWS a run may lose to reviewer/judge failure before it
+                  stops being measurable (default 0.15). Rows, not documents: exclusion
+                  happens per document, but documents carry between one and a dozen rows
+                  each, so only a row fraction bounds how much of the corpus is lost.
   --readme      rewrite this file's `baseline mean_r=` line from the measured result
   --standards   org standards doc to forward; default is docs/standards.md at the SHA the
                 shipped workflow pins its action to, which is what production reads
@@ -74,9 +80,14 @@ engine=chat
 runs=0
 out_file=
 max_spread=
-# 0.15 is a ceiling on how much of the gold set may vanish before a run stops describing it,
-# not a target. Set from the first live subset: 1 document of 12 excluded is 0.083, so a
-# single flaky response stays inside the gate while a systemic backend fault does not.
+# 0.15 is a ceiling on how much of the gold set may vanish before a run stops describing it, not
+# a target, and it is read as a fraction of gold ROWS (see the gate below). Its origin is the
+# first live subset, where one document of 12 was excluded -- 0.083 of the documents, comfortably
+# inside the ceiling, which is the shape wanted: one flaky response passes, a systemic backend
+# fault does not. That event's ROW fraction was never recorded, so this default is inherited
+# rather than re-derived; re-measure it once a run reports excluded_rows_max over a full corpus.
+# Carried across because a fat document is worth several thin ones, so if the two fractions
+# diverge here the row one is the larger, and inheriting it errs toward refusing a run.
 max_excluded=0.15
 readme_file=
 standards_override=
@@ -139,7 +150,7 @@ fi
 
 require_number --max-excluded "$max_excluded"
 jq -e -n --argjson m "$max_excluded" '$m >= 0 and $m <= 1' >/dev/null \
-    || die "--max-excluded is a fraction of the gold documents, so it must be within 0..1 (got $max_excluded)"
+    || die "--max-excluded is a fraction of the gold rows, so it must be within 0..1 (got $max_excluded)"
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd) || die "cannot resolve script dir"
 adapter="$here/review-adapter.sh"
