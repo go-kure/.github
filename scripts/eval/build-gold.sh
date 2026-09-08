@@ -189,6 +189,19 @@ removed_lines() {
         '
 }
 
+# ws_sensitive PATH -- true when a whitespace-only edit to PATH can change what it means.
+#
+# Indentation is syntax in these formats, so "whitespace-only" does not imply "harmless" the way
+# it does in a braces-and-semicolons language: reindenting a Python block moves statements between
+# scopes, and reindenting a YAML key moves it between mappings. Both extensions are in the default
+# include set (see include_re), so this is a shape the corpus really can contain.
+ws_sensitive() {
+    case "$1" in
+        *.py | *.yaml | *.yml) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 # blame_range PARENT PATH START END -- emit "sha<TAB>orig_lineno<TAB>final_lineno" per line.
 #
 # Both numbers are load-bearing and they are not interchangeable. A porcelain header reads
@@ -205,9 +218,19 @@ removed_lines() {
 # tests for. The result is a gold row accusing an innocent formatting change, and a harness
 # reviewing a whitespace diff for a defect it does not contain. `-w` walks through to the real
 # introduction instead.
+#
+# Except where whitespace is semantic. There `-w` walks past the commit that BROKE the file: a fix
+# repairing an indentation bug in Python or YAML has an introducing commit whose only change was
+# whitespace, and `-w` is documented as ignoring exactly that ("ignore whitespace differences",
+# `git blame -h`). Blame then names an older revision, the row's head_sha points at a diff from
+# before the defect existed, and check-gold.sh cannot tell -- the span really is inside that older
+# diff. For those formats the attribution stays exact, and confirm_introduction matches it. The
+# two settings must always agree about whitespace; which way they agree is what varies.
 blame_range() {
     local parent="$1" path="$2" start="$3" end="$4"
-    git_r blame --porcelain -w --no-textconv -L "$start,$end" "$parent" -- "$path" 2>/dev/null \
+    local wflag=(-w)
+    ws_sensitive "$path" && wflag=()
+    git_r blame --porcelain "${wflag[@]}" --no-textconv -L "$start,$end" "$parent" -- "$path" 2>/dev/null \
         | awk '/^[0-9a-f]{40} / { print $1 "\t" $2 "\t" $3 }'
 }
 
@@ -218,7 +241,9 @@ blame_range() {
 # parent, a different revision, so the comparison is a genuine cross-check rather than a
 # restatement of what blame already said.
 #
-# Whitespace-insensitive, because blame_range above passes `-w` and the two must agree. When a
+# Whitespace-insensitive exactly where blame_range passes `-w`, because the two must agree; for a
+# whitespace-sensitive path both go exact instead, so a reindent is attributed to the commit that
+# performed it rather than walked past. When a
 # line is re-indented between its introduction and the fix, `-w` correctly walks past the
 # formatting commit to the real introducer -- but that introducer's diff contains the
 # PRE-reindent spelling, while TEXT carries the post-reindent one. An exact comparison then
@@ -239,10 +264,16 @@ blame_range() {
 confirm_introduction() {
     local sha="$1" path="$2" text="$3"
     [ -n "$text" ] || return 1
+    local exact=0
+    ws_sensitive "$path" && exact=1
     git_r show --format= --unified=0 --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ "$sha" -- "$path" 2>/dev/null \
-        | WANT="$text" awk '
-            function squash(s) { gsub(/[ \t]+/, "", s); return s }
-            BEGIN { want = squash(ENVIRON["WANT"]); if (want == "") exit 1 }
+        | WANT="$text" EXACT="$exact" awk '
+            function squash(s) { if (exact) return s; gsub(/[ \t]+/, "", s); return s }
+            BEGIN {
+                exact = (ENVIRON["EXACT"] == "1")
+                want = squash(ENVIRON["WANT"])
+                if (want == "") exit 1
+            }
             /^(\+\+\+|---)/ { next }
             /^\+/ { if (squash(substr($0, 2)) == want) added = 1; next }
             /^-/  { if (squash(substr($0, 2)) == want) removed = 1 }

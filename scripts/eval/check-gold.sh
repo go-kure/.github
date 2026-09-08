@@ -128,7 +128,12 @@ for g in "${gold_files[@]}"; do
         continue
     fi
 
-    if ! jq -e '(.intro_title // "") != ""' "$g" >/dev/null 2>&1; then
+    # Type, not just inequality with "". `0`, `[]` and `{}` are all `!= ""` in jq, so a document
+    # carrying one passes a bare emptiness test and run.sh then forwards a non-string as the
+    # review title -- a prompt without the introducing commit's subject, measured against rows
+    # whose prompts have one. Same class as the span check below: build-gold.sh cannot emit it,
+    # a hand-edited or externally generated corpus can, and nothing else looks.
+    if ! jq -e '(.intro_title | type) == "string" and (.intro_title | length) > 0' "$g" >/dev/null 2>&1; then
         printf 'no intro_title (run.sh would review it under a neutral title): %s\n' "$g"
         violations=$((violations + 1))
     fi
