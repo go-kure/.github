@@ -298,6 +298,39 @@ idx="$(prt_build_line_index "$deleted_fixture")"
 assert_eq "line index: deleted file contributes no entry at all" "null" "$(jq -r '."gone.go" // "null" | if type=="array" then "present" else "null" end' <<< "$idx")"
 rm -f "$deleted_fixture"
 
+# A "+++ " line inside a hunk body is content (someone added a line whose own
+# text begins "++ "), not a file header. Two files, because the second one is
+# what exercises the `diff --git` reset: drop that rule and in_hunk stays 1
+# from doc.md, so second.md's own header is ignored and its lines land under
+# doc.md. go-kure/.github#163.
+header_body_fixture="$(mktemp)"
+cat > "$header_body_fixture" <<'EOF'
+diff --git a/doc.md b/doc.md
+index 1111111..2222222 100644
+--- a/doc.md
++++ b/doc.md
+@@ -1,2 +1,4 @@
+ one
++++ added marker
++real line
+ two
+diff --git a/second.md b/second.md
+index 3333333..4444444 100644
+--- a/second.md
++++ b/second.md
+@@ -5,1 +5,2 @@
+ ctx at 5
++added at 6
+EOF
+idx="$(prt_build_line_index "$header_body_fixture")"
+assert_eq "line index: a '+++ ' body line is content, not a header" \
+  "[1,2,3,4]" "$(jq -c '."doc.md" // []' <<< "$idx")"
+assert_eq "line index: a '+++ ' body line mints no phantom path" \
+  "false" "$(jq '(keys | index("added")) != null' <<< "$idx")"
+assert_eq "line index: the file after such a hunk keeps its own path" \
+  "[5,6]" "$(jq -c '."second.md" // []' <<< "$idx")"
+rm -f "$header_body_fixture"
+
 # ============================================================ diff chunking
 chunk_dir="$(mktemp -d)"
 small_diff="$(mktemp)"
