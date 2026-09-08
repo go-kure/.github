@@ -143,6 +143,13 @@ judge="$here/judge.sh"
 [ -x "$adapter" ] || die "not executable: $adapter"
 [ -x "$judge" ] || die "not executable: $judge"
 
+# Same path the shipped action resolves PRT_STANDARDS_FILE to: relative to the script, in THIS
+# repository, not the reviewed checkout. Warn rather than die when it is missing -- the harness
+# is still useful without it, but not knowing it was absent is how a category of findings
+# silently stops being measured (see the forwarding below).
+standards_file="$here/../../docs/standards.md"
+[ -f "$standards_file" ] || log "warning: no standards doc at $standards_file; standards-violation findings will assess as FALSE_POSITIVE"
+
 # ---------------------------------------------------------------------------
 # gold inputs
 # ---------------------------------------------------------------------------
@@ -192,6 +199,51 @@ gold_tree=$(
 
 workdir=$(mktemp -d "${TMPDIR:-/tmp}/eval-run.XXXXXX") || die "mktemp failed"
 trap 'rm -rf "$workdir"' EXIT
+
+# show_blob CHECKOUT REV PATH -- print PATH's contents at REV, following in-tree symlinks.
+#
+# `git show <rev>:<path>` on a symlink prints the LINK TARGET, not the file: a repository whose
+# .claude/CLAUDE.md points at ../AGENTS.md yields the literal string "../AGENTS.md" (verified).
+# Production reads the working tree with `cat`, which follows the link, so without this the
+# harness feeds a one-line path where the shipped reviewer gets a whole standards document --
+# and it fails silently, because a 12-byte context file is still a context file.
+#
+# Bounded rather than recursive: a symlink cycle in a historical tree would otherwise hang the
+# run, and no legitimate case needs more than a hop or two. Returns 1 if the path does not
+# resolve to a regular blob, leaving the caller to treat the context as absent.
+show_blob() {
+    local checkout="$1" rev="$2" path="$3"
+    local hops=0 mode target dir
+
+    while [ "$hops" -lt 4 ]; do
+        mode=$(git -C "$checkout" ls-tree "$rev" -- "$path" 2>/dev/null | awk '{print $1; exit}')
+        [ -n "$mode" ] || return 1
+        [ "$mode" = 120000 ] || { git -C "$checkout" show "$rev:$path" 2>/dev/null; return; }
+
+        target=$(git -C "$checkout" show "$rev:$path" 2>/dev/null) || return 1
+        case "$target" in
+            /*) return 1 ;;  # absolute link: nothing in the tree to resolve it against
+        esac
+        dir=$(dirname -- "$path")
+        [ "$dir" = "." ] && dir=""
+        # Normalise ../ and ./ against the link's own directory; git paths are always /-separated
+        # and never contain a trailing slash, so plain text collapsing is sufficient here.
+        path=$(printf '%s\n' "${dir:+$dir/}$target" | awk -F/ '{
+            n = 0
+            for (i = 1; i <= NF; i++) {
+                if ($i == "" || $i == ".") continue
+                if ($i == "..") { if (n > 0) n--; continue }
+                parts[++n] = $i
+            }
+            out = ""
+            for (i = 1; i <= n; i++) out = out (i > 1 ? "/" : "") parts[i]
+            print out
+        }')
+        [ -n "$path" ] || return 1
+        hops=$((hops + 1))
+    done
+    return 1
+}
 
 # ---------------------------------------------------------------------------
 # one run
@@ -272,15 +324,27 @@ do_run() {
         # followed. Absent files simply yield no flag; the adapter treats them as optional.
         context_flag=()
         agents_file="$workdir/run$run_idx-$(basename "$g" .json).agents.md"
-        if git -C "$checkout" show "$head:AGENTS.md" >"$agents_file" 2>/dev/null \
+        if show_blob "$checkout" "$head" AGENTS.md >"$agents_file" 2>/dev/null \
             && [ -s "$agents_file" ]; then
             context_flag+=(--agents "$agents_file")
         fi
         claude_md_file="$workdir/run$run_idx-$(basename "$g" .json).claude.md"
-        if git -C "$checkout" show "$head:.claude/CLAUDE.md" >"$claude_md_file" 2>/dev/null \
+        if show_blob "$checkout" "$head" .claude/CLAUDE.md >"$claude_md_file" 2>/dev/null \
             && [ -s "$claude_md_file" ]; then
             context_flag+=(--claude-md "$claude_md_file")
         fi
+
+        # The org standards doc, from THIS repository rather than the reviewed checkout --
+        # pr-review-threads.sh resolves PRT_STANDARDS_FILE relative to its own script dir, not
+        # the target repo, because the standards live here and apply to every consumer.
+        #
+        # Omitting it silently deletes findings rather than merely weakening the prompt, and
+        # only in combination with --assess: the assess prompt is instructed to mark a
+        # standards-violation finding FALSE_POSITIVE when the rule it cites is absent from the
+        # standards section, and the filter added alongside this then drops it before judging.
+        # With no standards supplied, every rule is absent, so a whole finding category can be
+        # assessed away and scored as a miss against a reviewer that named it correctly.
+        [ -f "$standards_file" ] && context_flag+=(--standards "$standards_file")
 
         findings_file="$workdir/run$run_idx-$(basename "$g" .json).findings.json"
         child_rc=0

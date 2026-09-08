@@ -59,7 +59,7 @@ built before the field existed) gets a neutral constant, never the note.
 ## Run `check-gold.sh` before spending a run
 
 ```sh
-check-gold.sh --gold 'eval/gold/*.json' --checkout go-kure/kure=<path>
+./check-gold.sh --gold 'eval/gold/*.json' --checkout go-kure/kure=<path>
 ```
 
 It asserts every row is `confirmed`, every document has an `intro_title`, and — the one that
