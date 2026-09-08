@@ -170,11 +170,25 @@ for g in "${gold_files[@]}"; do
 done
 log "${#gold_files[@]} gold documents, $gold_total gold rows, engine=$engine, runs=$runs"
 
-# gold_sha identifies the INPUTS, not the checkout: two results are comparable only when they
-# read the same gold tree. Taken from the first gold file's own repository.
+# gold_tree identifies the INPUTS, not the checkout: two results are comparable only when they
+# read the same gold bytes, and compare.sh refuses to compare across differing values.
+#
+# It is computed from the files actually read, never from `git rev-parse HEAD:./`. The committed
+# tree hash answers a different question -- what the corpus looks like in git -- and the two
+# diverge exactly when it matters most: build-gold.sh writes into a working tree, so the normal
+# build-then-run sequence measures uncommitted or modified documents while HEAD still names the
+# previous corpus. Two runs over different bytes would then carry the same gold_tree and compare
+# as though they were comparable. Hashing the content cannot drift from what was measured.
+#
+# Sorted by path so the value does not depend on glob expansion order, and the path is included
+# in the digest so moving a document between files is a different corpus.
 gold_dir=$(cd -- "$(dirname -- "${gold_files[0]}")" && pwd)
 gold_sha=$(git -C "$gold_dir" rev-parse HEAD 2>/dev/null || echo unknown)
-gold_tree=$(git -C "$gold_dir" rev-parse "HEAD:./" 2>/dev/null || echo unknown)
+gold_tree=$(
+    for g in "${gold_files[@]}"; do
+        printf '%s  %s\n' "$(sha256sum <"$g" | cut -d' ' -f1)" "$(basename -- "$g")"
+    done | LC_ALL=C sort | sha256sum | cut -d' ' -f1
+) || die "cannot digest the gold corpus"
 
 workdir=$(mktemp -d "${TMPDIR:-/tmp}/eval-run.XXXXXX") || die "mktemp failed"
 trap 'rm -rf "$workdir"' EXIT
@@ -206,7 +220,9 @@ trap 'rm -rf "$workdir"' EXIT
 do_run() {
     local run_idx="$1"
     local matched=0 uncredited=0 denom=0 excluded=0
-    local g repo checkout diff_file findings_file verdict_file rows child_rc
+    local g repo checkout diff_file findings_file judge_input verdict_file rows child_rc
+    local chunks_failed agents_file claude_md_file
+    local -a context_flag
     local v_matched v_uncredited
 
     for g in "${gold_files[@]}"; do
@@ -217,7 +233,16 @@ do_run() {
         local base head title
         base=$(jq -r '.base_sha' "$g")
         head=$(jq -r '.head_sha' "$g")
-        title=$(jq -r '.gold[0].note // "change under review"' "$g")
+
+        # The INTRODUCING commit's subject, and never `.gold[0].note`. `note` is the FIX
+        # commit's subject, mined with --grep '^fix', so it names the defect by construction --
+        # "fix(nats): reply.replyWithError not s.replyWithError in bootstrap.render
+        # schema-version rejection" was a real title handed to the reviewer. Passing it as the
+        # title of the pre-fix diff tells the reviewer the answer and measures how well it can
+        # copy a hint, which is not recall. A gold set built before intro_title existed has no
+        # leak-free title available, so it gets a neutral constant rather than a silent fallback
+        # to the note.
+        title=$(jq -r '.intro_title // "change under review"' "$g")
 
         diff_file="$workdir/run$run_idx-$(basename "$g" .json).diff"
         # --src-prefix/--dst-prefix explicitly: a user's diff.noprefix=true otherwise emits
@@ -235,10 +260,32 @@ do_run() {
         # it would let a deterministic harness fault -- a malformed diff, an unreadable gold
         # file -- burn one exclusion per document and land as a shrunken denominator instead of
         # an error, which is the same "no signal scored as no defects" mistake one level up.
+        # Repo guidance, as the shipped reviewer gets it. pr-review-threads.sh loads AGENTS.md
+        # and .claude/CLAUDE.md into the system prompt, so a harness that omits them measures a
+        # context-free reviewer and then ranks engines by a prompt nothing in CI ever sends --
+        # and the rule-guided configuration is precisely the one published work finds largest,
+        # so the omission suppresses the effect most likely to differentiate candidates.
+        #
+        # Read at the REVIEWED revision, not from the checkout's worktree: these documents are
+        # years of commits ahead of most gold documents, and feeding today's standards to a
+        # review of an old commit measures the reviewer against rules its author could not have
+        # followed. Absent files simply yield no flag; the adapter treats them as optional.
+        context_flag=()
+        agents_file="$workdir/run$run_idx-$(basename "$g" .json).agents.md"
+        if git -C "$checkout" show "$head:AGENTS.md" >"$agents_file" 2>/dev/null \
+            && [ -s "$agents_file" ]; then
+            context_flag+=(--agents "$agents_file")
+        fi
+        claude_md_file="$workdir/run$run_idx-$(basename "$g" .json).claude.md"
+        if git -C "$checkout" show "$head:.claude/CLAUDE.md" >"$claude_md_file" 2>/dev/null \
+            && [ -s "$claude_md_file" ]; then
+            context_flag+=(--claude-md "$claude_md_file")
+        fi
+
         findings_file="$workdir/run$run_idx-$(basename "$g" .json).findings.json"
         child_rc=0
         "$adapter" --diff "$diff_file" --title "$title" --out "$findings_file" \
-            "${assess_flag[@]}" || child_rc=$?
+            "${context_flag[@]}" "${assess_flag[@]}" || child_rc=$?
         if [ "$child_rc" -ge 2 ]; then
             log "setup fault from the reviewer adapter on $g (exit $child_rc)"
             return 1
@@ -249,9 +296,36 @@ do_run() {
             continue
         fi
 
+        # A partially reviewed document cannot be scored. The adapter exits 0 as long as ONE
+        # chunk succeeded, but this document's gold rows are judged as a whole, so a row living
+        # in a chunk the model never answered for would be counted as a miss by a reviewer that
+        # never saw it -- the same "no signal scored as no defects" error the exit-1 path above
+        # exists to prevent, just at sub-document granularity, and biased downward by exactly
+        # the model failure rate --max-excluded is there to tolerate. Restricting the denominator
+        # to successfully reviewed chunks was the alternative; it needs a chunk-to-gold-row map
+        # that does not exist (chunks are byte ranges of a diff, gold rows are file/line pairs
+        # in a revision), so excluding the document is the honest option available.
+        chunks_failed=$(jq -er '.chunks_failed // 0' "$findings_file" 2>/dev/null) || chunks_failed=0
+        if [ "$chunks_failed" -gt 0 ]; then
+            log "excluding $g: $chunks_failed of $(jq -r '.chunks // 0' "$findings_file") chunks produced no usable review"
+            excluded=$((excluded + 1))
+            continue
+        fi
+
+        # Under --assess, judge what the shipped reviewer would actually have published. The
+        # production path suppresses FALSE_POSITIVE findings before they ever become threads
+        # (pr-review-threads.sh), so crediting one here would score a defect against a reviewer
+        # whose own second pass had already discarded it -- flattering the two-pass config for
+        # findings it withheld. Without --assess no verdicts exist and this is a no-op copy,
+        # which is why it is unconditional rather than branching on the flag.
+        judge_input="$workdir/run$run_idx-$(basename "$g" .json).judged.json"
+        jq '.findings |= map(select((.verdict // "") != "FALSE_POSITIVE"))' \
+            "$findings_file" >"$judge_input" \
+            || { log "cannot filter assessed findings for $g"; return 1; }
+
         verdict_file="$workdir/run$run_idx-$(basename "$g" .json).verdict.json"
         child_rc=0
-        "$judge" --findings "$findings_file" --gold "$g" --out "$verdict_file" || child_rc=$?
+        "$judge" --findings "$judge_input" --gold "$g" --out "$verdict_file" || child_rc=$?
         if [ "$child_rc" -ge 2 ]; then
             log "setup fault from the judge on $g (exit $child_rc)"
             return 1

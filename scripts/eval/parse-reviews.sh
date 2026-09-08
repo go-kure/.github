@@ -89,6 +89,10 @@ function csv(s) {
 function trim(s) {
     sub(/^[ \t]+/, "", s)
     sub(/[ \t]+$/, "", s)
+    # Undo the escaped-pipe protection applied per record (see LEDGER_AWK's BEGIN). Harmless
+    # for the other programs sharing this prelude: they never introduce the sentinel, and
+    # \001 is not a character a Markdown ledger can otherwise contain.
+    gsub(/\001/, "|", s)
     return s
 }
 AWK
@@ -102,6 +106,18 @@ read -r -d '' LEDGER_AWK <<'AWK' || true
 # mislabelled the class column of every table whose width it guessed wrong -- a wrong number
 # that looks exactly like a right one.
 BEGIN { FS = "|"; in_table = 0 }
+
+# An escaped pipe is cell CONTENT, not a delimiter -- and a ledger's `issue` or `rule` cell
+# routinely holds one, since `\|` is how Markdown carries a pipe inside a table. FS splits on
+# it anyway, so a single `\|` anywhere left of the status column shifts every header-derived
+# index by one and the row silently reports the wrong class, rule or status. Header-driven
+# indexing does not save us here: the header row rarely contains an escape, so the columns are
+# mapped correctly and only the data rows slide. Protect the escapes before the split, and
+# restore them in trim() as each cell is read. Assigning to $0 is what forces the re-split.
+{
+    _line = $0
+    if (gsub(/\\\|/, "\001", _line)) $0 = _line
+}
 
 function header_row(  i, name, found_id, found_status) {
     delete col

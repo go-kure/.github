@@ -38,6 +38,7 @@ usage: build-gold.sh --repo <path> --repo-name <owner/name> --out <dir>
   --grep        subject pattern selecting fix commits (default: ^fix(\(|:| ))
   --include     ERE a gold file path must match (default: source extensions)
   --max-span    drop a gold row wider than this many lines (default: 20)
+  --replace     clear existing *.json from --out first (required to rebuild in place)
 
 exit status
   0  gold rows written
@@ -68,6 +69,10 @@ include_re='\.(go|sh|bash|mjs|js|ts|py|rb|rs|java|c|h|cc|cpp|yaml|yml|json|tf|sq
 # default cut -- generous enough for a function, tight enough to stay a finding.
 max_span=20
 
+# Opt-in to rebuilding into a directory that already holds gold. Off by default because the
+# failure it guards is silent: a merged corpus measures fine and reports a number.
+replace=false
+
 while [ $# -gt 0 ]; do
     case "$1" in
         --repo) repo=${2-}; shift 2 || die "--repo needs a value" ;;
@@ -78,6 +83,7 @@ while [ $# -gt 0 ]; do
         --grep) subject_re=${2-}; shift 2 || die "--grep needs a value" ;;
         --include) include_re=${2-}; shift 2 || die "--include needs a value" ;;
         --max-span) max_span=${2-}; shift 2 || die "--max-span needs a value" ;;
+        --replace) replace=true; shift ;;
         -h|--help) usage; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
@@ -92,6 +98,18 @@ case "$max_fixes" in ''|*[!0-9]*) die "--max-fixes must be a number" ;; esac
 case "$max_span" in ''|*[!0-9]*) die "--max-span must be a number" ;; esac
 
 mkdir -p "$out_dir" || die "cannot create $out_dir"
+
+# A rebuild writes one file per surviving candidate and overwrites by slug, so it never removes
+# a document the new sweep no longer produces. Change --since, --include, --max-span or the
+# history itself and the dropped candidates' files stay behind, where run.sh's gold glob picks
+# them up as if they were current -- a corpus that is part one sweep and part another, with
+# nothing on disk saying so. Refuse rather than silently merge; --replace is the explicit opt-in.
+if [ -n "$(find "$out_dir" -maxdepth 1 -name '*.json' -print -quit)" ]; then
+    [ "$replace" = true ] || die "$out_dir already holds gold documents; pass --replace to rebuild it, or use an empty directory"
+    find "$out_dir" -maxdepth 1 -name '*.json' -delete \
+        || die "cannot clear $out_dir"
+    log "--replace: cleared existing gold documents from $out_dir"
+fi
 
 git_r() { git -C "$repo" "$@"; }
 
@@ -133,11 +151,26 @@ removed_lines() {
         '
 }
 
-# blame_range PARENT PATH START END -- emit "sha<TAB>lineno" for each line in the range.
+# blame_range PARENT PATH START END -- emit "sha<TAB>orig_lineno<TAB>final_lineno" per line.
+#
+# Both numbers are load-bearing and they are not interchangeable. A porcelain header reads
+# `<sha> <orig-lineno> <final-lineno> [<n>]`: `orig` locates the line in the blamed commit's own
+# file, `final` locates it in PARENT, the fix's pre-image. The harness needs one of each --
+# `final` to read the faulty text out of PARENT, `orig` for the gold row, because run.sh reviews
+# the introducing commit's own diff and a judge shown a line number from the wrong revision is
+# being asked about a line that is not in what the reviewer saw. Keeping only `final` conflated
+# the two silently whenever a later commit inserted or deleted lines above the defect.
+#
+# `-w` because blame otherwise stops at a reindent, and confirm_introduction cannot catch that
+# case: a whitespace-only edit rewrites the line, so blame credits the formatting commit, and
+# that commit's diff really does add the reindented text verbatim -- exactly what the check
+# tests for. The result is a gold row accusing an innocent formatting change, and a harness
+# reviewing a whitespace diff for a defect it does not contain. `-w` walks through to the real
+# introduction instead.
 blame_range() {
     local parent="$1" path="$2" start="$3" end="$4"
-    git_r blame --porcelain -L "$start,$end" "$parent" -- "$path" 2>/dev/null \
-        | awk '/^[0-9a-f]{40} / { print $1 "\t" $3 }'
+    git_r blame --porcelain -w -L "$start,$end" "$parent" -- "$path" 2>/dev/null \
+        | awk '/^[0-9a-f]{40} / { print $1 "\t" $2 "\t" $3 }'
 }
 
 # confirm_introduction SHA PATH TEXT -- true when SHA's own diff adds exactly TEXT.
@@ -231,9 +264,10 @@ while read -r fix; do
     while IFS=$'\t' read -r path start end; do
         [ -n "$path" ] || continue
         blame_range "$parent" "$path" "$start" "$end" \
-            | while IFS=$'\t' read -r sha lineno; do
+            | while IFS=$'\t' read -r sha orig_lineno final_lineno; do
                 [ -n "$sha" ] || continue
-                printf '%s\t%s\t%s\t%s\t%s\n' "$sha" "$path" "$lineno" "$fix" "$parent"
+                printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+                    "$sha" "$path" "$orig_lineno" "$final_lineno" "$fix" "$parent"
             done
     done <"$work/ranges.tsv" >>"$candidates"
 
@@ -246,19 +280,26 @@ log "scanned $n_fixes fix commits; $(wc -l <"$candidates") blame candidates"
 # confirmation and emission
 # ---------------------------------------------------------------------------
 
-# Collapse to one row per (introducing sha, file, fix commit), keeping the line span.
+# Collapse to one row per (introducing sha, file, fix commit), keeping BOTH line spans: the
+# span in the introducing commit (orig, columns 3) for the gold row, and the span in the fix's
+# parent (final, column 4) for reading the faulty text. Tracking one and deriving the other is
+# not possible -- intervening commits shift them by different amounts per line.
 sort -u "$candidates" | awk -F'\t' '
     {
-        key = $1 "\t" $2 "\t" $4 "\t" $5
-        if (!(key in lo) || $3 + 0 < lo[key]) lo[key] = $3 + 0
-        if (!(key in hi) || $3 + 0 > hi[key]) hi[key] = $3 + 0
+        key = $1 "\t" $2 "\t" $5 "\t" $6
+        if (!(key in olo) || $3 + 0 < olo[key]) olo[key] = $3 + 0
+        if (!(key in ohi) || $3 + 0 > ohi[key]) ohi[key] = $3 + 0
+        if (!(key in flo) || $4 + 0 < flo[key]) flo[key] = $4 + 0
     }
-    END { for (k in lo) printf "%s\t%d\t%d\n", k, lo[k], hi[k] }
+    END {
+        for (k in olo)
+            printf "%s\t%d\t%d\t%d\n", k, olo[k], ohi[k], flo[k]
+    }
 ' >"$work/spans.tsv"
 
 : >"$work/gold.ndjson"
 
-while IFS=$'\t' read -r sha path fix parent lo hi; do
+while IFS=$'\t' read -r sha path fix parent lo hi flo; do
     [ -n "$sha" ] || continue
 
     if ! printf '%s\n' "$path" | grep -Eq -- "$include_re"; then
@@ -271,8 +312,11 @@ while IFS=$'\t' read -r sha path fix parent lo hi; do
         continue
     fi
 
-    # Confirm against the first line of the span: the text as it stood at the fix's parent.
-    text=$(git_r show "$parent:$path" 2>/dev/null | sed -n "${lo}p")
+    # Confirm against the first line of the span as it stood at the fix's parent -- so the
+    # PARENT-relative span (flo), never the introducing-commit span (lo) that the gold row
+    # carries. Reading `${lo}p` out of `$parent:$path` picks whatever line happens to sit at
+    # that offset in a different revision of the file.
+    text=$(git_r show "$parent:$path" 2>/dev/null | sed -n "${flo}p")
     if ! confirm_introduction "$sha" "$path" "$text"; then
         n_dropped_unconfirmed=$((n_dropped_unconfirmed + 1))
         continue
@@ -286,13 +330,21 @@ while IFS=$'\t' read -r sha path fix parent lo hi; do
     base=$(git_r rev-parse --verify --quiet "$sha^") || continue
     note=$(git_r log -1 --format=%s "$fix")
 
+    # The INTRODUCING commit's own subject, which is what a reviewer of base..head would have
+    # seen. `note` is the FIX commit's subject and must never reach the reviewer: mined with
+    # --grep '^fix', it names the defect by construction ("fix(nats): reply.replyWithError not
+    # s.replyWithError in bootstrap.render schema-version rejection" is a real one), so using it
+    # as the review title hands over the answer and measures a reviewer that was told where to
+    # look. It stays in the document for the judge and for whoever reads the gold file.
+    intro_title=$(git_r log -1 --format=%s "$sha")
+
     jq -cn \
         --arg repo "$repo_name" --arg pr "$pr" \
-        --arg head "$sha" --arg base "$base" \
+        --arg head "$sha" --arg base "$base" --arg intro_title "$intro_title" \
         --arg file "$path" --arg fix "$fix" --arg note "$note" \
         --argjson lo "$lo" --argjson hi "$hi" \
         '{repo: $repo, pr: (if $pr == "" then null else ($pr | tonumber) end),
-          head_sha: $head, base_sha: $base,
+          head_sha: $head, base_sha: $base, intro_title: $intro_title,
           gold: [{file: $file, lines: [$lo, $hi], fix_commit: $fix,
                   note: $note, confirmed: true}]}' >>"$work/gold.ndjson"
     n_rows=$((n_rows + 1))
@@ -320,6 +372,7 @@ done < <(jq -s -c '
     group_by(.repo + "@" + .head_sha)
     | map({repo: .[0].repo, pr: .[0].pr,
            head_sha: .[0].head_sha, base_sha: .[0].base_sha,
+           intro_title: .[0].intro_title,
            gold: (map(.gold[]) | unique_by(.file + ":" + (.lines | tostring)))})
     | .[]
 ' "$work/gold.ndjson")
