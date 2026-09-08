@@ -635,11 +635,19 @@ done < <(jq -s -c '
 #
 # Checked here rather than at the top because the staged names are not known until the emission
 # loop has run; nothing has been touched yet either way.
+# The unreadable case gets its own message. It is the same refusal -- this script does not
+# delete what it cannot identify, here any more than in repo_docs -- but the remedy is the
+# opposite one, and a collision message would send the caller to rename a repository or split
+# the corpus when what is actually there is one corrupt file to remove. Refusing with the wrong
+# reason is worse than refusing: it is a refusal the caller cannot act on.
 for n in "${staged_names[@]}"; do
     [ -e "$out_dir/$n" ] || continue
     owner=$(jq -r '.repo // empty' "$out_dir/$n" 2>/dev/null)
-    [ "$owner" = "$repo_name" ] ||
-        die "$out_dir/$n already belongs to ${owner:-an unreadable document}, not $repo_name; two repositories slug to the same filename -- give this one its own --out"
+    [ "$owner" = "$repo_name" ] || {
+        [ -n "$owner" ] ||
+            die "$out_dir/$n exists but has no readable .repo, and this run wants that name; remove or repair that document, then re-run"
+        die "$out_dir/$n already belongs to $owner, not $repo_name; two repositories slug to the same filename -- give this one its own --out"
+    }
 done
 
 # The swap. Everything above this line is recoverable; this is the only step that touches the
@@ -656,8 +664,11 @@ backup="$out_dir/.superseded.$$"
 # one. If the restore itself fails, say where the documents actually are -- a message naming a
 # directory the caller can move back by hand is worth more than a tidy one that loses them.
 #
-# By staged NAME, not by a `.repo` sweep: a document this install half-wrote has no readable
-# `.repo` to match on, and every other repository's documents must survive untouched.
+# By staged NAME, not by a `.repo` sweep. What a failed install leaves is a partial SET, not a
+# partial file: staging lives inside $out_dir, so each `mv` is a same-filesystem rename and every
+# document that landed is whole. The staged names are the exact record of which ones those were,
+# so undoing the install needs no parsing and no reasoning about what else the directory holds.
+# The scoped sweep is for the caller's corpus; this is for this run's own writes.
 restore_and_die() {
     for n in "${staged_names[@]}"; do
         rm -f -- "$out_dir/$n"
