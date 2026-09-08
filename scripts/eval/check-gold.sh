@@ -122,8 +122,13 @@ rows_total=0
 rows_outside=0
 
 for g in "${gold_files[@]}"; do
-    if ! jq -e '(.gold | length) > 0 and all(.gold[]; .confirmed == true)' "$g" >/dev/null 2>&1; then
-        printf 'unconfirmed or empty rows: %s\n' "$g"
+    # `type == "array"` before anything else. jq's `length`, `.[]` and `all` all work on an
+    # OBJECT too, so `.gold` stored as a map keyed by row id passes every test here and the row
+    # loop below iterates its values happily -- but judge.sh indexes the rows positionally
+    # (`to_entries[].key` handed to `--argjson`), so the approved corpus is unusable by the very
+    # scoring path this preflight exists to clear it for.
+    if ! jq -e '(.gold | type) == "array" and (.gold | length) > 0 and all(.gold[]; .confirmed == true)' "$g" >/dev/null 2>&1; then
+        printf 'gold is not a non-empty array of confirmed rows: %s\n' "$g"
         violations=$((violations + 1))
         continue
     fi
@@ -162,8 +167,17 @@ for g in "${gold_files[@]}"; do
     done
 
     while IFS=$'\t' read -r file lo hi; do
-        [ -n "$file" ] || continue
         rows_total=$((rows_total + 1))
+
+        # An empty or null `file` is a violation, not something to skip past. Skipping left the
+        # row out of rows_total AND out of the violation count, so a row naming no file at all --
+        # unmatchable by any reviewer, which is precisely what this script rejects rows for --
+        # passed the preflight without appearing anywhere in its output.
+        if [ -z "$file" ] || [ "$file" = null ]; then
+            printf 'row names no file: %s -> lines %s-%s\n' "$(basename -- "$g")" "$lo" "$hi"
+            violations=$((violations + 1))
+            continue
+        fi
 
         # Shape before content. span_outside_diff counts the lines of lo..hi that the diff does
         # not add, so a reversed or non-numeric span makes its loop run zero times, leave the

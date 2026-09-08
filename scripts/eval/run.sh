@@ -389,6 +389,14 @@ show_blob() {
     local checkout="$1" rev="$2" path="$3"
     local hops=0 mode='' target comp parent resolved='' rest="$path"
 
+    # A trailing separator is an assertion that the path names a DIRECTORY -- `real.md/` is not
+    # `real.md`, and production's `[ -f ]` rejects it before reading (`pr-review-threads.sh:250-253`).
+    # The walk skips empty components, so without this the separator simply evaporates and a link
+    # `AGENTS.md -> real.md/` would hand the reviewer a document production never opens. A
+    # directory is never a context file, so the assertion is always fatal here; it is checked at
+    # both points a path enters the walk.
+    case "$rest" in */) return 1 ;; esac
+
     while [ -n "$rest" ]; do
         comp=${rest%%/*}
         if [ "$comp" = "$rest" ]; then rest=''; else rest=${rest#*/}; fi
@@ -432,6 +440,7 @@ show_blob() {
         # among them would have restarted the walk when it was first reached, so everything in
         # `parent` is a plain tree entry by construction.
         rest=${parent:+$parent/}$target${rest:+/$rest}
+        case "$rest" in */) return 1 ;; esac  # see the entry check: a link target may carry one too
         resolved=''
         mode=''
     done
