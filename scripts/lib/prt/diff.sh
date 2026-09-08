@@ -167,13 +167,27 @@ prt_split_diff() {
 prt_build_line_index() {
   local diff_file="$1"
   awk '
-    /^\+\+\+ / {
+    # The header rules are position-gated, not pattern-gated. Inside a hunk
+    # every body line carries a +/- prefix, so adding a line whose own text
+    # begins "++ " arrives as "+++ ..." — a pattern-only match reassigns cur
+    # mid-file, indexing the rest of that file under a path that does not
+    # exist and silently costing every finding there its inline anchor.
+    # in_hunk closes it: headers precede the first @@ of a file, body lines
+    # follow it, and `diff --git` reopens the header region. Same shape, and
+    # the same reasoning written out at length, as removed_lines in
+    # scripts/eval/build-gold.sh (go-kure/.github#163).
+    /^diff --git / { in_hunk = 0; cur = ""; next }
+    !in_hunk && /^\+\+\+ / {
       f = $2
       sub(/^b\//, "", f)
       cur = (f == "/dev/null") ? "" : f
       next
     }
     /^@@ / {
+      # Set before the cur=="" bail: a deleted file has cur=="" from its
+      # `+++ /dev/null`, and bailing first would leave its header region open
+      # across the whole hunk.
+      in_hunk = 1
       if (cur == "") next
       # @@ -a,b +c,d @@ ... — take the first "+<digits>" as the new-file
       # start line.
