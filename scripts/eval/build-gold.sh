@@ -99,6 +99,22 @@ case "$max_span" in ''|*[!0-9]*) die "--max-span must be a number" ;; esac
 
 mkdir -p "$out_dir" || die "cannot create $out_dir"
 
+# One builder per output directory, held from before the dirty probe until after the swap.
+#
+# Without it two --replace runs interleave: both see documents and set out_dir_dirty, the first
+# moves them aside, the second's probe now finds an empty directory, and both install. The later
+# install overwrites the slugs they share and leaves the earlier run's unique slugs in place --
+# the mixed corpus --replace exists to prevent, assembled by the very flag meant to prevent it,
+# with nothing on disk recording that it happened. The staging directory's pid suffix keeps the
+# two runs from writing over each other's files; it says nothing about the sequence of probe,
+# move-aside and install, which is what actually has to be serialised.
+#
+# Non-blocking: a second builder is a mistake to report, not a queue to join. A build costs
+# model calls and the caller almost certainly meant to point it somewhere else.
+command -v flock >/dev/null 2>&1 || die "flock is required"
+exec 9>"$out_dir/.build.lock" || die "cannot open the build lock in $out_dir"
+flock -n 9 || die "another build-gold.sh is building $out_dir; wait for it or use a different --out"
+
 # A rebuild writes one file per surviving candidate and overwrites by slug, so it never removes
 # a document the new sweep no longer produces. Change --since, --include, --max-span or the
 # history itself and the dropped candidates' files stay behind, where run.sh's gold glob picks
@@ -136,7 +152,7 @@ git_r() { git -C "$repo" "$@"; }
 # nothing -- a clean exit reporting zero candidates, indistinguishable from a repo with no fixes.
 removed_lines() {
     local fix="$1"
-    git_r diff --unified=0 --no-color --no-renames --diff-filter=M \
+    git_r diff --unified=0 --inter-hunk-context=0 --no-color --no-renames --diff-filter=M \
         --src-prefix=a/ --dst-prefix=b/ "$fix^" "$fix" -- \
         | awk '
             # The header rules are position-gated, not pattern-gated. Inside a hunk every body
@@ -158,7 +174,18 @@ removed_lines() {
                 in_hunk = 1
                 next
             }
-            in_hunk && /^-/ { if (path != "") printf "%s\t%d\n", path, lineno; lineno++ }
+            # A context line occupies an old-file line number just as a removed one does, so it
+            # must advance lineno. Only an ADDED line does not exist in the old file. Under a
+            # strict -U0 a hunk carries no context, but the caller does not own the repository
+            # this runs against: `diff.interHunkContext` (default 0, but 5 on at least one
+            # machine this was built on) merges neighbouring hunks and puts the unchanged lines
+            # between them into the body. Advancing only on `-` then under-counts by exactly
+            # those lines and blames a line the fix never touched -- measured on a two-change
+            # file, the second removal was reported at old line 3 instead of 6. The explicit
+            # --inter-hunk-context=0 above makes that config irrelevant; this rule makes the
+            # parser correct regardless of it, which is the half that survives someone adding
+            # another diff flag later.
+            in_hunk && /^[- ]/ { if (/^-/ && path != "") printf "%s\t%d\n", path, lineno; lineno++ }
         '
 }
 
@@ -407,8 +434,9 @@ fi
 # new set, which is the exact failure the staging exists to prevent. Inside the destination
 # every move is a same-filesystem rename, which cannot fail for space.
 #
-# The name is dot-prefixed and pid-suffixed so it never matches the *.json globs above or
-# run.sh's gold glob, and two concurrent builds into one directory cannot collide.
+# The name is dot-prefixed so it never matches the *.json globs above or run.sh's gold glob, and
+# pid-suffixed so a stale directory from a killed run is never mistaken for this one's. Serialising
+# concurrent builders is the lock's job, not the name's.
 staging="$out_dir/.staging.$$"
 rm -rf "$staging"
 mkdir -p "$staging" || die "cannot create $staging"

@@ -191,11 +191,20 @@ log "${#gold_files[@]} gold documents, $gold_total gold rows, engine=$engine, ru
 # in the digest so moving a document between files is a different corpus.
 gold_dir=$(cd -- "$(dirname -- "${gold_files[0]}")" && pwd)
 gold_sha=$(git -C "$gold_dir" rev-parse HEAD 2>/dev/null || echo unknown)
-gold_tree=$(
+#
+# Each file's digest is checked on its own. Inside a command substitution used as an argument,
+# a failed `sha256sum <"$g"` -- an unreadable file, a vanished one -- contributes an empty
+# string and printf still succeeds, so the outer `|| die` only ever sees the exit status of the
+# trailing `cut`. The corpus would then be stamped with a gold_tree digesting a blank where a
+# document should have been, and two runs that read different bytes would compare as equal.
+gold_digests=$(
     for g in "${gold_files[@]}"; do
-        printf '%s  %s\n' "$(sha256sum <"$g" | cut -d' ' -f1)" "$(basename -- "$g")"
-    done | LC_ALL=C sort | sha256sum | cut -d' ' -f1
+        h=$(sha256sum <"$g") || exit 1
+        printf '%s  %s\n' "${h%% *}" "$(basename -- "$g")"
+    done
 ) || die "cannot digest the gold corpus"
+gold_tree=$(printf '%s\n' "$gold_digests" | LC_ALL=C sort | sha256sum | cut -d' ' -f1) ||
+    die "cannot digest the gold corpus"
 
 workdir=$(mktemp -d "${TMPDIR:-/tmp}/eval-run.XXXXXX") || die "mktemp failed"
 trap 'rm -rf "$workdir"' EXIT
@@ -412,14 +421,45 @@ do_run() {
             continue
         fi
 
-        # Under --assess, judge what the shipped reviewer would actually have published. The
-        # production path suppresses FALSE_POSITIVE findings before they ever become threads
+        # Truncation is the same error wearing different clothes, and chunks_failed does not see
+        # it. When one hunk alone exceeds the hard ceiling, prt_split_diff truncates its body,
+        # records REVIEW_INCOMPLETE and still hands back a usable chunk (lib/prt/diff.sh); the
+        # model answers that chunk, so nothing failed and chunks_failed stays 0 -- while the
+        # discarded tail is diff the reviewer never received. Judging the document whole then
+        # scores any gold row in that tail as a miss. Same remedy, same reason: exclude it from
+        # both sides of the fraction rather than counting unseen code against the reviewer.
+        n_incomplete=$(jq -er '(.incomplete // []) | length' "$findings_file" 2>/dev/null) || n_incomplete=0
+        if [ "$n_incomplete" -gt 0 ]; then
+            log "excluding $g: the diff was truncated before review ($n_incomplete marker(s))"
+            excluded=$((excluded + 1))
+            continue
+        fi
+
+        # Judge what the shipped reviewer would actually have published, which is narrower than
+        # what it emitted in two independent ways.
+        #
+        # FALSE_POSITIVE: the production path suppresses these before they ever become threads
         # (pr-review-threads.sh), so crediting one here would score a defect against a reviewer
         # whose own second pass had already discarded it -- flattering the two-pass config for
-        # findings it withheld. Without --assess no verdicts exist and this is a no-op copy,
-        # which is why it is unconditional rather than branching on the flag.
+        # findings it withheld. Without --assess no verdicts exist and that arm is a no-op,
+        # which is why the filter is unconditional rather than branching on the flag.
+        #
+        # collision: prt_assign_ordinals sets it on EVERY member of a group sharing a file and a
+        # category (finding.sh, `collision: ($glen > 1)`), and reconcile.sh's row 1 returns NONE
+        # for each of them before any other rule is consulted. Nothing publishes them. Crediting
+        # them would count defects no human is ever shown, and it would do so inconsistently
+        # with the FALSE_POSITIVE filter one line above -- the two suppressions are equally
+        # unconditional in production, so filtering one and not the other measures neither the
+        # engine nor the product.
+        #
+        # This does mean an engine that emits several findings per file and category scores
+        # lower. That is a real property of the delivered system rather than an artefact: those
+        # findings are genuinely withheld today. If the harness is ever pointed at an engine
+        # meant to be judged before the thread lifecycle, this is the line to revisit, and it
+        # needs a flag and a README paragraph rather than a silent removal.
         judge_input="$workdir/run$run_idx-$(basename "$g" .json).judged.json"
-        jq '.findings |= map(select((.verdict // "") != "FALSE_POSITIVE"))' \
+        jq '.findings |= map(select(
+                ((.verdict // "") != "FALSE_POSITIVE") and (.collision != true)))' \
             "$findings_file" >"$judge_input" \
             || { log "cannot filter assessed findings for $g"; return 1; }
 

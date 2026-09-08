@@ -93,7 +93,13 @@ span_outside_diff() {
     # which the matcher below then never recognises -- turning "no hunks found" into "every row
     # is outside the diff" and condemning a perfectly good corpus. The other machine-parsed
     # diffs in this harness already pass it.
-    git -C "$checkout" diff --no-color -U0 "$base" "$head" -- "$file" 2>/dev/null |
+    #
+    # --inter-hunk-context=0 because that setting (default 0, but 5 on at least one machine this
+    # was built on) merges neighbouring hunks, and a merged hunk's "+start,count" spans the
+    # UNCHANGED lines between the two changes. This parser marks the whole range as added, so
+    # every one of those lines passes an invariant that exists to reject exactly them -- a
+    # permissive oracle that reports a clean corpus and cannot be told apart from a real one.
+    git -C "$checkout" diff --no-color -U0 --inter-hunk-context=0 "$base" "$head" -- "$file" 2>/dev/null |
         awk -v lo="$lo" -v hi="$hi" '
             /^@@/ {
                 match($0, /\+[0-9]+(,[0-9]+)?/)
