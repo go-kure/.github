@@ -68,6 +68,9 @@ usage: run.sh --gold '<glob>' --engine <chat> --runs <n> --out <file>
   --readme      rewrite this file's `baseline mean_r=` line from the measured result
   --standards   org standards doc to forward; default is docs/standards.md at the SHA the
                 shipped workflow pins its action to, which is what production reads
+  --context     the per-repository project-context string production forwards as
+                PRT_PROJECT_CONTEXT; empty by default, and NEVER inherited from the
+                environment. Its digest is recorded and compare.sh gates on it
   --no-assess   skip the reviewer's assessment pass. Measures the review call alone, which is
                 NOT the shipped product; the result records assess:false and compare.sh
                 refuses to compare it against an assessed one
@@ -102,6 +105,9 @@ standards_override=
 # shipped pipeline.
 assess=true
 assess_flag=(--assess)
+# Not defaulted from PRT_PROJECT_CONTEXT on purpose -- see the --context forward in do_run. An
+# inherited value would enter both prompts and be recorded nowhere.
+project_context=
 declare -A checkouts=()
 
 while [ $# -gt 0 ]; do
@@ -115,6 +121,7 @@ while [ $# -gt 0 ]; do
         --readme) readme_file=${2-}; shift 2 || die "--readme needs a value" ;;
         --standards) standards_override=${2-}; shift 2 || die "--standards needs a value" ;;
         --no-assess) assess=false; assess_flag=(); shift ;;
+        --context) project_context=${2-}; shift 2 || die "--context needs a value" ;;
         --checkout)
             case "${2-}" in
                 *=*) checkouts["${2%%=*}"]="${2#*=}" ;;
@@ -354,6 +361,18 @@ if [ -n "$standards_file" ] && [ -f "$standards_file" ]; then
     standards_sha=${standards_sha%% *}
 fi
 
+# The project-context string is the third input to a prompt, alongside the standards doc and the
+# repository's own AGENTS.md/CLAUDE.md: production forwards a per-repository value
+# (`action.yml:105` -> `PRT_PROJECT_CONTEXT`) into both the review and the assess call. Two runs
+# over the same gold tree with different context strings are not comparable, and nothing in the
+# numbers shows it -- so it is digested here for the same reason the standards doc is. `none`
+# rather than an absent key, so an older result and an explicitly empty one stay distinguishable.
+context_sha=none
+if [ -n "$project_context" ]; then
+    context_sha=$(printf '%s' "$project_context" | sha256sum) || die "cannot digest --context"
+    context_sha=${context_sha%% *}
+fi
+
 # show_blob CHECKOUT REV PATH -- print PATH's contents at REV, following in-tree symlinks.
 #
 # `git show <rev>:<path>` on a symlink prints the LINK TARGET, not the file: a repository whose
@@ -556,6 +575,14 @@ do_run() {
         # assessed away and scored as a miss against a reviewer that named it correctly.
         [ -f "$standards_file" ] && context_flag+=(--standards "$standards_file")
 
+        # ALWAYS passed, even empty. The adapter defaults this from PRT_PROJECT_CONTEXT
+        # (review-adapter.sh:69), so leaving it off does not mean "no context" -- it means
+        # whatever the operator's shell happens to export, entering both the review and the
+        # assess prompt (pr-review-threads.sh:329,518) and changing the findings without
+        # appearing anywhere in the result. Passing it explicitly is what makes context_sha
+        # below a true statement about the run rather than a guess.
+        context_flag+=(--context "$project_context")
+
         findings_file="$workdir/run$run_idx-$(basename "$g" .json).findings.json"
         child_rc=0
         "$adapter" --diff "$diff_file" --title "$title" --out "$findings_file" \
@@ -743,6 +770,7 @@ out_json=$(jq -n \
     --arg gold_tree "$gold_tree" \
     --arg standards_sha "$standards_sha" \
     --arg standards_source "$standards_source" \
+    --arg context_sha "$context_sha" \
     --argjson assess "$assess" \
     --argjson runs "$runs" \
     --argjson mean_r "$mean_r" \
@@ -755,7 +783,7 @@ out_json=$(jq -n \
     --argjson per_run "$(printf '%s\n' "${recalls[@]}" | jq -sc '.')" \
     '{engine: $engine, gold_sha: $gold_sha, gold_tree: $gold_tree, gold_total: $gold_total,
       standards_sha: $standards_sha, standards_source: $standards_source,
-      assess: $assess, gold_docs: $gold_docs,
+      context_sha: $context_sha, assess: $assess, gold_docs: $gold_docs,
       excluded_docs_max: $excluded_docs_max, excluded_rows_max: $excluded_rows_max,
       runs: $runs, mean_r: $mean_r, spread: $spread, uncredited: $uncredited,
       per_run_recall: $per_run}') || die "cannot build summary JSON"

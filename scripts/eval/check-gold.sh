@@ -166,15 +166,24 @@ for g in "${gold_files[@]}"; do
         fi
     done
 
-    while IFS=$'\t' read -r file lo hi; do
+    while IFS=$'\t' read -r ok file lo hi; do
         rows_total=$((rows_total + 1))
 
-        # An empty or null `file` is a violation, not something to skip past. Skipping left the
-        # row out of rows_total AND out of the violation count, so a row naming no file at all --
-        # unmatchable by any reviewer, which is precisely what this script rejects rows for --
-        # passed the preflight without appearing anywhere in its output.
-        if [ -z "$file" ] || [ "$file" = null ]; then
-            printf 'row names no file: %s -> lines %s-%s\n' "$(basename -- "$g")" "$lo" "$hi"
+        # The producer classifies each row before emitting it, and it does so because the naive
+        # form (`"\(.file)\t\(.lines[0])\t\(.lines[1])"`) is not TOTAL: `.lines` stored as a
+        # scalar makes jq abort mid-stream while indexing it. That abort happens inside a process
+        # substitution, whose status the shell never sees, so the loop simply ends early -- the
+        # script then reports fewer rows than the document holds and exits 0. A document with one
+        # such row was passing this preflight while `run.sh` kept the row in its denominator.
+        #
+        # It also settles the type questions the old shape could not ask. `jq -r` renders every
+        # scalar as text, so `.file: 0` arrives as the string `0` and matches a checkout that
+        # happens to contain a path named `0` -- passing here, then never matching in judge.sh,
+        # which compares the JSON values without coercion. `.file: null` arrives as the literal
+        # `null`, and an all-empty row arrives as two bare tabs that `read` (tab is IFS
+        # whitespace) collapses into three empty variables.
+        if [ "$ok" != ok ]; then
+            printf 'malformed gold row: %s -> %s\n' "$(basename -- "$g")" "$file"
             violations=$((violations + 1))
             continue
         fi
@@ -186,6 +195,8 @@ for g in "${gold_files[@]}"; do
         # range and sits in the denominator while being unmatchable, depressing recall.
         # build-gold.sh cannot emit one (its span collapse is ordered by construction), so this
         # guards a hand-edited or externally produced corpus, whose shape nothing else checks.
+        # The producer above now guarantees both endpoints are JSON numbers; it does not guarantee
+        # they are integers, ordered, or >= 1, which is what this second layer is for.
         # Each endpoint on its own, never the pair joined by a comma. Joining them makes the
         # separator indistinguishable from a comma INSIDE an endpoint, so `["1,2", "2"]` reads as
         # well-formed; `[ "1,2" -lt 1 ]` then fails its own syntax rather than the comparison, the
@@ -212,7 +223,14 @@ for g in "${gold_files[@]}"; do
             rows_outside=$((rows_outside + 1))
             violations=$((violations + 1))
         fi
-    done < <(jq -r '.gold[] | "\(.file)\t\(.lines[0])\t\(.lines[1])"' "$g")
+    done < <(jq -r '
+        .gold[] |
+        if (.file | type) == "string" and (.file | length) > 0
+           and (.lines | type) == "array" and (.lines | length) == 2
+           and all(.lines[]; type == "number")
+        then "ok\t\(.file)\t\(.lines[0])\t\(.lines[1])"
+        else "bad\t\(tojson)"
+        end' "$g")
 done
 
 printf '%s: %d documents, %d rows, %d rows outside the reviewed diff\n' \

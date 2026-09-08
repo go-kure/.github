@@ -280,6 +280,14 @@ digests as the literal `none`, which is a positive statement rather than a missi
 given no `PROJECT STANDARDS` assesses every standards-violation finding as `FALSE_POSITIVE`, and
 that run must not be quietly compared against one that had the document.
 
+The same argument covers the project-context string. Production forwards a per-repository value
+into both the review and the assess prompt (the workflow's `pr_review_context` input reaches the
+script as `PRT_PROJECT_CONTEXT`), so `run.sh` takes `--context`, records `context_sha`, and
+`compare.sh` gates on it. Note that the flag is not merely optional: the adapter defaults the
+value from `PRT_PROJECT_CONTEXT` in its own environment, so `run.sh` passes `--context` on every
+invocation — with the empty string when none was given — rather than letting whatever the
+operator's shell exports enter the prompt unrecorded.
+
 ## The reviewer is scored on what it publishes
 
 Two suppressions sit between a finding and a human, and both are unconditional in production, so
