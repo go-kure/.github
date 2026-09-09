@@ -136,6 +136,28 @@ assert_eq "retry recovers: 3 raw proxy calls were made" "3" "$(cat "$STUB_DIR/ca
 assert_eq "retry recovers: judge_calls reflects all 3, not one per call site" "3" \
   "$(jq -r .judge_calls <<<"$retried")"
 
+# --- model.sh's OWN internal connect-retry (curl exit 6/7), inside a single _judge_once_attempt ---
+#
+# Distinct from the retry above: that one is judge_once's own outer retry across TWO
+# _judge_once_attempt calls. This one is entirely inside ONE _judge_once_attempt -- order 1's
+# single raw call costs 2 real curl invocations because _prt_call_proxy retries the connect
+# failure itself (model.sh:377-419) -- invisible to judge_once unless it reads
+# PRT_LAST_MODEL_CALLS_FILE rather than assuming 1 per _judge_once_attempt (go-kure/.github#184
+# review finding, round 3). 3 raw calls total: order 1's connect failure + its retry, plus
+# order 2's one call.
+reset_stub
+printf '6' > "$STUB_DIR/exit-1"
+printf '%s' '{"same": true}' > "$STUB_DIR/reply-2"
+printf '%s' '{"same": true}' > "$STUB_DIR/reply-3"
+connect_retried="$(PRT_MODEL_CONNECT_RETRY_DELAY=0 run_judge)"
+rc=$?
+assert_eq "connect-retry inside one attempt: exit 0" "0" "$rc"
+assert_eq "connect-retry inside one attempt: matched" "1" "$(jq -r .matched <<<"$connect_retried")"
+assert_eq "connect-retry inside one attempt: 3 raw proxy calls were made" "3" \
+  "$(cat "$STUB_DIR/calls")"
+assert_eq "connect-retry inside one attempt: judge_calls reflects all 3, not 2 (one per order)" \
+  "3" "$(jq -r .judge_calls <<<"$connect_retried")"
+
 # --- both attempts unparseable: exhausted after one retry, reason is "not-json" ---
 reset_stub
 printf '%s' 'still not json' > "$STUB_DIR/reply-1"

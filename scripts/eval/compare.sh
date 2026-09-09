@@ -141,11 +141,25 @@ c_stable=$(jq -r 'if has("denominator_stable") then
     else "unknown" end' "$candidate")
 [ "$b_stable" != "unknown" ] && [ "$c_stable" != "unknown" ] \
     || die "denominator_stable is missing from at least one result; re-measure with a run.sh that records it"
-# Require the literal boolean true, not merely "not false" -- "malformed" and "false" are both
-# refused here, and neither falls through into the winner calculation below, which is exactly
-# the fail-closed gate this field exists to enforce.
-if [ "$b_stable" != "true" ] || [ "$c_stable" != "true" ]; then
-    die "denominator_stable is not true (baseline=$b_stable, candidate=$c_stable); spread may include documents excluded unevenly across that config's own runs and cannot be attributed to reviewer variance -- re-measure until both are stable before gating"
+
+# Never trust the reported flag alone -- derive the identical signal from $b_excl/$c_excl, the
+# same sorted excluded_per_run multiset the coverage-match gate above already computed. A stale
+# run.sh, or a hand-edited fixture, can set denominator_stable: true on a result whose own
+# excluded_per_run is internally uneven; two such results can still share the identical uneven
+# pattern, which passes the coverage-match gate above without the spread actually being pure
+# reviewer variance (go-kure/.github#184 review finding, round 3). Recomputing from data already
+# in hand, rather than re-reading the file, means this cannot itself drift from the coverage gate
+# it is cross-checking.
+b_excl_stable=$(jq -nr --argjson e "$b_excl" '(($e | unique | length) == 1) | tostring')
+c_excl_stable=$(jq -nr --argjson e "$c_excl" '(($e | unique | length) == 1) | tostring')
+
+# Require the literal boolean true from BOTH the reported field and the derived cross-check --
+# "malformed", "false", and a derived mismatch are all refused here, and none falls through into
+# the winner calculation below, which is exactly the fail-closed gate this field exists to
+# enforce.
+if [ "$b_stable" != "true" ] || [ "$c_stable" != "true" ] \
+    || [ "$b_excl_stable" != "true" ] || [ "$c_excl_stable" != "true" ]; then
+    die "denominator_stable is not true (baseline=$b_stable/excl=$b_excl_stable, candidate=$c_stable/excl=$c_excl_stable); spread may include documents excluded unevenly across that config's own runs and cannot be attributed to reviewer variance -- re-measure until both are stable before gating"
 fi
 
 b_engine=$(jq -r '.engine' "$baseline")

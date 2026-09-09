@@ -44,6 +44,28 @@ _prt_set_model_failure() {
   return 0
 }
 
+# PRT_LAST_MODEL_CALLS — the number of raw HTTP attempts the LAST
+# _prt_call_proxy invocation actually issued (0, 1 or 2): 0 when it refused
+# before curl ever ran (payload-build, local-tempdir, or deadline-exhausted on
+# attempt 1), 2 only when attempt 1 hit the connect-class retry (curl exit 6
+# or 7) and attempt 2 then ran. A caller counting "model calls" for cost
+# purposes (judge.sh's judge_calls) must read this after every
+# _prt_call_proxy invocation, not assume 1: that internal retry is invisible
+# from the outside otherwise, and undercounts real API usage whenever it
+# fires and succeeds (go-kure/.github#184 review finding). Same file-based
+# survival as PRT_LAST_MODEL_FAILURE_FILE above, for the same reason: every
+# real caller invokes this via command substitution, so a plain variable
+# never reaches back out of that subshell.
+# shellcheck disable=SC2034 # read by callers in judge.sh, not within this file
+PRT_LAST_MODEL_CALLS=""
+
+_prt_set_model_calls() {
+  # shellcheck disable=SC2034 # read by callers in judge.sh, not within this file
+  PRT_LAST_MODEL_CALLS="$1"
+  [ -n "${PRT_LAST_MODEL_CALLS_FILE:-}" ] && printf '%s' "$1" > "$PRT_LAST_MODEL_CALLS_FILE"
+  return 0
+}
+
 set -uo pipefail
 
 prt_strip_thinking() {
@@ -290,6 +312,7 @@ _prt_call_proxy() {
   # rather than removing it.
   local dir sysf userf req tmp
   _prt_set_model_failure ""
+  _prt_set_model_calls 0
   dir="$(mktemp -d)"
   if [ -z "$dir" ] || [ ! -d "$dir" ]; then
     echo "prt_model: could not create a temp dir for the request" >&2
@@ -393,6 +416,10 @@ _prt_call_proxy() {
       # transport fault.
       echo "prt_model: run deadline exhausted before attempt $attempt (${budget_left}s left, floor ${PRT_MODEL_TIMEOUT_FLOOR}s) — refusing call" >&2
       _prt_set_model_failure "deadline-exhausted"
+      # $attempt itself hasn't run curl yet on this iteration -- attempt-1 is
+      # how many already have (0 on the first iteration, 1 if this fires on
+      # the connect-retry's second attempt).
+      _prt_set_model_calls $((attempt - 1))
       # Every other failure path in this function removes $dir before
       # returning (the payload-build failure above, and the post-loop
       # branches below); mirror that here rather than falling through to
@@ -420,6 +447,10 @@ _prt_call_proxy() {
     esac
     break
   done
+  # $attempt only reaches 2 by falling through the connect-retry `continue`
+  # above, so at this point it already equals the number of curl invocations
+  # this call actually made -- no separate counter to keep in sync.
+  _prt_set_model_calls "$attempt"
   resp="$(cat "$tmp")"
   rm -rf "$dir"
 

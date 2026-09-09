@@ -110,6 +110,10 @@ workdir=$(mktemp -d "${TMPDIR:-/tmp}/judge.XXXXXX") || die "mktemp failed"
 trap 'rm -rf "$workdir"' EXIT
 PRT_LAST_MODEL_FAILURE_FILE="$workdir/last_model_failure"
 export PRT_LAST_MODEL_FAILURE_FILE
+# The real per-attempt HTTP call count model.sh's own connect-retry can make invisible otherwise
+# (go-kure/.github#184 review finding) -- see model.sh's own comment on PRT_LAST_MODEL_CALLS.
+PRT_LAST_MODEL_CALLS_FILE="$workdir/last_model_calls"
+export PRT_LAST_MODEL_CALLS_FILE
 # judge_once always runs inside a `v1=$(judge_once ...)` command substitution -- a subshell --
 # so a plain variable it sets is gone the instant that subshell exits. Same reason
 # PRT_LAST_MODEL_FAILURE_FILE above is a file and not a variable.
@@ -152,18 +156,26 @@ Respond with ONLY a single JSON object, no markdown fences, no prose:
 # reading the reason _judge_once_attempt (or the transport call inside it) recorded via
 # _prt_set_model_failure: only its own four parse/shape reasons are retryable.
 #
-# Writes the number of raw model calls this invocation actually made (1 or 2) to
-# $_JUDGE_ONCE_CALLS_FILE, so the caller's judge_calls counter -- documented above as counting
-# calls, not pairs -- stays accurate when a retry fires instead of silently undercounting real
-# API usage. A variable would not survive the `v1=$(judge_once ...)` subshell at every call site.
+# Writes the number of raw model calls this invocation actually made to $_JUDGE_ONCE_CALLS_FILE,
+# so the caller's judge_calls counter -- documented above as counting calls, not pairs -- stays
+# accurate whether this level's own retry fires OR model.sh's internal connect-class retry fires
+# inside a single _judge_once_attempt (go-kure/.github#184 review finding, round 3: a flat +1 per
+# attempt here silently dropped that inner retry, undercounting real API usage whenever it fired
+# and succeeded). Each _judge_once_attempt call runs _prt_call_proxy exactly once, which itself
+# leaves the real count of THAT call in $PRT_LAST_MODEL_CALLS_FILE (model.sh's own comment) --
+# summed across attempts here rather than assumed. A variable would not survive the
+# `v1=$(judge_once ...)` subshell at every call site.
 judge_once() {
-    local attempt calls=0 reason
+    local attempt calls=0 reason attempt_calls
     for attempt in 1 2; do
-        calls=$((calls + 1))
         if _judge_once_attempt "$1" "$2"; then
+            attempt_calls=$(cat "$PRT_LAST_MODEL_CALLS_FILE" 2>/dev/null || echo 1)
+            calls=$((calls + attempt_calls))
             printf '%s' "$calls" >"$_JUDGE_ONCE_CALLS_FILE"
             return 0
         fi
+        attempt_calls=$(cat "$PRT_LAST_MODEL_CALLS_FILE" 2>/dev/null || echo 1)
+        calls=$((calls + attempt_calls))
         [ "$attempt" -eq 1 ] || break
         reason=$(cat "$PRT_LAST_MODEL_FAILURE_FILE" 2>/dev/null || echo '')
         case "$reason" in

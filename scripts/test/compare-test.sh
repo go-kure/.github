@@ -114,5 +114,22 @@ rc=$?
 assert_eq "string-valued denominator_stable: exit 2, not a passed verdict" "2" "$rc"
 assert_match "string-valued denominator_stable: names the reason" "denominator_stable is not true" "$out"
 
+# --- denominator_stable: true lies about an internally uneven excluded_per_run ---
+#
+# Both sides share the IDENTICAL uneven pattern, so the coverage-match gate above passes it --
+# but each one's own denominator_stable should have been false, since the pattern is uneven
+# across THAT config's own three runs. A check that only reads the field, not the exclusion
+# data it is supposed to summarize, is fooled by a stale run.sh or a hand-edited fixture
+# (go-kure/.github#184 review finding, round 3). Cross-checking against excluded_per_run itself
+# must catch what the field alone missed.
+write_result "$WORK/baseline.json" chat 0.50 0.02 \
+  '.excluded_per_run = [[],["doc.json"],[]] | .denominator_stable = true'
+write_result "$WORK/candidate.json" service 0.60 0.02 \
+  '.excluded_per_run = [[],["doc.json"],[]] | .denominator_stable = true'
+out="$(bash "$COMPARE" "$WORK/baseline.json" "$WORK/candidate.json" 2>&1)"
+rc=$?
+assert_eq "flag lies about uneven exclusions: exit 2, not a passed verdict" "2" "$rc"
+assert_match "flag lies about uneven exclusions: names the reason" "denominator_stable is not true" "$out"
+
 echo "passed: $pass_count, failed: $failures"
 [ "$failures" -eq 0 ]
