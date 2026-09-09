@@ -1636,8 +1636,26 @@ audit_rulesets() {
     # Get existing rulesets. includes_parents=false excludes org-level rulesets that
     # apply here by inheritance — those are managed at the org level, not this repo's,
     # and would otherwise show up as unmanaged drift below.
-    local existing_rulesets
-    existing_rulesets=$(gh api "repos/$GITHUB_ORG/$repo/rulesets?includes_parents=false" 2>/dev/null || echo "[]")
+    # On failure (rulesets unsupported on this plan/repo visibility, permissions,
+    # rate-limit) `gh api` still writes the error body to stdout before exiting
+    # non-zero, so a bare `|| echo "[]"` fallback captured both and fed jq a
+    # two-document stream — the second document's error object then failed
+    # `.name` indexing ("Cannot index string with string"). Check the exit
+    # status explicitly instead, and skip the audit rather than silently
+    # reporting every applicable ruleset as MISSING against a fetch that never
+    # happened.
+    local existing_rulesets rulesets_fetch_ok=true
+    if ! existing_rulesets=$(gh api "repos/$GITHUB_ORG/$repo/rulesets?includes_parents=false" 2>/dev/null); then
+        existing_rulesets="[]"
+        rulesets_fetch_ok=false
+    fi
+
+    if [ "$rulesets_fetch_ok" = "false" ]; then
+        if [ "${#applicable_names[@]}" -gt 0 ]; then
+            echo -e "  ${YELLOW}SKIP${NC}: Could not read rulesets for $GITHUB_ORG/$repo (unsupported on this plan/visibility, or a permissions/rate-limit error) — ${#applicable_names[@]} ruleset(s) declared in policy could not be audited"
+        fi
+        return
+    fi
 
     for name in "${applicable_names[@]}"; do
         local existing_id
