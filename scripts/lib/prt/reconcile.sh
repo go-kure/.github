@@ -29,6 +29,10 @@ set -uo pipefail
 #
 # Prints one action word:
 #   NONE       — do nothing
+#   QUARANTINE — fp_base collides with another finding this run; withheld
+#                because the fingerprint is ambiguous — never created, and
+#                never silently dropped: rendered into the withheld section
+#                of the overflow/advisory comment instead (go-kure/.github#155)
 #   SUPPRESS   — FALSE POSITIVE, never created; render into the suppressed
 #                list in the overflow/summary instead
 #   REPLY_RESOLVE   — post the FALSE POSITIVE reply, then resolveReviewThread
@@ -41,8 +45,12 @@ prt_decide_finding() {
   local collision="$1" verdict="$2" thread_exists="$3" thread_resolved="$4" \
         resolved_by_bot="$5" within_cap="$6"
 
-  # Row 1: collision beats every other row, matched or absent.
-  [ "$collision" = true ] && { echo NONE; return 0; }
+  # Row 1: collision beats every other row, matched or absent — withheld
+  # (QUARANTINE) rather than reconciled normally, whether or not a thread
+  # already exists for it (go-kure/.github#155: this used to be NONE, which
+  # for a finding with no thread yet was indistinguishable from every other
+  # do-nothing row and left the finding's body nowhere).
+  [ "$collision" = true ] && { echo QUARANTINE; return 0; }
 
   if [ "$verdict" = FALSE_POSITIVE ]; then
     # Row 2: never created in the first place.
@@ -207,6 +215,14 @@ prt_thread_stays_gating() {
     REPLY_UNRESOLVE) echo true ;;
     REPLY_RESOLVE) echo false ;;
     NONE) [ "$thread_resolved" != true ] && echo true || echo false ;;
+    # QUARANTINE (go-kure/.github#155): row 1 fires before thread_exists is
+    # even read, so an OWNED thread that predates the collision and is still
+    # open must keep reserving its slot exactly as it did when this was
+    # NONE — the mechanism doesn't touch the thread, it only stops future
+    # resolve/reopen, so an unresolved thread here still blocks merge for
+    # real. Same predicate as the NONE row above, spelled out separately so
+    # it survives the next split of NONE's meanings.
+    QUARANTINE) [ "$thread_resolved" != true ] && echo true || echo false ;;
     # CREATE/OVERFLOW/SUPPRESS: unreachable when thread_exists=true (every
     # OWNED row this function is called for) — spelled out explicitly
     # rather than falling into this default by coincidence. This does NOT

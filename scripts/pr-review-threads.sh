@@ -910,8 +910,18 @@ ALL_FINDINGS="$capped_findings"
 # Evaluates every finding this run produced to completion (successes and
 # failures alike) BEFORE loop 2 reads REVIEW_INCOMPLETE.
 OVERFLOW='[]'
+QUARANTINED='[]'
 SUPPRESSED_COUNT=0
 MATCHED_FPS='[]'
+# THREADS_WRITTEN: a thread this run actually created or updated (CREATE,
+# REPLY_RESOLVE, REPLY_UNRESOLVE, each counted only on success). Distinct
+# from NONE_ANCHORED_COUNT (a thread that already existed and needed no
+# action this run) — go-kure/.github#155 needs the first to know whether
+# "the review threads carry the current state" is true, and the sum of both
+# to know whether every finding this run produced ended up somewhere
+# observable.
+THREADS_WRITTEN=0
+NONE_ANCHORED_COUNT=0
 
 if [ "$PRT_MODE" = advisory ]; then
   # advisory: zero thread creates/mutations, one plain issue comment with
@@ -1001,7 +1011,8 @@ else
     prt_log "fp=$fp -> $action"
 
     case "$action" in
-      NONE) : ;;
+      NONE) NONE_ANCHORED_COUNT=$((NONE_ANCHORED_COUNT + 1)) ;;
+      QUARANTINE) QUARANTINED="$(jq -c --argjson f "$f" '. + [$f]' <<< "$QUARANTINED")" ;;
       SUPPRESS) SUPPRESSED_COUNT=$((SUPPRESSED_COUNT + 1)) ;;
       OVERFLOW) OVERFLOW="$(jq -c --argjson f "$f" '. + [$f]' <<< "$OVERFLOW")" ;;
       REPLY_RESOLVE)
@@ -1025,6 +1036,7 @@ else
         # spam loop on a thread that never closes.
         mut="mutation(\$id:ID!){resolveReviewThread(input:{threadId:\$id}){thread{id}}}"
         if prt_gh_graphql "$mut" "$(jq -n --arg id "$thread_id" '{id:$id}')" >/dev/null; then
+          THREADS_WRITTEN=$((THREADS_WRITTEN + 1))
           # This freshness check only gates the reply, not the mutation
           # above — which already committed. prt_handle_freshness_rc's rc=1
           # ("safe to treat as non-fatal") relies on a superseding run
@@ -1057,6 +1069,7 @@ else
         db_id="$(jq -r '.first_comment_db_id' <<< "$owned_match")"
         mut="mutation(\$id:ID!){unresolveReviewThread(input:{threadId:\$id}){thread{id}}}"
         if prt_gh_graphql "$mut" "$(jq -n --arg id "$thread_id" '{id:$id}')" >/dev/null; then
+          THREADS_WRITTEN=$((THREADS_WRITTEN + 1))
           # Same reasoning as REPLY_RESOLVE above: this check only gates the
           # reply, the mutation already committed, so a superseding run will
           # not redo it — stay fatal via prt_mark_incomplete regardless of rc
@@ -1092,7 +1105,9 @@ else
           create_payload="$(jq -n --arg b "$body" --arg sha "$PRT_HEAD_SHA" --arg path "$file" \
             '{body:$b, commit_id:$sha, path:$path, subject_type:"file"}')"
         fi
-        if ! prt_gh_rest POST "/repos/${PRT_REPO}/pulls/${PRT_PR_NUMBER}/comments" "$create_payload" >/dev/null; then
+        if prt_gh_rest POST "/repos/${PRT_REPO}/pulls/${PRT_PR_NUMBER}/comments" "$create_payload" >/dev/null; then
+          THREADS_WRITTEN=$((THREADS_WRITTEN + 1))
+        else
           # 422 ladder gated on the actual status, not "any non-2xx": a
           # transient 403 (secondary rate limit) or 502 here previously
           # triggered an immediate second POST, which can succeed and leave
@@ -1106,8 +1121,11 @@ else
             if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
               fallback_payload="$(jq -n --arg b "$body" --arg sha "$PRT_HEAD_SHA" --arg path "$file" \
                 '{body:$b, commit_id:$sha, path:$path, subject_type:"file"}')"
-              prt_gh_rest POST "/repos/${PRT_REPO}/pulls/${PRT_PR_NUMBER}/comments" "$fallback_payload" >/dev/null || \
+              if prt_gh_rest POST "/repos/${PRT_REPO}/pulls/${PRT_PR_NUMBER}/comments" "$fallback_payload" >/dev/null; then
+                THREADS_WRITTEN=$((THREADS_WRITTEN + 1))
+              else
                 prt_mark_incomplete "fp=$fp: create failed (line-anchored 422 and file-level fallback both rejected)"
+              fi
             else
               prt_handle_freshness_rc "$?" "fp=$fp: create failed with 422, file-level fallback"
             fi
@@ -1118,6 +1136,26 @@ else
         ;;
     esac
   done
+fi
+
+# --- Accounting invariant (go-kure/.github#155's sixth criterion): every
+# finding this run produced must end in exactly one of three observable
+# states — anchored to a review thread (created/updated this run, or
+# already existing and left as-is), rendered in the durable overflow/
+# advisory comment, or counted in the withheld (SUPPRESS/QUARANTINE)
+# buckets. A run in which findings=N and the four counters below sum to
+# fewer than N is itself a reportable condition, not a silent outcome — it
+# catches a finding lost to any cause, not only the collision path (#155's
+# own render/QUARANTINE fix only closes that one path; this is the backstop
+# for a path nobody has found yet, per the issue's closing comment). Only
+# meaningful in enforce mode: advisory posts every finding in one comment
+# unconditionally, with no per-finding accounting to check.
+if [ "$PRT_MODE" = enforce ]; then
+  n_findings_total="$(jq 'length' <<< "$ALL_FINDINGS")"
+  accounted=$((THREADS_WRITTEN + NONE_ANCHORED_COUNT + SUPPRESSED_COUNT + $(jq 'length' <<< "$OVERFLOW") + $(jq 'length' <<< "$QUARANTINED")))
+  if [ "$accounted" -lt "$n_findings_total" ]; then
+    prt_mark_degraded "accounting mismatch: findings=$n_findings_total but only $accounted ended in an observable state (thread/comment/withheld) — $((n_findings_total - accounted)) finding(s) may have been silently lost this run (go-kure/.github#155 invariant)"
+  fi
 fi
 
 # ============================= LOOP 2: absence ==============================
@@ -1262,10 +1300,13 @@ if [ "$PRT_MODE" = enforce ]; then
   done
 fi
 
-# --- Overflow / advisory output, summary ---
-if [ "$PRT_MODE" = enforce ] && [ "$(jq 'length' <<< "$OVERFLOW")" -gt 0 ]; then
+# --- Overflow / quarantine / advisory output, summary ---
+# Fires on either bucket being non-empty: a QUARANTINE-only run (every
+# finding collided, none over the cap) must still get this comment, or the
+# withheld bodies land nowhere durable (go-kure/.github#155).
+if [ "$PRT_MODE" = enforce ] && { [ "$(jq 'length' <<< "$OVERFLOW")" -gt 0 ] || [ "$(jq 'length' <<< "$QUARANTINED")" -gt 0 ]; }; then
   if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
-    overflow_body="$(prt_render_overflow_comment "$OVERFLOW")"
+    overflow_body="$(prt_render_overflow_comment "$OVERFLOW" "$QUARANTINED")"
     prt_gh_rest POST "/repos/${PRT_REPO}/issues/${PRT_PR_NUMBER}/comments" \
       "$(jq -n --arg b "$overflow_body" '{body:$b}')" >/dev/null || \
       prt_mark_incomplete "failed to post overflow comment (HTTP ${PRT_LAST_HTTP_STATUS:-unknown})"
@@ -1337,7 +1378,7 @@ if [ "$PRT_MODE" = enforce ]; then
           # Re-check immediately before the write — see the identical
           # rationale on the zero-findings branch above.
           if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
-            superseded_body="$(prt_render_clean_comment_superseded "$PRT_HEAD_SHA" "$total_findings_this_run")"
+            superseded_body="$(prt_render_clean_comment_superseded "$PRT_HEAD_SHA" "$total_findings_this_run" "$THREADS_WRITTEN" "$SUPPRESSED_COUNT" "$(jq 'length' <<< "$OVERFLOW")" "$(jq 'length' <<< "$QUARANTINED")")"
             # go-kure/.github#98: degraded, not fatal — matching this
             # branch's own established asymmetry just above (a listing
             # failure here is deliberately NOT prt_mark_incomplete either):
@@ -1366,7 +1407,7 @@ incomplete_count=0
 prt_is_incomplete && incomplete_count="$(prt_incomplete_reasons | grep -c . || true)"
 degraded_count=0
 prt_is_degraded && degraded_count="$(prt_degraded_reasons | grep -c . || true)"
-prt_log "done: findings=$(jq 'length' <<< "$ALL_FINDINGS") gating=$(jq '[.[] | select(.within_cap == true)] | length' <<< "$ALL_FINDINGS") suppressed=$SUPPRESSED_COUNT incomplete=$incomplete_count degraded=$degraded_count"
+prt_log "done: findings=$(jq 'length' <<< "$ALL_FINDINGS") gating=$(jq '[.[] | select(.within_cap == true)] | length' <<< "$ALL_FINDINGS") suppressed=$SUPPRESSED_COUNT quarantined=$(jq 'length' <<< "$QUARANTINED") incomplete=$incomplete_count degraded=$degraded_count"
 
 # A non-empty REVIEW_INCOMPLETE state means some part of the review could not
 # be completed (a skipped/failed read or write, a malformed model response,
