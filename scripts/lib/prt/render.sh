@@ -291,23 +291,26 @@ EOF
 
 # prt_render_clean_comment_superseded SHA FINDING_COUNT THREADS_WRITTEN \
 #                                      SUPPRESSED_COUNT OVERFLOW_COUNT \
-#                                      QUARANTINED_COUNT
+#                                      QUARANTINED_COUNT NONE_ANCHORED_COUNT
 # — rewrites (never deletes) a prior clean-verdict comment once a later run
 # on the same PR finds something. Deleting would destroy the audit trail
 # that SHA really was reviewed clean.
 #
-# "The review threads on this PR carry the current state" is only true when
-# THREADS_WRITTEN>0 — a run whose every finding was suppressed, went to the
-# overflow cap, or was quarantined on a colliding fingerprint creates or
-# updates no thread at all, and pointing at "the review threads" then
-# describes threads that do not exist (go-kure/.github#155: this was the
-# false sentence in the original report — a collided run left the reader
-# believing findings were tracked somewhere they were not). The zero-thread
-# branch states the breakdown and points at the overflow/advisory comment,
-# the durable surface that actually carries them.
+# "The review threads on this PR carry the current state" is true whenever
+# THREADS_WRITTEN>0 OR NONE_ANCHORED_COUNT>0 — the latter is the steady-state
+# case where a finding matched an already-existing thread and needed no
+# update this run, so no write happened but the existing thread still
+# carries it. Keying on THREADS_WRITTEN alone (go-kure/.github#180 kure-bot
+# review) misclassified that case as "no thread carries them" and pointed at
+# an advisory comment that was never posted (OVERFLOW/QUARANTINED both 0).
+# The zero-anchor branch is reserved for a run where every finding was
+# suppressed, went to the overflow cap, or was quarantined on a colliding
+# fingerprint — creates or updates no thread AND anchors to no existing one
+# — and states the breakdown, pointing at the overflow/advisory comment that
+# actually carries them (go-kure/.github#155: the original false sentence).
 prt_render_clean_comment_superseded() {
-  local sha="$1" count="$2" threads_written="$3" suppressed="$4" overflow="$5" quarantined="$6"
-  if [ "$threads_written" -gt 0 ]; then
+  local sha="$1" count="$2" threads_written="$3" suppressed="$4" overflow="$5" quarantined="$6" none_anchored="${7:-0}"
+  if [ "$((threads_written + none_anchored))" -gt 0 ]; then
     cat <<EOF
 ## ~~AI Code Review — Reviewed, no findings~~ (superseded)
 

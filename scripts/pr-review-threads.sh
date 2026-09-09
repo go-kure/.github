@@ -1382,7 +1382,7 @@ if [ "$PRT_MODE" = enforce ]; then
           # Re-check immediately before the write — see the identical
           # rationale on the zero-findings branch above.
           if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
-            superseded_body="$(prt_render_clean_comment_superseded "$PRT_HEAD_SHA" "$total_findings_this_run" "$THREADS_WRITTEN" "$SUPPRESSED_COUNT" "$(jq 'length' <<< "$OVERFLOW")" "$(jq 'length' <<< "$QUARANTINED")")"
+            superseded_body="$(prt_render_clean_comment_superseded "$PRT_HEAD_SHA" "$total_findings_this_run" "$THREADS_WRITTEN" "$SUPPRESSED_COUNT" "$(jq 'length' <<< "$OVERFLOW")" "$(jq 'length' <<< "$QUARANTINED")" "$NONE_ANCHORED_COUNT")"
             # go-kure/.github#98: degraded, not fatal — matching this
             # branch's own established asymmetry just above (a listing
             # failure here is deliberately NOT prt_mark_incomplete either):
