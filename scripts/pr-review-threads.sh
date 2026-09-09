@@ -1307,6 +1307,10 @@ fi
 if [ "$PRT_MODE" = enforce ] && { [ "$(jq 'length' <<< "$OVERFLOW")" -gt 0 ] || [ "$(jq 'length' <<< "$QUARANTINED")" -gt 0 ]; }; then
   if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
     overflow_body="$(prt_render_overflow_comment "$OVERFLOW" "$QUARANTINED")"
+    # issues/{n}/comments deliberately, not pulls/{n}/comments: the latter
+    # posts a review thread reply, which sets has_human_reply (content-based,
+    # not author-based) and would make a quarantined/overflow body a merge
+    # blocker instead of the advisory it's meant to be.
     prt_gh_rest POST "/repos/${PRT_REPO}/issues/${PRT_PR_NUMBER}/comments" \
       "$(jq -n --arg b "$overflow_body" '{body:$b}')" >/dev/null || \
       prt_mark_incomplete "failed to post overflow comment (HTTP ${PRT_LAST_HTTP_STATUS:-unknown})"
