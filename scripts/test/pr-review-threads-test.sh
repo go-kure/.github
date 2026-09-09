@@ -1063,6 +1063,22 @@ assert_eq "prt_render_clean_comment_superseded: fully accounted run (count == su
 assert_eq "prt_render_clean_comment_superseded: unaccounted-branch predicate is discriminating (positive control)" \
   "true" "$(grep -qF 'reach any durable outcome' <<< "$superseded_unaccounted" && echo true || echo false)"
 
+# go-kure/.github#180 codex review, this round: a quarantine-only run whose
+# overflow/quarantine comment POST fails is REVIEW_INCOMPLETE
+# (pr-review-threads.sh:1358), but the true OVERFLOW/QUARANTINED array
+# lengths still get passed to this function unless the orchestrator zeroes
+# them on that specific failure — args below are what the orchestrator's
+# OVERFLOW_COMMENT_POSTED=false path now passes (0 0, not the true
+# quarantined=1), reproducing the exact call the fixed call site makes.
+# Before the fix, passing the true count (quarantined=1) here took the
+# advisory_count>0 branch and falsely claimed "see the advisory comment on
+# this PR" for a comment that was never posted.
+superseded_overflow_post_failed="$(prt_render_clean_comment_superseded 'def4567890def4567890def4567890def4567890' 1 0 0 0 0 0)"
+assert_eq "prt_render_clean_comment_superseded: overflow-comment POST failed (args zeroed) -> does NOT point at the advisory comment" \
+  "false" "$(grep -qF 'advisory comment' <<< "$superseded_overflow_post_failed" && echo true || echo false)"
+assert_eq "prt_render_clean_comment_superseded: overflow-comment POST failed (args zeroed) -> takes the unaccounted branch instead" \
+  "true" "$(grep -qF 'reach any durable outcome' <<< "$superseded_overflow_post_failed" && echo true || echo false)"
+
 # ============================================================ render.sh: prt_render_overflow_comment quarantined section (go-kure/.github#155)
 # QUARANTINED_JSON is the second, optional argument — findings withheld by
 # reconcile.sh row 1 (fp_base collision). Both polarities per criterion 3:
@@ -1102,6 +1118,31 @@ assert_eq "prt_render_overflow_comment: at least one gating:true row -> the blan
   "false" "$(grep -qF '*Automated review — advisory only, not merge-gating.*' <<< "$quarantine_gating_footer" && echo true || echo false)"
 assert_eq "prt_render_overflow_comment: no gating:true row (all false) -> blanket 'advisory only, not merge-gating.' footer" \
   "true" "$(grep -qF '*Automated review — advisory only, not merge-gating.*' <<< "$quarantine_only" && echo true || echo false)"
+
+# persisted_only column (go-kure/.github#180 codex review, this round): a
+# quarantined row can be effective-collision=true purely from a thread's
+# PERSISTED marker (finding.sh:204's this-run collision=false), not from
+# another finding sharing the fingerprint in the CURRENT diff — the table
+# must say which, per row, not assert "in this diff" unconditionally.
+quarantine_persisted='[{"severity":"High","category":"other","file":"dup.go","issue":"collision issue one","fix":"n/a","gating":false,"persisted_only":true}]'
+quarantine_persisted_row="$(prt_render_overflow_comment '[]' "$quarantine_persisted")"
+# Keyed on the pipe-delimited TABLE CELL, not the bare phrase: the intro
+# paragraph explains both labels in prose, so it always contains the
+# literal string "persisted (earlier run)" regardless of any row's actual
+# value — a bare-phrase assertion would pass vacuously either way (same
+# class of trap as G4, go-kure/.github#180 gmr round 1: a predicate that
+# can never discriminate proves nothing about which branch rendered).
+assert_eq "prt_render_overflow_comment: persisted_only:true row -> Collision cell reads 'persisted (earlier run)'" \
+  "true" "$(grep -qF '| persisted (earlier run) |' <<< "$quarantine_persisted_row" && echo true || echo false)"
+assert_eq "prt_render_overflow_comment: persisted_only:true row -> Collision cell does NOT read 'this run' (negative, paired with the positive control above)" \
+  "false" "$(grep -qF '| this run |' <<< "$quarantine_persisted_row" && echo true || echo false)"
+assert_eq "prt_render_overflow_comment: persisted_only:true row -> intro no longer asserts 'in this diff' unconditionally" \
+  "false" "$(grep -qF 'share a fingerprint with another finding in this diff' <<< "$quarantine_persisted_row" && echo true || echo false)"
+quarantine_this_run="$(prt_render_overflow_comment '[]' "$quarantine_triple")"
+assert_eq "prt_render_overflow_comment: persisted_only omitted (default) -> Collision cell reads 'this run' (existing fixtures have no persisted_only field)" \
+  "true" "$(grep -qF '| this run |' <<< "$quarantine_this_run" && echo true || echo false)"
+assert_eq "prt_render_overflow_comment: persisted_only omitted (default) -> Collision cell does NOT read 'persisted (earlier run)' (positive control: the row-specific predicate DOES discriminate, proven by the row above taking the other branch)" \
+  "false" "$(grep -qF '| persisted (earlier run) |' <<< "$quarantine_this_run" && echo true || echo false)"
 
 # ============================================================ render.sh: prt_render_advisory_comment degraded/incomplete disclosure (go-kure/.github#98 round 3, chatgpt-codex-connector[bot] review go-kure/.github#101#pullrequestreview-5028172237; round 5, kure-bot pr-review AI Code Review on go-kure/.github#101 at 9b2fe22 — the zero-count suppression round 3 added for `degraded_reasons` alone left the strictly-more-severe `incomplete_reasons`-only zero-count case still printing plain "No issues found.")
 adv_clean_zero="$(prt_render_advisory_comment '[]')"
@@ -2610,6 +2651,19 @@ assert_eq "orchestrator: fingerprint-collided run -> all three finding bodies re
   "true" "$(grep -qF 'collision issue one' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && grep -qF 'collision issue two' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && grep -qF 'collision issue three' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && echo true || echo false)"
 assert_eq "orchestrator: fingerprint-collided run -> no accounting-mismatch REVIEW_DEGRADED (all three findings landed in the withheld bucket, criterion 6 invariant holds)" \
   "false" "$(grep -qF 'accounting mismatch' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+# go-kure/.github#180 codex review, this round: all three findings collide
+# THIS run (finding.sh:204, group length 3), so persisted_only must be
+# false for every one — the Collision column must read "this run", not
+# falsely "persisted (earlier run)" (which would only be correct if this
+# run's own multiplicity were absent and the flag came from an owned
+# thread's carried-over marker instead — no owned thread exists in this
+# scenario at all).
+# Keyed on the pipe-delimited TABLE CELL, not the bare phrase — see the
+# render.sh unit test above for why a bare-phrase predicate here would be
+# vacuous (the intro paragraph's own explanatory prose contains both
+# labels unconditionally).
+assert_eq "orchestrator: fingerprint-collided run (THIS-run multiplicity, no owned thread) -> Collision cell reads 'this run', not 'persisted'" \
+  "true" "$(grep -qF '| this run |' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && ! grep -qF '| persisted (earlier run) |' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && echo true || echo false)"
 PRT_TEST_MODEL_RESPONSE_MODE=clean
 rm -f "$PRT_TEST_ISSUE_COMMENT_BODY_FILE"
 unset PRT_TEST_ISSUE_COMMENT_BODY_FILE

@@ -1039,7 +1039,21 @@ else
           gating_resolved="$(jq -r '.resolved' <<< "$gating_owned_match")"
           [ "$gating_resolved" != true ] && gating_flag=true
         fi
-        QUARANTINED="$(jq -c --argjson f "$f" --argjson g "$gating_flag" '. + [$f + {gating: $g}]' <<< "$QUARANTINED")"
+        # $collision is this finding's own this-run multiplicity
+        # (finding.sh:204, group length>1 in ALL_FINDINGS this run);
+        # $effective_collision above OR's it with a persisted thread flag.
+        # QUARANTINE can fire on the OR alone (effective_collision=true,
+        # collision=false) when this run has only ONE finding for the
+        # fp_base but an earlier run's collision persisted onto the owned
+        # thread (:968-993) — the other finding that caused the original
+        # collision may be gone several pushes ago. Tag which case this is
+        # so the render layer doesn't tell reviewers a duplicate exists "in
+        # this diff" when it may not (go-kure/.github#180 codex review,
+        # this round).
+        persisted_only_flag=false
+        [ "$collision" != true ] && persisted_only_flag=true
+        QUARANTINED="$(jq -c --argjson f "$f" --argjson g "$gating_flag" --argjson p "$persisted_only_flag" \
+          '. + [$f + {gating: $g, persisted_only: $p}]' <<< "$QUARANTINED")"
         ;;
       SUPPRESS) SUPPRESSED_COUNT=$((SUPPRESSED_COUNT + 1)) ;;
       OVERFLOW) OVERFLOW="$(jq -c --argjson f "$f" '. + [$f]' <<< "$OVERFLOW")" ;;
@@ -1332,6 +1346,14 @@ fi
 # Fires on either bucket being non-empty: a QUARANTINE-only run (every
 # finding collided, none over the cap) must still get this comment, or the
 # withheld bodies land nowhere durable (go-kure/.github#155).
+#
+# OVERFLOW_COMMENT_POSTED tracks whether that POST actually succeeded —
+# consumed below by the clean-comment supersede call, which must not credit
+# overflow/quarantined findings as "see the advisory comment" when this
+# comment never made it (go-kure/.github#180 codex review, this round): the
+# accounting invariant above (:1181-1187) only sees array lengths, computed
+# before this POST is even attempted, so it cannot see a later failure here.
+OVERFLOW_COMMENT_POSTED=true
 if [ "$PRT_MODE" = enforce ] && { [ "$(jq 'length' <<< "$OVERFLOW")" -gt 0 ] || [ "$(jq 'length' <<< "$QUARANTINED")" -gt 0 ]; }; then
   if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
     overflow_body="$(prt_render_overflow_comment "$OVERFLOW" "$QUARANTINED")"
@@ -1341,9 +1363,10 @@ if [ "$PRT_MODE" = enforce ] && { [ "$(jq 'length' <<< "$OVERFLOW")" -gt 0 ] || 
     # blocker instead of the advisory it's meant to be.
     prt_gh_rest POST "/repos/${PRT_REPO}/issues/${PRT_PR_NUMBER}/comments" \
       "$(jq -n --arg b "$overflow_body" '{body:$b}')" >/dev/null || \
-      prt_mark_incomplete "failed to post overflow comment (HTTP ${PRT_LAST_HTTP_STATUS:-unknown})"
+      { prt_mark_incomplete "failed to post overflow comment (HTTP ${PRT_LAST_HTTP_STATUS:-unknown})"; OVERFLOW_COMMENT_POSTED=false; }
   else
     prt_handle_freshness_rc "$?" "overflow comment"
+    OVERFLOW_COMMENT_POSTED=false
   fi
 fi
 
@@ -1410,7 +1433,20 @@ if [ "$PRT_MODE" = enforce ]; then
           # Re-check immediately before the write — see the identical
           # rationale on the zero-findings branch above.
           if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
-            superseded_body="$(prt_render_clean_comment_superseded "$PRT_HEAD_SHA" "$total_findings_this_run" "$THREADS_WRITTEN" "$SUPPRESSED_COUNT" "$(jq 'length' <<< "$OVERFLOW")" "$(jq 'length' <<< "$QUARANTINED")" "$NONE_ANCHORED_COUNT")"
+            # When the overflow/quarantine comment failed to post, its
+            # findings did not reach ANY durable outcome this run — pass 0,
+            # not the true counts, so the "unaccounted" branch below picks
+            # them up instead of the advisory-comment branch falsely
+            # claiming "see the advisory comment on this PR" for a comment
+            # that was never written (go-kure/.github#180 codex review, this
+            # round).
+            superseded_overflow_arg="$(jq 'length' <<< "$OVERFLOW")"
+            superseded_quarantined_arg="$(jq 'length' <<< "$QUARANTINED")"
+            if [ "$OVERFLOW_COMMENT_POSTED" != true ]; then
+              superseded_overflow_arg=0
+              superseded_quarantined_arg=0
+            fi
+            superseded_body="$(prt_render_clean_comment_superseded "$PRT_HEAD_SHA" "$total_findings_this_run" "$THREADS_WRITTEN" "$SUPPRESSED_COUNT" "$superseded_overflow_arg" "$superseded_quarantined_arg" "$NONE_ANCHORED_COUNT")"
             # go-kure/.github#98: degraded, not fatal — matching this
             # branch's own established asymmetry just above (a listing
             # failure here is deliberately NOT prt_mark_incomplete either):

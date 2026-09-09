@@ -581,6 +581,32 @@ misrepresents a failed write as a reviewer verdict. The function now checks `cou
 of its other four counters first; a shortfall renders a dedicated message naming how many findings
 did not reach a durable outcome, before any of the three existing branches run.
 
+A third codex review round (against the commit carrying all of the above) found two further real
+defects, both in code this PR itself introduced. First, the same-run accounting invariant
+(`pr-review-threads.sh:1181-1187`) runs *before* the overflow/quarantine comment POST
+(`:1349-1362`) and only sees `OVERFLOW`/`QUARANTINED` array lengths, so it already counts a
+quarantined finding as accounted for even if that POST is about to fail. When it does fail,
+`prt_mark_incomplete` records `REVIEW_INCOMPLETE`, but the nonzero-findings supersede branch
+(`:1421` on) has no `! prt_is_incomplete` guard the way its zero-findings sibling does, so it still
+ran and called `prt_render_clean_comment_superseded` with the true (nonzero) overflow/quarantined
+counts — producing "see the advisory comment on this PR for the withheld/overflow finding bodies"
+for a comment that was never posted. A new `OVERFLOW_COMMENT_POSTED` flag now tracks that POST's
+own outcome; the supersede call site passes `0 0` for the overflow/quarantined counts instead of
+the true lengths when it is `false`, which routes those findings into the existing "did not reach
+any durable outcome" branch instead of falsely pointing at the advisory comment — reusing the
+unaccounted-branch machinery the previous round's fix already added, rather than a new branch.
+Second, the withheld-findings table's intro sentence claimed every quarantined finding "share[s] a
+fingerprint with another finding in this diff" — true only when this run's own multiplicity
+(`finding.sh`'s `collision` field, group length>1) caused the quarantine. A finding can also be
+quarantined purely because an *earlier* run's collision persisted onto the owned thread's marker
+(`pr-review-threads.sh:968-993`), with only one finding for that `fp_base` present this run — the
+other finding that originally caused the collision may be gone several pushes ago, and persisted
+collisions are never cleared automatically, so every later singleton run repeated the same false
+claim. Each quarantined finding is now tagged `persisted_only: true/false` (`$collision != true` at
+the point `effective_collision` was OR'd with the owned thread's flag) and the table gained a
+`Collision` column reading "this run" or "persisted (earlier run)" per row, with the intro reworded
+to describe both sources instead of asserting the first unconditionally.
+
 Landing this fix also required its own same-repo composite-action pin bump (`docs/standards.md`,
 "GitHub Actions pinning"): `scripts/pr-review-threads.sh` and `scripts/lib/prt/*.sh` are delegate
 code consumed through `.github/workflows/pr-review.yml`'s pinned `pr-review-threads` action
