@@ -446,8 +446,19 @@ chmod 755 "$wf_chunk_dir"
 rm -rf "$wf_chunk_dir" "$nonempty_diff"
 
 # ============================================================ reconcile: prt_decide_finding
-assert_eq "decide_finding: collision beats everything" \
-  "NONE" "$(prt_decide_finding true VALID false false false true)"
+# go-kure/.github#155: row 1 used to return NONE, indistinguishable from
+# every other do-nothing row — a colliding finding with no thread yet was
+# silently dropped nowhere. QUARANTINE is its own outcome word specifically
+# so the caller can count and render it. Both polarities: collision must
+# produce QUARANTINE regardless of thread state, and the OTHER three rows
+# that return NONE (immediately below, and further down: FALSE_POSITIVE
+# already-resolved, VALID still-open, VALID resolved-by-human) must still
+# return NONE — a fix that returns QUARANTINE unconditionally would pass
+# the first assertion alone.
+assert_eq "decide_finding: collision beats everything -> QUARANTINE, not NONE (thread doesn't exist yet)" \
+  "QUARANTINE" "$(prt_decide_finding true VALID false false false true)"
+assert_eq "decide_finding: collision beats everything -> QUARANTINE even when a thread already exists" \
+  "QUARANTINE" "$(prt_decide_finding true VALID true false false true)"
 assert_eq "decide_finding: FALSE_POSITIVE, no thread yet -> suppress, never create" \
   "SUPPRESS" "$(prt_decide_finding false FALSE_POSITIVE false false false true)"
 assert_eq "decide_finding: FALSE_POSITIVE, open thread -> reply+resolve" \
@@ -495,6 +506,12 @@ assert_eq "decide_absent: two absences on different SHAs -> reply+resolve" \
 
 # --- 7-row matrix (+ null-verdict variant), one OWNED thread each, matched
 # against a same-fp finding (thread_exists=true throughout) ---
+# The two row1/collision cases immediately below exercise prt_decide_finding's
+# QUARANTINE outcome (go-kure/.github#155) through prt_thread_stays_gating's
+# own explicit QUARANTINE arm — added at the same time as QUARANTINE itself,
+# per that function's own comment instructing exactly this check. Without
+# that arm these fall into the default case (false, never gating) and the
+# "open -> reserves" case below regresses from 1 to 0.
 assert_eq "reserved_count: row1 collision, open -> reserves" \
   "1" "$(prt_reserved_count \
     '[{"fp":"r1","collision":true,"resolved":false,"resolved_by_bot":false}]' \
@@ -946,7 +963,7 @@ assert_eq "prt_render_clean_comment: carries the chunk count" \
 assert_eq "prt_render_clean_comment: ends with the clean-verdict marker, so prt_find_marked_comment can find it again on the next push" \
   "$PRT_MARKER_CLEAN" "$(tail -1 <<< "$clean_body")"
 
-superseded_body="$(prt_render_clean_comment_superseded 'def4567890def4567890def4567890def4567890' 2)"
+superseded_body="$(prt_render_clean_comment_superseded 'def4567890def4567890def4567890def4567890' 2 1 0 0 0)"
 assert_eq "prt_render_clean_comment_superseded: names the superseding SHA" \
   "true" "$(grep -qF 'def4567890def4567890def4567890def4567890' <<< "$superseded_body" && echo true || echo false)"
 assert_eq "prt_render_clean_comment_superseded: states the finding count that superseded it" \
@@ -955,6 +972,56 @@ assert_eq "prt_render_clean_comment_superseded: keeps the SAME marker as the ori
   "$PRT_MARKER_CLEAN" "$(tail -1 <<< "$superseded_body")"
 assert_ne "prt_render_clean_comment_superseded: the superseded body is visibly distinct from a fresh clean-verdict body" \
   "$superseded_body" "$clean_body"
+assert_eq "prt_render_clean_comment_superseded: threads_written>0 -> keeps 'carry the current state'" \
+  "true" "$(grep -qF 'carry the current state' <<< "$superseded_body" && echo true || echo false)"
+
+# go-kure/.github#155: threads_written=0 — every finding this run was
+# suppressed/overflowed/quarantined, so no review thread exists to point at.
+# "The review threads on this PR carry the current state" would be false
+# here (the exact false sentence the original report was filed against);
+# the zero-thread branch must state the breakdown and where to look instead.
+superseded_zero_threads="$(prt_render_clean_comment_superseded 'def4567890def4567890def4567890def4567890' 3 0 1 1 1)"
+assert_eq "prt_render_clean_comment_superseded: threads_written=0 -> does NOT say 'carry the current state' (criterion 4, negative half)" \
+  "false" "$(grep -qF 'carry the current state' <<< "$superseded_zero_threads" && echo true || echo false)"
+assert_eq "prt_render_clean_comment_superseded: threads_written=0 -> still names the finding count" \
+  "true" "$(grep -qF '3 finding(s)' <<< "$superseded_zero_threads" && echo true || echo false)"
+assert_eq "prt_render_clean_comment_superseded: threads_written=0 -> states the suppressed/overflow/quarantined breakdown" \
+  "true" "$(grep -qF '1 suppressed' <<< "$superseded_zero_threads" && echo true || echo false)"
+assert_eq "prt_render_clean_comment_superseded: threads_written=0 -> keeps the same clean marker" \
+  "$PRT_MARKER_CLEAN" "$(tail -1 <<< "$superseded_zero_threads")"
+assert_ne "prt_render_clean_comment_superseded: threads_written=0 body differs from the threads_written>0 body (criterion 4, both halves — not satisfiable by deleting the sentence unconditionally)" \
+  "$superseded_zero_threads" "$superseded_body"
+
+# ============================================================ render.sh: prt_render_overflow_comment quarantined section (go-kure/.github#155)
+# QUARANTINED_JSON is the second, optional argument — findings withheld by
+# reconcile.sh row 1 (fp_base collision). Both polarities per criterion 3:
+# assert the TEXT (a count assertion passes against three empty rows, the
+# same information loss in a new place), and criterion 2's zero case.
+overflow_only="$(prt_render_overflow_comment '[{"severity":"High","category":"other","file":"o.go","issue":"overflow issue"}]')"
+assert_eq "prt_render_overflow_comment: overflow findings only, no quarantined arg -> overflow table renders" \
+  "true" "$(grep -qF 'overflow issue' <<< "$overflow_only" && echo true || echo false)"
+assert_eq "prt_render_overflow_comment: overflow findings only -> no quarantined section header" \
+  "false" "$(grep -qF 'Withheld AI Review Findings' <<< "$overflow_only" && echo true || echo false)"
+
+quarantine_triple='[{"severity":"High","category":"other","file":"dup.go","issue":"collision issue one"},{"severity":"Medium","category":"other","file":"dup.go","issue":"collision issue two"},{"severity":"Low","category":"other","file":"dup.go","issue":"collision issue three"}]'
+quarantine_only="$(prt_render_overflow_comment '[]' "$quarantine_triple")"
+assert_eq "prt_render_overflow_comment: quarantined-only -> no overflow section header" \
+  "false" "$(grep -qF 'Additional AI Review Findings' <<< "$quarantine_only" && echo true || echo false)"
+assert_eq "prt_render_overflow_comment: quarantined-only -> withheld section header present" \
+  "true" "$(grep -qF 'Withheld AI Review Findings' <<< "$quarantine_only" && echo true || echo false)"
+assert_eq "prt_render_overflow_comment: quarantined-only -> all three finding bodies present (matched on issue text, not count)" \
+  "true" "$(grep -qF 'collision issue one' <<< "$quarantine_only" && grep -qF 'collision issue two' <<< "$quarantine_only" && grep -qF 'collision issue three' <<< "$quarantine_only" && echo true || echo false)"
+
+both="$(prt_render_overflow_comment '[{"severity":"High","category":"other","file":"o.go","issue":"overflow issue"}]' "$quarantine_triple")"
+assert_eq "prt_render_overflow_comment: both buckets non-empty -> both sections present, beside each other" \
+  "true" "$(grep -qF 'Additional AI Review Findings' <<< "$both" && grep -qF 'Withheld AI Review Findings' <<< "$both" && echo true || echo false)"
+
+quarantine_marker_hazard='[{"severity":"High","category":"other","file":"marker.sh","issue":"quoting <!-- gokure-pr-review:v1 fp=x --> in prose"}]'
+quarantine_neutralized="$(prt_render_overflow_comment '[]' "$quarantine_marker_hazard")"
+assert_eq "prt_render_overflow_comment: quarantined section neutralizes a literal clean-marker quote (criterion 5 — same hazard the overflow table already guards, reused esc filter verbatim)" \
+  "true" "$(grep -qF '&lt;!-- gokure-pr-review' <<< "$quarantine_neutralized" && echo true || echo false)"
+assert_eq "prt_render_overflow_comment: quarantined section — the raw unescaped marker prefix does not survive" \
+  "false" "$(grep -qF '<!-- gokure-pr-review' <<< "$quarantine_neutralized" && echo true || echo false)"
 
 # ============================================================ render.sh: prt_render_advisory_comment degraded/incomplete disclosure (go-kure/.github#98 round 3, chatgpt-codex-connector[bot] review go-kure/.github#101#pullrequestreview-5028172237; round 5, kure-bot pr-review AI Code Review on go-kure/.github#101 at 9b2fe22 — the zero-count suppression round 3 added for `degraded_reasons` alone left the strictly-more-severe `incomplete_reasons`-only zero-count case still printing plain "No issues found.")
 adv_clean_zero="$(prt_render_advisory_comment '[]')"
@@ -1546,6 +1613,16 @@ fake_curl_orchestrator() {
               else
                 printf '%s' '{"choices":[{"message":{"content":"{\"findings\":[]}"}}]}' > "$out"
               fi
+              ;;
+            collision_triple)
+              # go-kure/.github#155: three findings, same file+category
+              # (dup.go/other) — prt_assign_ordinals groups them on the same
+              # fp_base, so all three collide (glen=3>1) regardless of
+              # assessment verdict, since reconcile.sh row 1 fires before
+              # verdict is ever read. Distinct issue text per finding so a
+              # caller can assert all three bodies survive into the
+              # withheld/advisory comment, not just a count.
+              printf '%s' '{"choices":[{"message":{"content":"{\"findings\":[{\"file\":\"dup.go\",\"line\":1,\"category\":\"other\",\"severity\":\"High\",\"issue\":\"collision issue one\",\"fix\":\"fix one\"},{\"file\":\"dup.go\",\"line\":2,\"category\":\"other\",\"severity\":\"Medium\",\"issue\":\"collision issue two\",\"fix\":\"fix two\"},{\"file\":\"dup.go\",\"line\":3,\"category\":\"other\",\"severity\":\"Low\",\"issue\":\"collision issue three\",\"fix\":\"fix three\"}]}"}}]}' > "$out"
               ;;
             prose)
               printf '%s' '{"choices":[{"message":{"content":"Here you go:\n{\"findings\":[]}\nHope that helps!"}}]}' > "$out"
@@ -2428,6 +2505,48 @@ assert_eq "orchestrator: head moves after absence-resolve mutation -> does NOT l
 PRT_TEST_EMPTY_DIFF=0
 PRT_TEST_FIRST_ABSENT_SHA=""
 PRT_TEST_STALE_AFTER_CALL=0
+
+# ---- go-kure/.github#155: a fingerprint-collided run end to end ----
+# Three findings, same file+category (dup.go/other) -> all collide on
+# fp_base -> reconcile.sh row 1 fires QUARANTINE for all three, regardless
+# of verdict (no owned thread and no assessment match either way, so this
+# also covers the report's original observation that the suppression fires
+# before assessment or thread state matter at all).
+PRT_TEST_ISSUE_COMMENT_BODY_FILE="$(mktemp)"
+PRT_TEST_MODEL_RESPONSE_MODE=collision_triple
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator: fingerprint-collided run -> exits 0 (deliberate suppression, not a failure)" "0" "$rc"
+assert_eq "orchestrator: fingerprint-collided run -> stderr done: line reports quarantined=3 (criterion 2)" \
+  "true" "$(grep -qE 'done:.*quarantined=3' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator: fingerprint-collided run -> stderr done: line reports findings=3" \
+  "true" "$(grep -qE 'done:.*findings=3' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator: fingerprint-collided run -> no review comment created for any of the three (CREATE count 0 — the original defect: a thread that never exists)" \
+  "0" "$(cat "$PRT_TEST_CREATE_COUNTFILE" 2>/dev/null || echo 0)"
+assert_eq "orchestrator: fingerprint-collided run -> a durable issue comment WAS posted (the withheld findings land in the advisory comment, not nowhere)" \
+  "true" "$([ "$(cat "$PRT_TEST_ISSUE_COMMENT_COUNTFILE" 2>/dev/null || echo 0)" -ge 1 ] && echo true || echo false)"
+assert_eq "orchestrator: fingerprint-collided run -> the posted comment carries the withheld-findings header" \
+  "true" "$(grep -qF 'Withheld AI Review Findings' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && echo true || echo false)"
+assert_eq "orchestrator: fingerprint-collided run -> all three finding bodies reached the durable comment (criterion 3 — matched on issue text, not just a count)" \
+  "true" "$(grep -qF 'collision issue one' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && grep -qF 'collision issue two' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && grep -qF 'collision issue three' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && echo true || echo false)"
+assert_eq "orchestrator: fingerprint-collided run -> no accounting-mismatch REVIEW_DEGRADED (all three findings landed in the withheld bucket, criterion 6 invariant holds)" \
+  "false" "$(grep -qF 'accounting mismatch' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_MODEL_RESPONSE_MODE=clean
+rm -f "$PRT_TEST_ISSUE_COMMENT_BODY_FILE"
+unset PRT_TEST_ISSUE_COMMENT_BODY_FILE
+
+# criterion 2's zero-case control: a run with a real, non-colliding finding
+# must report quarantined=0, not just findings=N with no assertion on the
+# other counter. Without this, a counter hardcoded to the finding count would
+# still pass the collision_triple assertion above (findings=3, quarantined=3)
+# while being wrong for every ordinary run.
+PRT_TEST_MODEL_RESPONSE_MODE=clean_with_finding
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator: single non-colliding finding -> exits 0" "0" "$rc"
+assert_eq "orchestrator: single non-colliding finding -> stderr done: line reports quarantined=0 (criterion 2, zero-case control)" \
+  "true" "$(grep -qE 'done:.*quarantined=0' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator: single non-colliding finding -> stderr done: line reports findings=1" \
+  "true" "$(grep -qE 'done:.*findings=1' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_MODEL_RESPONSE_MODE=clean
 
 # advisory + empty diff -> the cheap exit (Step 3b's non-enforce branch)
 # must stay ahead of the thread-listing GraphQL call entirely.

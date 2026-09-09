@@ -120,32 +120,58 @@ prt_render_summary() {
   }
 }
 
-# prt_render_overflow_comment FINDINGS_JSON — FINDINGS_JSON is the array of
-# VALID/PARTIALLY VALID findings beyond the PR-wide cap. One plain (non-
-# resolvable) issue comment, reusing the pre-existing endpoint but now only
-# for overflow, never for the whole review.
+# prt_render_overflow_comment FINDINGS_JSON [QUARANTINED_JSON] — FINDINGS_JSON
+# is the array of VALID/PARTIALLY VALID findings beyond the PR-wide cap.
+# QUARANTINED_JSON (optional, defaults to empty array) is the array of
+# findings withheld because their fp_base collided with another finding this
+# run (reconcile.sh row 1 / QUARANTINE, go-kure/.github#155) — never created
+# as a thread, so this comment is their only durable home; a job summary
+# expires with run retention. Both render as their own table, in one plain
+# (non-resolvable) issue comment, reusing the pre-existing endpoint but now
+# for overflow and quarantine, never for the whole review.
 prt_render_overflow_comment() {
-  local findings="$1"
-  local count
+  local findings="$1" quarantined="${2:-[]}"
+  local count qcount
   count="$(jq 'length' <<< "$findings")"
+  qcount="$(jq 'length' <<< "$quarantined")"
   {
-    printf '## Additional AI Review Findings (advisory — beyond the gating cap)\n\n'
-    printf 'These %s finding(s) exceeded the per-PR gating cap and are not blocking, ' "$count"
-    printf 'but are worth a look:\n\n'
-    printf '| Severity | Category | File | Issue |\n'
-    printf '|----------|----------|------|-------|\n'
-    # gsub("<!-- gokure-pr-review"; ...) neutralizes marker syntax in
-    # model-generated prose, matching prt_marker_neutralize (marker.sh) —
-    # this comment is posted by the same bot login prt_find_marked_comment
-    # scans, so a finding whose issue text happens to quote the exact clean
-    # marker (e.g. a self-review of marker.sh itself) must not make this
-    # comment eligible to be matched and later overwritten by a clean-verdict
-    # upsert (gmr dot-github#88 round 1).
-    jq -r '
-      def esc: tostring | gsub("\r\n"; " ") | gsub("[\n\r]"; " ") | gsub("\\|"; "\\|") | gsub("<!-- gokure-pr-review"; "&lt;!-- gokure-pr-review");
-      .[] | "| \(.severity|esc) | \(.category|esc) | \(.file|esc) | \(.issue|esc) |"
-    ' <<< "$findings"
-    printf '\n---\n*Automated review — advisory only, not merge-gating.*\n'
+    if [ "$count" -gt 0 ]; then
+      printf '## Additional AI Review Findings (advisory — beyond the gating cap)\n\n'
+      printf 'These %s finding(s) exceeded the per-PR gating cap and are not blocking, ' "$count"
+      printf 'but are worth a look:\n\n'
+      printf '| Severity | Category | File | Issue |\n'
+      printf '|----------|----------|------|-------|\n'
+      # gsub("<!-- gokure-pr-review"; ...) neutralizes marker syntax in
+      # model-generated prose, matching prt_marker_neutralize (marker.sh) —
+      # this comment is posted by the same bot login prt_find_marked_comment
+      # scans, so a finding whose issue text happens to quote the exact clean
+      # marker (e.g. a self-review of marker.sh itself) must not make this
+      # comment eligible to be matched and later overwritten by a clean-verdict
+      # upsert (gmr dot-github#88 round 1).
+      jq -r '
+        def esc: tostring | gsub("\r\n"; " ") | gsub("[\n\r]"; " ") | gsub("\\|"; "\\|") | gsub("<!-- gokure-pr-review"; "&lt;!-- gokure-pr-review");
+        .[] | "| \(.severity|esc) | \(.category|esc) | \(.file|esc) | \(.issue|esc) |"
+      ' <<< "$findings"
+      printf '\n'
+    fi
+    if [ "$qcount" -gt 0 ]; then
+      printf '## Withheld AI Review Findings (advisory — ambiguous fingerprint)\n\n'
+      printf 'These %s finding(s) share a fingerprint with another finding in this diff ' "$qcount"
+      printf '(same file and category) and were withheld rather than posted as a review '
+      printf 'thread, to avoid a thread that could later be misattributed to the wrong '
+      printf 'finding. Not blocking:\n\n'
+      printf '| Severity | Category | File | Issue |\n'
+      printf '|----------|----------|------|-------|\n'
+      # Same esc filter, verbatim, as the overflow table above — a
+      # quarantined finding is model-generated prose posted by the same bot
+      # login and carries the identical marker-collision hazard.
+      jq -r '
+        def esc: tostring | gsub("\r\n"; " ") | gsub("[\n\r]"; " ") | gsub("\\|"; "\\|") | gsub("<!-- gokure-pr-review"; "&lt;!-- gokure-pr-review");
+        .[] | "| \(.severity|esc) | \(.category|esc) | \(.file|esc) | \(.issue|esc) |"
+      ' <<< "$quarantined"
+      printf '\n'
+    fi
+    printf -- '---\n*Automated review — advisory only, not merge-gating.*\n'
   }
 }
 
@@ -263,13 +289,26 @@ ${PRT_MARKER_CLEAN}
 EOF
 }
 
-# prt_render_clean_comment_superseded SHA FINDING_COUNT — rewrites (never
-# deletes) a prior clean-verdict comment once a later run on the same PR
-# finds something. Deleting would destroy the audit trail that SHA really
-# was reviewed clean; the review threads now carry the PR's current state.
+# prt_render_clean_comment_superseded SHA FINDING_COUNT THREADS_WRITTEN \
+#                                      SUPPRESSED_COUNT OVERFLOW_COUNT \
+#                                      QUARANTINED_COUNT
+# — rewrites (never deletes) a prior clean-verdict comment once a later run
+# on the same PR finds something. Deleting would destroy the audit trail
+# that SHA really was reviewed clean.
+#
+# "The review threads on this PR carry the current state" is only true when
+# THREADS_WRITTEN>0 — a run whose every finding was suppressed, went to the
+# overflow cap, or was quarantined on a colliding fingerprint creates or
+# updates no thread at all, and pointing at "the review threads" then
+# describes threads that do not exist (go-kure/.github#155: this was the
+# false sentence in the original report — a collided run left the reader
+# believing findings were tracked somewhere they were not). The zero-thread
+# branch states the breakdown and points at the overflow/advisory comment,
+# the durable surface that actually carries them.
 prt_render_clean_comment_superseded() {
-  local sha="$1" count="$2"
-  cat <<EOF
+  local sha="$1" count="$2" threads_written="$3" suppressed="$4" overflow="$5" quarantined="$6"
+  if [ "$threads_written" -gt 0 ]; then
+    cat <<EOF
 ## ~~AI Code Review — Reviewed, no findings~~ (superseded)
 
 A later review of \`${sha}\` reported **${count} finding(s)**. The review
@@ -277,4 +316,17 @@ threads on this PR carry the current state.
 
 ${PRT_MARKER_CLEAN}
 EOF
+  else
+    cat <<EOF
+## ~~AI Code Review — Reviewed, no findings~~ (superseded)
+
+A later review of \`${sha}\` reported **${count} finding(s)**, but created or
+updated no review thread this run: ${suppressed} suppressed (false
+positive), ${overflow} beyond the gating cap, ${quarantined} withheld
+(ambiguous fingerprint). See the advisory comment on this PR for the
+withheld/overflow finding bodies — no thread on this PR carries them.
+
+${PRT_MARKER_CLEAN}
+EOF
+  fi
 }

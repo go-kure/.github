@@ -35,7 +35,8 @@ This is the design/operations reference the code cites but didn't yet have:
   GitHub I/O — REST, GraphQL, retry, freshness), `diff.sh` (chunking, the
   commentable-line index), `finding.sh` (fingerprinting, ordinal/collision assignment),
   `marker.sh` (the HTML-comment marker embedded in each thread's first comment, carrying the
-  fingerprint across runs), `render.sh` (job summary and comment bodies), `model.sh` (the two
+  fingerprint across runs), `render.sh` (job summary and comment bodies, including the withheld/
+  quarantine section), `model.sh` (the two
   LLM calls), `reconcile.sh` (the pure decision tables — `prt_decide_finding` /
   `prt_decide_absent` — that loops 1 and 2 execute, plus the PR-wide gating-cap functions
   `prt_thread_stays_gating` / `prt_reserved_count` / `prt_gating_eligible` / `prt_apply_cap`
@@ -354,7 +355,7 @@ review thread isn't read as absent this run (`finding.sh:139-160`) — the absen
 `prt_is_incomplete` alone, so a partial-drop chunk that now only calls `prt_mark_degraded` would
 stop setting it. The fix folds the `partial-drop` reason directly into that check
 (`prt_degraded_reasons | grep -q 'partial-drop'`) rather than dual-marking: `prt_decide_absent`'s
-`review_incomplete=true` branch (`reconcile.sh:111-114`) then still forces `CLEAR_MARKER`/`NONE`
+`review_incomplete=true` branch (`reconcile.sh:119-122`) then still forces `CLEAR_MARKER`/`NONE`
 instead of `SET_FIRST_ABSENT`/`REPLY_RESOLVE` for that thread, exactly as it would for a true
 `REVIEW_INCOMPLETE` run, without the run itself failing closed.
 
@@ -442,7 +443,7 @@ comment, not this run's primary output. The freshness-gated skips immediately ar
 
 **What this does not fix:** a finding whose verdict stays `null` — whether from an assess-call
 failure above, an unmatched `fp`, or a duplicate-verdict contradiction (`finding.sh:174-235`) —
-still reaches `prt_decide_finding`'s `NONE` branch (`reconcile.sh:57-62`) and still becomes a
+still reaches `prt_decide_finding`'s `NONE` branch (`reconcile.sh:65-71`) and still becomes a
 `CREATE`d, merge-gating thread needing manual resolution. Only this run's own exit code/severity
 changes; a `null`-verdict finding is exactly as gating after this change as before it.
 
@@ -461,7 +462,7 @@ whether or not the run is also fatal.
 Every run that reaches the main body also emits `prt_log` stage tracing to stderr (`prt:
 mode=...`, `prt: diff: <n> bytes, chunks=<n>`, per-chunk review/assess outcome, `prt: threads
 listed: N, owned=M`, a `prt: fp=<fp> -> <action>` line per reconciliation decision, and a closing
-`prt: done: findings=N gating=N suppressed=N incomplete=N degraded=N` line) — a successful run used to print
+`prt: done: findings=N gating=N suppressed=N quarantined=N incomplete=N degraded=N` line) — a successful run used to print
 nothing at all between the workflow's own log markers, indistinguishable at a glance from a job
 that hung (go-kure/.github#61). An early exit ahead of the first `prt_log` call — the `off`-mode
 short-circuit, a non-2xx diff fetch, or a PR-metadata fetch failure — still prints its own `ERROR`/
@@ -473,6 +474,49 @@ The unparseable-response diagnostic above stays on the permitted side of that li
 construction: `len=`/`leading=` are shape, `sha16=` is a fingerprint, and `class=` is drawn from a
 closed in-repo enum rather than from the response. Adding a field that prints response bytes —
 even a truncated prefix — is the change this list forbids.
+
+**A fingerprint-collided finding is withheld, not silently dropped (go-kure/.github#155).**
+`prt_fp_base` (`finding.sh`) keys on `(file, category)` only — deliberately, so a fingerprint
+survives a push that shifts line numbers — which means any file with two same-category findings
+collides on the same base fingerprint by construction; `prt_assign_ordinals` (`finding.sh`) then
+marks every member of that group `collision=true`. `reconcile.sh`'s decision table used to return
+`NONE` for a colliding finding regardless of whether a thread already existed for it — the same
+word four other do-nothing rows also return — so a finding that collided *and* had no prior thread
+was reconciled into doing absolutely nothing: no thread, no suppressed-count entry, no overflow-comment
+row, its body written nowhere. On a repo where `required_review_thread_resolution` gates merge with
+zero required approvals (an unresolved thread is the *only* gate), that finding's absence from the
+merge gate was indistinguishable from a clean review. A corpus sweep across `kure`, `launcher` and
+this repo found 17 such collision events across 16 PRs, 15 already merged, with a demonstrated
+floor of 2 real findings lost.
+
+The fix is a fourth outcome word, `QUARANTINE`, returned by the same row instead of `NONE`. It does
+not reverse the row — a colliding finding still never becomes a thread, for the same reason as
+before: a thread whose identity is ambiguous between two-or-more findings cannot be safely
+auto-resolved or auto-reopened later without risking misattribution. What changes is that the
+outcome is now distinguishable and counted: the orchestrator collects `QUARANTINE`d findings into
+their own bucket (`QUARANTINED`, mirroring `OVERFLOW`) and renders their bodies into a "Withheld AI
+Review Findings" section beside the existing overflow table, in the same non-gating advisory
+comment — not the job summary, which expires with run retention and would only move the same defect
+onto a delay. The `done:` line's new `quarantined=N` counter, and `prt_thread_stays_gating`'s
+explicit `QUARANTINE` case (an OWNED thread that predates the collision and is still open keeps
+reserving its cap-budget slot exactly as it did when this case returned `NONE` — the mechanism
+never touches the thread itself, so an unresolved one still blocks merge for real), complete the
+same accounting for the reservation/cap system. A same-run accounting invariant checks that every
+finding this run produced landed in exactly one of: an anchored review thread (created, updated, or
+already existing and untouched), the durable overflow/withheld comment, or a withheld/suppressed
+counter — and reports `REVIEW_DEGRADED` (never fatal) if the sum comes up short, as a backstop for a
+loss shape nobody has found yet, not only the collision path this fix closes.
+
+The clean-verdict-comment supersede path (`prt_render_clean_comment_superseded`) carried the same
+false-positive risk one level up: its fixed sentence, "the review threads on this PR carry the
+current state," was written for the normal case and is false for a run whose every finding was
+suppressed, overflowed, or quarantined — a run that writes to no thread at all. It now takes a
+`threads_written` count and only claims threads carry the state when that count is nonzero;
+otherwise it states the suppressed/overflow/quarantined breakdown and points at the advisory
+comment instead. Row 1's decision to never create a thread for a colliding finding is unchanged —
+this is observability only, and it does not tell you how often the all-collide shape happens on any
+given repo (a same-file-and-category pair is ordinary on a small changeset, but no frequency data
+was collected as part of this fix).
 
 All unbounded reconciliation collections obey one additional invariant: thread pages, paginated
 comment nodes, the combined `THREADS` and `OWNED` inventories, and the findings/ownership inputs to
