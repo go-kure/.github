@@ -157,21 +157,26 @@ prt_render_overflow_comment() {
     fi
     if [ "$qcount" -gt 0 ]; then
       printf '## Withheld AI Review Findings (advisory — ambiguous fingerprint)\n\n'
-      printf 'These %s finding(s) share a fingerprint with another finding in this diff ' "$qcount"
-      printf '(same file and category) and were withheld rather than posted as a review '
-      printf 'thread, to avoid a thread that could later be misattributed to the wrong '
-      printf 'finding. **Gating status varies per row** — a finding whose fingerprint '
-      printf 'already had an open review thread before this collision is still merge-gating '
-      printf 'through that existing thread; only a row with no matching thread is genuinely '
-      printf 'not blocking:\n\n'
-      printf '| Severity | Category | File | Issue | Fix | Gating |\n'
-      printf '|----------|----------|------|-------|-----|--------|\n'
+      printf 'These %s finding(s) were withheld rather than posted as a review thread ' "$qcount"
+      printf 'because their fingerprint (same file and category) is ambiguous, to avoid a '
+      printf 'thread that could later be misattributed to the wrong finding. Ambiguity has '
+      printf 'two distinct sources — see the Collision column: "this run" means another '
+      printf 'finding in *this* diff currently shares the fingerprint; "persisted (earlier '
+      printf 'run)" means only this run'"'"'s single finding is present, but an earlier run '
+      printf 'recorded the collision on this file+category and it has not been cleared '
+      printf 'since — the other finding that originally caused it may be gone. **Gating '
+      printf 'status varies per row** — a finding whose fingerprint already had an open '
+      printf 'review thread before this collision is still merge-gating through that '
+      printf 'existing thread; only a row with no matching thread is genuinely not '
+      printf 'blocking:\n\n'
+      printf '| Severity | Category | File | Issue | Fix | Collision | Gating |\n'
+      printf '|----------|----------|------|-------|-----|-----------|--------|\n'
       # Same esc filter, verbatim, as the overflow table above — a
       # quarantined finding is model-generated prose posted by the same bot
       # login and carries the identical marker-collision hazard.
       jq -r '
         def esc: tostring | gsub("\r\n"; " ") | gsub("[\n\r]"; " ") | gsub("\\|"; "\\|") | gsub("<!-- gokure-pr-review"; "&lt;!-- gokure-pr-review");
-        .[] | "| \(.severity|esc) | \(.category|esc) | \(.file|esc) | \(.issue|esc) | \(.fix|esc) | \(if .gating == true then "yes (existing thread)" else "no" end) |"
+        .[] | "| \(.severity|esc) | \(.category|esc) | \(.file|esc) | \(.issue|esc) | \(.fix|esc) | \(if .persisted_only == true then "persisted (earlier run)" else "this run" end) | \(if .gating == true then "yes (existing thread)" else "no" end) |"
       ' <<< "$quarantined"
       printf '\n'
     fi
