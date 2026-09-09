@@ -1027,7 +1027,7 @@ assert_eq "prt_render_clean_comment_superseded: mixed -> states the overflow/qua
 # (2) suppressed-only run — every finding this run was a false positive.
 # SUPPRESS has no durable output surface anywhere (the overflow/advisory
 # comment POST requires overflow or quarantined > 0, go-kure/.github#180
-# pr-review-threads.sh:1307), so the zero-anchor breakdown branch's "See the
+# pr-review-threads.sh:1335), so the zero-anchor breakdown branch's "See the
 # advisory comment" sentence would point at a comment that was never posted.
 superseded_suppressed_only="$(prt_render_clean_comment_superseded 'def4567890def4567890def4567890def4567890' 2 0 2 0 0 0)"
 assert_eq "prt_render_clean_comment_superseded: suppressed-only (2 suppressed, 0 overflow, 0 quarantined, 0 anchored) -> does NOT say 'carry the current state'" \
@@ -1048,8 +1048,20 @@ assert_eq "prt_render_clean_comment_superseded: count exceeds threads_carry+advi
   "false" "$(grep -qF 'suppressed as false positives' <<< "$superseded_unaccounted" && echo true || echo false)"
 assert_eq "prt_render_clean_comment_superseded: count exceeds accounted findings -> states some did not reach a durable outcome" \
   "true" "$(grep -qF 'did not' <<< "$superseded_unaccounted" && grep -qF 'not the same as being' <<< "$superseded_unaccounted" && echo true || echo false)"
+# The predicate must be a substring that survives the rendered line wrap:
+# render.sh splits "did not reach any durable outcome" across a newline
+# ("...but N did not" / "reach any durable outcome this run..."), and grep is
+# line-oriented, so the full phrase matches NO line even when the unaccounted
+# branch IS taken. Keyed on the post-wrap fragment instead, and paired with a
+# positive control below — a negative assertion whose predicate can never fire
+# passes against the very branch it claims to exclude, asserting coverage it
+# does not have (go-kure/.github#180 gmr round 1, codex lens).
 assert_eq "prt_render_clean_comment_superseded: fully accounted run (count == sum of counters) -> does NOT take the unaccounted branch" \
-  "false" "$(grep -qF 'did not reach any durable outcome' <<< "$superseded_suppressed_only" && echo true || echo false)"
+  "false" "$(grep -qF 'reach any durable outcome' <<< "$superseded_suppressed_only" && echo true || echo false)"
+# Positive control for the assertion immediately above: the same predicate must
+# actually fire on the unaccounted branch, or "false" there proves nothing.
+assert_eq "prt_render_clean_comment_superseded: unaccounted-branch predicate is discriminating (positive control)" \
+  "true" "$(grep -qF 'reach any durable outcome' <<< "$superseded_unaccounted" && echo true || echo false)"
 
 # ============================================================ render.sh: prt_render_overflow_comment quarantined section (go-kure/.github#155)
 # QUARANTINED_JSON is the second, optional argument — findings withheld by
@@ -1085,7 +1097,7 @@ assert_eq "prt_render_overflow_comment: quarantined section — the raw unescape
 quarantine_gating='[{"severity":"High","category":"other","file":"dup.go","issue":"collision issue one","fix":"n/a","gating":true},{"severity":"Medium","category":"other","file":"dup.go","issue":"collision issue two","fix":"n/a","gating":false}]'
 quarantine_gating_footer="$(prt_render_overflow_comment '[]' "$quarantine_gating")"
 assert_eq "prt_render_overflow_comment: at least one gating:true row -> footer states the contradiction, not the blanket claim (kure-bot round 2, fp=4ab69f0ddb6d86ed)" \
-  "true" "$(grep -qF 'At least one withheld finding below IS gating' <<< "$quarantine_gating_footer" && echo true || echo false)"
+  "true" "$(grep -qF 'At least one withheld finding above IS gating' <<< "$quarantine_gating_footer" && echo true || echo false)"
 assert_eq "prt_render_overflow_comment: at least one gating:true row -> the blanket 'advisory only, not merge-gating.' sentence does not appear" \
   "false" "$(grep -qF '*Automated review — advisory only, not merge-gating.*' <<< "$quarantine_gating_footer" && echo true || echo false)"
 assert_eq "prt_render_overflow_comment: no gating:true row (all false) -> blanket 'advisory only, not merge-gating.' footer" \
@@ -2311,7 +2323,7 @@ unset PRT_TEST_ISSUE_COMMENT_BODY_FILE
 # at pr-review-threads.sh's absence loop, prt_decide_absent would return
 # REPLY_RESOLVE here (row 10) — a malformed row's still-open thread wrongly
 # read as fixed. With it, the review_incomplete=true branch
-# (reconcile.sh:111-114) fires first and returns CLEAR_MARKER instead (a
+# (reconcile.sh:119-122) fires first and returns CLEAR_MARKER instead (a
 # non-empty first_absent_sha forces a clean restart rather than a resolve).
 PRT_TEST_MODEL_RESPONSE_MODE=partial_drop
 PRT_TEST_OWNED_FP="0000000000000000"

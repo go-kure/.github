@@ -164,7 +164,7 @@ current is preceded by a freshness check (`prt_freshness_check`, `gh.sh:136-165`
 the PR's live head SHA and compares it
 against the expected one — the run's real wall-clock spans multiple model calls, so the PR can
 move underneath it. The one documented exception is the reply posted after a marker-clearing write
-already failed (`pr-review-threads.sh:1222-1230`): it explains a failure that already happened and
+already failed (`pr-review-threads.sh:1288-1296`): it explains a failure that already happened and
 is deliberately allowed to post even if the head has since moved, rather than being silently
 dropped on top of the write failure it's explaining. `prt_freshness_check` returns a three-way
 status (go-kure/.github#99) instead
@@ -400,20 +400,20 @@ stays eligible for the clean comment. What this does not fix: a chunk that fails
 contributes zero findings, so a real defect confined to that chunk's files goes unreviewed this
 run — the run reports degraded rather than red, it does not recover the review.
 
-`advisory` mode's single issue comment (`prt_render_advisory_comment`, `render.sh:186-234`)
+`advisory` mode's single issue comment (`prt_render_advisory_comment`, `render.sh:227-275`)
 discloses both severities on its own live output surface, not only in `$GITHUB_STEP_SUMMARY`: a
 non-empty `advisory_incomplete_reasons` or `advisory_degraded_reasons`
-(`pr-review-threads.sh:920-923`, gathered via `prt_is_incomplete`/`prt_incomplete_reasons` and
+(`pr-review-threads.sh:930-933`, gathered via `prt_is_incomplete`/`prt_incomplete_reasons` and
 `prt_is_degraded`/`prt_degraded_reasons` respectively) renders its own warning banner ahead of the
 findings table, worded to distinguish the two ("this review run was incomplete" vs "this review
 run was degraded"). The degraded banner is deliberately degradation-neutral prose ("see the
 reason(s) below; this may mean part of this run's output is incomplete, unverdicted, or dropped")
 rather than a blanket "rows were dropped" claim: `prt_mark_degraded` covers six call sites
-(`pr-review-threads.sh:478,534,570,592,605,1347`, plus `prt_resolve_review_parse_failures` in
+(`pr-review-threads.sh:478,534,570,592,605,1420`, plus `prt_resolve_review_parse_failures` in
 `state.sh` for the review-parse-failure case above), only one of the direct call sites (`:478`, a chunk's malformed
 finding rows dropped) is actually a drop — the other five leave findings present but unverdicted
 (an assess-call transport fault or unparseable response, an `.assessments` join failure) or are
-unrelated to the current run's findings at all (`:1347`, a past run's clean-verdict comment failing
+unrelated to the current run's findings at all (`:1420`, a past run's clean-verdict comment failing
 to be superseded). The banner intro no longer overrides those per-reason bullets (rendered
 verbatim below it) with a claim that is only true for one of the six (round 4, go-kure/.github#101
 second review pass, `chatgpt-codex-connector[bot]`). Critically, the "No issues found." shortcut
@@ -529,7 +529,7 @@ current state" stand alone, since it would then imply that is everything; the fu
 threads carry only *part* of the state and still points at the advisory comment for the rest. A
 **suppressed-only** run — every finding was a false positive, `SUPPRESS` has no durable output
 surface anywhere by design — must not point at an advisory comment that was never posted (that
-POST fires only when `overflow` or `quarantined` is nonzero, `pr-review-threads.sh:1307`); it now
+POST fires only when `overflow` or `quarantined` is nonzero, `pr-review-threads.sh:1335`); it now
 gets its own third branch that names the count and states everything was suppressed, with no
 comment reference at all. The function is now a three-way branch on `threads_carry` and
 `advisory_count`, not two.

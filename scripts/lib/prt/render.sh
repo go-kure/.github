@@ -182,7 +182,7 @@ prt_render_overflow_comment() {
       # "yes (existing thread)" — a quarantined finding whose pre-collision
       # thread is still open and still blocks merge.
       printf '*Automated review — the overflow table above is advisory only, not '
-      printf 'merge-gating. At least one withheld finding below IS gating, through '
+      printf 'merge-gating. At least one withheld finding above IS gating, through '
       printf 'a pre-existing thread — see its Gating column.*\n'
     else
       printf '*Automated review — advisory only, not merge-gating.*\n'
