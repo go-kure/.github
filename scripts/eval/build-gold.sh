@@ -258,7 +258,7 @@ ws_sensitive() {
 # being asked about a line that is not in what the reviewer saw. Keeping only `final` conflated
 # the two silently whenever a later commit inserted or deleted lines above the defect.
 #
-# `-w` because blame otherwise stops at a reindent, and confirm_introduction cannot catch that
+# `-w` because blame otherwise stops at a reindent, and confirmed_offsets cannot catch that
 # case: a whitespace-only edit rewrites the line, so blame credits the formatting commit, and
 # that commit's diff really does add the reindented text verbatim -- exactly what the check
 # tests for. The result is a gold row accusing an innocent formatting change, and a harness
@@ -270,7 +270,7 @@ ws_sensitive() {
 # whitespace, and `-w` is documented as ignoring exactly that ("ignore whitespace differences",
 # `git blame -h`). Blame then names an older revision, the row's head_sha points at a diff from
 # before the defect existed, and check-gold.sh cannot tell -- the span really is inside that older
-# diff. For those formats the attribution stays exact, and confirm_introduction matches it. The
+# diff. For those formats the attribution stays exact, and confirmed_offsets matches it. The
 # two settings must always agree about whitespace; which way they agree is what varies.
 blame_range() {
     local parent="$1" path="$2" start="$3" end="$4"
@@ -280,17 +280,21 @@ blame_range() {
         | awk '/^[0-9a-f]{40} / { print $1 "\t" $2 "\t" $3 }'
 }
 
-# confirm_introduction SHA PATH TEXT -- true when SHA's own diff adds EVERY line of TEXT, up to
-# whitespace, and removes none of them. TEXT is newline-separated: one entry per line of the span.
+# confirmed_offsets SHA PATH ORIG_LO TEXT -- prints the orig line number of every line of TEXT
+# that SHA's own diff adds, up to whitespace, at that line's own destination position, and
+# removes nowhere. TEXT is newline-separated: one entry per line of the span, index i pairing
+# with orig line ORIG_LO+i-1.
 #
 # This is the check that turns a blame candidate into gold: blame names the commit that last
 # touched a line, and this asserts that commit actually ADDED it. TEXT is read from the fix's
 # parent, a different revision, so the comparison is a genuine cross-check rather than a
 # restatement of what blame already said.
 #
-# EVERY line, because a gold row is a claim about its whole span and the span is a run of lines,
-# not one line. Checking only the first let a two-line row be confirmed by evidence covering half
-# of it: a first line that was merely reindented confirms against the older commit, while an
+# EVERY line is checked, not just the first, because a gold row is a claim about its whole span
+# and the span is a run of lines, not one line -- and each line's own verdict is what feeds the
+# run-splitting the caller does below (go-kure/.github#171), not a single pass/fail for the whole
+# span. Checking only the first would let a two-line row be confirmed by evidence covering half of
+# it: a first line that was merely reindented confirms against the older commit, while an
 # adjacent second line whose INTERIOR whitespace a later commit changed is walked past by `-w` and
 # attributed to that same older commit. Measured on a `.js` two-line span -- commit C adds
 # `const label = "a b";`, commit D tightens it to `"ab"`, the fix touches both lines -- the row
@@ -551,7 +555,7 @@ sort -u -t"$(printf '\t')" -k1,1 -k2,2 -k5,5 -k6,6 -k3,3n "$candidates" | awk -F
             # together: where the parent of the fix reordered lines, the smallest orig line and
             # the smallest final line belong to DIFFERENT rows. Minimising each separately then
             # reads the text at that number for a line the gold row does not name, so
-            # confirm_introduction validates evidence belonging to some other line. Sorting by
+            # confirmed_offsets validates evidence belonging to some other line. Sorting by
             # orig puts that pairing here, and appending in that order keeps the rest of the list
             # paired too.
         } else if ($3 + 0 > ohi) {
@@ -677,20 +681,32 @@ while IFS=$'\t' read -r sha path fix parent lo hi flist; do
     # own comment, go-kure/.github#171); group the survivors into contiguous orig-numbered runs
     # and emit one gold row per run, rather than reconstructing [lo,hi] over a line nothing
     # confirms.
-    confirmed=$(confirmed_offsets "$sha" "$path" "$lo" "$text")
+    #
+    # Guarded the same way as $text above: confirmed_offsets ends in a `git_r show | awk`
+    # pipeline, and under pipefail a git show failure (an unreachable object, a transient repo
+    # error) makes the assignment itself fail. Unguarded, whatever partial output the awk had
+    # already printed before the failure would still land in $confirmed and could reach
+    # emit_runs as partially-validated gold; guarding it treats the whole candidate as
+    # unconfirmed instead, the same conservative outcome a clean "nothing confirmed" gets
+    # (go-kure/.github#185 review finding).
+    confirmed=$(confirmed_offsets "$sha" "$path" "$lo" "$text") || confirmed=
     if [ -z "$confirmed" ]; then
         n_dropped_unconfirmed=$((n_dropped_unconfirmed + 1))
         continue
     fi
-    n_runs=$(wc -l <<<"$confirmed" | tr -d ' ')
-    [ "$n_runs" -eq $((hi - lo + 1)) ] || n_clipped=$((n_clipped + 1))
 
     # Looked up only for rows that survive. Counted in emit_run, not here -- see its own
     # comment for why the count has to be per emitted row, not per candidate.
     pr=$(pr_for_commit "$sha")
 
+    # Validated BEFORE n_clipped below, not after: a candidate attributed to a root commit (no
+    # parent to rev-parse) never reaches emit_runs, so counting it as clipped here would report a
+    # split that was never written -- "confirmed N candidate rows (M split into narrower runs)"
+    # with M candidates that produced zero actual rows (go-kure/.github#185 review finding).
     base=$(git_r rev-parse --verify --quiet "$sha^") || continue
     note=$(git_r log -1 --format=%s "$fix")
+    n_runs=$(wc -l <<<"$confirmed" | tr -d ' ')
+    [ "$n_runs" -eq $((hi - lo + 1)) ] || n_clipped=$((n_clipped + 1))
 
     # The INTRODUCING commit's own subject, which is what a reviewer of base..head would have
     # seen. `note` is the FIX commit's subject and must never reach the reviewer: mined with
