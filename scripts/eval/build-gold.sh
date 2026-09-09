@@ -7,8 +7,12 @@
 #
 # `git blame` names the commit that LAST TOUCHED a line, not the one that introduced the
 # defect: a reformat, a rename or a whitespace pass in between makes an innocent change the
-# accused. So a candidate only enters the gold set once `confirm_introduction` shows the
-# blamed commit's own diff ADDS that exact line text. Everything else is dropped and counted.
+# accused. So a candidate line only enters the gold set once `confirmed_offsets` shows the
+# blamed commit's own diff added that exact text AT that line's own destination position.
+# Confirmation is per line, not per whole candidate span: a span with an unconfirmed interior
+# line is split into contiguous runs of confirmed lines, each emitted as its own gold row,
+# rather than the whole span being kept or dropped as one unit. A candidate with no confirmed
+# line at all drops entirely and is counted.
 #
 # Output: one JSON document per introducing pull request, written to --out, of the shape
 #   {repo, pr, head_sha, base_sha, gold: [{file, lines, fix_commit, note, confirmed}]}
@@ -336,16 +340,24 @@ blame_range() {
 # between two hunks -- text confirmation alone passed all three, because 129's own short text
 # happened to recur inside an added line elsewhere in the same commit's diff.
 #
-# confirmed_offsets below adds a POSITION gate: a line confirms only when its own destination
-# line number -- ORIG_LO plus its offset, the exact number blame_range's `orig` column already
-# names -- falls inside a hunk this SAME diff's header claims as added. That is the identical
-# range-based technique check-gold.sh's span_outside_diff relies on (`-U0
-# --inter-hunk-context=0` forces genuinely separate change regions into separate hunks, so a
-# header's own +start,count range IS the set of destination lines that hunk added; no per-line
-# +/- bookkeeping needed). Checked per line rather than once for the whole span, so one
-# unconfirmed interior line drops only itself: the caller below splits the survivors into
-# contiguous runs and emits one gold row per run, instead of reconstructing a span that spans a
-# line nothing confirms.
+# confirmed_offsets below adds a POSITION gate: a line confirms only when the text THIS DIFF
+# ADDED AT ITS OWN DESTINATION LINE -- ORIG_LO plus its offset, the exact number blame_range's
+# `orig` column already names -- equals the wanted text. `added_at` is keyed by destination line
+# number, not by text, and is filled by walking each hunk's `+`/`-` lines with a running position
+# counter seeded from the header's own newstart: `-U0 --inter-hunk-context=0` guarantees no
+# context lines interleave, so every `+` line in a hunk occupies the next consecutive new-file
+# line after the last one, with no separate newcount bookkeeping needed. This was NOT the first
+# shape of this gate -- an earlier version kept text membership (`added`, a set of strings) and
+# position membership (`pos_added`, a set of line numbers) as two INDEPENDENT sets, gating on
+# "this text was added somewhere" AND "this position is inside an added hunk somewhere", which a
+# review of go-kure/.github#185 caught as still satisfiable by two DIFFERENT lines: a duplicate
+# elsewhere in the diff supplies the text, an unrelated edit at the target position supplies the
+# hunk membership, and the line confirms without this diff ever having added that text AT that
+# position. Keying by position and comparing the text found there closes that gap structurally --
+# there is only one set to satisfy, and it can only be satisfied by the same line. Checked per
+# line rather than once for the whole span, so one unconfirmed interior line drops only itself:
+# the caller below splits the survivors into contiguous runs and emits one gold row per run,
+# instead of reconstructing a span that spans a line nothing confirms.
 confirmed_offsets() {
     local sha="$1" path="$2" orig_lo="$3" text="$4"
     local exact=0
@@ -384,23 +396,27 @@ confirmed_offsets() {
                 in_hunk = 1
                 # header: @@ -oldstart[,oldcount] +newstart[,newcount] @@ -- newcount defaults to
                 # 1 when omitted (a single-line hunk), same convention unified diff always uses.
+                # `pos` seeds the running counter below at newstart; newcount itself is never
+                # consulted again -- with -U0 there is no context line to miscount, so each `+`
+                # line encountered is simply the next consecutive destination line number.
                 match($0, /\+[0-9]+(,[0-9]+)?/)
-                spec = substr($0, RSTART + 1, RLENGTH - 1)
-                split(spec, nc, ",")
-                newstart = nc[1] + 0
-                newcount = (nc[2] == "" ? 1 : nc[2] + 0)
-                for (p = newstart; p < newstart + newcount; p++) pos_added[p] = 1
+                pos = substr($0, RSTART + 1, RLENGTH - 1) + 0
                 next
             }
-            in_hunk && /^\+/ { w = squash(substr($0, 2)); added[w] = 1; next }
+            # Keyed by destination line number, not by text: added_at[p] is the text THIS diff
+            # put at line p, so a candidate confirms only when its own wanted text matches what
+            # was added AT ITS OWN position, never merely somewhere in the diff (see the doc
+            # comment above confirmed_offsets for the bug this closes).
+            in_hunk && /^\+/ { added_at[pos] = squash(substr($0, 2)); pos++; next }
             in_hunk && /^-/  { w = squash(substr($0, 2)); removed[w] = 1 }
             END {
                 for (i = 1; i <= n; i++) {
                     w = want[i]
                     if (w == "") continue
-                    if (!(w in added) || (w in removed)) continue
-                    if (!((orig_lo + i - 1) in pos_added)) continue
-                    print (orig_lo + i - 1)
+                    p = orig_lo + i - 1
+                    if (!(p in added_at) || added_at[p] != w) continue
+                    if (w in removed) continue
+                    print p
                 }
             }
         '
@@ -563,6 +579,12 @@ emit_run() {
           gold: [{file: $file, lines: [$lo, $hi], fix_commit: $fix,
                   note: $note, confirmed: true}]}' >>"$work/gold.ndjson"
     n_rows=$((n_rows + 1))
+    # Counted per emitted ROW, not per candidate: a split candidate (go-kure/.github#171) calls
+    # emit_run more than once, and each row it writes carries the same $pr. Counting once per
+    # candidate instead (as an earlier version did) undercounted whenever a span split
+    # (go-kure/.github#185 review finding) -- the reported total must describe the gold set
+    # actually written, one increment per row lacking a PR/MR reference.
+    [ -n "$pr" ] || n_no_pr=$((n_no_pr + 1))
 }
 
 # emit_runs CONFIRMED -- CONFIRMED is confirmed_offsets' output, ascending orig line numbers one
@@ -663,10 +685,9 @@ while IFS=$'\t' read -r sha path fix parent lo hi flist; do
     n_runs=$(wc -l <<<"$confirmed" | tr -d ' ')
     [ "$n_runs" -eq $((hi - lo + 1)) ] || n_clipped=$((n_clipped + 1))
 
-    # Looked up only for rows that survive, so the reported no-reference count describes the
-    # gold set that was written rather than every candidate considered.
+    # Looked up only for rows that survive. Counted in emit_run, not here -- see its own
+    # comment for why the count has to be per emitted row, not per candidate.
     pr=$(pr_for_commit "$sha")
-    [ -n "$pr" ] || n_no_pr=$((n_no_pr + 1))
 
     base=$(git_r rev-parse --verify --quiet "$sha^") || continue
     note=$(git_r log -1 --format=%s "$fix")

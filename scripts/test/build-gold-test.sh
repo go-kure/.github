@@ -164,6 +164,29 @@ assert_eq "exactly two offsets survive, not three" "2" \
   "$(grep -c . <<<"$offsets")"
 
 # ---------------------------------------------------------------------------
+# confirmed_offsets: text added SOMEWHERE plus a position inside SOME added hunk must not
+# confirm a line unless that text is what the diff put AT that exact position
+# (go-kure/.github#185 review, round 2 -- the round-1 fix above added a position gate, but
+# checked text membership and position membership as two INDEPENDENT sets, still satisfiable by
+# two different lines).
+#
+# Two separate hunks, so pos_added would hold {2,3,7} and added would hold {"AAA","BBB","XXX"}
+# under the old decoupled scheme. Candidate: position 3, wanted text "XXX" -- position 3 IS
+# inside hunk 1's added range, and "XXX" WAS added, just at position 7, not 3. The line actually
+# added at position 3 is "BBB". A decoupled check confirms this; the fix must not.
+printf 'L1\nOLD2\nOLD3\nF4\nF5\nF6\nOLD7\nL8\n' > "$REPO2/g.txt"
+git -C "$REPO2" add g.txt
+git -C "$REPO2" commit -q -m base2
+printf 'L1\nAAA\nBBB\nF4\nF5\nF6\nXXX\nL8\n' > "$REPO2/g.txt"
+git -C "$REPO2" add g.txt
+git -C "$REPO2" commit -q -m intro2
+sha3=$(git -C "$REPO2" rev-parse HEAD)
+
+offsets2="$(confirmed_offsets "$sha3" g.txt 3 "XXX")"
+assert_eq "text added elsewhere + position in an unrelated added hunk does NOT confirm" "" \
+  "$offsets2"
+
+# ---------------------------------------------------------------------------
 # The text-extraction awk inside the main loop: a flist naming the same final line number twice
 # (legitimate -- final_lineno need not rise in step with orig_lineno, so two different orig
 # positions can map to one final line) must not spuriously fail confirmation. Extracted verbatim
