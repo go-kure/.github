@@ -1007,6 +1007,35 @@ assert_eq "prt_render_clean_comment_superseded: threads_written=0, none_anchored
 assert_eq "prt_render_clean_comment_superseded: none_anchored defaults to 0 when omitted (existing 6-arg call sites unaffected)" \
   "$superseded_zero_threads" "$(prt_render_clean_comment_superseded 'def4567890def4567890def4567890def4567890' 3 0 1 1 1)"
 
+# go-kure/.github#180 codex review, two findings on the same round:
+#
+# (1) mixed run — some findings anchored to threads, some in the advisory
+# comment (threads_written>0 AND overflow/quarantined>0). The plain "carry
+# the current state" sentence would wrongly imply that's *everything*, when
+# part of this run's findings are only in the separate advisory comment.
+superseded_mixed="$(prt_render_clean_comment_superseded 'def4567890def4567890def4567890def4567890' 4 1 0 1 1 0)"
+assert_eq "prt_render_clean_comment_superseded: mixed (threads_written=1, overflow=1, quarantined=1) -> says threads carry only PART of the state" \
+  "true" "$(grep -qF 'carry part of the current state' <<< "$superseded_mixed" && echo true || echo false)"
+assert_eq "prt_render_clean_comment_superseded: mixed -> does NOT claim threads carry the FULL current state" \
+  "false" "$(grep -qF 'threads on this PR carry the current state.' <<< "$superseded_mixed" && echo true || echo false)"
+assert_eq "prt_render_clean_comment_superseded: mixed -> still points at the advisory comment for the non-anchored part" \
+  "true" "$(grep -qF 'advisory comment' <<< "$superseded_mixed" && echo true || echo false)"
+assert_eq "prt_render_clean_comment_superseded: mixed -> states the overflow/quarantined breakdown" \
+  "true" "$(grep -qF '1 beyond the gating cap' <<< "$superseded_mixed" && grep -qF '1 withheld' <<< "$superseded_mixed" && echo true || echo false)"
+
+# (2) suppressed-only run — every finding this run was a false positive.
+# SUPPRESS has no durable output surface anywhere (the overflow/advisory
+# comment POST requires overflow or quarantined > 0, go-kure/.github#180
+# pr-review-threads.sh:1307), so the zero-anchor breakdown branch's "See the
+# advisory comment" sentence would point at a comment that was never posted.
+superseded_suppressed_only="$(prt_render_clean_comment_superseded 'def4567890def4567890def4567890def4567890' 2 0 2 0 0 0)"
+assert_eq "prt_render_clean_comment_superseded: suppressed-only (2 suppressed, 0 overflow, 0 quarantined, 0 anchored) -> does NOT say 'carry the current state'" \
+  "false" "$(grep -qF 'carry the current state' <<< "$superseded_suppressed_only" && echo true || echo false)"
+assert_eq "prt_render_clean_comment_superseded: suppressed-only -> does NOT point at the advisory comment (none was posted)" \
+  "false" "$(grep -qF 'advisory comment' <<< "$superseded_suppressed_only" && echo true || echo false)"
+assert_eq "prt_render_clean_comment_superseded: suppressed-only -> still names the finding count and that all were suppressed" \
+  "true" "$(grep -qF '2 finding(s)' <<< "$superseded_suppressed_only" && grep -qF 'suppressed as false positives' <<< "$superseded_suppressed_only" && echo true || echo false)"
+
 # ============================================================ render.sh: prt_render_overflow_comment quarantined section (go-kure/.github#155)
 # QUARANTINED_JSON is the second, optional argument — findings withheld by
 # reconcile.sh row 1 (fp_base collision). Both polarities per criterion 3:
@@ -2545,6 +2574,30 @@ assert_eq "orchestrator: fingerprint-collided run -> all three finding bodies re
   "true" "$(grep -qF 'collision issue one' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && grep -qF 'collision issue two' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && grep -qF 'collision issue three' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && echo true || echo false)"
 assert_eq "orchestrator: fingerprint-collided run -> no accounting-mismatch REVIEW_DEGRADED (all three findings landed in the withheld bucket, criterion 6 invariant holds)" \
   "false" "$(grep -qF 'accounting mismatch' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_MODEL_RESPONSE_MODE=clean
+rm -f "$PRT_TEST_ISSUE_COMMENT_BODY_FILE"
+unset PRT_TEST_ISSUE_COMMENT_BODY_FILE
+
+# go-kure/.github#180 codex review: a quarantined finding whose fp_base
+# already has an OWNED, still-open thread (from a prior run, before this run
+# introduced the collision) is still merge-gating through that thread —
+# reconcile.sh's prt_thread_stays_gating QUARANTINE case reserves its cap
+# slot for exactly this reason. The withheld-findings table must not render
+# a blanket "Not blocking" that hides this. Ordinal 0 (lowest .line, "issue
+# one") gets the unsuffixed fp_base and is the one that matches the OWNED
+# thread here; ordinals 2-3 get suffixed fps and match no thread.
+PRT_TEST_ISSUE_COMMENT_BODY_FILE="$(mktemp)"
+PRT_TEST_MODEL_RESPONSE_MODE=collision_triple
+PRT_TEST_OWNED_FP="$(prt_fp_base dup.go other)"
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator: fingerprint-collided run, one member matches an existing open thread -> exits 0" "0" "$rc"
+assert_eq "orchestrator: quarantined finding matching an existing open thread -> withheld comment marks it gating" \
+  "true" "$(grep -qF 'yes (existing thread)' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && echo true || echo false)"
+assert_eq "orchestrator: quarantined findings with no matching thread -> withheld comment marks them not gating" \
+  "true" "$(grep -qF '| no |' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && echo true || echo false)"
+assert_eq "orchestrator: quarantined finding matching an existing open thread -> its fix suggestion is rendered too" \
+  "true" "$(grep -qF 'fix one' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && echo true || echo false)"
+PRT_TEST_OWNED_FP="deadbeefcafebabe"
 PRT_TEST_MODEL_RESPONSE_MODE=clean
 rm -f "$PRT_TEST_ISSUE_COMMENT_BODY_FILE"
 unset PRT_TEST_ISSUE_COMMENT_BODY_FILE

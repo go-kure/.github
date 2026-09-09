@@ -520,10 +520,32 @@ was being misclassified into the zero-thread branch, which then pointed at an ad
 was never posted (overflow and quarantined both 0). The function now also takes `none_anchored`
 (from `NONE_ANCHORED_COUNT`) and takes the "carry the current state" branch whenever
 `threads_written + none_anchored > 0`, reserving the breakdown branch for a run that anchors to
-nothing at all. Row 1's decision to never create a thread for a colliding finding is unchanged —
-this is observability only, and it does not tell you how often the all-collide shape happens on any
-given repo (a same-file-and-category pair is ordinary on a small changeset, but no frequency data
-was collected as part of this fix).
+nothing at all.
+
+Codex's own review of this PR (same round) found two more shapes the two-way branch above still
+missed. A **mixed** run — some findings anchored to threads, others in the advisory comment
+(`threads_written>0` and `overflow+quarantined>0` at once) — must not let "threads carry the
+current state" stand alone, since it would then imply that is everything; the function now says
+threads carry only *part* of the state and still points at the advisory comment for the rest. A
+**suppressed-only** run — every finding was a false positive, `SUPPRESS` has no durable output
+surface anywhere by design — must not point at an advisory comment that was never posted (that
+POST fires only when `overflow` or `quarantined` is nonzero, `pr-review-threads.sh:1307`); it now
+gets its own third branch that names the count and states everything was suppressed, with no
+comment reference at all. The function is now a three-way branch on `threads_carry` and
+`advisory_count`, not two.
+
+Codex also caught that the withheld-findings table itself, not just the supersede text, overclaimed
+non-gating status: a quarantined finding whose `fp_base` already had an OWNED, still-open thread —
+created by an earlier, pre-collision run — is still merge-gating through that thread
+(`prt_thread_stays_gating`'s `QUARANTINE` case reserves its cap slot for exactly this reason). The
+table rendered a blanket "Not blocking" regardless. Each quarantined finding is now tagged
+`gating: true/false` at the point it is bucketed (`thread_exists=true` and not yet resolved) and the
+table carries a `Gating` column instead of a blanket claim; it also gained the `Fix` column every
+other findings table already had; go-kure/.github#180 was itself the first PR whose own quarantine
+table needed it fixed. Row 1's decision to never create a thread for a colliding finding is
+unchanged — this is observability only, and it does not tell you how often the all-collide shape
+happens on any given repo (a same-file-and-category pair is ordinary on a small changeset, but no
+frequency data was collected as part of this fix).
 
 All unbounded reconciliation collections obey one additional invariant: thread pages, paginated
 comment nodes, the combined `THREADS` and `OWNED` inventories, and the findings/ownership inputs to

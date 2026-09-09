@@ -159,15 +159,18 @@ prt_render_overflow_comment() {
       printf 'These %s finding(s) share a fingerprint with another finding in this diff ' "$qcount"
       printf '(same file and category) and were withheld rather than posted as a review '
       printf 'thread, to avoid a thread that could later be misattributed to the wrong '
-      printf 'finding. Not blocking:\n\n'
-      printf '| Severity | Category | File | Issue |\n'
-      printf '|----------|----------|------|-------|\n'
+      printf 'finding. **Gating status varies per row** — a finding whose fingerprint '
+      printf 'already had an open review thread before this collision is still merge-gating '
+      printf 'through that existing thread; only a row with no matching thread is genuinely '
+      printf 'not blocking:\n\n'
+      printf '| Severity | Category | File | Issue | Fix | Gating |\n'
+      printf '|----------|----------|------|-------|-----|--------|\n'
       # Same esc filter, verbatim, as the overflow table above — a
       # quarantined finding is model-generated prose posted by the same bot
       # login and carries the identical marker-collision hazard.
       jq -r '
         def esc: tostring | gsub("\r\n"; " ") | gsub("[\n\r]"; " ") | gsub("\\|"; "\\|") | gsub("<!-- gokure-pr-review"; "&lt;!-- gokure-pr-review");
-        .[] | "| \(.severity|esc) | \(.category|esc) | \(.file|esc) | \(.issue|esc) |"
+        .[] | "| \(.severity|esc) | \(.category|esc) | \(.file|esc) | \(.issue|esc) | \(.fix|esc) | \(if .gating == true then "yes (existing thread)" else "no" end) |"
       ' <<< "$quarantined"
       printf '\n'
     fi
@@ -302,15 +305,27 @@ EOF
 # update this run, so no write happened but the existing thread still
 # carries it. Keying on THREADS_WRITTEN alone (go-kure/.github#180 kure-bot
 # review) misclassified that case as "no thread carries them" and pointed at
-# an advisory comment that was never posted (OVERFLOW/QUARANTINED both 0).
-# The zero-anchor branch is reserved for a run where every finding was
-# suppressed, went to the overflow cap, or was quarantined on a colliding
-# fingerprint — creates or updates no thread AND anchors to no existing one
-# — and states the breakdown, pointing at the overflow/advisory comment that
-# actually carries them (go-kure/.github#155: the original false sentence).
+# an advisory comment that was never posted when OVERFLOW/QUARANTINED were
+# also both 0.
+#
+# Three cases, not two (go-kure/.github#180 codex review, same round):
+#   1. threads carry it, no advisory comment exists (overflow+quarantined=0)
+#      — the plain "carry the current state" sentence, unconditionally true.
+#   2. an advisory comment exists (overflow+quarantined>0), whether or not
+#      threads also carry part of it — point at the advisory comment either
+#      way; a mixed run (some anchored, some overflowed/quarantined) must
+#      not let "threads carry the current state" imply that's *everything*,
+#      and a threads_carry=0 run must not claim threads carry nothing while
+#      staying silent about where the rest actually is.
+#   3. neither: every finding this run was a suppressed false positive
+#      (SUPPRESS has no durable output surface anywhere, by design — go-kure/
+#      .github#180 codex review) — must not point at an advisory comment that
+#      was never posted (that POST requires overflow or quarantined > 0).
 prt_render_clean_comment_superseded() {
   local sha="$1" count="$2" threads_written="$3" suppressed="$4" overflow="$5" quarantined="$6" none_anchored="${7:-0}"
-  if [ "$((threads_written + none_anchored))" -gt 0 ]; then
+  local threads_carry=$((threads_written + none_anchored))
+  local advisory_count=$((overflow + quarantined))
+  if [ "$advisory_count" -eq 0 ] && [ "$threads_carry" -gt 0 ]; then
     cat <<EOF
 ## ~~AI Code Review — Reviewed, no findings~~ (superseded)
 
@@ -319,15 +334,31 @@ threads on this PR carry the current state.
 
 ${PRT_MARKER_CLEAN}
 EOF
+  elif [ "$advisory_count" -gt 0 ]; then
+    local lead
+    if [ "$threads_carry" -gt 0 ]; then
+      lead="Review threads on this PR carry part of the current state."
+    else
+      lead="Created or updated no review thread this run."
+    fi
+    cat <<EOF
+## ~~AI Code Review — Reviewed, no findings~~ (superseded)
+
+A later review of \`${sha}\` reported **${count} finding(s)**. ${lead}
+${suppressed} suppressed (false positive), ${overflow} beyond the gating cap,
+${quarantined} withheld (ambiguous fingerprint) — see the advisory comment
+on this PR for the withheld/overflow finding bodies.
+
+${PRT_MARKER_CLEAN}
+EOF
   else
     cat <<EOF
 ## ~~AI Code Review — Reviewed, no findings~~ (superseded)
 
 A later review of \`${sha}\` reported **${count} finding(s)**, but created or
-updated no review thread this run: ${suppressed} suppressed (false
-positive), ${overflow} beyond the gating cap, ${quarantined} withheld
-(ambiguous fingerprint). See the advisory comment on this PR for the
-withheld/overflow finding bodies — no thread on this PR carries them.
+updated no review thread this run: all suppressed as false positives, with
+no durable output surface anywhere on this PR (suppressed findings are
+never rendered, by design).
 
 ${PRT_MARKER_CLEAN}
 EOF
