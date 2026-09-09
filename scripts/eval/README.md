@@ -159,12 +159,12 @@ commit did add and then run on over lines it did not — see the next section.
 
 `git blame` names the commit that **last touched** a line, not the one that introduced the
 defect. A reformat, a rename or a whitespace pass in between makes an innocent change the
-accused. `build-gold.sh` therefore confirms each line of a candidate span individually, gating
-on both its text (the blamed commit's own diff must add that exact line text) and its own
-destination position (that line must fall inside a hunk the same diff declares added) — a short
-or duplicated token elsewhere in the commit's diff is not enough to confirm a line the commit
-never touched, wherever blame happened to place it (go-kure/.github#171). A span whose interior
-line fails either check is not dropped or kept whole: the surviving lines are grouped into
+accused. `build-gold.sh` therefore confirms each line of a candidate span individually: it
+requires the blamed commit's own diff to add that exact line's text at that exact destination
+line — not merely somewhere in the diff, and not merely at that position with different text.
+Text added elsewhere in the diff, or different text landing at the same position, is not enough
+to confirm a line the commit never touched at that spot (go-kure/.github#171). A span whose
+interior line fails confirmation is not dropped or kept whole: the surviving lines are grouped into
 separate contiguous runs, and each run becomes its own gold row, carrying the same
 `fix_commit`/`note`/provenance as the original candidate. It also drops rows outside source
 files and rows whose blame span is wider than `--max-span`: a wide span means the fix rewrote a
