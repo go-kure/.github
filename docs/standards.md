@@ -311,6 +311,18 @@ it only here has no effect on their jobs. See `docs/pr-review-threads-live-findi
 the full V2-V7 record, still land PR2 immediately as backup rather than relying on `off`
 alone to hold the window open indefinitely.
 
+**No PR to this repo that modifies the composite action can ever be validated live by its own
+CI.** The reusable-workflow pin (`pr-review-caller.yml`'s `uses: go-kure/.github/.github/workflows/pr-review.yml@main`)
+resolves the entire called workflow's content — including every nested action pin — from `main`
+at call time, not from the calling branch: this is true for every PR on this repo, self-referential
+by construction, not a bug in a given PR. A PR editing `.github/actions/pr-review-threads/**`,
+`scripts/pr-review-threads.sh` or `scripts/lib/prt/**` therefore has its own reconciliation
+mechanics (quarantine outcomes, the accounting invariant, thread create/resolve) run against
+`main`'s pre-merge code on every CI pass it gets, never its own. This was confirmed live on #180:
+its own CI log printed `main`'s real SHA instead of the branch's own placeholder pin. The local
+test suite plus a static review lens (`nah run codex`) are not a lesser substitute while this gap
+exists — they are the only coverage this class of PR gets before merge.
+
 Every later PR that touches the action's delegate code needs the same two-PR sequence as
 the bootstrap, not a single PR: rebase-merge still rewrites the commit's SHA on landing, so
 no SHA known while the PR is open can be the one that ends up on `main`. The first PR lands the code changes and bumps the pin to a new 40-hex placeholder SHA
