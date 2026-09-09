@@ -50,7 +50,18 @@ prt_decide_finding() {
   # already exists for it (go-kure/.github#155: this used to be NONE, which
   # for a finding with no thread yet was indistinguishable from every other
   # do-nothing row and left the finding's body nowhere).
-  [ "$collision" = true ] && { echo QUARANTINE; return 0; }
+  #
+  # Exception: an unthreaded finding the second pass already rejected as a
+  # false positive still follows row 2 (SUPPRESS), not QUARANTINE — a
+  # non-collided unthreaded false positive is never published, and a
+  # collision doesn't make a rejected finding worth publishing either
+  # (go-kure/.github#180 codex review). An *existing* ambiguous thread stays
+  # conservative and is quarantined regardless of verdict.
+  if [ "$collision" = true ]; then
+    [ "$thread_exists" != true ] && [ "$verdict" = FALSE_POSITIVE ] && { echo SUPPRESS; return 0; }
+    echo QUARANTINE
+    return 0
+  fi
 
   if [ "$verdict" = FALSE_POSITIVE ]; then
     # Row 2: never created in the first place.

@@ -357,7 +357,9 @@ prt_render_clean_comment_superseded() {
 
 A later review of \`${sha}\` reported **${count} finding(s)**, but ${unaccounted} did not
 reach any durable outcome this run (a write likely failed) — this is not the same as being
-suppressed as a false positive. Check the job log for "create failed" and re-run if needed.
+suppressed as a false positive. Check the job log for the REVIEW_INCOMPLETE reason (e.g.
+"create failed" for a single finding, "failed to post overflow comment" for the whole
+advisory batch) and re-run if needed.
 
 ${PRT_MARKER_CLEAN}
 EOF

@@ -459,6 +459,15 @@ assert_eq "decide_finding: collision beats everything -> QUARANTINE, not NONE (t
   "QUARANTINE" "$(prt_decide_finding true VALID false false false true)"
 assert_eq "decide_finding: collision beats everything -> QUARANTINE even when a thread already exists" \
   "QUARANTINE" "$(prt_decide_finding true VALID true false false true)"
+# Exception to the two assertions above: a collided finding the second pass
+# already rejected as a false positive, with no thread yet, still suppresses
+# rather than publishing a rejected finding just because its fingerprint was
+# ambiguous (go-kure/.github#180 codex review) -- but an EXISTING ambiguous
+# thread stays conservative and is still quarantined regardless of verdict.
+assert_eq "decide_finding: collision + FALSE_POSITIVE, no thread yet -> suppress, not quarantine" \
+  "SUPPRESS" "$(prt_decide_finding true FALSE_POSITIVE false false false true)"
+assert_eq "decide_finding: collision + FALSE_POSITIVE, thread already exists -> still quarantine" \
+  "QUARANTINE" "$(prt_decide_finding true FALSE_POSITIVE true false false true)"
 assert_eq "decide_finding: FALSE_POSITIVE, no thread yet -> suppress, never create" \
   "SUPPRESS" "$(prt_decide_finding false FALSE_POSITIVE false false false true)"
 assert_eq "decide_finding: FALSE_POSITIVE, open thread -> reply+resolve" \
