@@ -510,10 +510,17 @@ loss shape nobody has found yet, not only the collision path this fix closes.
 The clean-verdict-comment supersede path (`prt_render_clean_comment_superseded`) carried the same
 false-positive risk one level up: its fixed sentence, "the review threads on this PR carry the
 current state," was written for the normal case and is false for a run whose every finding was
-suppressed, overflowed, or quarantined — a run that writes to no thread at all. It now takes a
+suppressed, overflowed, or quarantined — a run that writes to no thread at all. It takes a
 `threads_written` count and only claims threads carry the state when that count is nonzero;
 otherwise it states the suppressed/overflow/quarantined breakdown and points at the advisory
-comment instead. Row 1's decision to never create a thread for a colliding finding is unchanged —
+comment instead. A same-PR kure-bot review round on this change caught that `threads_written` alone
+is not sufficient: a steady-state run where every finding matches an already-existing thread and
+needs no write also has `threads_written=0`, but an existing thread does still carry it — that case
+was being misclassified into the zero-thread branch, which then pointed at an advisory comment that
+was never posted (overflow and quarantined both 0). The function now also takes `none_anchored`
+(from `NONE_ANCHORED_COUNT`) and takes the "carry the current state" branch whenever
+`threads_written + none_anchored > 0`, reserving the breakdown branch for a run that anchors to
+nothing at all. Row 1's decision to never create a thread for a colliding finding is unchanged —
 this is observability only, and it does not tell you how often the all-collide shape happens on any
 given repo (a same-file-and-category pair is ordinary on a small changeset, but no frequency data
 was collected as part of this fix).

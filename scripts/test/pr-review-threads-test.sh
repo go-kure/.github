@@ -992,6 +992,21 @@ assert_eq "prt_render_clean_comment_superseded: threads_written=0 -> keeps the s
 assert_ne "prt_render_clean_comment_superseded: threads_written=0 body differs from the threads_written>0 body (criterion 4, both halves — not satisfiable by deleting the sentence unconditionally)" \
   "$superseded_zero_threads" "$superseded_body"
 
+# go-kure/.github#180 kure-bot review: steady state — every finding this run
+# matched an already-existing thread and needed no write (all NONE,
+# threads_written=0), but that existing thread still carries the finding.
+# Keying on threads_written alone misclassified this as "no thread carries
+# them" and pointed at an advisory comment that was never posted (overflow
+# and quarantined both 0 here). none_anchored>0 must take the "carry the
+# current state" branch even though nothing was written this run.
+superseded_none_anchored="$(prt_render_clean_comment_superseded 'def4567890def4567890def4567890def4567890' 2 0 0 0 0 2)"
+assert_eq "prt_render_clean_comment_superseded: threads_written=0 but none_anchored=2 -> still says 'carry the current state' (steady state, not a loss)" \
+  "true" "$(grep -qF 'carry the current state' <<< "$superseded_none_anchored" && echo true || echo false)"
+assert_eq "prt_render_clean_comment_superseded: threads_written=0, none_anchored=2 -> does NOT emit the zero-anchor breakdown sentence" \
+  "false" "$(grep -qF 'no thread on this PR carries them' <<< "$superseded_none_anchored" && echo true || echo false)"
+assert_eq "prt_render_clean_comment_superseded: none_anchored defaults to 0 when omitted (existing 6-arg call sites unaffected)" \
+  "$superseded_zero_threads" "$(prt_render_clean_comment_superseded 'def4567890def4567890def4567890def4567890' 3 0 1 1 1)"
+
 # ============================================================ render.sh: prt_render_overflow_comment quarantined section (go-kure/.github#155)
 # QUARANTINED_JSON is the second, optional argument — findings withheld by
 # reconcile.sh row 1 (fp_base collision). Both polarities per criterion 3:
