@@ -864,6 +864,20 @@ excluded_per_run=$(printf '%s\n' "${excluded_doc_lists[@]}" | jq -sc 'map(sort)'
 excluded_docs_union=$(jq -nc --argjson r "$excluded_per_run" '$r | add // [] | unique') ||
     die "cannot summarise the excluded-document lists"
 
+# denominator_stable -- true only when every run excluded the identical set (including the
+# common case of every run excluding nothing). compare.sh's excluded_per_run equality gate
+# (compare.sh:116-121) catches this ACROSS two configs being compared; it says nothing about a
+# single config's own three runs disagreeing with each other, which is exactly what makes
+# `spread` here partly reflect harness reliability (a judge call failing on run 3 but not runs
+# 1-2) instead of pure reviewer variance (go-kure/.github#179). False is a signal to the reader,
+# not a refusal -- compare.sh still gates on the coverage-match rule above regardless.
+denominator_stable=$(jq -nc --argjson r "$excluded_per_run" '($r | unique | length) == 1') ||
+    die "cannot compute denominator_stable"
+if [ "$denominator_stable" != "true" ]; then
+    printf 'run.sh: spread includes document(s) excluded unevenly across runs (union: %s); not pure reviewer variance\n' \
+        "$(jq -nc --argjson d "$excluded_docs_union" '$d | length')" >&2
+fi
+
 printf 'mean_r=%s spread=%s runs=%d\n' "$mean_r" "$spread" "$runs"
 
 out_json=$(jq -n \
@@ -884,12 +898,14 @@ out_json=$(jq -n \
     --argjson excluded_rows_max "$excluded_rows_max" \
     --argjson excluded_docs "$excluded_docs_union" \
     --argjson excluded_per_run "$excluded_per_run" \
+    --argjson denominator_stable "$denominator_stable" \
     --argjson per_run "$(printf '%s\n' "${recalls[@]}" | jq -sc '.')" \
     '{engine: $engine, gold_sha: $gold_sha, gold_tree: $gold_tree, gold_total: $gold_total,
       standards_sha: $standards_sha, standards_source: $standards_source,
       context_sha: $context_sha, assess: $assess, gold_docs: $gold_docs,
       excluded_docs_max: $excluded_docs_max, excluded_rows_max: $excluded_rows_max,
       excluded_docs: $excluded_docs, excluded_per_run: $excluded_per_run,
+      denominator_stable: $denominator_stable,
       runs: $runs, mean_r: $mean_r, spread: $spread, uncredited: $uncredited,
       per_run_recall: $per_run}') || die "cannot build summary JSON"
 
