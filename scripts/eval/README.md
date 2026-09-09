@@ -386,7 +386,14 @@ not what the gate reads.
 #    Two exceptions, both refusals rather than surprises: a document already in --out that
 #    carries no readable `.repo` (remove or repair it), and two repositories whose names slug
 #    to the same filename -- `acme/widgets-api` and `acme-widgets/api` both become
-#    `acme-widgets-api`, so with one PR number they claim one file. Give that one its own --out.
+#    `acme-widgets-api`, so with one head_sha prefix they claim one file. Give that one its
+#    own --out.
+#    A document is named <repo-slug>-<head_sha[0:12]>.json, on the same key the grouping uses.
+#    It is deliberately NOT named after the PR number even when one is recovered: a PR carries
+#    several commits, so a pr-keyed name is coarser than the grouping and two documents would
+#    claim one file (go-kure/.github#172). Staging now refuses a collision rather than
+#    overwriting, so if this is ever reintroduced the build stops instead of silently
+#    installing a smaller corpus.
 ./build-gold.sh --repo ../../that-repo --repo-name group/that-repo \
                 --out "$EVAL/gold" --max-fixes 200
 ./build-gold.sh --repo ../../other-repo --repo-name group/other-repo \

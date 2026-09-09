@@ -586,7 +586,11 @@ while IFS=$'\t' read -r sha path fix parent lo hi flist; do
     n_rows=$((n_rows + 1))
 done <"$work/spans.tsv"
 
-log "confirmed $n_rows rows; dropped $n_dropped_unconfirmed unconfirmed, $n_dropped_path off-path, $n_dropped_span over --max-span"
+# CANDIDATE rows, which is not the same number as what lands: the grouping below drops rows
+# that are exactly duplicated inside one document. Said explicitly because this line and the
+# end-of-run line differing by a few rows previously read as data loss and cost a corpus
+# review the time to rule it out (go-kure/.github#172).
+log "confirmed $n_rows candidate rows; dropped $n_dropped_unconfirmed unconfirmed, $n_dropped_path off-path, $n_dropped_span over --max-span"
 
 if [ "$n_rows" -eq 0 ]; then
     log "no gold rows survived confirmation"
@@ -617,18 +621,36 @@ mkdir -p "$staging" || die "cannot create $staging"
 trap 'rm -rf "$work" "$staging"' EXIT
 
 written=0
+rows_written=0
 # The names this run installs, recorded here because the install consumes them: a partially
 # failed `mv` leaves the moved ones out of the staging directory, so afterwards there is no
 # other list of what landed. restore_and_die below removes exactly these and nothing else.
 staged_names=()
 while read -r doc; do
     [ -n "$doc" ] || continue
+    # Named by head_sha, which is the SAME key the grouping above uses. It used to be
+    # `pr<N>` whenever a PR reference was recovered, and that is a naming key finer-grained
+    # than the grouping key is coarse: one PR routinely carries several commits, so two
+    # documents for two distinct introducing commits claimed one filename and the second
+    # silently overwrote the first. Not a miscount -- the losing document and all its rows
+    # left the corpus with nothing on disk recording it. Measured on a 3-repository build:
+    # 620 documents staged, 617 installed, all three losses on the repository with the most
+    # recovered PR references (go-kure/.github#172).
+    #
+    # `pr` stays in the document; it is provenance, and provenance does not have to be
+    # unique. The filename has to be, because it is the corpus's primary key.
     slug=$(printf '%s' "$doc" | jq -r '
-        (.repo | gsub("[/ ]"; "-")) + "-"
-        + (if .pr == null then (.head_sha[0:12]) else ("pr" + (.pr | tostring)) end)')
+        (.repo | gsub("[/ ]"; "-")) + "-" + (.head_sha[0:12])')
+    # Defence in depth, and it must stay even though the slug above is now injective for a
+    # single repository: a future change to the naming rule that reintroduces a collision
+    # should stop the build rather than quietly install a smaller corpus. Overwriting is the
+    # one outcome that leaves no evidence, which is what made the original defect invisible.
+    [ -e "$staging/$slug.json" ] &&
+        die "slug collision: two documents both claim $slug.json; refusing to overwrite"
     printf '%s\n' "$doc" | jq . >"$staging/$slug.json" || die "cannot write $staging/$slug.json"
     staged_names+=("$slug.json")
     written=$((written + 1))
+    rows_written=$((rows_written + $(printf '%s' "$doc" | jq '.gold | length')))
 done < <(jq -s -c '
     group_by(.repo + "@" + .head_sha)
     | map({repo: .[0].repo, pr: .[0].pr,
@@ -712,4 +734,10 @@ if [ "$out_dir_dirty" = true ]; then
     rm -rf "$backup" || log "warning: cannot remove $backup"
 fi
 
-log "wrote $written documents to $out_dir ($n_no_pr rows carried no PR/MR reference)"
+# Both numbers describe what is now ON DISK for this repository, not what was considered:
+# $written and $rows_written are counted from the staged documents themselves, and every staged
+# document was installed or the mv above would have aborted the run. An operator comparing this
+# line against `ls | wc -l` and a jq row count should find them equal -- that comparison is the
+# only check on this script that does not read this script's own counters, so it has to be able
+# to succeed.
+log "installed $written documents ($rows_written rows) to $out_dir; $n_no_pr candidate rows carried no PR/MR reference"
