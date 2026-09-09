@@ -101,5 +101,18 @@ rc=$?
 assert_eq "malformed denominator_stable: exit 2, not a passed verdict" "2" "$rc"
 assert_match "malformed denominator_stable: names the reason" "denominator_stable is not true" "$out"
 
+# --- denominator_stable is the STRING "true", not the JSON boolean: refused, not read as truthy ---
+#
+# The specific schema-drift shape a bare `tostring` check misses: `"true" | tostring` produces
+# the identical shell text "true" that the JSON boolean true produces, so a naive text compare
+# passes it (go-kure/.github#184 review finding, round 2). Only `type == "boolean"` distinguishes
+# them.
+write_result "$WORK/baseline.json" chat 0.50 0.02
+write_result "$WORK/candidate.json" service 0.60 0.02 '.denominator_stable = "true"'
+out="$(bash "$COMPARE" "$WORK/baseline.json" "$WORK/candidate.json" 2>&1)"
+rc=$?
+assert_eq "string-valued denominator_stable: exit 2, not a passed verdict" "2" "$rc"
+assert_match "string-valued denominator_stable: names the reason" "denominator_stable is not true" "$out"
+
 echo "passed: $pass_count, failed: $failures"
 [ "$failures" -eq 0 ]

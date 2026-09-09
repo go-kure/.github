@@ -126,14 +126,24 @@ fi
 # spread is still partly a judge failure, not reviewer variance. A result missing the field
 # predates that fix and is refused the same way a missing excluded_per_run already is above --
 # "unknown" is not evidence of stability.
-b_stable=$(jq -r 'if has("denominator_stable") then (.denominator_stable | tostring) else "unknown" end' "$baseline")
-c_stable=$(jq -r 'if has("denominator_stable") then (.denominator_stable | tostring) else "unknown" end' "$candidate")
+# Type-checked before stringifying, not `tostring` directly on the raw value: `tostring` on the
+# JSON STRING "true" produces the shell text "true", identical to what the JSON BOOLEAN true
+# produces, so a schema-drifted result recording the field as a string would pass a check that
+# merely compared stringified text (go-kure/.github#184 review finding, round 2 -- the first
+# round's tostring-based check closed the null/false gap but missed this one). Only a JSON
+# boolean is ever mapped to "true"/"false"; every other present type, string included, becomes
+# "malformed".
+b_stable=$(jq -r 'if has("denominator_stable") then
+        (if (.denominator_stable | type) == "boolean" then (.denominator_stable | tostring) else "malformed" end)
+    else "unknown" end' "$baseline")
+c_stable=$(jq -r 'if has("denominator_stable") then
+        (if (.denominator_stable | type) == "boolean" then (.denominator_stable | tostring) else "malformed" end)
+    else "unknown" end' "$candidate")
 [ "$b_stable" != "unknown" ] && [ "$c_stable" != "unknown" ] \
     || die "denominator_stable is missing from at least one result; re-measure with a run.sh that records it"
-# Require the literal boolean true, not merely "not false" -- a present but malformed value
-# (null, a stray string, a schema-drifted field) would otherwise stringify to something that is
-# neither "unknown" nor "false" and fall through the two checks above straight into the winner
-# calculation below, which is exactly the fail-closed gate this field exists to enforce.
+# Require the literal boolean true, not merely "not false" -- "malformed" and "false" are both
+# refused here, and neither falls through into the winner calculation below, which is exactly
+# the fail-closed gate this field exists to enforce.
 if [ "$b_stable" != "true" ] || [ "$c_stable" != "true" ]; then
     die "denominator_stable is not true (baseline=$b_stable, candidate=$c_stable); spread may include documents excluded unevenly across that config's own runs and cannot be attributed to reviewer variance -- re-measure until both are stable before gating"
 fi
