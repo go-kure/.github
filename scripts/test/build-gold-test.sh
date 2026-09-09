@@ -103,8 +103,102 @@ assert_eq "the reported row count equals what is on disk" \
   "$(jq -s '[.[].gold[]] | length' "$OUT"/*.json)" "$reported_rows"
 
 # ---------------------------------------------------------------------------
-# Summary
+# confirmed_offsets: a duplicated token confirms an untouched interior line by TEXT alone, and
+# the POSITION gate must be what rejects it (go-kure/.github#171).
+#
+# Real case this reproduces: pkg/kubernetes/fluxcd/create.go orig lines 128-130, where 128 and
+# 130 are genuinely added and 129 sits in an untouched gap between two hunks -- but 129's own
+# short text happened to recur inside an added line elsewhere in the same commit's diff, so the
+# old whole-span, text-only check confirmed all three as one row.
+#
+# Tested by extracting confirmed_offsets and ws_sensitive VERBATIM out of build-gold.sh rather
+# than through the end-to-end pipeline: `git blame` correctly refuses to attribute genuinely
+# untouched content to the commit that touched its neighbours (confirmed by hand against several
+# constructions while writing this test), so this exact shape cannot be provoked through normal
+# git history without deliberately re-implementing whatever internal diff-alignment choice
+# produced it in the real repository. Extracting the function verbatim (not a hand-copied
+# reimplementation) means any future edit to the real function is exercised here unchanged --
+# there is nothing to keep in sync by hand.
+extract_func() {
+  awk -v fn="$2" '$0 ~ "^" fn "\\(\\) \\{" { p = 1 } p { print } p && /^}/ { exit }' "$1"
+}
+eval "$(extract_func "$BUILD" ws_sensitive)"
+eval "$(extract_func "$BUILD" confirmed_offsets)"
+
+REPO2="$WORK/repo2"
+mkdir -p "$REPO2"
+git -C "$REPO2" init -q -b main
+git -C "$REPO2" config user.email t@example.invalid
+git -C "$REPO2" config user.name  Test
+
+# Filler lines (F5-F8) keep the two real edits far from the far-away duplicate at position 9,
+# so git's diff algorithm has no local ambiguity to resolve near position 3 -- without them, an
+# earlier version of this fixture had a NEARBY duplicate and git's own LCS chose to represent
+# position 3 as freshly inserted instead of unchanged, which shifted the gap this test needs to
+# a different position than the one being asserted.
+printf 'L1\nOLD2\nECHO\nOLD4\nF5\nF6\nF7\nF8\nOLD9\nL10\n' > "$REPO2/f.txt"
+git -C "$REPO2" add f.txt
+git -C "$REPO2" commit -q -m base
+
+# Position 3 ("ECHO") is untouched by this commit -- it stays out of every hunk below. Position
+# 9, in an unrelated hunk far away, happens to be rewritten to the SAME text "ECHO" -- the
+# duplicate that lets a text-only check confirm position 3 by accident.
+printf 'L1\nHELLO\nECHO\nWORLD2\nF5\nF6\nF7\nF8\nECHO\nL10\n' > "$REPO2/f.txt"
+git -C "$REPO2" add f.txt
+git -C "$REPO2" commit -q -m intro
+sha2=$(git -C "$REPO2" rev-parse HEAD)
+
+git_r() { git -C "$REPO2" "$@"; }
+
+# The candidate span as build-gold.sh's own collapse would have assembled it, IF blame had
+# (wrongly, as real blame does not here) attributed all three lines to sha2: orig 2..4, text
+# read in orig order.
+offsets="$(confirmed_offsets "$sha2" f.txt 2 "$(printf 'HELLO\nECHO\nWORLD2')")"
+assert_eq "position 2 (genuinely added) confirms" "1" \
+  "$(grep -c '^2$' <<<"$offsets")"
+assert_eq "position 3 (untouched, text-duplicate only) does NOT confirm" "0" \
+  "$(grep -c '^3$' <<<"$offsets")"
+assert_eq "position 4 (genuinely added) confirms" "1" \
+  "$(grep -c '^4$' <<<"$offsets")"
+assert_eq "exactly two offsets survive, not three" "2" \
+  "$(grep -c . <<<"$offsets")"
+
 # ---------------------------------------------------------------------------
+# emit_runs/emit_run: the same confirmed-offsets gap (2 and 4 survive, 3 does not) must become
+# TWO gold rows, [2,2] and [4,4] -- never a reconstructed [2,4] -- and both must carry the exact
+# same fix_commit, note and provenance. Extracted verbatim for the same reason as above.
+# ---------------------------------------------------------------------------
+eval "$(extract_func "$BUILD" emit_run)"
+eval "$(extract_func "$BUILD" emit_runs)"
+
+work="$WORK/emit-work"
+mkdir -p "$work"
+: >"$work/gold.ndjson"
+# emit_run/emit_runs read these by name from their caller's scope (they are extracted verbatim
+# out of build-gold.sh's own main loop, where the same variables are set once per candidate
+# row) -- shellcheck cannot see that dynamic-scope use through the eval above.
+# shellcheck disable=SC2034
+n_rows=0
+# shellcheck disable=SC2034
+repo_name="test/repo" pr="7" sha="$sha2" base="deadbeef" intro_title="feat: add stuff" \
+  path="f.txt" fix="feedface" note="fix: correct stuff"
+
+emit_runs "$offsets"
+
+assert_eq "two rows were written, not one reconstructed span" "2" \
+  "$(wc -l <"$work/gold.ndjson" | tr -d ' ')"
+assert_eq "row 1 lines is [2,2]" "[2,2]" "$(sed -n 1p "$work/gold.ndjson" | jq -c '.gold[0].lines')"
+assert_eq "row 2 lines is [4,4]" "[4,4]" "$(sed -n 2p "$work/gold.ndjson" | jq -c '.gold[0].lines')"
+assert_eq "row 1 keeps fix_commit" "feedface" \
+  "$(sed -n 1p "$work/gold.ndjson" | jq -r '.gold[0].fix_commit')"
+assert_eq "row 2 keeps the SAME fix_commit as row 1, not a different one" "feedface" \
+  "$(sed -n 2p "$work/gold.ndjson" | jq -r '.gold[0].fix_commit')"
+assert_eq "row 1 keeps the note" "fix: correct stuff" \
+  "$(sed -n 1p "$work/gold.ndjson" | jq -r '.gold[0].note')"
+assert_eq "row 2 keeps the SAME note as row 1" "fix: correct stuff" \
+  "$(sed -n 2p "$work/gold.ndjson" | jq -r '.gold[0].note')"
+assert_eq "row 2 keeps head_sha (provenance), same as row 1" "$sha2" \
+  "$(sed -n 2p "$work/gold.ndjson" | jq -r '.head_sha')"
 
 printf '\n%s: %d passed, %d failed\n' "${0##*/}" "$pass_count" "$failures"
 [ "$failures" -eq 0 ]
