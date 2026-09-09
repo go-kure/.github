@@ -1012,7 +1012,17 @@ else
 
     case "$action" in
       NONE) NONE_ANCHORED_COUNT=$((NONE_ANCHORED_COUNT + 1)) ;;
-      QUARANTINE) QUARANTINED="$(jq -c --argjson f "$f" '. + [$f]' <<< "$QUARANTINED")" ;;
+      QUARANTINE)
+        # A quarantined finding whose fp_base already has an OWNED thread
+        # that is still open is still merge-gating — prt_thread_stays_gating
+        # reserves its cap slot for exactly this reason (reconcile.sh's
+        # QUARANTINE case arm). Tag it so the render layer doesn't claim
+        # every quarantined finding is "Not blocking" (go-kure/.github#180
+        # codex review).
+        gating_flag=false
+        [ "$thread_exists" = true ] && [ "$thread_resolved" != true ] && gating_flag=true
+        QUARANTINED="$(jq -c --argjson f "$f" --argjson g "$gating_flag" '. + [$f + {gating: $g}]' <<< "$QUARANTINED")"
+        ;;
       SUPPRESS) SUPPRESSED_COUNT=$((SUPPRESSED_COUNT + 1)) ;;
       OVERFLOW) OVERFLOW="$(jq -c --argjson f "$f" '. + [$f]' <<< "$OVERFLOW")" ;;
       REPLY_RESOLVE)
