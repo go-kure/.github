@@ -561,6 +561,26 @@ an explicit 7-argument call with `none_anchored=0`, so the default itself is wha
 Neither defect had a pre-existing test exercising the branch it broke; both fixes shipped with new
 coverage (`pr-review-threads-test.sh`, `prt_render_overflow_comment` quarantined section).
 
+Codex's next review round (of the commit before the two kure-bot fixes above, delivered after they
+had already landed) found two more real defects, both in code this PR itself introduced. First, the
+per-finding `gating` tag was looked up by this finding's own (possibly ordinal-suffixed) `.fp`
+against `OWNED` — but `prt_assign_ordinals` hands the unsuffixed `fp_base` to whichever collision-
+group member currently sorts to the lowest `.line`, which can differ from run to run as lines shift.
+An exact-`.fp` lookup therefore attaches "yes (existing thread)" to whichever row happens to hold
+the unsuffixed identity *this* run, potentially misattributing a thread that was created for a
+different member's finding text — the same identity-ambiguity class #155 exists to close, one level
+up. The lookup now recomputes `fp_base` from `(file, category)` directly and matches on that, so
+every member of the same collision group gets the identical `gating` value, sourced from whether the
+group's shared identity has a pre-existing open thread — not from which row happens to hold it this
+run. Second, a finding whose thread-CREATE call failed (a non-422 rejection or transient network
+error, `prt_mark_incomplete`) is counted in none of
+`threads_written`/`suppressed`/`overflow`/`quarantined`, so `count` — the true total — exceeds their
+sum. `prt_render_clean_comment_superseded` had no case for this: the finding fell through to the
+suppressed-only branch and was reported as "all suppressed as false positives," which
+misrepresents a failed write as a reviewer verdict. The function now checks `count` against the sum
+of its other four counters first; a shortfall renders a dedicated message naming how many findings
+did not reach a durable outcome, before any of the three existing branches run.
+
 Landing this fix also required its own same-repo composite-action pin bump (`docs/standards.md`,
 "GitHub Actions pinning"): `scripts/pr-review-threads.sh` and `scripts/lib/prt/*.sh` are delegate
 code consumed through `.github/workflows/pr-review.yml`'s pinned `pr-review-threads` action

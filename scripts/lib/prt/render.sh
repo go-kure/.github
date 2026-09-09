@@ -337,7 +337,26 @@ prt_render_clean_comment_superseded() {
   local sha="$1" count="$2" threads_written="$3" suppressed="$4" overflow="$5" quarantined="$6" none_anchored="${7:-0}"
   local threads_carry=$((threads_written + none_anchored))
   local advisory_count=$((overflow + quarantined))
-  if [ "$advisory_count" -eq 0 ] && [ "$threads_carry" -gt 0 ]; then
+  # A finding whose CREATE failed (network error, non-422 rejection) is
+  # counted in none of threads_written/suppressed/overflow/quarantined —
+  # prt_mark_incomplete records it, but this function only sees counters.
+  # Without this check, that finding fell through to the branch below,
+  # which reads count-threads_carry-advisory_count-suppressed findings as
+  # "all suppressed as false positives" — a failed write is not a
+  # suppression verdict, and saying so misrepresents what the reviewer
+  # decided (go-kure/.github#180 codex review, round 3).
+  local unaccounted=$((count - threads_carry - advisory_count - suppressed))
+  if [ "$unaccounted" -gt 0 ]; then
+    cat <<EOF
+## ~~AI Code Review — Reviewed, no findings~~ (superseded)
+
+A later review of \`${sha}\` reported **${count} finding(s)**, but ${unaccounted} did not
+reach any durable outcome this run (a write likely failed) — this is not the same as being
+suppressed as a false positive. Check the job log for "create failed" and re-run if needed.
+
+${PRT_MARKER_CLEAN}
+EOF
+  elif [ "$advisory_count" -eq 0 ] && [ "$threads_carry" -gt 0 ]; then
     cat <<EOF
 ## ~~AI Code Review — Reviewed, no findings~~ (superseded)
 
