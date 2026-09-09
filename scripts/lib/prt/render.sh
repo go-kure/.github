@@ -181,7 +181,7 @@ prt_render_overflow_comment() {
       printf '\n'
     fi
     printf -- '---\n'
-    if [ "$has_gating_row" = true ]; then
+    if [ "$has_gating_row" = true ] && [ "$count" -gt 0 ]; then
       # go-kure/.github#180 kure-bot round 2: the blanket "not merge-gating"
       # claim would contradict a withheld row whose own Gating column says
       # "yes (existing thread)" — a quarantined finding whose pre-collision
@@ -189,6 +189,13 @@ prt_render_overflow_comment() {
       printf '*Automated review — the overflow table above is advisory only, not '
       printf 'merge-gating. At least one withheld finding above IS gating, through '
       printf 'a pre-existing thread — see its Gating column.*\n'
+    elif [ "$has_gating_row" = true ]; then
+      # Same caveat, but a quarantine-only run (count=0) never printed the
+      # overflow table above — nothing to point "above" at
+      # (go-kure/.github#180 codex review, this round).
+      printf '*Automated review — advisory only, not merge-gating. At least one '
+      printf 'withheld finding above IS gating, through a pre-existing thread — '
+      printf 'see its Gating column.*\n'
     else
       printf '*Automated review — advisory only, not merge-gating.*\n'
     fi

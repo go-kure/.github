@@ -1127,6 +1127,12 @@ assert_eq "prt_render_overflow_comment: at least one gating:true row -> the blan
   "false" "$(grep -qF '*Automated review — advisory only, not merge-gating.*' <<< "$quarantine_gating_footer" && echo true || echo false)"
 assert_eq "prt_render_overflow_comment: no gating:true row (all false) -> blanket 'advisory only, not merge-gating.' footer" \
   "true" "$(grep -qF '*Automated review — advisory only, not merge-gating.*' <<< "$quarantine_only" && echo true || echo false)"
+# quarantine_gating_footer above has count=0 (no overflow findings, '[]' arg)
+# and a gating:true row -- the overflow section (line 139) never rendered,
+# so the footer must not point at "the overflow table above" (go-kure/.github#180
+# codex review, this round: confirmed present pre-fix).
+assert_eq "prt_render_overflow_comment: gating:true row but count=0 -> footer does not reference the (unrendered) overflow table" \
+  "false" "$(grep -qF 'the overflow table above' <<< "$quarantine_gating_footer" && echo true || echo false)"
 
 # persisted_only column (go-kure/.github#180 codex review, this round): a
 # quarantined row can be effective-collision=true purely from a thread's
