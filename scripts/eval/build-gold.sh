@@ -618,17 +618,23 @@ while IFS=$'\t' read -r sha path fix parent lo hi flist; do
     # with the wrong line the first time a span's final lines are out of orig order.
     #
     # The blob is read once and every wanted line pulled out of it in one pass, rather than once
-    # per line: a span may hold up to --max-span lines and this loop runs per candidate. `got`
-    # exits non-zero when fewer lines were found than were asked for, which is a span naming a
-    # line past the end of the file at that revision -- unconfirmable, and silently so if the
-    # short result were simply handed on with its positions shifted.
+    # per line: a span may hold up to --max-span lines and this loop runs per candidate. Only the
+    # WANTED lines are ever held in memory -- the wanted set is built from flist before the blob
+    # is read, so a span carved out of a huge generated file (JSON, SQL, vendored data) costs
+    # memory proportional to --max-span, never to the file's own size. `got` exits non-zero when
+    # fewer lines were found than were asked for, which is a span naming a line past the end of
+    # the file at that revision -- unconfirmable, and silently so if the short result were simply
+    # handed on with its positions shifted.
     text=$(git_r show "$parent:$path" 2>/dev/null | awk -v list="$flist" '
-        { line[FNR] = $0 }
-        END {
+        BEGIN {
             n = split(list, a, ",")
+            for (i = 1; i <= n; i++) want[a[i] + 0] = 1
+        }
+        FNR in want { line[FNR] = $0; got++ }
+        END {
             for (i = 1; i <= n; i++) {
                 ln = a[i] + 0
-                if (ln in line) { print line[ln]; got++ }
+                if (ln in line) print line[ln]
             }
             exit (n > 0 && got == n) ? 0 : 1
         }
