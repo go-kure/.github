@@ -110,6 +110,10 @@ workdir=$(mktemp -d "${TMPDIR:-/tmp}/judge.XXXXXX") || die "mktemp failed"
 trap 'rm -rf "$workdir"' EXIT
 PRT_LAST_MODEL_FAILURE_FILE="$workdir/last_model_failure"
 export PRT_LAST_MODEL_FAILURE_FILE
+# judge_once always runs inside a `v1=$(judge_once ...)` command substitution -- a subshell --
+# so a plain variable it sets is gone the instant that subshell exits. Same reason
+# PRT_LAST_MODEL_FAILURE_FILE above is a file and not a variable.
+_JUDGE_ONCE_CALLS_FILE="$workdir/last_judge_calls"
 
 # ---------------------------------------------------------------------------
 # the judge call
@@ -128,8 +132,44 @@ decision. Judge the defect, not the wording.
 Respond with ONLY a single JSON object, no markdown fences, no prose:
 {"same": true, "reason": "one short sentence"}'
 
-# judge_once A_TEXT B_TEXT -- prints "true" or "false"; returns 1 if the call was unusable.
+# judge_once A_TEXT B_TEXT -- prints "true" or "false"; returns 1 if the call was unusable after
+# a retry.
+#
+# One retry of the WHOLE call (transport included) on any failure, not just a transport fault.
+# _prt_call_proxy already retries connect-class transport faults once internally
+# (model.sh:377-419), but a response that arrives and fails to parse, or parses to the wrong
+# shape, gets no second attempt at this level: a transient bad reply currently costs the whole
+# document (go-kure/.github#179). ~3% of document-judgements failed this way on the 12-document
+# probe, so this adds at most one extra call for that ~3%, not for the other 97%.
+#
+# Writes the number of raw model calls this invocation actually made (1 or 2) to
+# $_JUDGE_ONCE_CALLS_FILE, so the caller's judge_calls counter -- documented above as counting
+# calls, not pairs -- stays accurate when a retry fires instead of silently undercounting real
+# API usage. A variable would not survive the `v1=$(judge_once ...)` subshell at every call site.
 judge_once() {
+    local attempt calls=0
+    for attempt in 1 2; do
+        calls=$((calls + 1))
+        if _judge_once_attempt "$1" "$2"; then
+            printf '%s' "$calls" >"$_JUDGE_ONCE_CALLS_FILE"
+            return 0
+        fi
+        [ "$attempt" -eq 1 ] || break
+    done
+    printf '%s' "$calls" >"$_JUDGE_ONCE_CALLS_FILE"
+    return 1
+}
+
+# _judge_once_attempt A_TEXT B_TEXT -- the single-attempt call judge_once retries. Every failure
+# path records its own reason via _prt_set_model_failure (model.sh:40-45) before returning, so
+# judge.sh's failure log (below) names the actual condition instead of a generic default that
+# five distinct causes could produce identically (go-kure/.github#179 problem 2).
+#
+# Every reason uses prt_response_shape (model.sh:178), never the response text itself: "never
+# logging raw model responses" is a standing rule for this whole action (docs/pr-review-threads.md
+# "Failure surface"), and A/B here are a finding's and a gold row's defect text -- exactly the
+# content that rule protects.
+_judge_once_attempt() {
     local a="$1" b="$2" raw parsed same
     local user
     user="Statement A:
@@ -146,19 +186,28 @@ Do A and B describe the same underlying issue?"
         parsed=$(prt_extract_json_braces "$raw" 2>/dev/null || echo '')
         parsed=$(jq -c '.' <<<"$parsed" 2>/dev/null || echo '')
     fi
-    [ -n "$parsed" ] || return 1
+    if [ -z "$parsed" ]; then
+        _prt_set_model_failure "not-json: $(prt_response_shape "$raw")"
+        return 1
+    fi
     # `.same` on a non-object -- a bare array, string or number -- makes jq ERROR rather than
     # return null, so `same` is set to the empty string, never the "bad" sentinel below. An
     # empty verdict then reads as "not a match" and the pair is silently scored as a miss,
     # which is a judge failure disguised as a reviewer failure: it lowers recall on evidence
     # that does not exist. Guard the type first, and check jq's own status, so an unusable
     # answer reaches the caller as a failed call.
-    jq -e 'type == "object"' >/dev/null 2>&1 <<<"$parsed" || return 1
-    same=$(jq -r 'if .same == true then "true" elif .same == false then "false" else "bad" end' \
-        <<<"$parsed") || return 1
+    if ! jq -e 'type == "object"' >/dev/null 2>&1 <<<"$parsed"; then
+        _prt_set_model_failure "not-object: $(prt_response_shape "$parsed")"
+        return 1
+    fi
+    if ! same=$(jq -r 'if .same == true then "true" elif .same == false then "false" else "bad" end' \
+        <<<"$parsed"); then
+        _prt_set_model_failure "same-eval-failed: $(prt_response_shape "$parsed")"
+        return 1
+    fi
     case "$same" in
         true|false) printf '%s' "$same" ;;
-        *) return 1 ;;
+        *) _prt_set_model_failure "no-boolean-same: $(prt_response_shape "$parsed")"; return 1 ;;
     esac
 }
 
@@ -225,11 +274,11 @@ while IFS=$'\t' read -r gi fi_idx; do
     # Both orders. Order 1 first: if it says no, order 2 cannot change the outcome (both
     # must agree), so the second call is skipped -- half the judge cost on non-matches.
     v1=$(judge_once "$finding_text" "$gold_text") || { call_failed=1; break; }
-    judge_calls=$((judge_calls + 1))
+    judge_calls=$((judge_calls + $(cat "$_JUDGE_ONCE_CALLS_FILE")))
     verdict=false
     if [ "$v1" = "true" ]; then
         v2=$(judge_once "$gold_text" "$finding_text") || { call_failed=1; break; }
-        judge_calls=$((judge_calls + 1))
+        judge_calls=$((judge_calls + $(cat "$_JUDGE_ONCE_CALLS_FILE")))
         [ "$v2" = "true" ] && verdict=true
     fi
 

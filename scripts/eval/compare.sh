@@ -120,6 +120,20 @@ if [ "$b_excl" != "$c_excl" ]; then
 fi
 [ "$b_excl" != '"unknown"' ] || die "excluded_per_run is missing from at least one result; re-measure with a run.sh that records it"
 
+# denominator_stable is run.sh's own within-config signal (go-kure/.github#179): the equality
+# check above only catches two configs whose per-run exclusions DIFFER from each other -- two
+# configs that happen to exclude the identical uneven pattern would pass it while each one's own
+# spread is still partly a judge failure, not reviewer variance. A result missing the field
+# predates that fix and is refused the same way a missing excluded_per_run already is above --
+# "unknown" is not evidence of stability.
+b_stable=$(jq -r 'if has("denominator_stable") then (.denominator_stable | tostring) else "unknown" end' "$baseline")
+c_stable=$(jq -r 'if has("denominator_stable") then (.denominator_stable | tostring) else "unknown" end' "$candidate")
+[ "$b_stable" != "unknown" ] && [ "$c_stable" != "unknown" ] \
+    || die "denominator_stable is missing from at least one result; re-measure with a run.sh that records it"
+if [ "$b_stable" = "false" ] || [ "$c_stable" = "false" ]; then
+    die "denominator_stable is false (baseline=$b_stable, candidate=$c_stable); spread includes documents excluded unevenly across that config's own runs and cannot be attributed to reviewer variance -- re-measure until both are stable before gating"
+fi
+
 b_engine=$(jq -r '.engine' "$baseline")
 c_engine=$(jq -r '.engine' "$candidate")
 
