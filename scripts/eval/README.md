@@ -271,8 +271,9 @@ changed is walked past by `-w` and credited to that same older commit. Measured 
 JavaScript span — one commit adds `const label = "a b";`, a later one tightens it to `"ab"`, the
 fix touches both — the row was written naming a commit that never wrote the line it points at, and
 `check-gold.sh` could not object, because that commit's diff does add both lines. The interior-exact
-comparison above already rejects that line; it was simply never asked about it. One unconfirmed line
-now fails the whole row.
+comparison above already rejects that line; it was simply never asked about it. An unconfirmed line
+no longer fails the whole row, only itself — the surviving lines on either side of it are split into
+their own contiguous runs and each is emitted as its own gold row (go-kure/.github#171).
 
 Which way they agree depends on the file. In Python and YAML — both in the default include set —
 indentation is syntax, so a whitespace-only edit is a real edit: reindenting moves a statement
