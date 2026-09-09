@@ -130,8 +130,12 @@ b_stable=$(jq -r 'if has("denominator_stable") then (.denominator_stable | tostr
 c_stable=$(jq -r 'if has("denominator_stable") then (.denominator_stable | tostring) else "unknown" end' "$candidate")
 [ "$b_stable" != "unknown" ] && [ "$c_stable" != "unknown" ] \
     || die "denominator_stable is missing from at least one result; re-measure with a run.sh that records it"
-if [ "$b_stable" = "false" ] || [ "$c_stable" = "false" ]; then
-    die "denominator_stable is false (baseline=$b_stable, candidate=$c_stable); spread includes documents excluded unevenly across that config's own runs and cannot be attributed to reviewer variance -- re-measure until both are stable before gating"
+# Require the literal boolean true, not merely "not false" -- a present but malformed value
+# (null, a stray string, a schema-drifted field) would otherwise stringify to something that is
+# neither "unknown" nor "false" and fall through the two checks above straight into the winner
+# calculation below, which is exactly the fail-closed gate this field exists to enforce.
+if [ "$b_stable" != "true" ] || [ "$c_stable" != "true" ]; then
+    die "denominator_stable is not true (baseline=$b_stable, candidate=$c_stable); spread may include documents excluded unevenly across that config's own runs and cannot be attributed to reviewer variance -- re-measure until both are stable before gating"
 fi
 
 b_engine=$(jq -r '.engine' "$baseline")

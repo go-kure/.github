@@ -183,6 +183,22 @@ assert_eq "disagreement: exit 0" "0" "$rc"
 assert_eq "disagreement: no match" "0" "$(jq -r .matched <<<"$disagree")"
 assert_eq "disagreement: still cost both calls" "2" "$(jq -r .judge_calls <<<"$disagree")"
 
+# --- a transport-class failure (curl exit 28, timeout) is NOT retried at this layer ---
+#
+# _prt_call_proxy deliberately excludes exit 28 from its own internal retry: the first attempt
+# already burned a max_time window this slow, and retrying re-spends the same budget for the
+# same likely result. judge_once must not undo that by wrapping the whole call in a second
+# attempt anyway (go-kure/.github#184 review finding) -- only its own parse/shape failures are
+# retryable, never a reason the transport layer set.
+reset_stub
+printf '28' > "$STUB_DIR/exit-1"
+timeout_case="$(run_judge)"
+rc=$?
+assert_eq "transport timeout: exit 1" "1" "$rc"
+assert_eq "transport timeout: prints no partial verdict" "" "$timeout_case"
+assert_eq "transport timeout: only 1 call made, no retry" "1" "$(cat "$STUB_DIR/calls")"
+assert_match "transport timeout: reason recorded" "curl-exit-28" "$(cat "$WORK/err")"
+
 # --- order 1 alone says no: order 2 is skipped entirely, at half the cost ---
 reset_stub
 printf '%s' '{"same": false}' > "$STUB_DIR/reply-1"
