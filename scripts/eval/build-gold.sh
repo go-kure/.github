@@ -327,13 +327,32 @@ blame_range() {
 # The wanted text travels through the environment, never through `awk -v`: a -v assignment
 # processes escape sequences, so a faulty line containing a backslash -- a regex, a printf
 # format, a Windows path -- would be compared in corrupted form and silently fail to confirm.
-confirm_introduction() {
-    local sha="$1" path="$2" text="$3"
-    [ -n "$text" ] || return 1
+#
+# go-kure/.github#171: the text check above is a bag-of-lines question -- "did this commit add a
+# line whose squashed text equals the wanted text ANYWHERE in its diff" -- which a short or
+# common token (a lone closing brace, a repeated import) can satisfy for a line that, AT ITS OWN
+# ACTUAL POSITION, this commit's diff never touched. Real case: pkg/kubernetes/fluxcd/create.go
+# orig lines 128-130, where 128 and 130 are genuinely added and 129 sits in an untouched gap
+# between two hunks -- text confirmation alone passed all three, because 129's own short text
+# happened to recur inside an added line elsewhere in the same commit's diff.
+#
+# confirmed_offsets below adds a POSITION gate: a line confirms only when its own destination
+# line number -- ORIG_LO plus its offset, the exact number blame_range's `orig` column already
+# names -- falls inside a hunk this SAME diff's header claims as added. That is the identical
+# range-based technique check-gold.sh's span_outside_diff relies on (`-U0
+# --inter-hunk-context=0` forces genuinely separate change regions into separate hunks, so a
+# header's own +start,count range IS the set of destination lines that hunk added; no per-line
+# +/- bookkeeping needed). Checked per line rather than once for the whole span, so one
+# unconfirmed interior line drops only itself: the caller below splits the survivors into
+# contiguous runs and emits one gold row per run, instead of reconstructing a span that spans a
+# line nothing confirms.
+confirmed_offsets() {
+    local sha="$1" path="$2" orig_lo="$3" text="$4"
     local exact=0
     ws_sensitive "$path" && exact=1
-    git_r show --format= --unified=0 --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ "$sha" -- "$path" 2>/dev/null \
-        | WANT="$text" EXACT="$exact" awk '
+    git_r show --format= --unified=0 --no-color --no-ext-diff --no-textconv --inter-hunk-context=0 \
+        --src-prefix=a/ --dst-prefix=b/ "$sha" -- "$path" 2>/dev/null \
+        | WANT="$text" ORIG_LO="$orig_lo" EXACT="$exact" awk '
             function squash(s) {
                 if (exact) return s
                 sub(/^[ \t]+/, "", s)
@@ -342,16 +361,12 @@ confirm_introduction() {
             }
             BEGIN {
                 exact = (ENVIRON["EXACT"] == "1")
-                # One entry per line of the span. A blank entry is unconfirmable, so it fails the
-                # whole row rather than being skipped -- `bad` rather than a bare `exit 1`,
-                # because an exit in BEGIN still runs END, whose own exit would override it.
+                orig_lo = ENVIRON["ORIG_LO"] + 0
+                # One entry per line of the span, 1-based so index i pairs with orig_lo+i-1. A
+                # blank entry is unconfirmable but only for ITS OWN line -- want[i] stays "" and
+                # the END block below skips it, rather than failing every other line in the span.
                 n = split(ENVIRON["WANT"], raw, "\n")
-                for (i = 1; i <= n; i++) {
-                    w = squash(raw[i])
-                    if (w == "") { bad = 1; exit 1 }
-                    want[w] = 1
-                }
-                if (n == 0) { bad = 1; exit 1 }
+                for (i = 1; i <= n; i++) want[i] = squash(raw[i])
             }
             # Position-gated exactly as removed_lines already gates its own headers, and for the
             # reason its comment gives: `+++` and `---` are file headers only BEFORE the first @@
@@ -365,16 +380,28 @@ confirm_introduction() {
             # not sufficient -- hence in_hunk, the same fix already applied to the sibling parser.
             /^diff --git / { in_hunk = 0; next }
             !in_hunk && /^(--- |\+\+\+ )/ { next }
-            /^@@ / { in_hunk = 1; next }
-            in_hunk && /^\+/ { w = squash(substr($0, 2)); if (w in want) added[w] = 1; next }
-            in_hunk && /^-/  { w = squash(substr($0, 2)); if (w in want) removed[w] = 1 }
+            /^@@ / {
+                in_hunk = 1
+                # header: @@ -oldstart[,oldcount] +newstart[,newcount] @@ -- newcount defaults to
+                # 1 when omitted (a single-line hunk), same convention unified diff always uses.
+                match($0, /\+[0-9]+(,[0-9]+)?/)
+                spec = substr($0, RSTART + 1, RLENGTH - 1)
+                split(spec, nc, ",")
+                newstart = nc[1] + 0
+                newcount = (nc[2] == "" ? 1 : nc[2] + 0)
+                for (p = newstart; p < newstart + newcount; p++) pos_added[p] = 1
+                next
+            }
+            in_hunk && /^\+/ { w = squash(substr($0, 2)); added[w] = 1; next }
+            in_hunk && /^-/  { w = squash(substr($0, 2)); removed[w] = 1 }
             END {
-                if (bad) exit 1
-                # Every wanted line added by this commit, and none of them also removed. One
-                # unconfirmed line fails the row: a span is a single claim, so partial evidence
-                # for it is no evidence.
-                for (w in want) if (!(w in added) || (w in removed)) exit 1
-                exit 0
+                for (i = 1; i <= n; i++) {
+                    w = want[i]
+                    if (w == "") continue
+                    if (!(w in added) || (w in removed)) continue
+                    if (!((orig_lo + i - 1) in pos_added)) continue
+                    print (orig_lo + i - 1)
+                }
             }
         '
 }
@@ -423,6 +450,7 @@ n_dropped_unconfirmed=0
 n_no_pr=0
 n_dropped_path=0
 n_dropped_span=0
+n_clipped=0
 
 log "mining $repo_name for fix commits since $since"
 
@@ -520,6 +548,49 @@ sort -u -t"$(printf '\t')" -k1,1 -k2,2 -k5,5 -k6,6 -k3,3n "$candidates" | awk -F
 
 : >"$work/gold.ndjson"
 
+# emit_run LO HI -- append one gold row for a confirmed contiguous run, reading every other
+# field (repo_name, pr, sha, base, intro_title, path, fix, note) from the enclosing loop
+# iteration's own variables. A span that splits into several runs (go-kure/.github#171) calls
+# this once per run, all sharing the same fix_commit/note/provenance.
+emit_run() {
+    jq -cn \
+        --arg repo "$repo_name" --arg pr "$pr" \
+        --arg head "$sha" --arg base "$base" --arg intro_title "$intro_title" \
+        --arg file "$path" --arg fix "$fix" --arg note "$note" \
+        --argjson lo "$1" --argjson hi "$2" \
+        '{repo: $repo, pr: (if $pr == "" then null else ($pr | tonumber) end),
+          head_sha: $head, base_sha: $base, intro_title: $intro_title,
+          gold: [{file: $file, lines: [$lo, $hi], fix_commit: $fix,
+                  note: $note, confirmed: true}]}' >>"$work/gold.ndjson"
+    n_rows=$((n_rows + 1))
+}
+
+# emit_runs CONFIRMED -- CONFIRMED is confirmed_offsets' output, ascending orig line numbers one
+# per line. Groups them into contiguous runs -- a gap of more than one ends a run, the same rule
+# spans.tsv's own collapse uses -- and calls emit_run once per run. Split into its own function,
+# separate from the loop that computes CONFIRMED, so it has a name and can be tested in
+# isolation (go-kure/.github#171): a span whose middle line the position gate rejects must
+# become TWO rows, [lo,mid-1] and [mid+1,hi], both carrying the same fix_commit/note/provenance
+# emit_run reads from the caller's variables -- never a single row reconstructing [lo,hi] over a
+# line nothing confirms.
+emit_runs() {
+    local confirmed="$1" ln run_lo="" run_hi=""
+    while read -r ln; do
+        [ -n "$ln" ] || continue
+        if [ -z "$run_lo" ]; then
+            run_lo=$ln
+            run_hi=$ln
+        elif [ "$ln" -le $((run_hi + 1)) ]; then
+            run_hi=$ln
+        else
+            emit_run "$run_lo" "$run_hi"
+            run_lo=$ln
+            run_hi=$ln
+        fi
+    done <<<"$confirmed"
+    emit_run "$run_lo" "$run_hi"
+}
+
 while IFS=$'\t' read -r sha path fix parent lo hi flist; do
     [ -n "$sha" ] || continue
 
@@ -533,30 +604,47 @@ while IFS=$'\t' read -r sha path fix parent lo hi flist; do
         continue
     fi
 
-    # Confirm against EVERY line of the span as it stood at the fix's parent -- so the
+    # Read the text of EVERY line of the span as it stood at the fix's parent -- so the
     # PARENT-relative line numbers (flist), never the introducing-commit span (lo..hi) that the
     # gold row carries. Reading `${lo}p` out of `$parent:$path` would pick whatever line happens
     # to sit at that offset in a different revision of the file.
     #
-    # The blob is read once and all wanted lines pulled out of it in one pass, rather than once
-    # per line: a span may hold up to --max-span lines and this loop runs per candidate.
+    # Printed in FLIST's OWN ORDER, not ascending file order: flist[i] is paired with orig line
+    # lo+i-1 (the spans.tsv comment above explains why that pairing cannot be re-derived --
+    # final_lineno does not rise in step with orig_lineno wherever the parent reordered lines).
+    # confirmed_offsets below relies on that same index correspondence to gate each text line by
+    # its own orig position, so printing by ascending FNR here -- as this used to, when the only
+    # consumer was a position-blind set membership check -- would silently pair the wrong text
+    # with the wrong line the first time a span's final lines are out of orig order.
     #
-    # awk exits non-zero when it printed fewer lines than were asked for, which is a span naming
-    # a line past the end of the file at that revision -- unconfirmable, and silently so if the
-    # short result were simply handed on, since confirm_introduction would then check a subset
-    # and pass. Counted with a `seen` guard so a repeated line number is asked for once.
+    # The blob is read once and every wanted line pulled out of it in one pass, rather than once
+    # per line: a span may hold up to --max-span lines and this loop runs per candidate. `got`
+    # exits non-zero when fewer lines were found than were asked for, which is a span naming a
+    # line past the end of the file at that revision -- unconfirmable, and silently so if the
+    # short result were simply handed on with its positions shifted.
     text=$(git_r show "$parent:$path" 2>/dev/null | awk -v list="$flist" '
-        BEGIN {
+        { line[FNR] = $0 }
+        END {
             n = split(list, a, ",")
-            for (i = 1; i <= n; i++) if (!(a[i] in seen)) { seen[a[i]] = 1; want[a[i] + 0] = 1; need++ }
+            for (i = 1; i <= n; i++) {
+                ln = a[i] + 0
+                if (ln in line) { print line[ln]; got++ }
+            }
+            exit (n > 0 && got == n) ? 0 : 1
         }
-        (FNR in want) { print; got++ }
-        END { exit (need > 0 && got == need) ? 0 : 1 }
     ') || text=
-    if ! confirm_introduction "$sha" "$path" "$text"; then
+
+    # confirmed_offsets gates each line of the span individually (text AND position -- see its
+    # own comment, go-kure/.github#171); group the survivors into contiguous orig-numbered runs
+    # and emit one gold row per run, rather than reconstructing [lo,hi] over a line nothing
+    # confirms.
+    confirmed=$(confirmed_offsets "$sha" "$path" "$lo" "$text")
+    if [ -z "$confirmed" ]; then
         n_dropped_unconfirmed=$((n_dropped_unconfirmed + 1))
         continue
     fi
+    n_runs=$(wc -l <<<"$confirmed" | tr -d ' ')
+    [ "$n_runs" -eq $((hi - lo + 1)) ] || n_clipped=$((n_clipped + 1))
 
     # Looked up only for rows that survive, so the reported no-reference count describes the
     # gold set that was written rather than every candidate considered.
@@ -574,23 +662,14 @@ while IFS=$'\t' read -r sha path fix parent lo hi flist; do
     # look. It stays in the document for the judge and for whoever reads the gold file.
     intro_title=$(git_r log -1 --format=%s "$sha")
 
-    jq -cn \
-        --arg repo "$repo_name" --arg pr "$pr" \
-        --arg head "$sha" --arg base "$base" --arg intro_title "$intro_title" \
-        --arg file "$path" --arg fix "$fix" --arg note "$note" \
-        --argjson lo "$lo" --argjson hi "$hi" \
-        '{repo: $repo, pr: (if $pr == "" then null else ($pr | tonumber) end),
-          head_sha: $head, base_sha: $base, intro_title: $intro_title,
-          gold: [{file: $file, lines: [$lo, $hi], fix_commit: $fix,
-                  note: $note, confirmed: true}]}' >>"$work/gold.ndjson"
-    n_rows=$((n_rows + 1))
+    emit_runs "$confirmed"
 done <"$work/spans.tsv"
 
 # CANDIDATE rows, which is not the same number as what lands: the grouping below drops rows
 # that are exactly duplicated inside one document. Said explicitly because this line and the
 # end-of-run line differing by a few rows previously read as data loss and cost a corpus
 # review the time to rule it out (go-kure/.github#172).
-log "confirmed $n_rows candidate rows; dropped $n_dropped_unconfirmed unconfirmed, $n_dropped_path off-path, $n_dropped_span over --max-span"
+log "confirmed $n_rows candidate rows ($n_clipped split into narrower runs); dropped $n_dropped_unconfirmed unconfirmed, $n_dropped_path off-path, $n_dropped_span over --max-span"
 
 if [ "$n_rows" -eq 0 ]; then
     log "no gold rows survived confirmation"
