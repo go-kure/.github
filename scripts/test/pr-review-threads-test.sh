@@ -1004,8 +1004,9 @@ assert_eq "prt_render_clean_comment_superseded: threads_written=0 but none_ancho
   "true" "$(grep -qF 'carry the current state' <<< "$superseded_none_anchored" && echo true || echo false)"
 assert_eq "prt_render_clean_comment_superseded: threads_written=0, none_anchored=2 -> does NOT emit the zero-anchor breakdown sentence" \
   "false" "$(grep -qF 'no thread on this PR carries them' <<< "$superseded_none_anchored" && echo true || echo false)"
-assert_eq "prt_render_clean_comment_superseded: none_anchored defaults to 0 when omitted (existing 6-arg call sites unaffected)" \
-  "$superseded_zero_threads" "$(prt_render_clean_comment_superseded 'def4567890def4567890def4567890def4567890' 3 0 1 1 1)"
+assert_eq "prt_render_clean_comment_superseded: none_anchored defaults to 0 when omitted (kure-bot round 2: the prior version of this check self-compared two 6-arg calls, exercising nothing; now diffs the 6-arg call against an explicit 7-arg none_anchored=0 call so the default itself is what's under test)" \
+  "$(prt_render_clean_comment_superseded 'def4567890def4567890def4567890def4567890' 3 0 1 1 1 0)" \
+  "$(prt_render_clean_comment_superseded 'def4567890def4567890def4567890def4567890' 3 0 1 1 1)"
 
 # go-kure/.github#180 codex review, two findings on the same round:
 #
@@ -1066,6 +1067,15 @@ assert_eq "prt_render_overflow_comment: quarantined section neutralizes a litera
   "true" "$(grep -qF '&lt;!-- gokure-pr-review' <<< "$quarantine_neutralized" && echo true || echo false)"
 assert_eq "prt_render_overflow_comment: quarantined section — the raw unescaped marker prefix does not survive" \
   "false" "$(grep -qF '<!-- gokure-pr-review' <<< "$quarantine_neutralized" && echo true || echo false)"
+
+quarantine_gating='[{"severity":"High","category":"other","file":"dup.go","issue":"collision issue one","fix":"n/a","gating":true},{"severity":"Medium","category":"other","file":"dup.go","issue":"collision issue two","fix":"n/a","gating":false}]'
+quarantine_gating_footer="$(prt_render_overflow_comment '[]' "$quarantine_gating")"
+assert_eq "prt_render_overflow_comment: at least one gating:true row -> footer states the contradiction, not the blanket claim (kure-bot round 2, fp=4ab69f0ddb6d86ed)" \
+  "true" "$(grep -qF 'At least one withheld finding below IS gating' <<< "$quarantine_gating_footer" && echo true || echo false)"
+assert_eq "prt_render_overflow_comment: at least one gating:true row -> the blanket 'advisory only, not merge-gating.' sentence does not appear" \
+  "false" "$(grep -qF '*Automated review — advisory only, not merge-gating.*' <<< "$quarantine_gating_footer" && echo true || echo false)"
+assert_eq "prt_render_overflow_comment: no gating:true row (all false) -> blanket 'advisory only, not merge-gating.' footer" \
+  "true" "$(grep -qF '*Automated review — advisory only, not merge-gating.*' <<< "$quarantine_only" && echo true || echo false)"
 
 # ============================================================ render.sh: prt_render_advisory_comment degraded/incomplete disclosure (go-kure/.github#98 round 3, chatgpt-codex-connector[bot] review go-kure/.github#101#pullrequestreview-5028172237; round 5, kure-bot pr-review AI Code Review on go-kure/.github#101 at 9b2fe22 — the zero-count suppression round 3 added for `degraded_reasons` alone left the strictly-more-severe `incomplete_reasons`-only zero-count case still printing plain "No issues found.")
 adv_clean_zero="$(prt_render_advisory_comment '[]')"
