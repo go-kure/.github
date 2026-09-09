@@ -711,18 +711,25 @@ do_run() {
         # no-op, which is why assessment is the default and the result records which it was.
         #
         # collision: prt_assign_ordinals sets it on EVERY member of a group sharing a file and a
-        # category (finding.sh, `collision: ($glen > 1)`), and reconcile.sh's row 1 returns NONE
-        # for each of them before any other rule is consulted. Nothing publishes them. Crediting
-        # them would count defects no human is ever shown, and it would do so inconsistently
-        # with the FALSE_POSITIVE filter one line above -- the two suppressions are equally
-        # unconditional in production, so filtering one and not the other measures neither the
-        # engine nor the product.
+        # category (finding.sh, `collision: ($glen > 1)`), and reconcile.sh's row 1 still refuses
+        # to create a review THREAD for each of them before any other rule is consulted.
         #
-        # This does mean an engine that emits several findings per file and category scores
-        # lower. That is a real property of the delivered system rather than an artefact: those
-        # findings are genuinely withheld today. If the harness is ever pointed at an engine
-        # meant to be judged before the thread lifecycle, this is the line to revisit, and it
-        # needs a flag and a README paragraph rather than a silent removal.
+        # STALE RATIONALE, deliberately not acted on here (go-kure/.github#180, implementing
+        # go-kure/.github#155): this filter's original justification was that "nothing publishes
+        # them" and they are "defects no human is ever shown". That is no longer true. Row 1 now
+        # returns QUARANTINE rather than NONE, and a quarantined finding's body IS published --
+        # rendered into the "Withheld AI Review Findings" table of the durable PR-level advisory
+        # comment (render.sh, prt_render_overflow_comment), and counted in `quarantined=N` on the
+        # done: line. A human IS now shown them; they are withheld from the thread lifecycle, not
+        # from the reader.
+        #
+        # The filter is left in place regardless, because changing it changes what every recorded
+        # baseline measured and so cannot ride along in the change that falsified its comment.
+        # The consequence is now a real scoring bug rather than a faithful reflection of the
+        # product: an engine emitting several findings per file and category scores lower for
+        # findings the delivered system does publish. Revisiting it needs a flag and a README
+        # paragraph rather than a silent removal, plus a baseline re-run -- tracked separately,
+        # not in go-kure/.github#180.
         judge_input="$workdir/run$run_idx-$(basename "$g" .json).judged.json"
         jq '.findings |= map(select(
                 ((.verdict // "") != "FALSE_POSITIVE") and (.collision != true)))' \

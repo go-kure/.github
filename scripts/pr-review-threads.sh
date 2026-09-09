@@ -1199,7 +1199,7 @@ if [ "$PRT_MODE" = enforce ]; then
   # read as absent this run (same reasoning finding.sh's docstring gives for
   # the fatal case). Fold the degraded-for-partial-drop reason directly into
   # this check instead: prt_decide_absent's review_incomplete=true branch
-  # (reconcile.sh:111-114) forces CLEAR_MARKER/NONE, never
+  # (reconcile.sh:119-122) forces CLEAR_MARKER/NONE, never
   # SET_FIRST_ABSENT/REPLY_RESOLVE, which is exactly the fail-safe behavior
   # this needs without dual-marking (see the partial-drop call site above,
   # :461-479, for why dual-marking would defeat degraded's whole point).
