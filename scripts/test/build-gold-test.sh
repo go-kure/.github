@@ -164,6 +164,29 @@ assert_eq "exactly two offsets survive, not three" "2" \
   "$(grep -c . <<<"$offsets")"
 
 # ---------------------------------------------------------------------------
+# The text-extraction awk inside the main loop: a flist naming the same final line number twice
+# (legitimate -- final_lineno need not rise in step with orig_lineno, so two different orig
+# positions can map to one final line) must not spuriously fail confirmation. Extracted verbatim
+# from between its two delimiting markers, since it is an inline awk program rather than a named
+# bash function and so cannot go through extract_func above.
+extract_awk_block() {
+  awk -v start='text=$(git_r show "$parent:$path"' -v stop="') || text=" '
+    index($0, start) { p = 1; next }
+    p && index($0, stop) { exit }
+    p
+  ' "$1"
+}
+extract_program="$(extract_awk_block "$BUILD")"
+[ -n "$extract_program" ] || { echo "FAIL: could not extract the text-extraction awk block from $BUILD" >&2; failures=$((failures + 1)); }
+
+blob=$'L1\nA\nB\nC'
+dup_out="$(printf '%s\n' "$blob" | awk -v list="2,4,2" "$extract_program")"
+dup_rc=$?
+assert_eq "duplicate flist entry: exit 0, not spuriously dropped" "0" "$dup_rc"
+assert_eq "duplicate flist entry: prints each occurrence in flist's own order" \
+  "$(printf 'A\nC\nA')" "$dup_out"
+
+# ---------------------------------------------------------------------------
 # emit_runs/emit_run: the same confirmed-offsets gap (2 and 4 survive, 3 does not) must become
 # TWO gold rows, [2,2] and [4,4] -- never a reconstructed [2,4] -- and both must carry the exact
 # same fix_commit, note and provenance. Extracted verbatim for the same reason as above.

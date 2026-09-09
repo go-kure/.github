@@ -625,10 +625,21 @@ while IFS=$'\t' read -r sha path fix parent lo hi flist; do
     # fewer lines were found than were asked for, which is a span naming a line past the end of
     # the file at that revision -- unconfirmable, and silently so if the short result were simply
     # handed on with its positions shifted.
+    #
+    # `got` is compared against `need`, the count of DISTINCT wanted line numbers, not against
+    # `n`, the raw (possibly repeat-carrying) flist entry count: flist can legitimately name the
+    # same final line twice (the spans.tsv comment above notes final_lineno need not rise in step
+    # with orig_lineno, so two different orig positions can map to one final line), and `got`
+    # increments once per distinct FNR matched while streaming, never once per flist entry -- an
+    # earlier version of this loop compared against `n` directly and spuriously failed, dropping
+    # the whole candidate, whenever a flist happened to repeat a line number.
     text=$(git_r show "$parent:$path" 2>/dev/null | awk -v list="$flist" '
         BEGIN {
             n = split(list, a, ",")
-            for (i = 1; i <= n; i++) want[a[i] + 0] = 1
+            for (i = 1; i <= n; i++) {
+                ln = a[i] + 0
+                if (!(ln in want)) { want[ln] = 1; need++ }
+            }
         }
         FNR in want { line[FNR] = $0; got++ }
         END {
@@ -636,7 +647,7 @@ while IFS=$'\t' read -r sha path fix parent lo hi flist; do
                 ln = a[i] + 0
                 if (ln in line) print line[ln]
             }
-            exit (n > 0 && got == n) ? 0 : 1
+            exit (n > 0 && got == need) ? 0 : 1
         }
     ') || text=
 
