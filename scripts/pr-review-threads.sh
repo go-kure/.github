@@ -1019,8 +1019,26 @@ else
         # QUARANTINE case arm). Tag it so the render layer doesn't claim
         # every quarantined finding is "Not blocking" (go-kure/.github#180
         # codex review).
+        #
+        # Deliberately re-looked-up by fp_base, not by this finding's own
+        # (possibly ordinal-suffixed) $fp / $thread_exists: prt_assign_ordinals
+        # hands the unsuffixed fp_base to whichever group member currently
+        # sorts to the lowest line, which can differ run to run as lines
+        # shift. Gating by the exact-$fp lookup would attach "yes (existing
+        # thread)" to whichever row happens to hold the unsuffixed identity
+        # THIS run, misattributing a thread that may have been created for a
+        # different member's text — same mismatch class #155 exists to
+        # close. Every member of the same fp_base group gets the identical
+        # value instead (go-kure/.github#180 codex review, round 3).
+        gating_file="$(jq -r '.file' <<< "$f")"
+        gating_category="$(jq -r '.category' <<< "$f")"
+        gating_fp_base="$(prt_fp_base "$gating_file" "$gating_category")"
+        gating_owned_match="$(jq -c --arg fp "$gating_fp_base" 'map(select(.fp == $fp)) | .[0] // empty' <<< "$OWNED")"
         gating_flag=false
-        [ "$thread_exists" = true ] && [ "$thread_resolved" != true ] && gating_flag=true
+        if [ -n "$gating_owned_match" ]; then
+          gating_resolved="$(jq -r '.resolved' <<< "$gating_owned_match")"
+          [ "$gating_resolved" != true ] && gating_flag=true
+        fi
         QUARANTINED="$(jq -c --argjson f "$f" --argjson g "$gating_flag" '. + [$f + {gating: $g}]' <<< "$QUARANTINED")"
         ;;
       SUPPRESS) SUPPRESSED_COUNT=$((SUPPRESSED_COUNT + 1)) ;;

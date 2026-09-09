@@ -963,7 +963,7 @@ assert_eq "prt_render_clean_comment: carries the chunk count" \
 assert_eq "prt_render_clean_comment: ends with the clean-verdict marker, so prt_find_marked_comment can find it again on the next push" \
   "$PRT_MARKER_CLEAN" "$(tail -1 <<< "$clean_body")"
 
-superseded_body="$(prt_render_clean_comment_superseded 'def4567890def4567890def4567890def4567890' 2 1 0 0 0)"
+superseded_body="$(prt_render_clean_comment_superseded 'def4567890def4567890def4567890def4567890' 2 2 0 0 0)"
 assert_eq "prt_render_clean_comment_superseded: names the superseding SHA" \
   "true" "$(grep -qF 'def4567890def4567890def4567890def4567890' <<< "$superseded_body" && echo true || echo false)"
 assert_eq "prt_render_clean_comment_superseded: states the finding count that superseded it" \
@@ -1014,7 +1014,7 @@ assert_eq "prt_render_clean_comment_superseded: none_anchored defaults to 0 when
 # comment (threads_written>0 AND overflow/quarantined>0). The plain "carry
 # the current state" sentence would wrongly imply that's *everything*, when
 # part of this run's findings are only in the separate advisory comment.
-superseded_mixed="$(prt_render_clean_comment_superseded 'def4567890def4567890def4567890def4567890' 4 1 0 1 1 0)"
+superseded_mixed="$(prt_render_clean_comment_superseded 'def4567890def4567890def4567890def4567890' 3 1 0 1 1 0)"
 assert_eq "prt_render_clean_comment_superseded: mixed (threads_written=1, overflow=1, quarantined=1) -> says threads carry only PART of the state" \
   "true" "$(grep -qF 'carry part of the current state' <<< "$superseded_mixed" && echo true || echo false)"
 assert_eq "prt_render_clean_comment_superseded: mixed -> does NOT claim threads carry the FULL current state" \
@@ -1036,6 +1036,20 @@ assert_eq "prt_render_clean_comment_superseded: suppressed-only -> does NOT poin
   "false" "$(grep -qF 'advisory comment' <<< "$superseded_suppressed_only" && echo true || echo false)"
 assert_eq "prt_render_clean_comment_superseded: suppressed-only -> still names the finding count and that all were suppressed" \
   "true" "$(grep -qF '2 finding(s)' <<< "$superseded_suppressed_only" && grep -qF 'suppressed as false positives' <<< "$superseded_suppressed_only" && echo true || echo false)"
+
+# go-kure/.github#180 codex review, round 3: a finding whose CREATE failed
+# (non-422 rejection, network error) is counted in none of
+# threads_written/suppressed/overflow/quarantined — count exceeds their sum.
+# Before this fix, that finding fell through to the suppressed-only branch
+# and was reported as "all suppressed as false positives", which is not what
+# happened: the write failed, no verdict was ever rendered.
+superseded_unaccounted="$(prt_render_clean_comment_superseded 'def4567890def4567890def4567890def4567890' 2 0 1 0 0 0)"
+assert_eq "prt_render_clean_comment_superseded: count exceeds threads_carry+advisory_count+suppressed -> does NOT say 'all suppressed as false positives'" \
+  "false" "$(grep -qF 'suppressed as false positives' <<< "$superseded_unaccounted" && echo true || echo false)"
+assert_eq "prt_render_clean_comment_superseded: count exceeds accounted findings -> states some did not reach a durable outcome" \
+  "true" "$(grep -qF 'did not' <<< "$superseded_unaccounted" && grep -qF 'not the same as being' <<< "$superseded_unaccounted" && echo true || echo false)"
+assert_eq "prt_render_clean_comment_superseded: fully accounted run (count == sum of counters) -> does NOT take the unaccounted branch" \
+  "false" "$(grep -qF 'did not reach any durable outcome' <<< "$superseded_suppressed_only" && echo true || echo false)"
 
 # ============================================================ render.sh: prt_render_overflow_comment quarantined section (go-kure/.github#155)
 # QUARANTINED_JSON is the second, optional argument — findings withheld by
@@ -2593,18 +2607,26 @@ unset PRT_TEST_ISSUE_COMMENT_BODY_FILE
 # introduced the collision) is still merge-gating through that thread —
 # reconcile.sh's prt_thread_stays_gating QUARANTINE case reserves its cap
 # slot for exactly this reason. The withheld-findings table must not render
-# a blanket "Not blocking" that hides this. Ordinal 0 (lowest .line, "issue
-# one") gets the unsuffixed fp_base and is the one that matches the OWNED
-# thread here; ordinals 2-3 get suffixed fps and match no thread.
+# a blanket "Not blocking" that hides this.
+#
+# go-kure/.github#180 codex review, round 3: gating is looked up by fp_base,
+# not by whichever member's exact (possibly ordinal-suffixed) $fp happens to
+# match this run — prt_assign_ordinals hands the unsuffixed fp_base to
+# whichever group member currently sorts to the lowest .line, which can
+# differ run to run as lines shift. An exact-$fp lookup would attach "yes
+# (existing thread)" to whichever row holds the unsuffixed identity THIS
+# run, misattributing a thread that may have been created for a different
+# member's text. All three members share the same fp_base (dup.go/other),
+# so all three must be marked gating together, not just ordinal 0.
 PRT_TEST_ISSUE_COMMENT_BODY_FILE="$(mktemp)"
 PRT_TEST_MODEL_RESPONSE_MODE=collision_triple
 PRT_TEST_OWNED_FP="$(prt_fp_base dup.go other)"
 rc="$(run_orchestrator enforce 0 0 0)"
-assert_eq "orchestrator: fingerprint-collided run, one member matches an existing open thread -> exits 0" "0" "$rc"
-assert_eq "orchestrator: quarantined finding matching an existing open thread -> withheld comment marks it gating" \
-  "true" "$(grep -qF 'yes (existing thread)' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && echo true || echo false)"
-assert_eq "orchestrator: quarantined findings with no matching thread -> withheld comment marks them not gating" \
-  "true" "$(grep -qF '| no |' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && echo true || echo false)"
+assert_eq "orchestrator: fingerprint-collided run, the group's fp_base matches an existing open thread -> exits 0" "0" "$rc"
+assert_eq "orchestrator: quarantined findings sharing a fp_base with an existing open thread -> ALL group members marked gating together (go-kure/.github#180 codex review round 3), not just whichever row currently holds the unsuffixed identity" \
+  "3" "$(grep -oF 'yes (existing thread)' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" | wc -l | tr -d ' ')"
+assert_eq "orchestrator: quarantined findings sharing a gating fp_base -> no row is left marked 'no'" \
+  "false" "$(grep -qF '| no |' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && echo true || echo false)"
 assert_eq "orchestrator: quarantined finding matching an existing open thread -> its fix suggestion is rendered too" \
   "true" "$(grep -qF 'fix one' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && echo true || echo false)"
 PRT_TEST_OWNED_FP="deadbeefcafebabe"
