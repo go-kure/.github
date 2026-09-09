@@ -547,6 +547,32 @@ unchanged — this is observability only, and it does not tell you how often the
 happens on any given repo (a same-file-and-category pair is ordinary on a small changeset, but no
 frequency data was collected as part of this fix).
 
+A kure-bot round-2 review (re-run automatically on the push containing the fixes above) caught two
+more defects in those very fixes. First, `prt_render_overflow_comment`'s trailing footer still said
+"advisory only, not merge-gating" unconditionally, directly contradicting a `Gating` column value of
+"yes (existing thread)" on any row in the same table — a quarantined finding whose pre-collision
+thread is still open genuinely does block merge, so a blanket disclaimer beneath it is a
+false-reassurance defect of the same shape #155 exists to close. The footer is now conditional on
+whether any quarantined row carries `gating: true`, and states the exception instead of overriding
+it. Second, the regression test guarding `none_anchored`'s default value was comparing two identical
+6-argument calls to `prt_render_clean_comment_superseded` — a tautology that could not have caught a
+broken default, since both sides took the same code path. It now diffs the 6-argument call against
+an explicit 7-argument call with `none_anchored=0`, so the default itself is what's under test.
+Neither defect had a pre-existing test exercising the branch it broke; both fixes shipped with new
+coverage (`pr-review-threads-test.sh`, `prt_render_overflow_comment` quarantined section).
+
+Landing this fix also required its own same-repo composite-action pin bump (`docs/standards.md`,
+"GitHub Actions pinning"): `scripts/pr-review-threads.sh` and `scripts/lib/prt/*.sh` are delegate
+code consumed through `.github/workflows/pr-review.yml`'s pinned `pr-review-threads` action
+reference, so a fix there does not reach any consumer (kure, launcher) until the pin moves. This PR
+is PR1 of that two-PR sequence — it bumps the pin to a new all-zeros placeholder, distinct from the
+real SHA it replaces — and a PR2 must land immediately after this one merges, replacing the
+placeholder with this PR's own merge SHA. `check-pin-bump.sh` (run in `scripts-smoke-test`)
+verifies only that the pin *moved*, not that it resolves; the "interim outage window" between PR1
+landing and PR2 landing is real and must not span a working day, which is also why `.github` itself
+is excluded from the org-wide `pr-review` required-check enforcement (`.github/workflows/pr-review.yml`
+lines 45-54) — that check would otherwise deadlock PR2 against its own not-yet-fixed pin.
+
 All unbounded reconciliation collections obey one additional invariant: thread pages, paginated
 comment nodes, the combined `THREADS` and `OWNED` inventories, and the findings/ownership inputs to
 cap eligibility reach `jq` through stdin, never through `--argjson` on external-process argv.

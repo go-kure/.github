@@ -131,9 +131,10 @@ prt_render_summary() {
 # for overflow and quarantine, never for the whole review.
 prt_render_overflow_comment() {
   local findings="$1" quarantined="${2:-[]}"
-  local count qcount
+  local count qcount has_gating_row
   count="$(jq 'length' <<< "$findings")"
   qcount="$(jq 'length' <<< "$quarantined")"
+  has_gating_row="$(jq 'any(.[]; .gating == true)' <<< "$quarantined")"
   {
     if [ "$count" -gt 0 ]; then
       printf '## Additional AI Review Findings (advisory — beyond the gating cap)\n\n'
@@ -174,7 +175,18 @@ prt_render_overflow_comment() {
       ' <<< "$quarantined"
       printf '\n'
     fi
-    printf -- '---\n*Automated review — advisory only, not merge-gating.*\n'
+    printf -- '---\n'
+    if [ "$has_gating_row" = true ]; then
+      # go-kure/.github#180 kure-bot round 2: the blanket "not merge-gating"
+      # claim would contradict a withheld row whose own Gating column says
+      # "yes (existing thread)" — a quarantined finding whose pre-collision
+      # thread is still open and still blocks merge.
+      printf '*Automated review — the overflow table above is advisory only, not '
+      printf 'merge-gating. At least one withheld finding below IS gating, through '
+      printf 'a pre-existing thread — see its Gating column.*\n'
+    else
+      printf '*Automated review — advisory only, not merge-gating.*\n'
+    fi
   }
 }
 
