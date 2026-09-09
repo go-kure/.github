@@ -376,6 +376,17 @@ each run and across runs, so it is insensitive to visit order and to which repet
 and sensitive only to how many did. `excluded_docs` is kept alongside as the readable union; it is
 not what the gate reads.
 
+**Neither result may internally vary its own exclusions, either.** `excluded_per_run` matching
+between baseline and candidate only catches the two DIFFERING from each other — two results that
+happen to exclude the identical uneven pattern (one document dropped in one repetition of three,
+kept in the other two) would pass that equality check while each one's own spread is still partly
+a judge failure, not reviewer variance. `run.sh` records this as its own within-config signal,
+`denominator_stable` — true only when a config's own `excluded_per_run` sets are identical across
+all its repetitions. `compare.sh` requires it to be the literal boolean `true` on both sides,
+refusing when either is `false`, present but not a boolean (a schema-drifted result), or missing
+(a result written before this field existed) — "unknown" is not evidence of stability, so a
+missing field is refused the same way a missing `excluded_per_run` already is above.
+
 ## Typical use
 
 ```sh

@@ -135,19 +135,29 @@ Respond with ONLY a single JSON object, no markdown fences, no prose:
 # judge_once A_TEXT B_TEXT -- prints "true" or "false"; returns 1 if the call was unusable after
 # a retry.
 #
-# One retry of the WHOLE call (transport included) on any failure, not just a transport fault.
+# One retry of the whole call, but ONLY when the failure is a parse/shape problem -- a response
+# that arrived and failed to parse, or parsed to the wrong shape, gets no second attempt at this
+# level by default: a transient bad reply currently costs the whole document (go-kure/.github#179).
+# ~3% of document-judgements failed this way on the 12-document probe, so this adds at most one
+# extra call for that ~3%, not for the other 97%.
+#
+# A TRANSPORT failure (curl-exit-*, http-*, deadline-exhausted, empty-content, or the call
+# refusing to start at all) is never retried here (go-kure/.github#184 review finding):
 # _prt_call_proxy already retries connect-class transport faults once internally
-# (model.sh:377-419), but a response that arrives and fails to parse, or parses to the wrong
-# shape, gets no second attempt at this level: a transient bad reply currently costs the whole
-# document (go-kure/.github#179). ~3% of document-judgements failed this way on the 12-document
-# probe, so this adds at most one extra call for that ~3%, not for the other 97%.
+# (model.sh:377-419) and deliberately excludes exit 28 (--max-time timeout) from that retry,
+# since the first attempt already burned a `max_time` window this slow and a second one just
+# re-spends the same budget for the same likely result -- the run deadline is the correct
+# control for that case, not a retry here. Retrying it anyway at this layer would let one
+# judgment consume nearly the whole 1800s budget in two timeout attempts. Distinguished by
+# reading the reason _judge_once_attempt (or the transport call inside it) recorded via
+# _prt_set_model_failure: only its own four parse/shape reasons are retryable.
 #
 # Writes the number of raw model calls this invocation actually made (1 or 2) to
 # $_JUDGE_ONCE_CALLS_FILE, so the caller's judge_calls counter -- documented above as counting
 # calls, not pairs -- stays accurate when a retry fires instead of silently undercounting real
 # API usage. A variable would not survive the `v1=$(judge_once ...)` subshell at every call site.
 judge_once() {
-    local attempt calls=0
+    local attempt calls=0 reason
     for attempt in 1 2; do
         calls=$((calls + 1))
         if _judge_once_attempt "$1" "$2"; then
@@ -155,6 +165,11 @@ judge_once() {
             return 0
         fi
         [ "$attempt" -eq 1 ] || break
+        reason=$(cat "$PRT_LAST_MODEL_FAILURE_FILE" 2>/dev/null || echo '')
+        case "$reason" in
+            not-json:*|not-object:*|same-eval-failed:*|no-boolean-same:*) ;;
+            *) break ;;
+        esac
     done
     printf '%s' "$calls" >"$_JUDGE_ONCE_CALLS_FILE"
     return 1

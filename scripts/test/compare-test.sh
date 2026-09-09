@@ -79,7 +79,7 @@ write_result "$WORK/candidate.json" service 0.60 0.02 \
 out="$(bash "$COMPARE" "$WORK/baseline.json" "$WORK/candidate.json" 2>&1)"
 rc=$?
 assert_eq "unstable baseline: exit 2, not a passed verdict" "2" "$rc"
-assert_match "unstable baseline: names the reason" "denominator_stable is false" "$out"
+assert_match "unstable baseline: names the reason" "denominator_stable is not true" "$out"
 
 # --- denominator_stable false on the candidate only: still refused ---
 write_result "$WORK/baseline.json" chat 0.50 0.02
@@ -87,7 +87,19 @@ write_result "$WORK/candidate.json" service 0.60 0.02 '.denominator_stable = fal
 out="$(bash "$COMPARE" "$WORK/baseline.json" "$WORK/candidate.json" 2>&1)"
 rc=$?
 assert_eq "unstable candidate: exit 2, not a passed verdict" "2" "$rc"
-assert_match "unstable candidate: names the reason" "denominator_stable is false" "$out"
+assert_match "unstable candidate: names the reason" "denominator_stable is not true" "$out"
+
+# --- denominator_stable present but not a boolean at all: refused, not read as truthy ---
+#
+# A value that is neither JSON true nor JSON false -- null, a stray string, a schema-drifted
+# field -- must not fall through the "unknown" and "false" checks straight into the winner
+# calculation (go-kure/.github#184 review finding): only the literal boolean true passes.
+write_result "$WORK/baseline.json" chat 0.50 0.02
+write_result "$WORK/candidate.json" service 0.60 0.02 '.denominator_stable = null'
+out="$(bash "$COMPARE" "$WORK/baseline.json" "$WORK/candidate.json" 2>&1)"
+rc=$?
+assert_eq "malformed denominator_stable: exit 2, not a passed verdict" "2" "$rc"
+assert_match "malformed denominator_stable: names the reason" "denominator_stable is not true" "$out"
 
 echo "passed: $pass_count, failed: $failures"
 [ "$failures" -eq 0 ]
