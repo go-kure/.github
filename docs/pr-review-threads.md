@@ -711,6 +711,41 @@ The regression test for this (`pr-review-threads-test.sh`, "model.sh: oversized 
 in-process and never `execve`'d, so it cannot reproduce `E2BIG` and would pass against the broken
 form, making the test vacuous.
 
+**`prt_decide_finding`'s row 3 did not honor a human reply (go-kure/.github#177).**
+`prt_decide_absent`'s row 13 already refuses to auto-resolve a thread with a human reply on it
+(`reconcile.sh:111` docstring — a human reply protects a thread from *any* auto action, not only
+that row's own absence case). Loop 1's row 3 — an open thread whose finding was reassessed
+`FALSE_POSITIVE` this run — had no equivalent: it unconditionally returned `REPLY_RESOLVE`, so a
+thread a human was actively defending got auto-resolved the next time the model called the same
+finding a false positive. `prt_decide_finding` now takes an optional 7th argument,
+`HAS_HUMAN_REPLY` (default `false` when omitted, matching every existing caller's prior behavior),
+and row 3 returns `NONE` — no reply, no resolve — when it's `true` (`reconcile.sh:73-86`). No reply
+is posted in that case either: posting "false positive, closing" into a thread a human just
+engaged with is still the automated action the guard exists to prevent, just split into two writes
+instead of one.
+
+This had a second-order effect on the PR-wide findings cap: `prt_reserved_count`
+(`reconcile.sh:268`) walks every `OWNED` thread through `prt_decide_finding` to know which stay
+gating and must hold a cap slot, so it now threads each row's real `has_human_reply` value through
+the same call (`reconcile.sh:306`) rather than leaving it at the default `false` — otherwise a
+`FALSE_POSITIVE`-plus-human-reply thread that now stays open (row 3's `NONE`) would go uncounted,
+letting a later `CREATE` exceed the cap by one. The regression suite covers this differentially,
+not just at the decision-table level: a fixture identical to an existing capped-PR scenario except
+for one thread's `has_human_reply` flag asserts `prt_reserved_count` and `prt_apply_cap` return
+different numbers between the two arms (5 vs. 4 reserved slots; 0 vs. 1 new finding admitted within
+cap) — a fixture that passed identically either way would not have caught this class of bug.
+
+This fix does **not** close the separate, broader gap it surfaced during investigation: `prt`
+treats a syntactically-valid-but-empty model response (`{"findings":[]}`) as a clean run by design
+(`finding.sh`, citing go-kure/.github#98 round 1 P1), the same shape as the structural defect
+reported against the downstream GitLab `mr-review` twin (a spuriously-empty comparison set retiring
+every open thread in one pass, with no line drift or fingerprint collision required). `prt` is not
+equally exposed — row 13's `has_human_reply` guard above already protects any human-replied thread
+regardless of a run's zero-findings state, and GitHub's `OWNED` inventory is rebuilt live via
+GraphQL every run rather than read from a locally persisted, truncatable cache the way GitLab's is
+— but neither mitigation eliminates the underlying exposure for a thread with no human reply on it.
+Left open, tracked separately from this fix; not filed as its own issue as of this PR.
+
 ## Fail-closed alerting
 
 Per-PR, a fatal run is already loud: the exit gate above prints `::error title=PR review threads

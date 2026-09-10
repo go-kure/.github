@@ -472,8 +472,27 @@ assert_eq "decide_finding: FALSE_POSITIVE, no thread yet -> suppress, never crea
   "SUPPRESS" "$(prt_decide_finding false FALSE_POSITIVE false false false true)"
 assert_eq "decide_finding: FALSE_POSITIVE, open thread -> reply+resolve" \
   "REPLY_RESOLVE" "$(prt_decide_finding false FALSE_POSITIVE true false false true)"
-assert_eq "decide_finding: FALSE_POSITIVE, already-resolved thread -> none" \
-  "NONE" "$(prt_decide_finding false FALSE_POSITIVE true true false true)"
+# go-kure/.github#177: row 3 used to ignore has_human_reply entirely, so a
+# thread a human was actively defending got resolved the next time an
+# assessment called the same finding a false positive -- the same
+# single-sample retirement the absence pass (row 13, has_human_reply arg)
+# was designed to avoid. Both polarities, per the issue's own suggested
+# test: the flag explicitly true protects; the flag explicitly false (not
+# just the 6-arg/omitted default tested two lines up) still resolves.
+assert_eq "decide_finding: FALSE_POSITIVE, open thread, human reply -> protected, not resolved (#177)" \
+  "NONE" "$(prt_decide_finding false FALSE_POSITIVE true false false true true)"
+assert_eq "decide_finding: FALSE_POSITIVE, open thread, no human reply -> still reply+resolve" \
+  "REPLY_RESOLVE" "$(prt_decide_finding false FALSE_POSITIVE true false false true false)"
+# Control: has_human_reply must NOT leak into a row it doesn't govern -- a
+# thread that doesn't exist yet (row 2) has no comments to reply to, and an
+# already-resolved thread (tail of row 3) has nothing left to protect
+# either. If a future edit moved the check earlier than the
+# thread_resolved!=true branch, these would flip from SUPPRESS/NONE to
+# something else and catch it.
+assert_eq "decide_finding: FALSE_POSITIVE, no thread yet, has_human_reply=true is inert -> still suppress" \
+  "SUPPRESS" "$(prt_decide_finding false FALSE_POSITIVE false false false true true)"
+assert_eq "decide_finding: FALSE_POSITIVE, already-resolved thread, has_human_reply=true is inert -> still none" \
+  "NONE" "$(prt_decide_finding false FALSE_POSITIVE true true false true true)"
 assert_eq "decide_finding: VALID, no thread, within cap -> create" \
   "CREATE" "$(prt_decide_finding false VALID false false false true)"
 assert_eq "decide_finding: VALID, no thread, beyond cap -> overflow" \
@@ -616,6 +635,25 @@ assert_eq "reserved_count: FALSE_POSITIVE frees a slot -> reserved drops to 4" \
 r3_capped="$(prt_apply_cap 5 "$r3_owned" "$r3_findings")"
 assert_eq "apply_cap: FALSE_POSITIVE frees exactly one new finding within_cap" \
   "1" "$(jq '[.[] | select((.fp | startswith("n")) and .within_cap == true)] | length' <<< "$r3_capped")"
+
+# --- Regression scenario 3b (go-kure/.github#177): identical to scenario 3
+# except o5's thread carries a human reply -- row 3's new guard now leaves
+# it open (NONE, not REPLY_RESOLVE), so it must keep reserving its slot
+# instead of freeing it. A pre-registered discriminating control: this
+# fixture differs from scenario 3 above by exactly one field
+# (has_human_reply:true on o5), and the two arms must print DIFFERENT
+# counts (5 here vs 4 above) -- a fixture that passed the same either way
+# would prove nothing about the guard actually firing. ---
+r3b_owned='[{"fp":"o1","collision":false,"resolved":false,"resolved_by_bot":false},
+            {"fp":"o2","collision":false,"resolved":false,"resolved_by_bot":false},
+            {"fp":"o3","collision":false,"resolved":false,"resolved_by_bot":false},
+            {"fp":"o4","collision":false,"resolved":false,"resolved_by_bot":false},
+            {"fp":"o5","collision":false,"resolved":false,"resolved_by_bot":false,"has_human_reply":true}]'
+assert_eq "reserved_count: FALSE_POSITIVE with human reply -> does NOT free the slot (#177)" \
+  "5" "$(prt_reserved_count "$r3b_owned" "$r3_findings")"
+r3b_capped="$(prt_apply_cap 5 "$r3b_owned" "$r3_findings")"
+assert_eq "apply_cap: human-reply-protected FALSE_POSITIVE leaves zero new findings within_cap" \
+  "0" "$(jq '[.[] | select((.fp | startswith("n")) and .within_cap == true)] | length' <<< "$r3b_capped")"
 
 # --- Regression scenario 4: absent-but-still-open thread reserves; absent
 # resolved-by-bot does NOT (codex round 1 finding P1-2 — this specific
