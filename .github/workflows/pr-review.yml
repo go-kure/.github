@@ -47,11 +47,15 @@
 # the check can't run there, but because the reusable-workflow pin
 # (`pr-review-caller.yml`'s `uses: ...pr-review.yml@main`) resolves the
 # reviewer implementation from `main` at call time, not from the calling
-# branch, so a PR to `.github` that edits the composite action never has
-# that specific change tested by its own required check; requiring it would
-# give a green check the same rubber-stamp weight as a genuinely-tested
-# one, for the one class of PR that most needs real scrutiny — the change
-# the check itself can't see. Full reasoning: docs/standards.md's
+# branch: the model still reads the branch's own diff (it is fed the PR's
+# actual changes, including edits to the composite action itself — see
+# scripts/lib/prt/model.sh) and can comment on them, but the reviewer code
+# doing that reading, and every downstream reconciliation step, is always
+# main's, never the branch's own — so the one thing this required check can
+# never do is execute the specific implementation change it is nominally
+# gating; requiring it would give a green check the same rubber-stamp
+# weight as a genuinely-tested one, for the one class of PR whose own
+# implementation change is never exercised. Full reasoning: docs/standards.md's
 # "Same-repo composite actions and the
 # pin-bump procedure".
 #
@@ -100,8 +104,7 @@
 #                                 GitLab parity: mirrors
 #                                 MR_REVIEW_STANDARDS_FILES in
 #                                 ci-templates/mr-review.yml, which this port
-#                                 lacked until now. Inert until PR2 below
-#                                 replaces the placeholder pin.)
+#                                 lacked until now.)
 #   PR_REVIEW_THREADS_MODE      (default: enforce; vars.PR_REVIEW_THREADS_MODE overrides — see note above)
 #   PR_REVIEW_MAX_FINDINGS_TOTAL (default: 5)
 
