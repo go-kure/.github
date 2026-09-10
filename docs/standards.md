@@ -293,10 +293,11 @@ check on kure and launcher (not on `.github` itself — see the pin-bump-deadloc
 resolves stale code, or fails to resolve at all in the bootstrap case — is live on every PR to
 *both* consumer repos, not just this one. **PR2 must land as soon as possible after PR1 merges;
 the window must not span a working day.** If it must stay open longer than that, or the placeholder
-breaks review outright, set the **org** variable `PR_REVIEW_THREADS_MODE=off` on **whichever
-consumer repo is affected** (kure or launcher), not on `.github` — the reusable workflow resolves
-this variable against the **caller's** repository, so a repo-level override on `.github` has no
-effect on kure/launcher's own jobs (full mechanics: `docs/pr-review-threads.md`, "Incident
+breaks review outright, set a **repository-level** override of `PR_REVIEW_THREADS_MODE=off` on
+**whichever consumer repo is affected** (kure or launcher) — never the org-level variable, which
+would disable review everywhere, and never a repo-level override on `.github`, since the reusable
+workflow resolves this variable against the **caller's** repository (full mechanics:
+`docs/pr-review-threads.md`, "Incident
 procedure").
 
 Every later PR that touches the action's delegate code needs the same two-PR sequence as
@@ -336,8 +337,12 @@ caller: `.github/workflows/pr-review.yml`'s own call site is not pinned — cons
 from `main` via `@main` — so if PR1 changes the action's inputs/outputs
 (`.github/actions/pr-review-threads/action.yml`) and updates
 that call site in the same commit, the live call site and the still-pinned old action version go
-out of sync for the whole PR1-to-PR2 window regardless of serialization. Keep the action's
-interface stable across a PR1/PR2 pair, or land the interface change together with PR2 instead.
+out of sync for the whole PR1-to-PR2 window regardless of serialization — PR2 only re-points the
+pin at PR1's already-merged SHA, it carries no code change of its own, so an interface change
+introduced *in* PR2 would never actually ship. Instead: land the interface change on the action
+side in PR1 (with the old interface still honored, so the still-pinned base-ref tip and the new
+call site can coexist), and defer updating the call site to *use* the new interface until PR2,
+once the pin points at a commit that actually has it.
 
 ### Pin-impact-ack (consumer-side gate on this repo's own pin)
 
