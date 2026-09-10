@@ -1088,6 +1088,19 @@ assert_eq "prt_render_clean_comment_superseded: overflow-comment POST failed (ar
 assert_eq "prt_render_clean_comment_superseded: overflow-comment POST failed (args zeroed) -> takes the unaccounted branch instead" \
   "true" "$(grep -qF 'reach any durable outcome' <<< "$superseded_overflow_post_failed" && echo true || echo false)"
 
+# ============================================================ render.sh: prt_render_summary Line column (go-kure/.github#190)
+# The job-summary table is the same content-loss class as the quarantine/
+# overflow/advisory tables, even though it's ephemeral ($GITHUB_STEP_SUMMARY,
+# expires with run retention) rather than durable PR-visible output.
+summary_with_line="$(prt_render_summary enforce abc1234 1 '[{"fp":"deadbeef","severity":"High","category":"other","file":"y.go","line":99,"verdict":"VALID"}]' 0 '')"
+assert_eq "prt_render_summary: table header carries a Line column (go-kure/.github#190)" \
+  "true" "$(grep -qF '| fp | Severity | Category | File | Line | Verdict |' <<< "$summary_with_line" && echo true || echo false)"
+assert_eq "prt_render_summary: row carries the finding's actual line number" \
+  "true" "$(grep -qF '| y.go | 99 | VALID |' <<< "$summary_with_line" && echo true || echo false)"
+summary_no_line="$(prt_render_summary enforce abc1234 1 '[{"fp":"deadbeef","severity":"High","category":"other","file":"y.go","verdict":"VALID"}]' 0 '')"
+assert_eq "prt_render_summary: row with no line field renders n/a, not blank or 'null'" \
+  "true" "$(grep -qF '| y.go | n/a | VALID |' <<< "$summary_no_line" && echo true || echo false)"
+
 # ============================================================ render.sh: prt_render_overflow_comment quarantined section (go-kure/.github#155)
 # QUARANTINED_JSON is the second, optional argument — findings withheld by
 # reconcile.sh row 1 (fp_base collision). Both polarities per criterion 3:
@@ -1096,6 +1109,15 @@ assert_eq "prt_render_clean_comment_superseded: overflow-comment POST failed (ar
 overflow_only="$(prt_render_overflow_comment '[{"severity":"High","category":"other","file":"o.go","issue":"overflow issue"}]')"
 assert_eq "prt_render_overflow_comment: overflow findings only, no quarantined arg -> overflow table renders" \
   "true" "$(grep -qF 'overflow issue' <<< "$overflow_only" && echo true || echo false)"
+# go-kure/.github#190: the overflow table dropped line numbers, same defect
+# class as the quarantine table below. No line field on this fixture -> "n/a".
+assert_eq "prt_render_overflow_comment: overflow table header carries a Line column (go-kure/.github#190)" \
+  "true" "$(grep -qF '| Severity | Category | File | Line | Issue |' <<< "$overflow_only" && echo true || echo false)"
+overflow_with_line="$(prt_render_overflow_comment '[{"severity":"High","category":"other","file":"o.go","line":42,"issue":"overflow issue"}]')"
+assert_eq "prt_render_overflow_comment: overflow row carries the finding's actual line number" \
+  "true" "$(grep -qF '| o.go | 42 | overflow issue |' <<< "$overflow_with_line" && echo true || echo false)"
+assert_eq "prt_render_overflow_comment: overflow row with no line field renders n/a, not blank or null" \
+  "true" "$(grep -qF '| o.go | n/a | overflow issue |' <<< "$overflow_only" && echo true || echo false)"
 assert_eq "prt_render_overflow_comment: overflow findings only -> no quarantined section header" \
   "false" "$(grep -qF 'Withheld AI Review Findings' <<< "$overflow_only" && echo true || echo false)"
 
@@ -1107,6 +1129,23 @@ assert_eq "prt_render_overflow_comment: quarantined-only -> withheld section hea
   "true" "$(grep -qF 'Withheld AI Review Findings' <<< "$quarantine_only" && echo true || echo false)"
 assert_eq "prt_render_overflow_comment: quarantined-only -> all three finding bodies present (matched on issue text, not count)" \
   "true" "$(grep -qF 'collision issue one' <<< "$quarantine_only" && grep -qF 'collision issue two' <<< "$quarantine_only" && grep -qF 'collision issue three' <<< "$quarantine_only" && echo true || echo false)"
+
+# go-kure/.github#190: the withheld-findings (quarantine) table dropped line
+# numbers, keeping only file — the finding that shipped unfixed into #180
+# because Codex's review fired on the undraft trigger two seconds after
+# merge. Positive control: distinct lines per collision-group member render
+# distinct values, not a shared/collapsed one. Negative control: a missing
+# line field renders "n/a", not blank or the literal string "null".
+assert_eq "prt_render_overflow_comment: quarantine table header carries a Line column (go-kure/.github#190)" \
+  "true" "$(grep -qF '| Severity | Category | File | Line | Issue | Fix | Collision | Gating |' <<< "$quarantine_only" && echo true || echo false)"
+quarantine_lines='[{"severity":"High","category":"other","file":"dup.go","line":10,"issue":"collision issue one"},{"severity":"Medium","category":"other","file":"dup.go","line":20,"issue":"collision issue two"}]'
+quarantine_lines_row="$(prt_render_overflow_comment '[]' "$quarantine_lines")"
+assert_eq "prt_render_overflow_comment: quarantine row 1 carries its own line number" \
+  "true" "$(grep -qF '| dup.go | 10 | collision issue one |' <<< "$quarantine_lines_row" && echo true || echo false)"
+assert_eq "prt_render_overflow_comment: quarantine row 2 carries a DIFFERENT line number, not row 1's (proves per-row, not a shared/collapsed value)" \
+  "true" "$(grep -qF '| dup.go | 20 | collision issue two |' <<< "$quarantine_lines_row" && echo true || echo false)"
+assert_eq "prt_render_overflow_comment: quarantine row with no line field renders n/a, not blank or 'null'" \
+  "true" "$(grep -qF '| dup.go | n/a | collision issue one |' <<< "$quarantine_only" && echo true || echo false)"
 
 both="$(prt_render_overflow_comment '[{"severity":"High","category":"other","file":"o.go","issue":"overflow issue"}]' "$quarantine_triple")"
 assert_eq "prt_render_overflow_comment: both buckets non-empty -> both sections present, beside each other" \
@@ -1164,6 +1203,14 @@ adv_clean_zero="$(prt_render_advisory_comment '[]')"
 assert_eq "prt_render_advisory_comment: zero findings, no incomplete/degraded reasons -> plain 'No issues found.'" \
   "true" "$(grep -qF 'No issues found.' <<< "$adv_clean_zero" && echo true || echo false)"
 
+# go-kure/.github#190: this is the sole output surface in advisory mode (no
+# thread is ever created), same content-loss class as the quarantine table.
+adv_with_line="$(prt_render_advisory_comment '[{"severity":"High","category":"other","file":"x.go","line":7,"issue":"i","fix":"f"}]')"
+assert_eq "prt_render_advisory_comment: table header carries a Line column (go-kure/.github#190)" \
+  "true" "$(grep -qF '| Severity | Category | File | Line | Issue | Fix |' <<< "$adv_with_line" && echo true || echo false)"
+assert_eq "prt_render_advisory_comment: row carries the finding's actual line number" \
+  "true" "$(grep -qF '| x.go | 7 | i | f |' <<< "$adv_with_line" && echo true || echo false)"
+
 adv_incomplete_zero="$(prt_render_advisory_comment '[]' 'chunk 0: something fatal')"
 assert_eq "prt_render_advisory_comment: zero findings + incomplete reasons -> 'No issues found.' does NOT fire (round 5: incomplete is strictly MORE severe than degraded, which already suppressed it — a fatal run must not be the one case that still reads as clean)" \
   "false" "$(grep -qF 'No issues found.' <<< "$adv_incomplete_zero" && echo true || echo false)"
@@ -1184,7 +1231,7 @@ assert_eq "prt_render_advisory_comment: degraded banner carries the actual reaso
 
 adv_degraded_nonzero="$(prt_render_advisory_comment '[{"severity":"High","category":"other","file":"x.go","issue":"i","fix":"f"}]' '' 'chunk 0: partial-drop')"
 assert_eq "prt_render_advisory_comment: degraded + nonzero surviving findings -> table still rendered alongside the banner" \
-  "true" "$(grep -qF '| High | other | x.go | i | f |' <<< "$adv_degraded_nonzero" && echo true || echo false)"
+  "true" "$(grep -qF '| High | other | x.go | n/a | i | f |' <<< "$adv_degraded_nonzero" && echo true || echo false)"
 assert_eq "prt_render_advisory_comment: degraded + nonzero -> banner still present" \
   "true" "$(grep -qF 'This review run was degraded' <<< "$adv_degraded_nonzero" && echo true || echo false)"
 
@@ -1224,7 +1271,7 @@ assert_eq "prt_render_advisory_comment: non-drop degraded reason -> still shows 
 assert_eq "prt_render_advisory_comment: non-drop degraded reason -> the specific reason text is carried verbatim" \
   "true" "$(grep -qF 'assessment call failed (transport/proxy error, exit 7); findings stay unverdicted' <<< "$adv_degraded_nondrop" && echo true || echo false)"
 assert_eq "prt_render_advisory_comment: non-drop degraded reason -> table still rendered (this finding was never dropped)" \
-  "true" "$(grep -qF '| High | other | x.go | i | f |' <<< "$adv_degraded_nondrop" && echo true || echo false)"
+  "true" "$(grep -qF '| High | other | x.go | n/a | i | f |' <<< "$adv_degraded_nondrop" && echo true || echo false)"
 
 adv_degraded_nondrop_zero="$(prt_render_advisory_comment '[]' '' 'chunk 0: .assessments missing/null/non-array')"
 assert_eq "prt_render_advisory_comment: non-drop degraded reason + zero findings -> reason-neutral zero-count line, not 'No surviving findings'" \

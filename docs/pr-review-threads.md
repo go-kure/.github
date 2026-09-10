@@ -802,6 +802,23 @@ each caller, so the draft-gate removal took effect asynchronously per caller. On
 had picked up the merge, the type became a pure redundant run at ready-time with no remaining
 safety-net value, so it was removed there too.
 
+**Every table in `render.sh` now carries a `Line` column (go-kure/.github#190).** Codex's own
+review of go-kure/.github#180 flagged this for the quarantine table specifically — the review
+prompt requires a specific line (`model.sh:224,249`) and normalization preserves it
+(`finding.sh:112`), but the table rendered only file, dropping the one field that would let a
+reader navigate to the affected code for a finding that never becomes a review thread. The finding
+fired on the undraft trigger two seconds after #180 had already merged, so it shipped unfixed; #190
+tracks it and this fix closes it. A sweep of every other table in `render.sh` found the same gap in
+three siblings — the job-summary table (`prt_render_summary`), the overflow (beyond-cap) table and
+the advisory-mode table (`prt_render_advisory_comment`, the sole output surface in `advisory` mode,
+where no thread is ever created) — all fixed the same way, `.line // "n/a"` inserted after `File`.
+`prt_render_finding_body`, the body of a normal anchored review thread, needed no change: GitHub
+carries that finding's line natively via the comment's own `path`/`line` API fields
+(`pr-review-threads.sh`'s `CREATE` case), so the body text was never this class of defect. Same
+family as go-kure/.github#183 (SUPPRESS/OVERFLOW content loss) and #155 (the original
+quarantine-drops-findings defect) — `prt` reporting a summary and discarding the content needed to
+act on it; this is the third instance of that class on record.
+
 ## GitLab (mr-review) parity
 
 This workflow was backported from the downstream platform's `meta/ci-templates/mr-review.yml`. Checked
