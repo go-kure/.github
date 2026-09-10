@@ -634,6 +634,17 @@ the point `effective_collision` was OR'd with the owned thread's flag) and the t
 `Collision` column reading "this run" or "persisted (earlier run)" per row, with the intro reworded
 to describe both sources instead of asserting the first unconditionally.
 
+**A third `Collision` value, `quarantine_reason: content_mismatch` (go-kure/.github#196 codex
+review), replaces `persisted_only`'s binary split once content_fp mismatch (below) is also a
+possible cause.** A content_fp mismatch ORs `effective_collision=true` exactly like the persisted
+flag does, so it also has `collision != true` this run and was, before this fix, indistinguishable
+from a genuinely persisted collision flag — the Collision column claimed "persisted (earlier run)"
+for a case where no thread ever carried a persisted collision flag at all. `pr-review-threads.sh`
+now tracks which of the three conditions actually fired (`this_run` / `persisted` /
+`content_mismatch`) and `render.sh` renders "content changed (recurring defect)" for the third,
+falling back to the old `persisted_only`-only logic when `quarantine_reason` is absent (fixtures
+predating this field).
+
 Landing this fix also required its own same-repo composite-action pin bump (`docs/standards.md`,
 "GitHub Actions pinning"): `scripts/pr-review-threads.sh` and `scripts/lib/prt/*.sh` are delegate
 code consumed through `.github/workflows/pr-review.yml`'s pinned `pr-review-threads` action
@@ -677,6 +688,17 @@ comparing what the thread originally said against what this run now sees. At loo
 created before this field existed carries no `content_fp` at all; that case is treated as
 unverifiable and trusts the match unchanged, exactly as before #196 — a pre-existing thread is never
 retroactively quarantined just because the field is missing.
+
+`content_fp` is an exact hash of the model's raw `issue`+`fix` prose — nothing pins model output
+determinism (no `temperature` override anywhere in `model.sh`), so the *same* still-open defect can
+regenerate with different wording across runs and its `content_fp` drifts with it. This is a
+deliberate, accepted tradeoff (posted to #196's design discussion), not an oversight: the
+alternative (semantic/fuzzy matching) is unbuildable without another model call per comparison.
+Practical effect: a genuinely unfixed defect whose thread has no same-run collision can re-trigger
+`QUARANTINE` on any push where the regenerated wording isn't byte-identical, repeating in the
+withheld/advisory comment every run instead of being suppressed as already-tracked — the existing
+thread still gates merge (no data loss), but the advisory channel meant to surface new problems
+gets noisy for that finding until it's actually fixed.
 
 This is a strict, additive refinement of #155's own `QUARANTINE` case, not a competing mechanism:
 `QUARANTINE` still never touches the existing thread (no resolve/reply/unresolve), so a content_fp

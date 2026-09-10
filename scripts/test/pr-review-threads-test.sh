@@ -1317,6 +1317,25 @@ assert_eq "prt_render_overflow_comment: persisted_only omitted (default) -> Coll
 assert_eq "prt_render_overflow_comment: persisted_only omitted (default) -> Collision cell does NOT read 'persisted (earlier run)' (positive control: the row-specific predicate DOES discriminate, proven by the row above taking the other branch)" \
   "false" "$(grep -qF '| persisted (earlier run) |' <<< "$quarantine_this_run" && echo true || echo false)"
 
+# quarantine_reason column (go-kure/.github#196 codex review): persisted_only
+# alone can't distinguish a genuinely persisted collision flag from a
+# content_fp mismatch -- both have collision=false this run. quarantine_reason
+# is the authoritative field when present; these three rows exercise all of
+# its values directly at the render layer, independent of the orchestrator
+# scenario above.
+quarantine_reason_triple='[
+  {"severity":"High","category":"other","file":"a.go","issue":"i1","fix":"f1","gating":false,"persisted_only":false,"quarantine_reason":"this_run"},
+  {"severity":"High","category":"other","file":"b.go","issue":"i2","fix":"f2","gating":false,"persisted_only":true,"quarantine_reason":"persisted"},
+  {"severity":"High","category":"other","file":"c.go","issue":"i3","fix":"f3","gating":false,"persisted_only":true,"quarantine_reason":"content_mismatch"}
+]'
+quarantine_reason_row="$(prt_render_overflow_comment '[]' "$quarantine_reason_triple")"
+assert_eq "prt_render_overflow_comment: quarantine_reason=this_run -> Collision cell reads 'this run'" \
+  "true" "$(grep -qF '| a.go | n/a | i1 | f1 | this run |' <<< "$quarantine_reason_row" && echo true || echo false)"
+assert_eq "prt_render_overflow_comment: quarantine_reason=persisted -> Collision cell reads 'persisted (earlier run)'" \
+  "true" "$(grep -qF '| b.go | n/a | i2 | f2 | persisted (earlier run) |' <<< "$quarantine_reason_row" && echo true || echo false)"
+assert_eq "prt_render_overflow_comment: quarantine_reason=content_mismatch -> Collision cell reads 'content changed (recurring defect)', NOT 'persisted (earlier run)' even though persisted_only:true is also set on this row (quarantine_reason must win over the legacy field when both are present)" \
+  "true" "$(grep -qF '| c.go | n/a | i3 | f3 | content changed (recurring defect) |' <<< "$quarantine_reason_row" && echo true || echo false)"
+
 # ============================================================ render.sh: prt_render_advisory_comment degraded/incomplete disclosure (go-kure/.github#98 round 3, chatgpt-codex-connector[bot] review go-kure/.github#101#pullrequestreview-5028172237; round 5, kure-bot pr-review AI Code Review on go-kure/.github#101 at 9b2fe22 — the zero-count suppression round 3 added for `degraded_reasons` alone left the strictly-more-severe `incomplete_reasons`-only zero-count case still printing plain "No issues found.")
 adv_clean_zero="$(prt_render_advisory_comment '[]')"
 assert_eq "prt_render_advisory_comment: zero findings, no incomplete/degraded reasons -> plain 'No issues found.'" \
@@ -3191,6 +3210,15 @@ assert_eq "orchestrator: content_fp mismatch against owned thread -> no resolve/
   "true" "$([ "$(cat "$PRT_TEST_RESOLVE_COUNTFILE" 2>/dev/null || echo 0)" -eq 0 ] && [ "$(cat "$PRT_TEST_UNRESOLVE_COUNTFILE" 2>/dev/null || echo 0)" -eq 0 ] && echo true || echo false)"
 assert_eq "orchestrator: content_fp mismatch against owned thread -> finding surfaces in the withheld/advisory comment" \
   "true" "$(grep -qF 'Withheld AI Review Findings' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" 2>/dev/null && echo true || echo false)"
+# go-kure/.github#196 review finding (Important): before this assertion pair,
+# a content_fp mismatch (collision=false this run, no persisted collision
+# flag on the thread either) rendered the Collision cell as "persisted
+# (earlier run)" -- a false claim, since no thread ever carried a persisted
+# collision flag in this scenario. quarantine_reason now distinguishes the
+# two causes; the cell must read the new content-mismatch label, not the
+# persisted one.
+assert_eq "orchestrator: content_fp mismatch against owned thread -> Collision cell reads 'content changed (recurring defect)', not 'persisted (earlier run)'" \
+  "true" "$(grep -qF '| content changed (recurring defect) |' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && ! grep -qF '| persisted (earlier run) |' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && echo true || echo false)"
 PRT_TEST_OWNED_CONTENT_FP=""
 PRT_TEST_OWNED_FP="deadbeefcafebabe"
 PRT_TEST_MODEL_RESPONSE_MODE=clean

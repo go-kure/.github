@@ -1071,6 +1071,7 @@ else
     # would resume normal resolve/reopen here, exactly what the C5 write
     # above exists to prevent (dot-github#50 gmr finding B3).
     effective_collision="$collision"
+    content_mismatch=false
     if [ "$thread_exists" = true ]; then
       owned_collision_eff="$(jq -r '.collision' <<< "$owned_match")"
       [ "$owned_collision_eff" = true ] && effective_collision=true
@@ -1097,6 +1098,7 @@ else
       owned_content_fp="$(jq -r '.content_fp' <<< "$owned_match")"
       if [ -n "$owned_content_fp" ] && [ "$owned_content_fp" != "$content_fp" ]; then
         effective_collision=true
+        content_mismatch=true
       fi
     fi
 
@@ -1134,19 +1136,32 @@ else
         fi
         # $collision is this finding's own this-run multiplicity
         # (finding.sh:204, group length>1 in ALL_FINDINGS this run);
-        # $effective_collision above OR's it with a persisted thread flag.
-        # QUARANTINE can fire on the OR alone (effective_collision=true,
-        # collision=false) when this run has only ONE finding for the
-        # fp_base but an earlier run's collision persisted onto the owned
-        # thread (:968-993) — the other finding that caused the original
-        # collision may be gone several pushes ago. Tag which case this is
-        # so the render layer doesn't tell reviewers a duplicate exists "in
-        # this diff" when it may not (go-kure/.github#180 codex review,
-        # this round).
+        # $effective_collision above OR's it with a persisted thread flag
+        # and, since go-kure/.github#196, a content_fp mismatch against the
+        # OWNED thread. QUARANTINE can fire on the OR alone
+        # (effective_collision=true, collision=false) for two DISTINCT
+        # reasons a same-run finding never has to tell apart: an earlier
+        # run's collision persisted onto the owned thread (:968-993, the
+        # other finding that caused it may be gone several pushes ago), or
+        # this run's single finding's content_fp doesn't match what the
+        # owned thread was created for (#196 — a different finding wearing
+        # the same fp_base identity). Collapsing both into one
+        # `persisted_only` boolean (pre-#196) mislabeled the content_fp case
+        # as "persisted (earlier run)", which is a false claim — no
+        # persisted collision flag was ever set on that thread. Track the
+        # actual reason so the render layer can tell all three cases apart.
+        quarantine_reason=this_run
+        if [ "$collision" != true ]; then
+          if [ "$content_mismatch" = true ]; then
+            quarantine_reason=content_mismatch
+          else
+            quarantine_reason=persisted
+          fi
+        fi
         persisted_only_flag=false
-        [ "$collision" != true ] && persisted_only_flag=true
-        QUARANTINED="$(jq -c --argjson f "$f" --argjson g "$gating_flag" --argjson p "$persisted_only_flag" \
-          '. + [$f + {gating: $g, persisted_only: $p}]' <<< "$QUARANTINED")"
+        [ "$quarantine_reason" = persisted ] && persisted_only_flag=true
+        QUARANTINED="$(jq -c --argjson f "$f" --argjson g "$gating_flag" --argjson p "$persisted_only_flag" --arg r "$quarantine_reason" \
+          '. + [$f + {gating: $g, persisted_only: $p, quarantine_reason: $r}]' <<< "$QUARANTINED")"
         ;;
       SUPPRESS) SUPPRESSED_COUNT=$((SUPPRESSED_COUNT + 1)) ;;
       OVERFLOW) OVERFLOW="$(jq -c --argjson f "$f" '. + [$f]' <<< "$OVERFLOW")" ;;
