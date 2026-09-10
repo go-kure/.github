@@ -2703,8 +2703,16 @@ PRT_TEST_FIRST_ABSENT_SHA=""
 # not-yet-attempted write would be. Must stay REVIEW_INCOMPLETE (exit 1),
 # not REVIEW_DEGRADED.
 #   call #1 = the real meta fetch (must report the true head SHA)
-#   call #2 = the pre-mutate freshness check (line ~1008) -> stays fresh
-#   call #3 = the post-mutate freshness check (line ~1036) -> goes stale
+#   call #2 = the pre-mutate freshness check at REPLY_RESOLVE's case entry
+#             (line ~1062) -> stays fresh
+#   call #3 = go-kure/.github#193 codex review round 2: the SECOND
+#             pre-mutate freshness check this fix inserts immediately
+#             before the mutation (after the human-reply recheck, which is
+#             GraphQL-only and does not touch this REST counter) -> must
+#             also stay fresh, or the mutation below would never fire and
+#             this scenario's own premise (head moves AFTER the mutation)
+#             would be untestable
+#   call #4 = the post-mutate freshness check (line ~1036) -> goes stale
 # PRT_TEST_RECHECK_MODE=false (go-kure/.github#193 fix): this scenario
 # exists to pin behaviour AFTER the resolveReviewThread mutation fires, so
 # the new pre-mutation recheck this fix inserts must itself report "no
@@ -2714,7 +2722,7 @@ PRT_TEST_FIRST_ABSENT_SHA=""
 PRT_TEST_MODEL_RESPONSE_MODE=clean_with_finding
 PRT_TEST_ASSESS_RESPONSE_MODE=false_positive_survivor
 PRT_TEST_OWNED_FP="$(prt_fp_base x.go other)"
-PRT_TEST_STALE_AFTER_CALL=2
+PRT_TEST_STALE_AFTER_CALL=3
 PRT_TEST_RECHECK_MODE=false
 rc="$(run_orchestrator enforce 0 0 0)"
 assert_eq "orchestrator: head moves between resolve mutation and reply freshness re-check -> exits 1 (stays fatal, NOT superseded-safe)" \
@@ -2727,6 +2735,40 @@ assert_eq "orchestrator: head moves after resolve mutation -> REVIEW_INCOMPLETE 
   "true" "$(grep -qF 'REVIEW_INCOMPLETE: fp=' "$PRT_TEST_STDERR_FILE" && grep -qF 'will not be redone by a superseding run' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 assert_eq "orchestrator: head moves after resolve mutation -> does NOT log the quiet 'Stale run' line (this is not the safe-superseded case)" \
   "false" "$(grep -qF 'Stale run: head moved; a newer run is already queued' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_MODEL_RESPONSE_MODE=clean
+PRT_TEST_ASSESS_RESPONSE_MODE=clean
+PRT_TEST_OWNED_FP="deadbeefcafebabe"
+PRT_TEST_STALE_AFTER_CALL=0
+
+# go-kure/.github#193 codex review (round 2): the mirror image of the
+# scenario above -- the head moves BEFORE the mutation this time, in the
+# gap the human-reply recheck (prt_thread_has_human_reply, GraphQL-only,
+# no REST call) opened between the case-entry freshness check (call #2)
+# and the mutation. This is exactly the TOCTOU the round-2 finding
+# reported: without the second freshness check this round adds, the
+# mutation would fire anyway using a stale assessment. With it, call #3
+# (the new check) goes stale and the resolve must be skipped -- the safe,
+# degradable case (rc=1), not fatal, since nothing was written yet.
+PRT_TEST_MODEL_RESPONSE_MODE=clean_with_finding
+PRT_TEST_ASSESS_RESPONSE_MODE=false_positive_survivor
+PRT_TEST_OWNED_FP="$(prt_fp_base x.go other)"
+PRT_TEST_STALE_AFTER_CALL=2
+PRT_TEST_RECHECK_MODE=false
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator: head moves between the human-reply recheck and the resolve mutation -> exits 0 (safe, superseded, nothing written yet)" \
+  "0" "$rc"
+assert_eq "orchestrator: head moves before the mutation -> resolveReviewThread never fires" \
+  "0" "$(cat "$PRT_TEST_RESOLVE_COUNTFILE" 2>/dev/null || echo 0)"
+assert_eq "orchestrator: head moves before the mutation -> no explanatory reply posted either (nothing to explain, no mutation ran)" \
+  "0" "$(cat "$PRT_TEST_REPLY_COUNTFILE" 2>/dev/null || echo 0)"
+# Not "Stale run" (that quiet line requires EVERY degraded reason to be a
+# staleness one): a REPLY_RESOLVE skipped this way lands in no observable
+# state this run (no resolve, no reply, no quarantine) and also trips the
+# separate go-kure/.github#155 accounting invariant, so this scenario is
+# REVIEW_DEGRADED with two mixed reasons, not the pure-staleness case the
+# SET_FIRST_ABSENT scenario above demonstrates.
+assert_eq "orchestrator: head moves before the mutation -> the staleness IS named among the degraded reasons" \
+  "true" "$(grep -qF 'reply+resolve (post-recheck): stale head SHA (run superseded), write skipped' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 PRT_TEST_MODEL_RESPONSE_MODE=clean
 PRT_TEST_ASSESS_RESPONSE_MODE=clean
 PRT_TEST_OWNED_FP="deadbeefcafebabe"
