@@ -160,13 +160,16 @@ prt_render_overflow_comment() {
       printf 'These %s finding(s) were withheld rather than posted as a review thread ' "$qcount"
       printf 'because their fingerprint (same file and category) is ambiguous, to avoid a '
       printf 'thread that could later be misattributed to the wrong finding. Ambiguity has '
-      printf 'two distinct sources — see the Collision column: "this run" means another '
+      printf 'three distinct sources — see the Collision column: "this run" means another '
       printf 'finding in *this* diff currently shares the fingerprint; "persisted (earlier '
       printf 'run)" means only this run'"'"'s single finding is present, but an earlier run '
       printf 'recorded the collision on this file+category and it has not been cleared '
-      printf 'since — the other finding that originally caused it may be gone. **Gating '
-      printf 'status varies per row** — a finding whose fingerprint already had an open '
-      printf 'review thread before this collision is still merge-gating through that '
+      printf 'since — the other finding that originally caused it may be gone; "content '
+      printf 'changed (recurring defect)" means this run'"'"'s finding matched an existing '
+      printf 'thread by file+category alone, but its text no longer matches what that thread '
+      printf 'was opened for — likely a different, later defect at the same location. '
+      printf '**Gating status varies per row** — a finding whose fingerprint already had an '
+      printf 'open review thread before this collision is still merge-gating through that '
       printf 'existing thread; only a row with no matching thread is genuinely not '
       printf 'blocking:\n\n'
       printf '| Severity | Category | File | Line | Issue | Fix | Collision | Gating |\n'
@@ -174,9 +177,21 @@ prt_render_overflow_comment() {
       # Same esc filter, verbatim, as the overflow table above — a
       # quarantined finding is model-generated prose posted by the same bot
       # login and carries the identical marker-collision hazard.
+      #
+      # quarantine_reason (go-kure/.github#196) is the authoritative source
+      # when present; persisted_only alone is kept as the fallback for
+      # fixtures/tests predating that field (go-kure/.github#180) so their
+      # binary this-run/persisted distinction still renders unchanged.
       jq -r '
         def esc: tostring | gsub("\r\n"; " ") | gsub("[\n\r]"; " ") | gsub("\\|"; "\\|") | gsub("<!-- gokure-pr-review"; "&lt;!-- gokure-pr-review");
-        .[] | "| \(.severity|esc) | \(.category|esc) | \(.file|esc) | \((.line // "n/a")|esc) | \(.issue|esc) | \(.fix|esc) | \(if .persisted_only == true then "persisted (earlier run)" else "this run" end) | \(if .gating == true then "yes (existing thread)" else "no" end) |"
+        def collision_cell:
+          if .quarantine_reason == "content_mismatch" then "content changed (recurring defect)"
+          elif .quarantine_reason == "persisted" then "persisted (earlier run)"
+          elif .quarantine_reason == "this_run" then "this run"
+          elif .persisted_only == true then "persisted (earlier run)"
+          else "this run"
+          end;
+        .[] | "| \(.severity|esc) | \(.category|esc) | \(.file|esc) | \((.line // "n/a")|esc) | \(.issue|esc) | \(.fix|esc) | \(collision_cell) | \(if .gating == true then "yes (existing thread)" else "no" end) |"
       ' <<< "$quarantined"
       printf '\n'
     fi
