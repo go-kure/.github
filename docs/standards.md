@@ -263,32 +263,15 @@ ever be the SHA that ends up on `main`:
    40-hex placeholder SHA and an inline comment marking it as a placeholder pending PR2.
    `check-pin-bump.sh` treats "no prior pin on the base ref" as the documented bootstrap
    exception and passes trivially — there is nothing to compare the bump against yet.
-   **The placeholder must be `main`'s own tip commit SHA at the moment PR1 branches** —
-   `git rev-parse main` (or the branch's actual merge-base with `main`, if it was created
-   earlier and rebased since) — **never all-zeros or any other unresolvable value, and
-   never an arbitrary earlier real SHA either.** Any commit on `main` at or after the last
-   real pin bump is guaranteed content-identical, for the delegate-code paths, to whatever
-   `main` currently carries — if it weren't, `check-pin-bump.sh` would already have forced
-   a bump on whatever commit changed them. The base-ref tip is therefore both a real,
-   resolvable SHA (satisfying `check-pin-bump.sh`'s only hard requirement, that the pin
-   *differ* from what `main` currently carries) **and** behaviorally identical to the pin
-   it replaces — zero outage *and* zero code-behavior change for the PR1-to-PR2 window.
-   An earlier-but-arbitrary SHA from the action's history does not carry this guarantee: it
-   can silently roll the action's delegate code back to an older, already-superseded
-   version for the whole window instead of merely holding still (caught live on
-   go-kure/.github#193, which had picked a two-generations-back SHA; see
-   go-kure/.github#177, go-kure/.github#191, go-kure/.github#195 for what an unresolvable
-   placeholder cost before that: an org-wide CI outage the first time and a held PR the
-   second).
+   **The bootstrap case is the one place all-zeros (or any other 40-hex value) is
+   genuinely fine, because no choice of SHA avoids the outage here:** the action does not
+   exist anywhere on `main` yet, so *every* candidate SHA — all-zeros, `main`'s own tip,
+   anything else — fails to resolve the action's path for the whole PR1-to-PR2 window.
+   This is the one-time, unavoidable cost of introducing a brand-new same-repo action, not
+   a defect this procedure can design around; see the non-bootstrap rule below for the
+   case that *can* avoid it.
 2. After PR1 merges, **PR2** replaces the placeholder with the real, now-final SHA of
    the merged commit on `main`.
-
-**Why the base-ref tip and not just "any distinct 40-hex value":** the inline
-`# placeholder pending PR2` comment already gives a human reviewer everything the
-all-zeros convention was for — nothing here depends on the SHA itself looking obviously
-fake. The base-ref tip carries no review-visibility cost over an unresolvable one and,
-unlike an unresolvable *or* an arbitrary older SHA, neither breaks a consumer's
-`pr-review` job nor silently changes its behavior while PR1 and PR2 are both in flight.
 
 **No PR to this repo that modifies the composite action can ever be validated live by its own
 CI.** The reusable-workflow pin (`pr-review-caller.yml`'s `uses: go-kure/.github/.github/workflows/pr-review.yml@main`)
@@ -306,16 +289,29 @@ Every later PR that touches the action's delegate code needs the same two-PR seq
 the bootstrap, not a single PR: rebase-merge still rewrites the commit's SHA on landing, so
 no SHA known while the PR is open can be the one that ends up on `main`. The first PR lands
 the code changes and bumps the pin to **the branch's own base-ref tip SHA** (never all-zeros,
-and never an arbitrary earlier real SHA — see the bootstrap note above for why: only the
-base-ref tip is guaranteed both distinct from the current pin *and* content-identical to it
-for the delegate-code paths; with an inline comment marking it as pending); the second bumps
-it to the real merged SHA. Unlike the bootstrap, `check-pin-bump.sh` requires the pin to
-visibly *move* on the first PR — the current pin at `main` is not itself a valid placeholder
-value, since leaving it in place would fail that check (there is a prior pin to compare
-against here, unlike the bootstrap's "no prior pin" exception); the base-ref tip always
+and never an arbitrary earlier real SHA — with an inline comment marking it as pending); the
+second bumps it to the real merged SHA. Unlike the bootstrap, `check-pin-bump.sh` requires the
+pin to visibly *move* on the first PR — the current pin at `main` is not itself a valid
+placeholder value, since leaving it in place would fail that check (there is a prior pin to
+compare against here, unlike the bootstrap's "no prior pin" exception); the base-ref tip always
 satisfies this too, since `main` advances with every merge. Dependabot cannot open this PR
-for you — it doesn't track same-repo paths as
-a dependency, so this stays a manual, two-PR habit for every change to the delegate code.
+for you — it doesn't track same-repo paths as a dependency, so this stays a manual, two-PR
+habit for every change to the delegate code.
+
+**The base-ref tip is content-identical to the current pin only under a normal, non-interleaved
+sequence** — one delegate-code change in flight at a time, each completing its own PR1/PR2 pair
+before the next starts. `check-pin-bump.sh` compares pin *strings*, not trees, and only across
+one PR's own base...head range: if a second delegate-code PR branches from `main` before an
+earlier one's PR2 has landed, and picks that earlier PR1's merged-but-not-yet-repinned tip as
+its own base-ref tip, the guarantee breaks — that tip carries code `check-pin-bump.sh` never
+compared against the still-live placeholder pin, because the comparison it ran belonged to the
+first PR, not the second. Keep same-repo delegate-code PRs serialized (one in flight at a time)
+to preserve the guarantee; do not rely on it across overlapping PRs. The guarantee also covers
+only the file-scoped delegate-code paths `check-pin-bump.sh` diffs — it says nothing about
+`docs/standards.md` itself, which the action reads from its pinned checkout and injects into
+its model prompts (`scripts/pr-review-threads.sh:255-260`, `scripts/lib/prt/model.sh:494,524`
+inject it as `PROJECT STANDARDS:`); a docs-only commit in the placeholder window is invisible
+to the delegate-path guard but can still change review behavior.
 
 ### Pin-impact-ack (consumer-side gate on this repo's own pin)
 
