@@ -135,15 +135,19 @@ github_repos:
         # `pr-review / AI Code Review` is required here (go-kure/.github#108) now that
         # PR_REVIEW_THREADS_MODE=enforce is the org's live and declared state — this closes
         # the auto-merge timing race a red-but-not-required run left open. Deliberately NOT
-        # added to .github's own contexts list (org default, above): the reviewer does review
-        # the current PR's diff, but for a PR that edits the composite action itself, the
-        # reusable-workflow pin resolves the *reviewer implementation* from `main`, not the
-        # branch, for every PR to this repo (see docs/standards.md, "Same-repo composite
-        # actions and the pin-bump procedure" — "No PR to this repo that modifies the
-        # composite action can ever be validated live by its own CI"). Requiring it here would
-        # gate merge on a check that cannot test the change it would need to test. kure/launcher
-        # have no equivalent problem, since their fix lands in a different repo (.github) than
-        # the one enforcing the check.
+        # added to .github's own contexts list (org default, above): the check itself would
+        # still run and could still be required, but the reusable-workflow pin
+        # (`pr-review-caller.yml`'s `uses: ...pr-review.yml@main`) resolves the *reviewer
+        # implementation* from `main`, not the branch, for every PR to this repo — so a PR
+        # that edits the composite action never has that specific change tested by its own
+        # required check (see docs/standards.md, "Same-repo composite actions and the pin-bump
+        # procedure" — "No PR to this repo that modifies the composite action can ever be
+        # validated live by its own CI"). This is a deliberate policy tradeoff, not a
+        # technical impossibility: requiring it here would reintroduce the same
+        # merge-before-review race this required check exists to close, for the one class of
+        # PR the check can least afford to rubber-stamp. kure/launcher have no equivalent
+        # problem, since their fix lands in a different repo (.github) than the one enforcing
+        # the check.
         rules:
           required_status_checks:
             strict: false
