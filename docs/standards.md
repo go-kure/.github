@@ -288,16 +288,18 @@ test suite plus a static review lens (`nah run codex`) are not a lesser substitu
 exists — they are the only coverage this class of PR gets before merge.
 
 **Operational constraints on the PR1-to-PR2 window.** `pr-review / AI Code Review` is a required
-check on kure and launcher (not on `.github` itself — see the pin-bump-deadlock rationale in
-`governance/repository-settings-policy.yaml`), so whatever the placeholder does for that window —
-resolves stale code, or fails to resolve at all in the bootstrap case — is live on every PR to
-*both* consumer repos, not just this one. **PR2 must land as soon as possible after PR1 merges;
-the window must not span a working day.** If it must stay open longer than that, or the placeholder
-breaks review outright, set a **repository-level** override of `PR_REVIEW_THREADS_MODE=off` on
-**whichever consumer repo is affected** (kure or launcher) — never the org-level variable, which
-would disable review everywhere, and never a repo-level override on `.github`, since the reusable
-workflow resolves this variable against the **caller's** repository (full mechanics:
-`docs/pr-review-threads.md`, "Incident
+check on kure and launcher (not on `.github` itself — see `governance/repository-settings-policy.yaml`'s
+comment on why the check can't be required there), so whatever the placeholder does for that
+window — resolves stale code, or fails to resolve at all in the bootstrap case — is live on every
+PR to *both* consumer repos, not just this one. **PR2 must land as soon as possible after PR1
+merges; the window must not span a working day.** If it must stay open longer than that, or the
+placeholder breaks review outright, and *only this pin window* needs to pause (not a genuine
+org-wide incident — see `docs/pr-review-threads.md`, "Incident procedure" for that broader case),
+set a **repository-level** override of `PR_REVIEW_THREADS_MODE=off` on **whichever consumer repo
+is affected** (kure or launcher) rather than the org-level variable, which would silence review on
+every consumer instead of just the one this window actually touches — and never a repo-level
+override on `.github` itself, since the reusable workflow resolves this variable against the
+**caller's** repository (full mechanics: `docs/pr-review-threads.md`, "Incident
 procedure").
 
 Every later PR that touches the action's delegate code needs the same two-PR sequence as
