@@ -807,20 +807,20 @@ review of go-kure/.github#180 flagged this for the quarantine table specifically
 prompt requires a specific line (`model.sh:224,249`) and normalization preserves it
 (`finding.sh:112`), but the table rendered only file, dropping the one field that would let a
 reader navigate to the affected code for a finding that never becomes a review thread. The finding
-fired on the undraft trigger two seconds after #180 had already merged, so it shipped unfixed; #190
-tracks it and this fix closes it. A sweep of every other table in `render.sh` found the same gap in
-three siblings — the job-summary table (`prt_render_summary`), the overflow (beyond-cap) table and
+fired on the undraft trigger two seconds after go-kure/.github#180 had already merged, so it
+shipped unfixed; go-kure/.github#190 tracks it and this fix closes it. A sweep of every other
+table in `render.sh` found the same gap in three siblings — the job-summary table (`prt_render_summary`), the overflow (beyond-cap) table and
 the advisory-mode table (`prt_render_advisory_comment`, the sole output surface in `advisory` mode,
 where no thread is ever created) — all fixed the same way, `.line // "n/a"` inserted after `File`.
 `prt_render_finding_body`, the body of a normal anchored review thread, needed no change: GitHub
 carries that finding's line natively via the comment's own `path`/`line` API fields
 (`pr-review-threads.sh`'s `CREATE` case), so the body text was never this class of defect, nor does
 it render `.line` at all. Same family as go-kure/.github#183 (SUPPRESS/OVERFLOW content loss) and
-#155 (the original quarantine-drops-findings defect) — `prt` reporting a summary and discarding the
-content needed to act on it; this is the third instance of that class on record.
+go-kure/.github#155 (the original quarantine-drops-findings defect) — `prt` reporting a summary and
+discarding the content needed to act on it; this is the third instance of that class on record.
 
-A kure-bot review of #191 (same round) caught that the new `.line // "n/a"` interpolation, in all
-four tables, was raw — the only column not passed through the `esc` filter every other
+A kure-bot review of go-kure/.github#191 (same round) caught that the new `.line // "n/a"`
+interpolation, in all four tables, was raw — the only column not passed through the `esc` filter every other
 model-sourced column already uses to neutralize a literal `|`, an embedded newline, and (in the
 overflow/quarantine/advisory tables specifically) the `<!-- gokure-pr-review` marker prefix. `.line`
 is always normalized to a JSON number or `null` before reaching any of these functions
