@@ -267,14 +267,9 @@ ever be the SHA that ends up on `main`:
    genuinely fine, because no SHA drawn from `main`'s own history avoids the outage here:**
    the action does not exist at any commit reachable from `main` yet, so all-zeros,
    `main`'s own tip, and every earlier `main` commit alike fail to resolve the action's
-   path for the whole PR1-to-PR2 window. (A commit from PR1's own unmerged branch that
-   already contains the action can technically resolve at the moment it's chosen, but this
-   procedure requires the pin to come from `main`'s own history regardless — rebase-merge
-   rewrites the branch commit away, and nothing guarantees it stays reachable or reviewable
-   after that.) This is the
-   one-time cost of introducing a brand-new same-repo action from `main`'s history, not a
-   defect this procedure can design around; see the non-bootstrap rule below for the case
-   that *can* avoid it.
+   path for the whole PR1-to-PR2 window. This is the one-time cost of introducing a
+   brand-new same-repo action, not a defect this procedure can design around; see the
+   non-bootstrap rule below for the case that *can* avoid it.
 2. After PR1 merges, **PR2** replaces the placeholder with the real, now-final SHA of
    the merged commit on `main`.
 
