@@ -652,6 +652,42 @@ reviewer implementation from `main` at call time, so a PR here can never have it
 implementation change executed by its own required check — see docs/standards.md, "Same-repo
 composite actions and the pin-bump procedure".
 
+**A same-`fp_base`, cross-run collision is a distinct failure from #155's same-run one, and #155's
+fix does not catch it (go-kure/.github#196).** `prt_fp_base` keys on `(file, category)` only, so two
+*different* findings on the same file, same category, in two *different* runs (e.g. one push fixes
+the first finding and a second, unrelated finding lands on a later push, or the file's other
+findings are fixed one push at a time) share one `fp_base` without ever co-occurring in the same
+run — `prt_assign_ordinals` never sees them together, so `collision=true` is never set, and the
+later run's own finding legitimately matches the earlier run's OWNED thread by bare `fp` alone.
+`reconcile.sh`'s row 1 (`OWNED`, no same-run collision) then treats it as the same finding recurring
+— reusing the thread — when it is actually a different finding wearing the same identity.
+
+The fix adds a second, independent fingerprint: `content_fp` (`prt_content_fp`, `finding.sh`) —
+`sha256(netstring(issue)+netstring(fix))`, truncated to 16 hex chars like `prt_fp_base` itself, and
+for the same reason deliberately excluding `.line` (a line-number-only diff must not change
+identity). It is carried in the marker (`marker.sh`) as a new, optional
+`content_fp=<16hex>` field appended after `first_absent_sha`, stamped once at `CREATE` time and
+copied forward unchanged on every later marker rewrite (collision-persist, `SET_FIRST_ABSENT`,
+`CLEAR_MARKER`) — it is never recomputed from a later run's finding, since the whole point is
+comparing what the thread originally said against what this run now sees. At loop 1, after an
+`OWNED` thread match, this run's finding gets its own fresh `content_fp` computed from its current
+`issue`/`fix` text and compared against the thread's stored value; a mismatch ORs
+`effective_collision=true`, routing the finding through the same, already-existing row 1
+`QUARANTINE` path #155 built — no new row, no change to `prt_decide_finding`'s signature. A thread
+created before this field existed carries no `content_fp` at all; that case is treated as
+unverifiable and trusts the match unchanged, exactly as before #196 — a pre-existing thread is never
+retroactively quarantined just because the field is missing.
+
+This is a strict, additive refinement of #155's own `QUARANTINE` case, not a competing mechanism:
+`QUARANTINE` still never touches the existing thread (no resolve/reply/unresolve), so a content_fp
+mismatch cannot make an already-open thread newly close or reopen — it can only add the mismatched
+finding to the withheld/advisory table instead of letting it silently ride an unrelated thread's
+identity. The interaction with go-kure/.github#193's `HAS_HUMAN_REPLY`-gated row 3 (`NONE`) was
+analyzed and posted to #196 before implementation: row 1 is evaluated first, so a #196-triggered
+collision on a thread with a human reply present resolves via `QUARANTINE`, never reaching row 3's
+`NONE` — and `QUARANTINE` strictly dominates `NONE` there (identical non-mutation of the thread,
+plus the finding is surfaced instead of discarded), so the row-precedence is not a regression.
+
 All unbounded reconciliation collections obey one additional invariant: thread pages, paginated
 comment nodes, the combined `THREADS` and `OWNED` inventories, and the findings/ownership inputs to
 cap eligibility reach `jq` through stdin, never through `--argjson` on external-process argv.

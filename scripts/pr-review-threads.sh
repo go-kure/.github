@@ -879,6 +879,11 @@ for ((ti = 0; ti < n_threads; ti++)); do
   fp="$(cut -f1 <<< "$parsed")"
   collision="$(cut -f2 <<< "$parsed")"
   first_absent_sha="$(cut -f3 <<< "$parsed")"
+  # go-kure/.github#196: absent on any thread created before this field
+  # existed — "" here means unverifiable, not "no content", and loop 1
+  # below must trust the fp match unchanged in that case rather than
+  # treating a blank content_fp as a mismatch.
+  content_fp="$(cut -f4 <<< "$parsed")"
 
   has_human_reply=false
   if ! n_comments="$(jq -r '.comments.nodes | length' <<< "$th" 2>/dev/null)"; then
@@ -900,11 +905,12 @@ for ((ti = 0; ti < n_threads; ti++)); do
   # reopen, never a wrong one.
   if ! ownership_row="$(jq -ce --arg fp "$fp" --arg collision "$collision" \
     --arg fas "$first_absent_sha" --arg bot "$PRT_BOT_LOGIN_GQL" \
-    --argjson hhr "$has_human_reply" '
+    --arg cfp "$content_fp" --argjson hhr "$has_human_reply" '
       {
         fp:$fp,
         collision:($collision == "true"),
         first_absent_sha:$fas,
+        content_fp:$cfp,
         resolved:.isResolved,
         resolved_by_bot:(.isResolved and ((.resolvedBy.login // "") == $bot)),
         has_human_reply:$hhr,
@@ -999,6 +1005,12 @@ else
     collision="$(jq -r '.collision' <<< "$f")"
     verdict="$(jq -r '.verdict // "NONE"' <<< "$f")"
     within_cap="$(jq -r '.within_cap' <<< "$f")"
+    # go-kure/.github#196: this finding's own content fingerprint, computed
+    # fresh every run from its (possibly regenerated) issue+fix text —
+    # compared below against whatever content_fp the matched OWNED thread's
+    # marker carries, to catch a same-fp collision across runs that
+    # prt_assign_ordinals (scoped to this run only) cannot see.
+    content_fp="$(prt_content_fp "$(jq -r '.issue' <<< "$f")" "$(jq -r '.fix' <<< "$f")")"
 
     owned_match="$(jq -c --arg fp "$fp" 'map(select(.fp == $fp)) | .[0] // empty' <<< "$OWNED")"
     thread_exists=false; thread_resolved=false; resolved_by_bot=false; has_human_reply=false
@@ -1028,7 +1040,11 @@ else
             if [ -n "$cur_body" ]; then
               fas="$(jq -r '.first_absent_sha' <<< "$owned_match")"
               [ "$fas" = null ] && fas=""
-              new_marker="$(prt_marker_build "$fp" "true" "$fas")"
+              # go-kure/.github#196: carry the thread's own stored content_fp
+              # forward unchanged — this rewrite persists the collision flag
+              # only, never recomputes identity from this run's finding.
+              cfp="$(jq -r '.content_fp' <<< "$owned_match")"
+              new_marker="$(prt_marker_build "$fp" "true" "$fas" "$cfp")"
               new_body="$(prt_marker_replace "$cur_body" "$new_marker")"
               prt_retry 3 prt_gh_rest_fresh PATCH "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA" \
                 "/repos/${PRT_REPO}/pulls/comments/${db_id}" \
@@ -1058,6 +1074,30 @@ else
     if [ "$thread_exists" = true ]; then
       owned_collision_eff="$(jq -r '.collision' <<< "$owned_match")"
       [ "$owned_collision_eff" = true ] && effective_collision=true
+
+      # go-kure/.github#196: a bare-fp match against an OWNED thread whose
+      # marker carries a DIFFERENT content_fp means this run's finding is
+      # not actually the defect that thread was opened for — the same
+      # fp_base collided across two separate runs, which
+      # prt_assign_ordinals (scoped to one run only) has no way to see.
+      # Route it through the existing QUARANTINE path (row 1) rather than
+      # letting prt_decide_finding evaluate this finding's verdict against
+      # that thread's state — a human-resolved thread would silently
+      # discard this finding (row 6), a bot-resolved one would reopen with
+      # a content-free "recurs" reply naming neither finding
+      # (go-kure/.github#196's reachability trace). An empty
+      # owned_content_fp means the thread predates this field —
+      # unverifiable, trust the match, unchanged behavior; never
+      # retroactively quarantine a pre-existing thread on the strength of
+      # a field it was never given the chance to carry. Deliberately not
+      # persisted onto the thread's own marker the way the collision flag
+      # above is (C5): a mismatch is recomputed fresh every run this
+      # finding recurs, which is enough — persisting would need its own
+      # durability argument this design doesn't need to make.
+      owned_content_fp="$(jq -r '.content_fp' <<< "$owned_match")"
+      if [ -n "$owned_content_fp" ] && [ "$owned_content_fp" != "$content_fp" ]; then
+        effective_collision=true
+      fi
     fi
 
     action="$(prt_decide_finding "$effective_collision" "$verdict" "$thread_exists" "$thread_resolved" "$resolved_by_bot" "$within_cap" "$has_human_reply")"
@@ -1237,7 +1277,10 @@ else
         ;;
       CREATE)
         prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA" || { prt_handle_freshness_rc "$?" "fp=$fp: create"; continue; }
-        marker="$(prt_marker_build "$fp" "$collision" "")"
+        # go-kure/.github#196: stamp this finding's content fingerprint on a
+        # brand-new thread — the only site that computes a NEW content_fp
+        # rather than carrying an existing one forward unchanged.
+        marker="$(prt_marker_build "$fp" "$collision" "" "$content_fp")"
         body="$(prt_render_finding_body "$f" "$marker")"
         file="$(jq -r '.file' <<< "$f")"
         line="$(jq -r '.line' <<< "$f")"
@@ -1344,6 +1387,11 @@ if [ "$PRT_MODE" = enforce ]; then
     first_absent_sha="$(jq -r '.first_absent_sha' <<< "$th")"
     thread_id="$(jq -r '.thread_id' <<< "$th")"
     first_comment_db_id="$(jq -r '.first_comment_db_id' <<< "$th")"
+    # go-kure/.github#196: carried forward unchanged into every marker
+    # rewrite below — this loop never recomputes identity, only persists
+    # collision/first_absent_sha state, same as loop 1's collision-persist
+    # block above.
+    content_fp="$(jq -r '.content_fp' <<< "$th")"
 
     # Simplified from the design's full "unanswered MAINT_FAILURE reply"
     # detection (ordering-sensitive scan of every reply): a thread that
@@ -1369,7 +1417,7 @@ if [ "$PRT_MODE" = enforce ]; then
       NONE) : ;;
       SET_FIRST_ABSENT)
         prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA" || { prt_handle_freshness_rc "$?" "fp=$fp: setting first_absent_sha"; continue; }
-        new_marker="$(prt_marker_build "$fp" "$collision" "$PRT_HEAD_SHA")"
+        new_marker="$(prt_marker_build "$fp" "$collision" "$PRT_HEAD_SHA" "$content_fp")"
         # The body comes from a fresh GET so prt_marker_replace preserves the
         # finding text exactly. The GET's own success/non-empty-body is checked
         # before ever
@@ -1394,7 +1442,7 @@ if [ "$PRT_MODE" = enforce ]; then
         ;;
       CLEAR_MARKER)
         prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA" || { prt_handle_freshness_rc "$?" "fp=$fp: marker clear"; continue; }
-        new_marker="$(prt_marker_build "$fp" "$collision" "")"
+        new_marker="$(prt_marker_build "$fp" "$collision" "" "$content_fp")"
         cur_resp="$(prt_gh_rest GET "/repos/${PRT_REPO}/pulls/comments/${first_comment_db_id}")"
         cur_body="$(jq -r '.body // empty' <<< "${cur_resp:-}" 2>/dev/null || true)"
         if [ -z "$cur_body" ]; then

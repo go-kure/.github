@@ -3,11 +3,24 @@
 # GitHub PR review thread back to a finding's fingerprint, across reruns.
 #
 # First comment on a thread this action owns carries:
-#   <!-- gokure-pr-review:v1 fp=<fp>[ collision=true][ first_absent_sha=<40hex>] -->
+#   <!-- gokure-pr-review:v1 fp=<fp>[ collision=true][ first_absent_sha=<40hex>][ content_fp=<16hex>] -->
 # Every bot REPLY (never the first comment) carries a different, simpler marker:
 #   <!-- gokure-pr-review:v1-note -->
 # No code path ever scans both ranges with the same test — ownership questions
 # ask about the first comment; has_human_reply questions ask about the rest.
+#
+# content_fp (go-kure/.github#196) is the finding's own content fingerprint
+# (prt_content_fp, finding.sh — hashes issue+fix, deliberately excluding
+# line for the same churn reason prt_fp_base excludes it from identity),
+# stamped at CREATE time and carried forward unchanged on every later
+# marker rewrite (collision persist, SET_FIRST_ABSENT, CLEAR_MARKER) —
+# never recomputed from a later run's finding. It lets an owned-thread
+# match by bare fp be checked against what the thread's own first comment
+# actually says it's about, catching a same-fp_base collision across runs
+# that prt_assign_ordinals (scoped to one run only) cannot see. Absent on
+# any thread created before this field existed — pr-review-threads.sh
+# treats a missing content_fp as unverifiable and trusts the match
+# unchanged, never retroactively quarantining a pre-existing thread.
 #
 # Prefix is org-namespaced, not reused from the sibling GitLab template's prefix —
 # see docs/standards.md, "No Downstream References (MUST)".
@@ -15,7 +28,7 @@
 set -uo pipefail
 
 PRT_MARKER_NOTE='<!-- gokure-pr-review:v1-note -->'
-PRT_MARKER_RE='^<!-- gokure-pr-review:v1 fp=([0-9a-f]{16}(-[0-9]+)?)( collision=true)?( first_absent_sha=([0-9a-f]{40}))? -->$'
+PRT_MARKER_RE='^<!-- gokure-pr-review:v1 fp=([0-9a-f]{16}(-[0-9]+)?)( collision=true)?( first_absent_sha=([0-9a-f]{40}))?( content_fp=([0-9a-f]{16}))? -->$'
 # The enforce-mode clean-verdict comment's identity marker (a plain issue
 # comment, not a thread — see prt_find_marked_comment/prt_upsert_issue_comment
 # in gh.sh). `-clean` is suffixed onto `v1`, not inserted before it
@@ -27,30 +40,33 @@ PRT_MARKER_RE='^<!-- gokure-pr-review:v1 fp=([0-9a-f]{16}(-[0-9]+)?)( collision=
 # shellcheck disable=SC2034 # read by render.sh/pr-review-threads.sh, not within this file
 PRT_MARKER_CLEAN='<!-- gokure-pr-review:v1-clean -->'
 
-# prt_marker_build FP [COLLISION] [FIRST_ABSENT_SHA]
+# prt_marker_build FP [COLLISION] [FIRST_ABSENT_SHA] [CONTENT_FP]
 # COLLISION: "true" or "" . Prints the marker line to stdout.
 prt_marker_build() {
-  local fp="$1" collision="${2:-}" first_absent_sha="${3:-}"
+  local fp="$1" collision="${2:-}" first_absent_sha="${3:-}" content_fp="${4:-}"
   local line="<!-- gokure-pr-review:v1 fp=${fp}"
   [ "$collision" = "true" ] && line="${line} collision=true"
   [ -n "$first_absent_sha" ] && line="${line} first_absent_sha=${first_absent_sha}"
+  [ -n "$content_fp" ] && line="${line} content_fp=${content_fp}"
   line="${line} -->"
   printf '%s' "$line"
 }
 
 # prt_marker_parse BODY — scans BODY line by line for the first-comment marker.
-# On match, prints four TAB-separated fields to stdout: fp, collision(true|""),
-# first_absent_sha(40hex|""), and the matched line's 1-based line number. Exits
-# 1 (no output) if no line matches — the comment is not one this action owns.
+# On match, prints five TAB-separated fields to stdout: fp, collision(true|""),
+# first_absent_sha(40hex|""), content_fp(16hex|"" — absent on a pre-#196
+# thread), and the matched line's 1-based line number. Exits 1 (no output) if
+# no line matches — the comment is not one this action owns.
 prt_marker_parse() {
   local body="$1" line lineno=0
   while IFS= read -r line; do
     lineno=$((lineno + 1))
     if [[ "$line" =~ $PRT_MARKER_RE ]]; then
-      printf '%s\t%s\t%s\t%s\n' \
+      printf '%s\t%s\t%s\t%s\t%s\n' \
         "${BASH_REMATCH[1]}" \
         "$([ -n "${BASH_REMATCH[3]:-}" ] && echo true)" \
         "${BASH_REMATCH[5]:-}" \
+        "${BASH_REMATCH[7]:-}" \
         "$lineno"
       return 0
     fi
@@ -76,7 +92,7 @@ prt_marker_replace() {
   local body="$1" new_marker="$2"
   local parsed lineno
   if parsed="$(prt_marker_parse "$body")"; then
-    lineno="$(cut -f4 <<< "$parsed")"
+    lineno="$(cut -f5 <<< "$parsed")"
     awk -v n="$lineno" -v repl="$new_marker" \
       'NR==n { print repl; next } { print }' <<< "$body"
   else
