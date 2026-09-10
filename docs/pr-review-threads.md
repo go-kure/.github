@@ -115,8 +115,9 @@ overrides the workflow's own default) is one of three values. An unrecognized va
   findings beyond what's left of the cap go into one overflow comment instead of a thread.
   Threads whose decision outcome remains gating — or, for a thread absent from this run's
   findings, that simply stays open — reserve first (regardless of severity rank) before new
-  findings compete for what remains; an open thread newly assessed `FALSE_POSITIVE` is currently
-  gating but deliberately frees its slot rather than reserving it. The cap only ever gates *new*
+  findings compete for what remains; an open thread newly assessed `FALSE_POSITIVE` frees its slot
+  by being auto-resolved, *unless* a human has already replied on it (go-kure/.github#177), in
+  which case it stays open and keeps reserving. The cap only ever gates *new*
   candidates: it never forces an already-gating thread closed, so if more threads are already
   reserved than the cap allows (all `remaining` clamps to 0, never negative) the total gating
   count for that run can still exceed `PRT_MAX_FINDINGS_TOTAL` — the cap bounds growth, not the
