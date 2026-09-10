@@ -1661,8 +1661,35 @@ _prt_test_malformed_threads_response() {
   printf '%s' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":{}}}}}}' > "$out"
 }
 
+# go-kure/.github#193 codex review fix: prt_thread_has_human_reply's own
+# node(id:...) recheck query matches the SAME `*PullRequestReviewThread*`
+# dispatch pattern as the pre-existing comment_page_query inventory-
+# pagination re-fetch. In PRT_TEST_INVENTORY_MODE=single (the default), the
+# owned thread's own inventory-build never triggers that pagination re-fetch
+# (has_next=false on its one-page comment list), so single mode is exactly
+# where PRT_TEST_RECHECK_MODE can control the recheck call unambiguously.
+# REPLY="true" plants a human reply as the (skipped-index-0-aside) second
+# comment; REPLY="false" keeps every comment marker-bearing (clean).
+_prt_test_recheck_response() {
+  local out="$1" reply="$2"
+  local second_body
+  if [ "$reply" = true ]; then
+    second_body='a fresh human reply, unmarked'
+  else
+    second_body="<!-- gokure-pr-review:v1-note -->"$'\n'"bot follow-up, marked"
+  fi
+  jq -n --arg second_body "$second_body" '
+    {data:{node:{comments:{
+      pageInfo:{hasNextPage:false,endCursor:null},
+      nodes:[
+        {id:"C1", databaseId:1, body:"planted finding body", author:{login:"test-bot"}},
+        {id:"C2", databaseId:2, body:$second_body, author:{login:"human-reviewer"}}
+      ]
+    }}}}' > "$out"
+}
+
 export -f _prt_test_paged_threads_response _prt_test_paginated_comments_response \
-  _prt_test_malformed_threads_response
+  _prt_test_malformed_threads_response _prt_test_recheck_response
 
 fake_curl_orchestrator() {
   local args=("$@") out="" accept="" url="" method="" data="" h req_body=""
@@ -1980,6 +2007,9 @@ fake_curl_orchestrator() {
           if [ "${PRT_TEST_INVENTORY_MODE:-single}" = paginated_comments ]; then
             _prt_test_paginated_comments_response "$out" "$data" || return 1
             echo 200
+          elif [ -n "${PRT_TEST_RECHECK_MODE:-}" ]; then
+            _prt_test_recheck_response "$out" "${PRT_TEST_RECHECK_MODE}"
+            echo 200
           else
             printf '%s' '{"data":{"node":null}}' > "$out"
             echo 200
@@ -2137,6 +2167,7 @@ run_orchestrator() {
     PRT_TEST_FIRST_ABSENT_SHA="${PRT_TEST_FIRST_ABSENT_SHA:-}" \
     PRT_TEST_OWNED_FP="${PRT_TEST_OWNED_FP:-deadbeefcafebabe}" \
     PRT_TEST_OWNED_RESOLVED_BY_BOT="${PRT_TEST_OWNED_RESOLVED_BY_BOT:-0}" \
+    PRT_TEST_RECHECK_MODE="${PRT_TEST_RECHECK_MODE:-}" \
     PRT_TEST_MODEL_RESPONSE_MODE="${PRT_TEST_MODEL_RESPONSE_MODE:-clean}" \
     PRT_TEST_ASSESS_RESPONSE_MODE="${PRT_TEST_ASSESS_RESPONSE_MODE:-clean}" \
     PRT_TEST_ASSESS_ALWAYS_FAIL="${PRT_TEST_ASSESS_ALWAYS_FAIL:-0}" \
@@ -2674,10 +2705,17 @@ PRT_TEST_FIRST_ABSENT_SHA=""
 #   call #1 = the real meta fetch (must report the true head SHA)
 #   call #2 = the pre-mutate freshness check (line ~1008) -> stays fresh
 #   call #3 = the post-mutate freshness check (line ~1036) -> goes stale
+# PRT_TEST_RECHECK_MODE=false (go-kure/.github#193 fix): this scenario
+# exists to pin behaviour AFTER the resolveReviewThread mutation fires, so
+# the new pre-mutation recheck this fix inserts must itself report "no
+# fresh reply" here, or the mutation this test is about would never be
+# reached at all. Uses PRT_TEST_GRAPHQL_COUNTFILE, not PRT_TEST_META_COUNTFILE
+# / PRT_TEST_STALE_AFTER_CALL, so it does not perturb the call numbering above.
 PRT_TEST_MODEL_RESPONSE_MODE=clean_with_finding
 PRT_TEST_ASSESS_RESPONSE_MODE=false_positive_survivor
 PRT_TEST_OWNED_FP="$(prt_fp_base x.go other)"
 PRT_TEST_STALE_AFTER_CALL=2
+PRT_TEST_RECHECK_MODE=false
 rc="$(run_orchestrator enforce 0 0 0)"
 assert_eq "orchestrator: head moves between resolve mutation and reply freshness re-check -> exits 1 (stays fatal, NOT superseded-safe)" \
   "1" "$rc"
@@ -2693,6 +2731,70 @@ PRT_TEST_MODEL_RESPONSE_MODE=clean
 PRT_TEST_ASSESS_RESPONSE_MODE=clean
 PRT_TEST_OWNED_FP="deadbeefcafebabe"
 PRT_TEST_STALE_AFTER_CALL=0
+PRT_TEST_RECHECK_MODE=
+
+# ---- go-kure/.github#193 codex review: REPLY_RESOLVE recheck-before-mutate ----
+# The stale has_human_reply snapshot from inventory build is the whole
+# precondition for row 3's REPLY_RESOLVE (go-kure/.github#177); a reply that
+# lands between that snapshot and this mutation must re-derive the answer,
+# not trust the snapshot. Same FALSE_POSITIVE-on-an-open-owned-thread setup
+# as the pinning test above, varying only PRT_TEST_RECHECK_MODE.
+
+# (a) A fresh human reply is detected on the recheck -> REPLY_RESOLVE
+# downgrades to NONE: no resolve mutation, no lost-reply REVIEW_INCOMPLETE,
+# a clean exit 0 logging the downgrade explicitly.
+PRT_TEST_MODEL_RESPONSE_MODE=clean_with_finding
+PRT_TEST_ASSESS_RESPONSE_MODE=false_positive_survivor
+PRT_TEST_OWNED_FP="$(prt_fp_base x.go other)"
+PRT_TEST_RECHECK_MODE=true
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator: fresh reply detected before REPLY_RESOLVE mutation -> exits 0 (downgraded to NONE, not incomplete)" \
+  "0" "$rc"
+assert_eq "orchestrator: fresh reply detected before REPLY_RESOLVE mutation -> resolveReviewThread never fires" \
+  "0" "$(cat "$PRT_TEST_RESOLVE_COUNTFILE" 2>/dev/null || echo 0)"
+assert_eq "orchestrator: fresh reply detected before REPLY_RESOLVE mutation -> stderr logs the downgrade" \
+  "true" "$(grep -qF 'REPLY_RESOLVE downgraded to NONE' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_MODEL_RESPONSE_MODE=clean
+PRT_TEST_ASSESS_RESPONSE_MODE=clean
+PRT_TEST_OWNED_FP="deadbeefcafebabe"
+PRT_TEST_RECHECK_MODE=
+
+# (b) The recheck confirms no fresh reply -> REPLY_RESOLVE proceeds exactly
+# as it did before this fix (control for (a): same setup, opposite recheck
+# result).
+PRT_TEST_MODEL_RESPONSE_MODE=clean_with_finding
+PRT_TEST_ASSESS_RESPONSE_MODE=false_positive_survivor
+PRT_TEST_OWNED_FP="$(prt_fp_base x.go other)"
+PRT_TEST_RECHECK_MODE=false
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator: recheck confirms no fresh reply -> exits 0" "0" "$rc"
+assert_eq "orchestrator: recheck confirms no fresh reply -> resolveReviewThread still fires" \
+  "1" "$(cat "$PRT_TEST_RESOLVE_COUNTFILE" 2>/dev/null || echo 0)"
+assert_eq "orchestrator: recheck confirms no fresh reply -> stderr does NOT log a downgrade" \
+  "false" "$(grep -qF 'REPLY_RESOLVE downgraded to NONE' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_MODEL_RESPONSE_MODE=clean
+PRT_TEST_ASSESS_RESPONSE_MODE=clean
+PRT_TEST_OWNED_FP="deadbeefcafebabe"
+PRT_TEST_RECHECK_MODE=
+
+# (c) The recheck itself cannot be completed (thread refetch returns an
+# unusable node, PRT_TEST_RECHECK_MODE left unset -> the default
+# {"data":{"node":null}}) -> the mutation is skipped rather than risking an
+# unseen reply, and this is REVIEW_INCOMPLETE, distinct from case (a)'s
+# clean downgrade.
+PRT_TEST_MODEL_RESPONSE_MODE=clean_with_finding
+PRT_TEST_ASSESS_RESPONSE_MODE=false_positive_survivor
+PRT_TEST_OWNED_FP="$(prt_fp_base x.go other)"
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator: recheck fetch fails before REPLY_RESOLVE mutation -> exits 1 (REVIEW_INCOMPLETE)" \
+  "1" "$rc"
+assert_eq "orchestrator: recheck fetch fails before REPLY_RESOLVE mutation -> resolveReviewThread never fires" \
+  "0" "$(cat "$PRT_TEST_RESOLVE_COUNTFILE" 2>/dev/null || echo 0)"
+assert_eq "orchestrator: recheck fetch fails before REPLY_RESOLVE mutation -> REVIEW_INCOMPLETE names the recheck failure, not the lost-reply reason" \
+  "true" "$(grep -qF 'REVIEW_INCOMPLETE: fp=' "$PRT_TEST_STDERR_FILE" && grep -qF 'could not re-check thread for a new human reply before resolving' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_MODEL_RESPONSE_MODE=clean
+PRT_TEST_ASSESS_RESPONSE_MODE=clean
+PRT_TEST_OWNED_FP="deadbeefcafebabe"
 
 # go-kure/.github#99 round-4 fold-in: the same race pinned above for
 # REPLY_RESOLVE, but for its mirror-image action REPLY_UNRESOLVE (row 7 —

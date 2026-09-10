@@ -164,6 +164,61 @@ prt_freshness_check() {
   return 0
 }
 
+# prt_thread_has_human_reply THREAD_ID — re-fetches THREAD_ID's own comments
+# (paginated, mirroring pr-review-threads.sh's inventory-build comment
+# pagination) and re-derives has_human_reply from scratch, the same rule the
+# inventory build applies once at the top of the run
+# (pr-review-threads.sh:831-843, "no note-marker on a non-first comment").
+#
+# Exists because that inventory snapshot is read once, long before a
+# REPLY_RESOLVE mutation that depends on it may actually run — chunked
+# review + assessment can span many model calls. A human reply is not a
+# commit: it never moves PRT_HEAD_SHA, so prt_freshness_check's head-only
+# comparison cannot see one land in that window, and the row-3 protection
+# (go-kure/.github#177) it feeds evaluates a value that may already be wrong
+# (go-kure/.github#193 codex review). Call this immediately before the
+# REPLY_RESOLVE mutation it gates, never rely on the inventory snapshot alone
+# for that one decision.
+#
+# Prints "true"/"false" on success. Returns rc=1 (nothing printed) if the
+# thread could not be read at all, or came back malformed — the caller must
+# treat that as "could not confirm safety" and skip the mutation, never
+# default to "false": a fetch failure and a genuinely quiet thread are not
+# the same evidence.
+prt_thread_has_human_reply() {
+  local thread_id="$1"
+  # shellcheck disable=SC2016  # $id/$cursor are GraphQL variable references,
+  # resolved server-side from the `variables` JSON object built below via
+  # jq -n — they must NOT be shell-expanded here (same convention as
+  # pr-review-threads.sh's list_query/comment_page_query).
+  local query='query($id:ID!,$cursor:String){node(id:$id){... on PullRequestReviewThread{comments(first:50,after:$cursor){pageInfo{hasNextPage endCursor} nodes{id databaseId body author{login}}}}}}'
+  local cursor=null nodes='[]' vars data page page_nodes merged has_next next_cursor
+  while :; do
+    vars="$(jq -n --arg id "$thread_id" --argjson cursor "$cursor" '{id:$id, cursor:$cursor}' 2>/dev/null)" || return 1
+    data="$(prt_gh_graphql "$query" "$vars" 2>/dev/null)" || return 1
+    page="$(prt_json_extract_inventory_page comments "$data")" || return 1
+    page_nodes="$(jq -ce '.nodes | select(type == "array")' <<< "$page" 2>/dev/null)" || return 1
+    merged="$(prt_json_concat_arrays "$nodes" "$page_nodes")" || return 1
+    nodes="$merged"
+    has_next="$(jq -r '.pageInfo.hasNextPage' <<< "$page" 2>/dev/null)" || return 1
+    case "$has_next" in true|false) : ;; *) return 1 ;; esac
+    [ "$has_next" = true ] || break
+    next_cursor="$(jq -ce '.pageInfo.endCursor | select(type == "string" and length > 0)' <<< "$page" 2>/dev/null)" || return 1
+    cursor="$next_cursor"
+  done
+  local n ci cbody
+  n="$(jq -r 'if type == "array" then length else empty end' <<< "$nodes" 2>/dev/null)" || return 1
+  [[ "$n" =~ ^[0-9]+$ ]] || return 1
+  for ((ci = 1; ci < n; ci++)); do
+    cbody="$(jq -r --argjson i "$ci" '.[$i].body' <<< "$nodes" 2>/dev/null)" || return 1
+    if ! prt_marker_has_note "$cbody"; then
+      echo true
+      return 0
+    fi
+  done
+  echo false
+}
+
 # prt_gh_rest_fresh METHOD REPO PR_NUMBER EXPECTED_SHA PATH [DATA_JSON] —
 # freshness-gated prt_gh_rest, meant to be passed to prt_retry so EVERY
 # retry attempt rechecks freshness immediately before its write, not just

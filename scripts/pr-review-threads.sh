@@ -1067,6 +1067,36 @@ else
         fi
         thread_id="$(jq -r '.thread_id' <<< "$owned_match")"
         db_id="$(jq -r '.first_comment_db_id' <<< "$owned_match")"
+        # go-kure/.github#193 codex review: REPLY_RESOLVE only exists (row 3,
+        # go-kure/.github#177) because has_human_reply was false at inventory
+        # build time — but that snapshot is read once, long before this
+        # mutation actually runs; chunked review+assessment can span many
+        # model calls. A human reply is not a commit, so it never moves
+        # PRT_HEAD_SHA and the prt_freshness_check above cannot see one land
+        # in that window. Re-derive has_human_reply from scratch, immediately
+        # before mutating, rather than trusting a snapshot for the one
+        # decision row 3 exists specifically to protect.
+        #
+        # Known, bounded, self-healing side effect of downgrading below: this
+        # run's cap accounting (prt_reserved_count, evaluated before loop 1
+        # started) already assumed this thread's row-3 outcome would free its
+        # gating slot, since it read the same now-stale has_human_reply=false.
+        # If we downgrade here, the thread stays open unexpectedly, so this
+        # run's total gating-thread count can exceed PRT_MAX_FINDINGS_TOTAL by
+        # at most one — never more, since only one thread can be downgraded
+        # per fp. Self-heals next run: its own fresh inventory snapshot will
+        # see the reply and reserve the slot correctly from the start. Never
+        # resolving a thread a human just engaged with is worth that bounded,
+        # one-run, self-correcting overage.
+        if ! fresh_hhr="$(prt_thread_has_human_reply "$thread_id")"; then
+          prt_mark_incomplete "fp=$fp: could not re-check thread for a new human reply before resolving; skipping resolve rather than risk overriding one unseen"
+          continue
+        fi
+        if [ "$fresh_hhr" = true ]; then
+          prt_log "fp=$fp: REPLY_RESOLVE downgraded to NONE — a human reply landed on this thread after the inventory snapshot"
+          NONE_ANCHORED_COUNT=$((NONE_ANCHORED_COUNT + 1))
+          continue
+        fi
         # Mutate first, reply only on success — reversing the naive
         # reply-then-mutate order. A resolve/unresolve failure (permission
         # gap, transient 5xx, secondary rate limit) previously left an
