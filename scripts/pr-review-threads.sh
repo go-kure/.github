@@ -505,12 +505,22 @@ fi
 ALL_FINDINGS="$(prt_assign_ordinals "$ALL_FINDINGS")"
 
 # Assessment: per chunk, against that chunk's own diff, joined by fp.
+# go-kure/.github#176: chunk_ok_count is the numerator for the terminal
+# coverage line below — a chunk counts as ok either by reaching the
+# fully-good "review ok, assess ok" branch or by having nothing to assess
+# (zero findings is trivially complete, not a failure); a chunk whose file
+# went missing (the :511 continue just below) does NOT count, since that is
+# an anomaly this loop has no other way to surface.
 ASSESSED='[]'
+chunk_ok_count=0
 for ((i = 0; i < chunk_idx; i++)); do
   chunk_file="$CHUNK_DIR/chunk-$(printf '%03d' "$i").diff"
   [ -f "$chunk_file" ] || continue
   chunk_findings="$(jq -c --argjson idx "$i" '[.[] | select(._chunk == $idx)]' <<< "$ALL_FINDINGS")"
-  [ "$(jq 'length' <<< "$chunk_findings")" -gt 0 ] || continue
+  if [ "$(jq 'length' <<< "$chunk_findings")" -eq 0 ]; then
+    chunk_ok_count=$((chunk_ok_count + 1))
+    continue
+  fi
   chunk_diff="$(cat "$chunk_file")"
 
   assess_rc=0
@@ -601,11 +611,32 @@ for ((i = 0; i < chunk_idx; i++)); do
   # three sites above (the assessment response DID parse as JSON here; it's
   # prt_join_assessment rejecting its `.assessments` shape), same outcome
   # (every finding in this chunk stays unverdicted, verdict:null).
-  joined="$(prt_join_assessment "$chunk_findings" "$assess_json")" || \
+  #
+  # go-kure/.github#176: this branch used to fall through into the
+  # fully-good log line and append below even on a `prt_join_assessment`
+  # failure — the only one of the four assess-loop failure sites without a
+  # `continue`, so a chunk whose `.assessments` shape was rejected still
+  # printed "review ok, assess ok". Match the three sibling branches above:
+  # degrade, log the failure explicitly, append with an explicit
+  # verdict:null/reasoning:null (not the rejected $joined shape), and skip
+  # the good-path marker below.
+  if ! joined="$(prt_join_assessment "$chunk_findings" "$assess_json")"; then
     prt_mark_degraded "chunk $i: .assessments missing/null/non-array"
-  prt_log "chunk $i: review ok, assess ok"
+    prt_log "chunk $i: review ok, assess FAILED (.assessments missing/null/non-array)"
+    ASSESSED="$(jq -c -n --argjson a "$ASSESSED" --argjson b "$chunk_findings" '$a + ($b | map(. + {verdict: null, reasoning: null}))')"
+    continue
+  fi
+  chunk_ok_count=$((chunk_ok_count + 1))
+  prt_log "chunk $((i + 1))/$chunk_count: review ok, assess ok"
   ASSESSED="$(jq -c -n --argjson a "$ASSESSED" --argjson b "$joined" '$a + $b')"
 done
+# go-kure/.github#176: positive coverage marker, fully-good path only.
+# Guarding on chunk_count > 0 keeps a prt_split_diff failure (chunk_count=0,
+# chunk_ok_count=0) from vacuously satisfying an "M of M" consumer check —
+# the issue's "Zero-chunk" acceptance criterion.
+if [ "$chunk_count" -gt 0 ] && [ "$chunk_ok_count" -eq "$chunk_count" ]; then
+  prt_log "coverage: $chunk_ok_count/$chunk_count chunks review+assess ok"
+fi
 ALL_FINDINGS="$ASSESSED"
 fi # EMPTY_DIFF != 1
 
