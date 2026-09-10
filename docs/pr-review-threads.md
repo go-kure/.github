@@ -620,10 +620,13 @@ all-zeros for non-bootstrap pin bumps in favor of the branch's own base-ref tip 
 docs/standards.md, "Same-repo composite actions and the pin-bump procedure") — and a PR2 must land
 immediately after this one merges, replacing the placeholder with this PR's own merge SHA.
 `check-pin-bump.sh` (run in `scripts-smoke-test`) verifies only that the pin *moved*, not that it
-resolves; the window between PR1 landing and PR2 landing must not span a working day, which is also
-why `.github` itself is excluded from the org-wide `pr-review` required-check enforcement
-(`.github/workflows/pr-review.yml`) — that check would otherwise gate PR2 on a reviewer
-implementation CI cannot validate from the branch.
+resolves; the window between PR1 landing and PR2 landing must not span a working day (see
+docs/standards.md, "Operational constraints on the PR1-to-PR2 window"). Separately, `.github`
+itself is excluded from the org-wide `pr-review` required-check enforcement
+(`.github/workflows/pr-review.yml`) for a different reason: the reusable-workflow pin resolves the
+reviewer implementation from `main` at call time, so a PR here can never have its own
+implementation change executed by its own required check — see docs/standards.md, "Same-repo
+composite actions and the pin-bump procedure".
 
 All unbounded reconciliation collections obey one additional invariant: thread pages, paginated
 comment nodes, the combined `THREADS` and `OWNED` inventories, and the findings/ownership inputs to

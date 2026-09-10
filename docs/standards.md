@@ -295,12 +295,15 @@ on every PR to *both* consumer repos, not just this one. **PR2 must land as soon
 PR1 merges; the window must not span a working day.** If it must stay open longer than that, or the
 placeholder breaks review outright, and *only this pin window* needs to pause (not a genuine
 org-wide incident — see `docs/pr-review-threads.md`, "Incident procedure" for that broader case),
-set a **repository-level** override of `PR_REVIEW_THREADS_MODE=off` on **whichever consumer repo
-is affected** (kure or launcher) rather than the org-level variable, which would silence review on
-every consumer instead of just the one this window actually touches — and never a repo-level
-override on `.github` itself, since the reusable workflow resolves this variable against the
-**caller's** repository (full mechanics: `docs/pr-review-threads.md`, "Incident
-procedure"). **After PR2 lands, a consumer PR whose required check already failed during the
+set a **repository-level** override of `PR_REVIEW_THREADS_MODE=off` on **each affected caller**
+(kure, launcher — both, since the placeholder is live on every PR to both the moment PR1 merges,
+per the constraint above) rather than the org-level variable, which would silence review on every
+repository in the org instead of just the ones this window actually touches. A repo-level override
+set on `.github` itself is not meaningless — the reusable workflow resolves this variable against
+the **caller's** repository (full mechanics: `docs/pr-review-threads.md`, "Incident procedure"),
+and `.github` is itself a caller via its own `pr-review-caller.yml` — so such an override does
+affect `.github`'s own PR reviews, it just has no effect on kure's or launcher's.
+**After PR2 lands, a consumer PR whose required check already failed during the
 window needs a fresh run to pick up the fix** — GitHub resolves a reusable-workflow `uses:` line
 once per run and re-running only the failed job reuses that same stale resolution; re-run every
 job (or push a new commit) rather than just the failed one.

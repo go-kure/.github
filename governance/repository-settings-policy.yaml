@@ -138,16 +138,18 @@ github_repos:
         # added to .github's own contexts list (org default, above): the check itself would
         # still run and could still be required, but the reusable-workflow pin
         # (`pr-review-caller.yml`'s `uses: ...pr-review.yml@main`) resolves the *reviewer
-        # implementation* from `main`, not the branch, for every PR to this repo — so a PR
-        # that edits the composite action never has that specific change tested by its own
-        # required check (see docs/standards.md, "Same-repo composite actions and the pin-bump
-        # procedure" — "No PR to this repo that modifies the composite action can ever be
-        # validated live by its own CI"). This is a deliberate policy tradeoff, not a
-        # technical impossibility: requiring it here would give a green check the same
-        # rubber-stamp weight as a genuinely-tested one, for the one class of PR that most
-        # needs real scrutiny — the change the check itself can't see. kure/launcher have no
-        # equivalent problem, since their fix lands in a different repo (.github) than the
-        # one enforcing the check.
+        # implementation* from `main`, not the branch, for every PR to this repo — the model
+        # still reads the branch's own diff, including edits to the composite action itself
+        # (see scripts/lib/prt/model.sh), but the reviewer code doing that reading is always
+        # main's, never the branch's own, so the check can never execute the specific
+        # implementation change it is nominally gating (see docs/standards.md, "Same-repo
+        # composite actions and the pin-bump procedure" — "No PR to this repo that modifies
+        # the composite action can ever be validated live by its own CI"). This is a
+        # deliberate policy tradeoff, not a technical impossibility: requiring it here would
+        # give a green check the same rubber-stamp weight as a genuinely-tested one, for the
+        # one class of PR whose own implementation change is never exercised. kure/launcher
+        # have no equivalent problem, since their fix lands in a different repo (.github)
+        # than the one enforcing the check.
         rules:
           required_status_checks:
             strict: false
