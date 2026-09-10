@@ -34,6 +34,21 @@ prt_fp_base() {
     | sha256sum | cut -c1-16
 }
 
+# prt_content_fp ISSUE FIX — prints the 16-hex-char content fingerprint
+# (go-kure/.github#196). Distinct from prt_fp_base: keys on the finding's
+# actual content (issue+fix text), not its (file, category) identity slot —
+# lets a caller tell a genuinely different defect apart from a prior,
+# unrelated finding that happens to land on the same fp_base/fp, a
+# collision prt_assign_ordinals cannot see across runs (it groups only
+# within one run's own findings). `line` is excluded for the same churn
+# reason prt_fp_base excludes it from identity — a line shift above the
+# finding must not look like a content change.
+prt_content_fp() {
+  local issue="$1" fix="$2"
+  { prt_netstring "$issue"; prt_netstring "$fix"; } \
+    | sha256sum | cut -c1-16
+}
+
 # prt_normalize_category RAW — clamp to the closed enum.
 prt_normalize_category() {
   local raw="$1" c

@@ -118,6 +118,25 @@ assert_ne "different category changes fp_base" \
 assert_eq "unrecognized category clamps to other" "other" "$(prt_normalize_category "made-up-category")"
 assert_eq "known category passes through unchanged" "race" "$(prt_normalize_category "race")"
 
+# go-kure/.github#196: content_fp is a second, independent fingerprint keyed
+# on issue+fix (the finding's actual content), not (file, category) — used
+# to detect a cross-run fp_base collision fp_base alone cannot distinguish.
+assert_eq "content_fp is deterministic across calls" \
+  "$(prt_content_fp "nil check missing" "add a nil guard")" \
+  "$(prt_content_fp "nil check missing" "add a nil guard")"
+
+assert_eq "content_fp is 16 hex chars" \
+  "16" "$(prt_content_fp "issue text" "fix text" | tr -d '[:space:]' | wc -c | tr -d ' ')"
+
+assert_ne "netstring join avoids issue|fix ambiguity (a|b + c vs a + b|c)" \
+  "$(prt_content_fp "a|b" "c")" "$(prt_content_fp "a" "b|c")"
+
+assert_ne "different fix text changes content_fp" \
+  "$(prt_content_fp "same issue" "fix one")" "$(prt_content_fp "same issue" "fix two")"
+
+assert_ne "different issue text changes content_fp" \
+  "$(prt_content_fp "issue one" "same fix")" "$(prt_content_fp "issue two" "same fix")"
+
 # ============================================================ ordinals / collision
 single_finding='[{"file":"a.go","category":"race","line":10,"severity":"High","issue":"x","fix":"y"}]'
 out="$(prt_assign_ordinals "$single_finding")"
@@ -225,12 +244,31 @@ parsed="$(prt_marker_parse "$m")"
 assert_eq "marker round-trip: fp" "abcdef0123456789" "$(cut -f1 <<< "$parsed")"
 assert_eq "marker round-trip: no collision by default" "" "$(cut -f2 <<< "$parsed")"
 assert_eq "marker round-trip: no first_absent_sha by default" "" "$(cut -f3 <<< "$parsed")"
+assert_eq "marker round-trip: no content_fp by default" "" "$(cut -f4 <<< "$parsed")"
 
 m="$(prt_marker_build "abcdef0123456789" "true" "1111111111111111111111111111111111111111")"
 parsed="$(prt_marker_parse "$m")"
 assert_eq "marker round-trip: collision=true survives" "true" "$(cut -f2 <<< "$parsed")"
 assert_eq "marker round-trip: first_absent_sha survives" \
   "1111111111111111111111111111111111111111" "$(cut -f3 <<< "$parsed")"
+assert_eq "marker round-trip: content_fp still absent when omitted (3-arg call)" "" "$(cut -f4 <<< "$parsed")"
+
+# go-kure/.github#196: content_fp round-trips through build/parse alongside
+# every other optional field, and prt_marker_replace's own lineno lookup
+# (shifted from field 4 to field 5 by this field's insertion) still finds
+# the right line.
+m="$(prt_marker_build "abcdef0123456789" "true" "1111111111111111111111111111111111111111" "fedcba9876543210")"
+parsed="$(prt_marker_parse "$m")"
+assert_eq "marker round-trip: content_fp survives alongside collision+first_absent_sha" \
+  "fedcba9876543210" "$(cut -f4 <<< "$parsed")"
+assert_eq "marker round-trip: fp/collision/first_absent_sha unaffected by content_fp's presence" \
+  "abcdef0123456789 true 1111111111111111111111111111111111111111" \
+  "$(cut -f1 <<< "$parsed") $(cut -f2 <<< "$parsed") $(cut -f3 <<< "$parsed")"
+
+m="$(prt_marker_build "abcdef0123456789" "" "" "fedcba9876543210")"
+parsed="$(prt_marker_parse "$m")"
+assert_eq "marker round-trip: content_fp survives with no collision/first_absent_sha (CREATE-time shape)" \
+  "fedcba9876543210" "$(cut -f4 <<< "$parsed")"
 
 prt_marker_parse "not a marker line at all" >/dev/null 2>&1
 assert_eq "marker parse: non-marker body returns rc 1" "1" "$?"
@@ -250,6 +288,23 @@ assert_eq "marker replace: new marker line is present" \
   "true" "$(grep -qF "$new_marker" <<< "$replaced" && echo true || echo false)"
 assert_eq "marker replace: old marker line is gone" \
   "false" "$(grep -qF "$body" <<< "$replaced" && grep -qF "first_absent_sha=2222" <<< "$body" && echo true || echo false)"
+
+# go-kure/.github#196: prt_marker_replace's lineno lookup moved from field 4
+# to field 5 when content_fp was inserted — pin that a body whose EXISTING
+# marker already carries a content_fp still gets replaced on the right
+# line, not appended as a spurious extra line (the no-marker-found fallback
+# at marker.sh's tail).
+cfp_body="$(prt_marker_build "abcdef0123456789" "" "" "fedcba9876543210")
+**Critical**
+
+Finding text with a content_fp-bearing marker.
+"
+cfp_new_marker="$(prt_marker_build "abcdef0123456789" "true" "" "fedcba9876543210")"
+cfp_replaced="$(prt_marker_replace "$cfp_body" "$cfp_new_marker")"
+assert_eq "marker replace (content_fp present): finding text survives" \
+  "true" "$(grep -qF "Finding text with a content_fp-bearing marker." <<< "$cfp_replaced" && echo true || echo false)"
+assert_eq "marker replace (content_fp present): replaced in place, exactly one marker line, not appended as a second" \
+  "1" "$(grep -cF 'content_fp=fedcba9876543210' <<< "$cfp_replaced")"
 
 # ============================================================ marker: neutralization
 neutralized="$(prt_marker_neutralize 'quoting <!-- gokure-pr-review:v1 fp=deadbeefcafebabe --> in prose')"
@@ -1575,7 +1630,11 @@ _prt_test_owned_thread_body() {
   # byte-for-byte match what a real prt_marker_replace produced — only that
   # it's non-empty and carries a parseable marker.
   local marker
-  marker="$(prt_marker_build "${PRT_TEST_OWNED_FP:-deadbeefcafebabe}" "" "${PRT_TEST_FIRST_ABSENT_SHA:-}")"
+  # go-kure/.github#196: empty by default (unset PRT_TEST_OWNED_CONTENT_FP)
+  # — every existing fixture that never sets it exercises the "thread
+  # predates this field, unverifiable, trust the match" backward-compat
+  # path unchanged.
+  marker="$(prt_marker_build "${PRT_TEST_OWNED_FP:-deadbeefcafebabe}" "" "${PRT_TEST_FIRST_ABSENT_SHA:-}" "${PRT_TEST_OWNED_CONTENT_FP:-}")"
   printf '**High**\n\nPlanted test finding for empty-diff absence reconciliation.\n\n%s\n' "$marker"
 }
 export -f _prt_test_owned_thread_body
@@ -2198,6 +2257,7 @@ run_orchestrator() {
     PRT_TEST_EMPTY_DIFF="${PRT_TEST_EMPTY_DIFF:-0}" \
     PRT_TEST_FIRST_ABSENT_SHA="${PRT_TEST_FIRST_ABSENT_SHA:-}" \
     PRT_TEST_OWNED_FP="${PRT_TEST_OWNED_FP:-deadbeefcafebabe}" \
+    PRT_TEST_OWNED_CONTENT_FP="${PRT_TEST_OWNED_CONTENT_FP:-}" \
     PRT_TEST_OWNED_RESOLVED_BY_BOT="${PRT_TEST_OWNED_RESOLVED_BY_BOT:-0}" \
     PRT_TEST_RECHECK_MODE="${PRT_TEST_RECHECK_MODE:-}" \
     PRT_TEST_MODEL_RESPONSE_MODE="${PRT_TEST_MODEL_RESPONSE_MODE:-clean}" \
@@ -3101,6 +3161,69 @@ assert_eq "orchestrator: single non-colliding finding -> stderr done: line repor
   "true" "$(grep -qE 'done:.*quarantined=0' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 assert_eq "orchestrator: single non-colliding finding -> stderr done: line reports findings=1" \
   "true" "$(grep -qE 'done:.*findings=1' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_MODEL_RESPONSE_MODE=clean
+
+# ---- go-kure/.github#196: cross-run fp_base collision via content_fp ----
+# The finding under clean_with_finding is fixed: file x.go, line 1, category
+# other, issue "i", fix "f" -> content_fp = prt_content_fp "i" "f".
+# fp_base = prt_fp_base x.go other, matching PRT_TEST_OWNED_FP below, so the
+# thread is OWNED by bare-fp match — content_fp is the only thing that can
+# still tell these two runs' findings apart.
+#
+# Case A: the owned thread's stored content_fp does NOT match this run's
+# finding (a different finding text collided onto the same fp_base in an
+# earlier run). effective_collision must be forced true even though the
+# owned-thread match succeeded, routing this finding into row 1 QUARANTINE —
+# same observable shape as the fp_base-collision tests above (no CREATE, a
+# durable withheld-findings comment), but triggered by content mismatch on a
+# SINGLE finding, not by same-run multiplicity.
+PRT_TEST_ISSUE_COMMENT_BODY_FILE="$(mktemp)"
+PRT_TEST_MODEL_RESPONSE_MODE=clean_with_finding
+PRT_TEST_OWNED_FP="$(prt_fp_base x.go other)"
+PRT_TEST_OWNED_CONTENT_FP="25122a0a5f719e16"
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator: content_fp mismatch against owned thread -> exits 0 (deliberate suppression, not a failure)" "0" "$rc"
+assert_eq "orchestrator: content_fp mismatch against owned thread -> stderr done: line reports quarantined=1" \
+  "true" "$(grep -qE 'done:.*quarantined=1' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator: content_fp mismatch against owned thread -> no CREATE (existing thread is not mutated)" \
+  "0" "$(cat "$PRT_TEST_CREATE_COUNTFILE" 2>/dev/null || echo 0)"
+assert_eq "orchestrator: content_fp mismatch against owned thread -> no resolve/unresolve on the existing thread (QUARANTINE does not touch it)" \
+  "true" "$([ "$(cat "$PRT_TEST_RESOLVE_COUNTFILE" 2>/dev/null || echo 0)" -eq 0 ] && [ "$(cat "$PRT_TEST_UNRESOLVE_COUNTFILE" 2>/dev/null || echo 0)" -eq 0 ] && echo true || echo false)"
+assert_eq "orchestrator: content_fp mismatch against owned thread -> finding surfaces in the withheld/advisory comment" \
+  "true" "$(grep -qF 'Withheld AI Review Findings' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" 2>/dev/null && echo true || echo false)"
+PRT_TEST_OWNED_CONTENT_FP=""
+PRT_TEST_OWNED_FP="deadbeefcafebabe"
+PRT_TEST_MODEL_RESPONSE_MODE=clean
+rm -f "$PRT_TEST_ISSUE_COMMENT_BODY_FILE"
+unset PRT_TEST_ISSUE_COMMENT_BODY_FILE
+
+# Case B, control: the owned thread's stored content_fp MATCHES this run's
+# finding -> effective_collision stays false on content_fp grounds, normal
+# reconciliation proceeds (no false quarantine just because the field is
+# present and checked).
+PRT_TEST_MODEL_RESPONSE_MODE=clean_with_finding
+PRT_TEST_OWNED_FP="$(prt_fp_base x.go other)"
+PRT_TEST_OWNED_CONTENT_FP="a9972e5c88f1fa3f"
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator: content_fp matches owned thread -> exits 0" "0" "$rc"
+assert_eq "orchestrator: content_fp matches owned thread -> stderr done: line reports quarantined=0 (no false quarantine)" \
+  "true" "$(grep -qE 'done:.*quarantined=0' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_OWNED_CONTENT_FP=""
+PRT_TEST_OWNED_FP="deadbeefcafebabe"
+PRT_TEST_MODEL_RESPONSE_MODE=clean
+
+# Case C, backward-compat control: the owned thread predates go-kure/.github#196
+# and carries no content_fp at all (empty, the default via
+# _prt_test_owned_thread_body's `${PRT_TEST_OWNED_CONTENT_FP:-}`) -> unverifiable,
+# trust the match, no false quarantine — same assertion as case B, distinct
+# fixture (absent field, not a matching one).
+PRT_TEST_MODEL_RESPONSE_MODE=clean_with_finding
+PRT_TEST_OWNED_FP="$(prt_fp_base x.go other)"
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator: owned thread predates content_fp (field absent) -> exits 0" "0" "$rc"
+assert_eq "orchestrator: owned thread predates content_fp (field absent) -> stderr done: line reports quarantined=0 (pre-existing thread trusted, not retroactively quarantined)" \
+  "true" "$(grep -qE 'done:.*quarantined=0' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_OWNED_FP="deadbeefcafebabe"
 PRT_TEST_MODEL_RESPONSE_MODE=clean
 
 # advisory + empty diff -> the cheap exit (Step 3b's non-enforce branch)
