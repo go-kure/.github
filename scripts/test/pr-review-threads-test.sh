@@ -1100,6 +1100,17 @@ assert_eq "prt_render_summary: row carries the finding's actual line number" \
 summary_no_line="$(prt_render_summary enforce abc1234 1 '[{"fp":"deadbeef","severity":"High","category":"other","file":"y.go","verdict":"VALID"}]' 0 '')"
 assert_eq "prt_render_summary: row with no line field renders n/a, not blank or 'null'" \
   "true" "$(grep -qF '| y.go | n/a | VALID |' <<< "$summary_no_line" && echo true || echo false)"
+# kure-bot review of #191: the Line column bypassed the esc filter every
+# other model-sourced column uses, unlike a real defect in production (.line
+# is always normalized to number-or-null by finding.sh before reaching any
+# render.sh caller) but worth closing directly, since these render functions
+# are tested in isolation from that guarantee. This table's esc (unlike the
+# overflow/quarantine/advisory tables below) does NOT neutralize the marker
+# prefix — deliberately, since $GITHUB_STEP_SUMMARY is never scanned by
+# prt_find_marked_comment, so only the pipe-escape behavior applies here.
+summary_line_pipe_hazard="$(prt_render_summary enforce abc1234 1 '[{"fp":"deadbeef","severity":"High","category":"other","file":"y.go","line":"1 | injected","verdict":"VALID"}]' 0 '')"
+assert_eq "prt_render_summary: Line cell escapes a literal pipe, not a phantom column (go-kure/.github#191 kure-bot)" \
+  "true" "$(grep -qF '1 \| injected' <<< "$summary_line_pipe_hazard" && echo true || echo false)"
 
 # ============================================================ render.sh: prt_render_overflow_comment quarantined section (go-kure/.github#155)
 # QUARANTINED_JSON is the second, optional argument — findings withheld by
@@ -1118,6 +1129,15 @@ assert_eq "prt_render_overflow_comment: overflow row carries the finding's actua
   "true" "$(grep -qF '| o.go | 42 | overflow issue |' <<< "$overflow_with_line" && echo true || echo false)"
 assert_eq "prt_render_overflow_comment: overflow row with no line field renders n/a, not blank or null" \
   "true" "$(grep -qF '| o.go | n/a | overflow issue |' <<< "$overflow_only" && echo true || echo false)"
+# kure-bot review of #191: this table's esc DOES neutralize the marker
+# prefix (unlike prt_render_summary's above) — this comment is posted by the
+# same bot login prt_find_marked_comment scans, so a forged marker here is
+# the worst case esc exists to prevent.
+overflow_line_marker_hazard="$(prt_render_overflow_comment '[{"severity":"High","category":"other","file":"o.go","line":"1 <!-- gokure-pr-review:v1 fp=x -->","issue":"overflow issue"}]')"
+assert_eq "prt_render_overflow_comment: overflow Line cell neutralizes a literal clean-marker quote (go-kure/.github#191 kure-bot)" \
+  "true" "$(grep -qF '&lt;!-- gokure-pr-review' <<< "$overflow_line_marker_hazard" && echo true || echo false)"
+assert_eq "prt_render_overflow_comment: overflow Line cell — the raw unescaped marker prefix does not survive" \
+  "false" "$(grep -qF '<!-- gokure-pr-review' <<< "$overflow_line_marker_hazard" && echo true || echo false)"
 assert_eq "prt_render_overflow_comment: overflow findings only -> no quarantined section header" \
   "false" "$(grep -qF 'Withheld AI Review Findings' <<< "$overflow_only" && echo true || echo false)"
 
@@ -1146,6 +1166,12 @@ assert_eq "prt_render_overflow_comment: quarantine row 2 carries a DIFFERENT lin
   "true" "$(grep -qF '| dup.go | 20 | collision issue two |' <<< "$quarantine_lines_row" && echo true || echo false)"
 assert_eq "prt_render_overflow_comment: quarantine row with no line field renders n/a, not blank or 'null'" \
   "true" "$(grep -qF '| dup.go | n/a | collision issue one |' <<< "$quarantine_only" && echo true || echo false)"
+quarantine_line_marker_hazard='[{"severity":"High","category":"other","file":"dup.go","line":"1 <!-- gokure-pr-review:v1 fp=x -->","issue":"collision issue one"}]'
+quarantine_line_marker_row="$(prt_render_overflow_comment '[]' "$quarantine_line_marker_hazard")"
+assert_eq "prt_render_overflow_comment: quarantine Line cell neutralizes a literal clean-marker quote (go-kure/.github#191 kure-bot)" \
+  "true" "$(grep -qF '&lt;!-- gokure-pr-review' <<< "$quarantine_line_marker_row" && echo true || echo false)"
+assert_eq "prt_render_overflow_comment: quarantine Line cell — the raw unescaped marker prefix does not survive" \
+  "false" "$(grep -qF '<!-- gokure-pr-review' <<< "$quarantine_line_marker_row" && echo true || echo false)"
 
 both="$(prt_render_overflow_comment '[{"severity":"High","category":"other","file":"o.go","issue":"overflow issue"}]' "$quarantine_triple")"
 assert_eq "prt_render_overflow_comment: both buckets non-empty -> both sections present, beside each other" \
@@ -1210,6 +1236,11 @@ assert_eq "prt_render_advisory_comment: table header carries a Line column (go-k
   "true" "$(grep -qF '| Severity | Category | File | Line | Issue | Fix |' <<< "$adv_with_line" && echo true || echo false)"
 assert_eq "prt_render_advisory_comment: row carries the finding's actual line number" \
   "true" "$(grep -qF '| x.go | 7 | i | f |' <<< "$adv_with_line" && echo true || echo false)"
+adv_line_marker_hazard="$(prt_render_advisory_comment '[{"severity":"High","category":"other","file":"x.go","line":"1 <!-- gokure-pr-review:v1 fp=x -->","issue":"i","fix":"f"}]')"
+assert_eq "prt_render_advisory_comment: Line cell neutralizes a literal clean-marker quote (go-kure/.github#191 kure-bot)" \
+  "true" "$(grep -qF '&lt;!-- gokure-pr-review' <<< "$adv_line_marker_hazard" && echo true || echo false)"
+assert_eq "prt_render_advisory_comment: Line cell — the raw unescaped marker prefix does not survive" \
+  "false" "$(grep -qF '<!-- gokure-pr-review' <<< "$adv_line_marker_hazard" && echo true || echo false)"
 
 adv_incomplete_zero="$(prt_render_advisory_comment '[]' 'chunk 0: something fatal')"
 assert_eq "prt_render_advisory_comment: zero findings + incomplete reasons -> 'No issues found.' does NOT fire (round 5: incomplete is strictly MORE severe than degraded, which already suppressed it — a fatal run must not be the one case that still reads as clean)" \

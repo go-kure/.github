@@ -814,10 +814,24 @@ the advisory-mode table (`prt_render_advisory_comment`, the sole output surface 
 where no thread is ever created) — all fixed the same way, `.line // "n/a"` inserted after `File`.
 `prt_render_finding_body`, the body of a normal anchored review thread, needed no change: GitHub
 carries that finding's line natively via the comment's own `path`/`line` API fields
-(`pr-review-threads.sh`'s `CREATE` case), so the body text was never this class of defect. Same
-family as go-kure/.github#183 (SUPPRESS/OVERFLOW content loss) and #155 (the original
-quarantine-drops-findings defect) — `prt` reporting a summary and discarding the content needed to
-act on it; this is the third instance of that class on record.
+(`pr-review-threads.sh`'s `CREATE` case), so the body text was never this class of defect, nor does
+it render `.line` at all. Same family as go-kure/.github#183 (SUPPRESS/OVERFLOW content loss) and
+#155 (the original quarantine-drops-findings defect) — `prt` reporting a summary and discarding the
+content needed to act on it; this is the third instance of that class on record.
+
+A kure-bot review of #191 (same round) caught that the new `.line // "n/a"` interpolation, in all
+four tables, was raw — the only column not passed through the `esc` filter every other
+model-sourced column already uses to neutralize a literal `|`, an embedded newline, and (in the
+overflow/quarantine/advisory tables specifically) the `<!-- gokure-pr-review` marker prefix. `.line`
+is always normalized to a JSON number or `null` before reaching any of these functions
+(`finding.sh:112`, via `prt_normalize_findings`), so this was never reachable in production — but
+the render functions are unit-tested in isolation from that guarantee, and the fix is one call
+site's worth of consistency with every sibling column, so it's applied directly rather than left as
+a documented invariant to trust. `prt_render_summary`'s own `esc` has no marker-neutralization
+clause at all (deliberately — `$GITHUB_STEP_SUMMARY` is never scanned by `prt_find_marked_comment`,
+so only its pipe-escaping applies there); the other three tables' `esc` already had the marker
+clause, so wrapping `.line` in it closed the same gap those tables' other columns were already
+guarded against.
 
 ## GitLab (mr-review) parity
 
