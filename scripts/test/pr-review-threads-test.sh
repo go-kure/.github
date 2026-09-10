@@ -1100,7 +1100,7 @@ assert_eq "prt_render_summary: row carries the finding's actual line number" \
 summary_no_line="$(prt_render_summary enforce abc1234 1 '[{"fp":"deadbeef","severity":"High","category":"other","file":"y.go","verdict":"VALID"}]' 0 '')"
 assert_eq "prt_render_summary: row with no line field renders n/a, not blank or 'null'" \
   "true" "$(grep -qF '| y.go | n/a | VALID |' <<< "$summary_no_line" && echo true || echo false)"
-# kure-bot review of #191: the Line column bypassed the esc filter every
+# kure-bot review of go-kure/.github#191: the Line column bypassed the esc filter every
 # other model-sourced column uses, unlike a real defect in production (.line
 # is always normalized to number-or-null by finding.sh before reaching any
 # render.sh caller) but worth closing directly, since these render functions
@@ -1129,7 +1129,7 @@ assert_eq "prt_render_overflow_comment: overflow row carries the finding's actua
   "true" "$(grep -qF '| o.go | 42 | overflow issue |' <<< "$overflow_with_line" && echo true || echo false)"
 assert_eq "prt_render_overflow_comment: overflow row with no line field renders n/a, not blank or null" \
   "true" "$(grep -qF '| o.go | n/a | overflow issue |' <<< "$overflow_only" && echo true || echo false)"
-# kure-bot review of #191: this table's esc DOES neutralize the marker
+# kure-bot review of go-kure/.github#191: this table's esc DOES neutralize the marker
 # prefix (unlike prt_render_summary's above) — this comment is posted by the
 # same bot login prt_find_marked_comment scans, so a forged marker here is
 # the worst case esc exists to prevent.
@@ -1151,7 +1151,7 @@ assert_eq "prt_render_overflow_comment: quarantined-only -> all three finding bo
   "true" "$(grep -qF 'collision issue one' <<< "$quarantine_only" && grep -qF 'collision issue two' <<< "$quarantine_only" && grep -qF 'collision issue three' <<< "$quarantine_only" && echo true || echo false)"
 
 # go-kure/.github#190: the withheld-findings (quarantine) table dropped line
-# numbers, keeping only file — the finding that shipped unfixed into #180
+# numbers, keeping only file — the finding that shipped unfixed into go-kure/.github#180
 # because Codex's review fired on the undraft trigger two seconds after
 # merge. Positive control: distinct lines per collision-group member render
 # distinct values, not a shared/collapsed one. Negative control: a missing
