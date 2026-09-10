@@ -135,14 +135,15 @@ github_repos:
         # `pr-review / AI Code Review` is required here (go-kure/.github#108) now that
         # PR_REVIEW_THREADS_MODE=enforce is the org's live and declared state — this closes
         # the auto-merge timing race a red-but-not-required run left open. Deliberately NOT
-        # added to .github's own contexts list (org default, above): a PR to .github can
-        # never have its own composite-action changes validated by that check anyway — the
-        # reusable-workflow pin resolves the job's content from `main`, not the branch, for
-        # every PR to this repo (see docs/standards.md, "Same-repo composite actions and the
-        # pin-bump procedure" — "No PR to this repo that modifies the composite action can
-        # ever be validated live by its own CI"). Requiring it here would gate merge on an
-        # always-stale, unrelated signal. kure/launcher have no equivalent problem, since
-        # their fix lands in a different repo (.github) than the one enforcing the check.
+        # added to .github's own contexts list (org default, above): the reviewer does review
+        # the current PR's diff, but for a PR that edits the composite action itself, the
+        # reusable-workflow pin resolves the *reviewer implementation* from `main`, not the
+        # branch, for every PR to this repo (see docs/standards.md, "Same-repo composite
+        # actions and the pin-bump procedure" — "No PR to this repo that modifies the
+        # composite action can ever be validated live by its own CI"). Requiring it here would
+        # gate merge on a check that cannot test the change it would need to test. kure/launcher
+        # have no equivalent problem, since their fix lands in a different repo (.github) than
+        # the one enforcing the check.
         rules:
           required_status_checks:
             strict: false

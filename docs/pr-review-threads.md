@@ -154,10 +154,9 @@ It is always a two-PR sequence:
 2. **PR2**, opened as soon as possible after PR1 merges, replaces the placeholder with the real
    merged SHA of PR1's commit on `main`.
 
-Full procedure, the bootstrap special case, the interim-outage-window caveat between PR1 and
-PR2 (including the V2 caller/callee resolution), and the non-bootstrap "every later PR" rule this
-PR itself follows: `docs/standards.md:129-234` ("GitHub Actions pinning" → "Same-repo composite
-actions and the pin-bump procedure").
+Full procedure, the bootstrap special case (including the V2 caller/callee resolution), and the
+non-bootstrap "every later PR" rule this PR itself follows: `docs/standards.md` ("GitHub Actions
+pinning" → "Same-repo composite actions and the pin-bump procedure").
 
 ## Failure surface
 
@@ -613,13 +612,15 @@ Landing this fix also required its own same-repo composite-action pin bump (`doc
 "GitHub Actions pinning"): `scripts/pr-review-threads.sh` and `scripts/lib/prt/*.sh` are delegate
 code consumed through `.github/workflows/pr-review.yml`'s pinned `pr-review-threads` action
 reference, so a fix there does not reach any consumer (kure, launcher) until the pin moves. This PR
-is PR1 of that two-PR sequence — it bumps the pin to a new all-zeros placeholder, distinct from the
-real SHA it replaces — and a PR2 must land immediately after this one merges, replacing the
-placeholder with this PR's own merge SHA. `check-pin-bump.sh` (run in `scripts-smoke-test`)
-verifies only that the pin *moved*, not that it resolves; the "interim outage window" between PR1
-landing and PR2 landing is real and must not span a working day, which is also why `.github` itself
-is excluded from the org-wide `pr-review` required-check enforcement (`.github/workflows/pr-review.yml`
-lines 45-54) — that check would otherwise deadlock PR2 against its own not-yet-fixed pin.
+is PR1 of that two-PR sequence — it bumps the pin to the branch's own base-ref tip SHA, distinct
+from the real SHA it replaces but content-identical to it for the delegate-code paths — and a PR2
+must land immediately after this one merges, replacing the placeholder with this PR's own merge
+SHA. `check-pin-bump.sh` (run in `scripts-smoke-test`) verifies only that the pin *moved*, not
+that it resolves; the window between PR1 landing and PR2 landing must not span a working day,
+which is also why `.github` itself is excluded from the org-wide `pr-review` required-check
+enforcement (`.github/workflows/pr-review.yml`) — that check would otherwise gate PR2 on a
+reviewer implementation CI cannot validate from the branch (see docs/standards.md, "Same-repo
+composite actions and the pin-bump procedure").
 
 All unbounded reconciliation collections obey one additional invariant: thread pages, paginated
 comment nodes, the combined `THREADS` and `OWNED` inventories, and the findings/ownership inputs to
@@ -726,8 +727,10 @@ unique, rather than taking whichever entry the API happens to list first.
 
 **Why the annotation title, not the job conclusion, is the signal.** A failed `pr-review` job is too
 coarse a filter on its own — the two-PR pin-bump window between a `pr-review-threads` action release
-and consumer repos catching up produces the exact same "job failed" shape for an unrelated reason
-(`Unable to resolve action go-kure/.github@...`). The digest instead requires an annotation titled
+and consumer repos catching up can produce the same "job failed" shape for an unrelated reason: an
+`Unable to resolve action go-kure/.github@...` error during the bootstrap case's window, where no
+placeholder resolves (see docs/standards.md, "Same-repo composite actions and the pin-bump
+procedure"). The digest instead requires an annotation titled
 exactly `PR review threads incomplete` **and** whose message (after stripping the `chunk N: ` prefix)
 matches one of the three model/proxy patterns above: `review response was not valid JSON`,
 `.findings missing/null/non-array`, or `review call failed (transport/proxy error` (including the
