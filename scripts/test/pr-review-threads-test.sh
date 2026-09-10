@@ -1793,6 +1793,22 @@ fake_curl_orchestrator() {
                 : > "$out"; echo 500; return 0
               fi
               ;;
+            first_ok_then_bad_shape)
+              # go-kure/.github#176: call-count-aware (not run-global) mode
+              # for the two-chunk "One-degraded" coverage fixture below —
+              # chunk 0's assess call (mc==1) gets a clean, valid
+              # `.assessments` array; chunk 1's (mc==2, and any later chunk)
+              # gets the same non-array shape as `bad_shape` above. Needed
+              # because `bad_shape` is one value for the whole run and would
+              # degrade every chunk's assess call, not just one — the
+              # acceptance criterion is specifically that one chunk fails
+              # while the sibling(s) succeed.
+              if [ "$mc" -le 1 ]; then
+                printf '%s' '{"choices":[{"message":{"content":"{\"assessments\":[{\"fp\":\"deadbeefcafebabe\",\"verdict\":\"VALID\",\"reasoning\":\"ok\"}]}"}}]}' > "$out"
+              else
+                printf '%s' '{"choices":[{"message":{"content":"{\"assessments\":\"oops-not-an-array\"}"}}]}' > "$out"
+              fi
+              ;;
             *)
               printf '%s' '{"choices":[{"message":{"content":"{\"assessments\":[{\"fp\":\"deadbeefcafebabe\",\"verdict\":\"VALID\",\"reasoning\":\"ok\"}]}"}}]}' > "$out"
               ;;
@@ -2607,6 +2623,68 @@ PRT_TEST_TWO_FILE_DIFF=0
 PRT_TEST_MODEL_RESPONSE_MODE=clean
 rm -f "$PRT_TEST_ISSUE_COMMENT_BODY_FILE"
 unset PRT_TEST_ISSUE_COMMENT_BODY_FILE
+
+# ---- Cases xvi-xviii (go-kure/.github#176): the positive coverage marker
+# ---- three polarities named in the issue's own acceptance criteria.
+
+# Case xvi — All-good: a two-chunk run (same PRT_TEST_TWO_FILE_DIFF/
+# max_diff_chars=150 fixture as Cases xiv-xv) where BOTH chunks complete
+# review and assess cleanly. The terminal `coverage: M/M` line must appear
+# with M equal to the `chunks=` value, and both per-chunk `i/M` markers must
+# be present.
+PRT_TEST_MODEL_RESPONSE_MODE=clean_with_finding
+PRT_TEST_TWO_FILE_DIFF=1
+rc="$(run_orchestrator advisory 0 0 0 150)"
+assert_eq "orchestrator: all-good two-chunk run -> exits 0" "0" "$rc"
+assert_eq "orchestrator: all-good two-chunk run -> chunks=2 on the diff-split line" \
+  "true" "$(grep -qE '^prt: diff:.*chunks=2$' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator: all-good two-chunk run -> both per-chunk i/M markers present" \
+  "true true" "$(grep -qF 'prt: chunk 1/2: review ok, assess ok' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(grep -qF 'prt: chunk 2/2: review ok, assess ok' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator: all-good two-chunk run -> terminal coverage: 2/2 line present, M matches chunks=" \
+  "true" "$(grep -qF 'prt: coverage: 2/2 chunks review+assess ok' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_TWO_FILE_DIFF=0
+PRT_TEST_MODEL_RESPONSE_MODE=clean
+
+# Case xvii — One-degraded: same two-chunk split, chunk 0's assess call
+# succeeds, chunk 1's returns the non-array `.assessments` shape
+# (first_ok_then_bad_shape, defined above). No full-coverage line may
+# appear, and the count of "review ok, assess ok" lines must be strictly
+# less than M(=2) — the exact acceptance-criteria wording ("the count of
+# assess ok lines must be strictly less than M").
+PRT_TEST_MODEL_RESPONSE_MODE=clean_with_finding
+PRT_TEST_ASSESS_RESPONSE_MODE=first_ok_then_bad_shape
+PRT_TEST_TWO_FILE_DIFF=1
+rc="$(run_orchestrator advisory 0 0 0 150)"
+assert_eq "orchestrator: one-degraded two-chunk run -> exits 0 (degraded, not fatal)" "0" "$rc"
+assert_eq "orchestrator: one-degraded two-chunk run -> chunk 1's .assessments rejection is logged, not silently swallowed" \
+  "true" "$(grep -qF 'prt: chunk 1: review ok, assess FAILED (.assessments missing/null/non-array)' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator: one-degraded two-chunk run -> no terminal coverage line" \
+  "false" "$(grep -qF 'prt: coverage:' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator: one-degraded two-chunk run -> exactly 1 'review ok, assess ok' line (strictly < M=2)" \
+  "1" "$(grep -cF 'review ok, assess ok' "$PRT_TEST_STDERR_FILE")"
+PRT_TEST_ASSESS_RESPONSE_MODE=clean
+PRT_TEST_TWO_FILE_DIFF=0
+PRT_TEST_MODEL_RESPONSE_MODE=clean
+
+# Case xviii — Zero-chunk: the issue's proposed fault is `prt_split_diff`
+# itself failing on a non-empty diff; the orchestrator test harness has no
+# seam to inject a write failure inside the subprocess's own freshly
+# mktemp'd WORKDIR (unlike Case 11's direct unit-level call to
+# prt_split_diff above, which chmods a caller-supplied OUT_DIR). The
+# EMPTY_DIFF=1 path exercised here instead is the one route this harness
+# has to a genuinely zero-chunk run (chunk_count stays at its 0
+# initialisation, the whole chunk+review+assess block — and the coverage
+# guard inside it — never runs) and proves the same property the acceptance
+# criterion cares about: a run that reviewed nothing never emits a line an
+# `M of M` consumer check can satisfy.
+PRT_TEST_EMPTY_DIFF=1
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator: zero-chunk (empty diff) run -> exits 0" "0" "$rc"
+assert_eq "orchestrator: zero-chunk (empty diff) run -> no terminal coverage line" \
+  "false" "$(grep -qF 'prt: coverage:' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator: zero-chunk (empty diff) run -> no per-chunk i/M marker either" \
+  "false" "$(grep -qE '^prt: chunk [0-9]+/[0-9]+:' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_EMPTY_DIFF=0
 
 # Case 3a — permanent metadata-fetch failure (F3): every attempt (matching
 # prt_retry 3's own attempt count) returns 502, unlike meta_fail=1 below

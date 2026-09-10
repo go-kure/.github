@@ -479,6 +479,22 @@ construction: `len=`/`leading=` are shape, `sha16=` is a fingerprint, and `class
 closed in-repo enum rather than from the response. Adding a field that prints response bytes —
 even a truncated prefix — is the change this list forbids.
 
+**`chunk N: review ok` is not the fully-good marker; `chunk i/M: review ok, assess ok` is
+(go-kure/.github#176).** Five sites print a `review ok` prefix; four of them are the review call
+succeeding while the assessment pass is still pending, degraded, or rejected outright
+(`chunk $chunk_idx: review ok ($n findings)` before assess even runs, and three `review ok, assess
+FAILED (...)` lines for a transport fault, a retried transport fault, and an unparseable assess
+response). A consumer keying on `review ok` alone accepts a run whose assessment died on every
+chunk. Only the chunk that both reviewed and assessed cleanly logs `chunk i/M: review ok, assess
+ok`, carrying its own index and the run's total chunk count. After the loop, a run in which every
+chunk reached that fully-good line — and only then — also logs a terminal `coverage: M/M chunks
+review+assess ok` line, `M` matching the `chunks=` value on the earlier diff-split line. The
+terminal line is withheld, not printed with a lower count, whenever any chunk falls short (a
+guard on `chunk_count > 0` in addition to the ok-count match keeps a `prt_split_diff` failure —
+`chunks=0`, nothing reviewed — from vacuously satisfying an `M of M` consumer check). Neither
+marker is added to the four degraded `review ok` sites above; a full-coverage line must never be
+assemblable from a degraded path.
+
 **A fingerprint-collided finding is withheld, not silently dropped (go-kure/.github#155).**
 `prt_fp_base` (`finding.sh`) keys on `(file, category)` only — deliberately, so a fingerprint
 survives a push that shifts line numbers — which means any file with two same-category findings
