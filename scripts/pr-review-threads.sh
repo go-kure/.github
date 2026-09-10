@@ -1078,16 +1078,29 @@ else
         # decision row 3 exists specifically to protect.
         #
         # Known, bounded, self-healing side effect of downgrading below: this
-        # run's cap accounting (prt_reserved_count, evaluated before loop 1
-        # started) already assumed this thread's row-3 outcome would free its
-        # gating slot, since it read the same now-stale has_human_reply=false.
-        # If we downgrade here, the thread stays open unexpectedly, so this
-        # run's total gating-thread count can exceed PRT_MAX_FINDINGS_TOTAL by
-        # at most one — never more, since only one thread can be downgraded
-        # per fp. Self-heals next run: its own fresh inventory snapshot will
-        # see the reply and reserve the slot correctly from the start. Never
-        # resolving a thread a human just engaged with is worth that bounded,
-        # one-run, self-correcting overage.
+        # run's cap accounting (prt_apply_cap, evaluated once before loop 1
+        # started, :898) already assumed this thread's row-3 outcome would
+        # free its gating slot, since it read the same now-stale
+        # has_human_reply=false. If we downgrade here, the thread stays open
+        # unexpectedly, so this run's total gating-thread count can exceed
+        # PRT_MAX_FINDINGS_TOTAL by at most one PER FINDING DOWNGRADED THIS
+        # RUN — go-kure/.github#193 codex review (round 2): an earlier
+        # version of this comment claimed "at most one, never more" across
+        # the whole run, which is wrong whenever two or more different
+        # threads each receive a fresh human reply in the same run — each
+        # is evaluated and downgraded independently (this case arm has no
+        # cross-iteration state), so the overage is one per affected
+        # fingerprint, not capped at one in aggregate. Not re-reserving that
+        # capacity here is a deliberate scope decision, not an oversight:
+        # doing so needs loop 1 to re-evaluate the cap mid-run as downgrades
+        # happen, which prt_apply_cap's current one-shot-before-the-loop
+        # design does not support — a bigger change than this round's fix.
+        # Still self-heals next run (its own fresh inventory snapshot sees
+        # every reply and reserves correctly from the start), and every
+        # affected thread got a human reply, so overrunning the cap by a
+        # few threads whose humans are actively engaged is the acceptable
+        # side of the tradeoff. Never resolving a thread a human just
+        # engaged with is worth that bounded, self-correcting overage.
         if ! fresh_hhr="$(prt_thread_has_human_reply "$thread_id")"; then
           prt_mark_incomplete "fp=$fp: could not re-check thread for a new human reply before resolving; skipping resolve rather than risk overriding one unseen"
           continue
@@ -1097,6 +1110,17 @@ else
           NONE_ANCHORED_COUNT=$((NONE_ANCHORED_COUNT + 1))
           continue
         fi
+        # go-kure/.github#193 codex review (round 2): prt_freshness_check's
+        # own contract is "immediately before every single write" — the
+        # check above (case entry) no longer satisfies that for THIS write,
+        # since prt_thread_has_human_reply between them can make multiple
+        # paginated GraphQL round trips and take real wall-clock time. A
+        # superseding run for a new head is only guaranteed queued
+        # (cancel-in-progress: false) once the head has actually moved, so a
+        # widened gap here is exactly the window that guarantee exists to
+        # close: re-check immediately before the mutation, same as every
+        # other write site in this file.
+        prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA" || { prt_handle_freshness_rc "$?" "fp=$fp: reply+resolve (post-recheck)"; continue; }
         # Mutate first, reply only on success — reversing the naive
         # reply-then-mutate order. A resolve/unresolve failure (permission
         # gap, transient 5xx, secondary rate limit) previously left an

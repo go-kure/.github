@@ -757,17 +757,29 @@ itself. A fresh `true` downgrades the action to `NONE` in place (logged, counted
 automated resolution regardless of when it was noticed, not only when it was noticed early enough to
 make the initial decision table.
 
-This does reopen the second-order cap question the previous paragraph closed, in the opposite
-direction: `prt_reserved_count` runs once, before loop 1, using the same inventory snapshot — so if
-it saw `has_human_reply=false` for this thread, it already assumed row 3's `REPLY_RESOLVE` would free
-this thread's gating slot for a different finding's `CREATE` to use. A downgrade here means the
-thread stays open after all, so this run's gating-thread count can exceed `PRT_MAX_FINDINGS_TOTAL`
-by at most one (never more — only one thread can be downgraded per finding) for this run only; it
-self-heals on the next run, whose own fresh inventory snapshot reserves the slot correctly from the
-start. Retroactively unwinding the `CREATE` decision already made elsewhere in the same run was
-judged not worth the added complexity for a bounded, self-correcting, single-run overage — the
-alternative (resolving a thread a human just engaged with) is the defect this whole mechanism exists
-to prevent.
+**A second codex review round (against the commit carrying the fix above) found the fix itself
+reopened the TOCTOU it closed, one layer down.** `prt_freshness_check`'s own contract is "immediately
+before every single write" (`gh.sh:107-113`) — but `prt_thread_has_human_reply` sits between the
+existing head-freshness check (at `REPLY_RESOLVE`'s case entry) and the actual resolve mutation, and
+itself makes one or more paginated GraphQL calls that take real wall-clock time. A superseded run
+(head moved during that window) could reach the mutation with neither check having run immediately
+before it. Fixed by adding a second `prt_freshness_check` call right after the human-reply recheck,
+immediately before the mutation — the same "immediately before every single write" pattern every
+other mutation site in this file already follows.
+
+The same round also corrected an overstated claim in the cap-overage side effect: `prt_apply_cap`
+runs once, before loop 1, using the same inventory snapshot — so if it saw `has_human_reply=false`
+for this thread, it already assumed row 3's `REPLY_RESOLVE` would free this thread's gating slot for
+a different finding's `CREATE` to use. A downgrade here means the thread stays open after all, so
+this run's gating-thread count can exceed `PRT_MAX_FINDINGS_TOTAL` by at most one **per finding
+downgraded this run** — not "at most one, never more" in aggregate, as an earlier version of this
+comment claimed: nothing in this case arm coordinates across iterations, so two or more threads each
+receiving a fresh human reply in the same run each independently keep their slot occupied. It
+self-heals on the next run, whose own fresh inventory snapshot reserves every slot correctly from the
+start. Re-reserving capacity mid-run for a canceled resolve was judged out of scope for this fix —
+`prt_apply_cap`'s one-shot-before-the-loop design has no mechanism for a mid-run re-evaluation, and
+building one is a larger change than the defect (a bounded, self-correcting overage whose every
+affected thread has an actively engaged human) justifies on its own.
 
 This fix does **not** close the separate, broader gap it surfaced during investigation: `prt`
 treats a syntactically-valid-but-empty model response (`{"findings":[]}`) as a clean run by design
