@@ -102,11 +102,11 @@ prt_render_summary() {
     printf -- '- Findings: %s\n' "$(jq 'length' <<< "$findings")"
     printf -- '- Suppressed (FALSE POSITIVE, no thread created): %s\n\n' "$suppressed_count"
     if [ "$(jq 'length' <<< "$findings")" -gt 0 ]; then
-      printf '| fp | Severity | Category | File | Verdict |\n'
-      printf '|----|----------|----------|------|---------|\n'
+      printf '| fp | Severity | Category | File | Line | Verdict |\n'
+      printf '|----|----------|----------|------|------|---------|\n'
       jq -r '
         def esc: tostring | gsub("\r\n"; " ") | gsub("[\n\r]"; " ") | gsub("\\|"; "\\|");
-        .[] | "| `\(.fp)` | \(.severity|esc) | \(.category|esc) | \(.file|esc) | \((.verdict // "n/a")|esc) |"
+        .[] | "| `\(.fp)` | \(.severity|esc) | \(.category|esc) | \(.file|esc) | \(.line // "n/a") | \((.verdict // "n/a")|esc) |"
       ' <<< "$findings"
     fi
     if [ -n "$incomplete_reasons" ]; then
@@ -140,8 +140,8 @@ prt_render_overflow_comment() {
       printf '## Additional AI Review Findings (advisory — beyond the gating cap)\n\n'
       printf 'These %s finding(s) exceeded the per-PR gating cap and are not blocking, ' "$count"
       printf 'but are worth a look:\n\n'
-      printf '| Severity | Category | File | Issue |\n'
-      printf '|----------|----------|------|-------|\n'
+      printf '| Severity | Category | File | Line | Issue |\n'
+      printf '|----------|----------|------|------|-------|\n'
       # gsub("<!-- gokure-pr-review"; ...) neutralizes marker syntax in
       # model-generated prose, matching prt_marker_neutralize (marker.sh) —
       # this comment is posted by the same bot login prt_find_marked_comment
@@ -151,7 +151,7 @@ prt_render_overflow_comment() {
       # upsert (gmr dot-github#88 round 1).
       jq -r '
         def esc: tostring | gsub("\r\n"; " ") | gsub("[\n\r]"; " ") | gsub("\\|"; "\\|") | gsub("<!-- gokure-pr-review"; "&lt;!-- gokure-pr-review");
-        .[] | "| \(.severity|esc) | \(.category|esc) | \(.file|esc) | \(.issue|esc) |"
+        .[] | "| \(.severity|esc) | \(.category|esc) | \(.file|esc) | \(.line // "n/a") | \(.issue|esc) |"
       ' <<< "$findings"
       printf '\n'
     fi
@@ -169,14 +169,14 @@ prt_render_overflow_comment() {
       printf 'review thread before this collision is still merge-gating through that '
       printf 'existing thread; only a row with no matching thread is genuinely not '
       printf 'blocking:\n\n'
-      printf '| Severity | Category | File | Issue | Fix | Collision | Gating |\n'
-      printf '|----------|----------|------|-------|-----|-----------|--------|\n'
+      printf '| Severity | Category | File | Line | Issue | Fix | Collision | Gating |\n'
+      printf '|----------|----------|------|------|-------|-----|-----------|--------|\n'
       # Same esc filter, verbatim, as the overflow table above — a
       # quarantined finding is model-generated prose posted by the same bot
       # login and carries the identical marker-collision hazard.
       jq -r '
         def esc: tostring | gsub("\r\n"; " ") | gsub("[\n\r]"; " ") | gsub("\\|"; "\\|") | gsub("<!-- gokure-pr-review"; "&lt;!-- gokure-pr-review");
-        .[] | "| \(.severity|esc) | \(.category|esc) | \(.file|esc) | \(.issue|esc) | \(.fix|esc) | \(if .persisted_only == true then "persisted (earlier run)" else "this run" end) | \(if .gating == true then "yes (existing thread)" else "no" end) |"
+        .[] | "| \(.severity|esc) | \(.category|esc) | \(.file|esc) | \(.line // "n/a") | \(.issue|esc) | \(.fix|esc) | \(if .persisted_only == true then "persisted (earlier run)" else "this run" end) | \(if .gating == true then "yes (existing thread)" else "no" end) |"
       ' <<< "$quarantined"
       printf '\n'
     fi
@@ -265,8 +265,8 @@ prt_render_advisory_comment() {
     elif [ "$count" -eq 0 ]; then
       printf 'No issues found.\n'
     else
-      printf '| Severity | Category | File | Issue | Fix |\n'
-      printf '|----------|----------|------|-------|-----|\n'
+      printf '| Severity | Category | File | Line | Issue | Fix |\n'
+      printf '|----------|----------|------|------|-------|-----|\n'
       # A `|` or embedded newline in model-generated issue/fix text breaks
       # table structure — a bare `|` adds a phantom column, and a `\n` ends
       # the row outright, dropping every finding after it into loose prose
@@ -278,7 +278,7 @@ prt_render_advisory_comment() {
       # scans (gmr dot-github#88 round 1).
       jq -r '
         def esc: tostring | gsub("\r\n"; " ") | gsub("[\n\r]"; " ") | gsub("\\|"; "\\|") | gsub("<!-- gokure-pr-review"; "&lt;!-- gokure-pr-review");
-        .[] | "| \(.severity|esc) | \(.category|esc) | \(.file|esc) | \(.issue|esc) | \(.fix|esc) |"
+        .[] | "| \(.severity|esc) | \(.category|esc) | \(.file|esc) | \(.line // "n/a") | \(.issue|esc) | \(.fix|esc) |"
       ' <<< "$findings"
     fi
     printf '\n---\n*Automated review — advisory only (PR_REVIEW_THREADS_MODE=advisory). '
