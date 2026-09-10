@@ -149,12 +149,13 @@ stale code until someone remembers to bump it by hand.
 delegate-code change — no SHA known while a PR is open can be the SHA that ends up on `main`.
 It is always a two-PR sequence:
 
-1. **PR1** lands the code change and bumps the pin to a new 40-hex **placeholder** SHA, distinct
-   from the prior real pin, with an inline comment marking it pending.
+1. **PR1** lands the code change and bumps the pin to **the branch's own base-ref tip SHA**
+   (never all-zeros or an arbitrary earlier SHA), with an inline comment marking it pending.
 2. **PR2**, opened as soon as possible after PR1 merges, replaces the placeholder with the real
    merged SHA of PR1's commit on `main`.
 
-Full procedure and the non-bootstrap "every later PR" rule this PR itself follows:
+Full procedure — including the bootstrap case, where deferring the `uses:` call site's activation
+to PR2 avoids a placeholder window entirely — and the non-bootstrap rule this PR itself follows:
 `docs/standards.md` ("GitHub Actions pinning" → "Same-repo composite actions and the pin-bump
 procedure"). Caller/callee `PR_REVIEW_THREADS_MODE` resolution (V2, resolved 2026-08-18) is
 covered below under "Incident procedure".
