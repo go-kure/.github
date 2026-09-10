@@ -736,6 +736,39 @@ for one thread's `has_human_reply` flag asserts `prt_reserved_count` and `prt_ap
 different numbers between the two arms (5 vs. 4 reserved slots; 0 vs. 1 new finding admitted within
 cap) — a fixture that passed identically either way would not have caught this class of bug.
 
+**Codex review of this PR found the row-3 protection itself has a TOCTOU window.** `has_human_reply`
+is read once, when the `OWNED` inventory is built (`:831-858`), and cached into `owned_match` for
+the rest of the run. But `REPLY_RESOLVE`'s actual mutation can run much later — chunked review and
+assessment span many model calls — and the only pre-mutation guard at that point,
+`prt_freshness_check`, validates the PR's *head SHA* (`gh.sh:107-165`), not the thread. A reply is
+not a commit: it never moves the head SHA, so a human replying to the thread in the window between
+inventory build and the resolve mutation is invisible to that check, and row 3's protection resolves
+the thread anyway on stale information — exactly the case go-kure/.github#177 exists to prevent, just
+arriving through a timing gap instead of a stale decision table.
+
+The fix is `prt_thread_has_human_reply` (`gh.sh`): a targeted, paginated re-fetch of one thread's
+current comments, re-deriving `has_human_reply` from scratch by the same rule the inventory build
+uses. Called immediately before `REPLY_RESOLVE`'s mutation, not as a change to the inventory build
+itself. A fresh `true` downgrades the action to `NONE` in place (logged, counted into
+`NONE_ANCHORED_COUNT`, thread left untouched) instead of resolving; a fetch failure is treated as
+"could not confirm safety" and also skips the resolve (`prt_mark_incomplete`), never defaulting to
+"no reply" just because the recheck itself failed. This mirrors row 13's own reasoning
+(`prt_decide_absent`, above) one level later in the pipeline: a human reply protects a thread from
+automated resolution regardless of when it was noticed, not only when it was noticed early enough to
+make the initial decision table.
+
+This does reopen the second-order cap question the previous paragraph closed, in the opposite
+direction: `prt_reserved_count` runs once, before loop 1, using the same inventory snapshot — so if
+it saw `has_human_reply=false` for this thread, it already assumed row 3's `REPLY_RESOLVE` would free
+this thread's gating slot for a different finding's `CREATE` to use. A downgrade here means the
+thread stays open after all, so this run's gating-thread count can exceed `PRT_MAX_FINDINGS_TOTAL`
+by at most one (never more — only one thread can be downgraded per finding) for this run only; it
+self-heals on the next run, whose own fresh inventory snapshot reserves the slot correctly from the
+start. Retroactively unwinding the `CREATE` decision already made elsewhere in the same run was
+judged not worth the added complexity for a bounded, self-correcting, single-run overage — the
+alternative (resolving a thread a human just engaged with) is the defect this whole mechanism exists
+to prevent.
+
 This fix does **not** close the separate, broader gap it surfaced during investigation: `prt`
 treats a syntactically-valid-but-empty model response (`{"findings":[]}`) as a clean run by design
 (`finding.sh`, citing go-kure/.github#98 round 1 P1), the same shape as the structural defect
