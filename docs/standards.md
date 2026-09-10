@@ -264,12 +264,16 @@ ever be the SHA that ends up on `main`:
    `check-pin-bump.sh` treats "no prior pin on the base ref" as the documented bootstrap
    exception and passes trivially — there is nothing to compare the bump against yet.
    **The bootstrap case is the one place all-zeros (or any other 40-hex value) is
-   genuinely fine, because no choice of SHA avoids the outage here:** the action does not
-   exist at any commit reachable from `main` yet, so no SHA drawn from `main`'s own
-   history — all-zeros, `main`'s own tip, an earlier `main` commit — resolves the action's
-   path for the whole PR1-to-PR2 window. This is the one-time, unavoidable cost of
-   introducing a brand-new same-repo action, not a defect this procedure can design
-   around; see the non-bootstrap rule below for the case that *can* avoid it.
+   genuinely fine, because no SHA drawn from `main`'s own history avoids the outage here:**
+   the action does not exist at any commit reachable from `main` yet, so all-zeros,
+   `main`'s own tip, and every earlier `main` commit alike fail to resolve the action's
+   path for the whole PR1-to-PR2 window. (A commit from PR1's own unmerged branch that
+   already contains the action can technically resolve at the moment it's chosen, but it
+   is not a real placeholder: rebase-merge rewrites it away, and once the branch is gone
+   the commit is eligible for GC — not something to build a procedure on.) This is the
+   one-time cost of introducing a brand-new same-repo action from `main`'s history, not a
+   defect this procedure can design around; see the non-bootstrap rule below for the case
+   that *can* avoid it.
 2. After PR1 merges, **PR2** replaces the placeholder with the real, now-final SHA of
    the merged commit on `main`.
 
