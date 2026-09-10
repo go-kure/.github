@@ -260,56 +260,26 @@ rebase, which rewrites every commit's SHA — so no SHA known while the PR is op
 ever be the SHA that ends up on `main`:
 
 1. **PR1** lands the action and its delegate scripts, with the workflow pinned to a
-   40-hex placeholder SHA (all zeros is fine) and an inline comment marking it as a
-   placeholder pending PR2. `check-pin-bump.sh` treats "no prior pin on the base ref"
-   as the documented bootstrap exception and passes trivially — there is nothing to
-   compare the bump against yet.
+   40-hex placeholder SHA and an inline comment marking it as a placeholder pending PR2.
+   `check-pin-bump.sh` treats "no prior pin on the base ref" as the documented bootstrap
+   exception and passes trivially — there is nothing to compare the bump against yet.
+   **The placeholder must be a real, resolvable, already-merged commit SHA of the action**
+   (any earlier commit in its history is fine) — **never an unresolvable value such as
+   all-zeros.** The only hard requirement, from `check-pin-bump.sh`, is that the pin
+   *differ* from whatever `main` currently carries; resolvability is not checked by any
+   script, but an unresolvable placeholder fails the composite-action step outright for
+   every consumer pinned to `@main` the moment PR1 merges, until PR2 lands (see
+   go-kure/.github#177, go-kure/.github#191, go-kure/.github#195 for what this cost in
+   practice: an org-wide CI outage the first time and a held PR the second).
 2. After PR1 merges, **PR2** replaces the placeholder with the real, now-final SHA of
    the merged commit on `main`.
 
-**Interim outage window, disclosed rather than discovered:** the moment PR1 merges to
-`main`, every consumer that calls the wrapping reusable workflow at `@main` (e.g.
-`kure`/`launcher`'s `pr-review.yml`) picks up the new code immediately — including the
-placeholder SHA. Until PR2 lands, the composite-action step fails to resolve for every
-PR in those consumers, and the job it's part of now fails outright (`pr-review.yml` fails
-closed as of Phase 2 Task 5 — `continue-on-error: true` was removed once the failure
-surface was hardened).
-
-**As of go-kure/.github#108, `pr-review / AI Code Review` IS a required status check on
-kure and launcher** (`governance/repository-settings-policy.yaml`'s kure `&queue_protection`
-anchor, aliased by launcher) — so this window now blocks every PR on both of them until PR2
-lands; land PR2 immediately after PR1 merges, do not let the window span a working day.
-`.github` itself is deliberately excluded from this required check for exactly this reason:
-`.github` is where the bootstrap/pin-bump PRs themselves land, and PR2 — the PR that fixes
-the placeholder pin — would otherwise have to pass its own now-required check under normal
-enforcement while that check is still broken by the placeholder it exists to fix. The
-`PR_REVIEW_THREADS_MODE=off` escape hatch below could unblock a single stuck PR2 the same
-way it covers any other incident, but routing every ordinary pin-bump PR through an incident
-toggle isn't a workable default — excluding the required check is the actual fix, `off` stays
-the fallback for a genuine outage. kure/launcher have no equivalent problem: their fix always
-lands in a different repo (`.github`) than the one enforcing the check, so the requirement
-there gates a genuinely independent signal, not the fix's own PR.
-
-**`PR_REVIEW_THREADS_MODE=off` now covers this window too — with one open caveat.** The
-mode is checked twice: inside the script (as before), and, since a live review finding on
-`.github#56`, in the `pr-review` job's own `if:` (`.github/workflows/pr-review.yml`) —
-`vars.PR_REVIEW_THREADS_MODE != 'off'` skips checkout, Setup tools, AND the composite
-action step entirely when set, so an unresolvable action SHA is never reached. Historical
-note, from *before* this job-level check existed: kure#669 hit exactly this ("Unable to
-resolve action `go-kure/.github@0000...0`", confirmed live 2026-08-18) while a bootstrap
-pin-bump PR was open-but-unmerged — at that time `off` genuinely could not have helped.
-**V2 resolved (2026-08-18):** `vars.PR_REVIEW_THREADS_MODE` inside the called reusable
-workflow resolves against the **caller's** repository (kure/launcher), not this one —
-GitHub docs: "For reusable workflows, the variables from the caller workflow's repository
-are used. Variables from the repository that contains the called workflow are not made
-available to the caller workflow."
-(docs.github.com/en/actions/reference/workflows-and-actions/variables). Practical consequence: today
-`PR_REVIEW_THREADS_MODE` is an **org**-level variable, visible identically everywhere, so
-this doesn't change anything in the common case — but during an incident, a **repo-level**
-override must be set on the affected consumer (kure or launcher), not on `.github`; setting
-it only here has no effect on their jobs. See `docs/pr-review-threads-live-findings.md` for
-the full V2-V7 record, still land PR2 immediately as backup rather than relying on `off`
-alone to hold the window open indefinitely.
+**Why a real SHA and not just "any distinct 40-hex value":** the inline
+`# placeholder pending PR2` comment already gives a human reviewer everything the
+all-zeros convention was for — nothing here depends on the SHA itself looking obviously
+fake. A resolvable-but-old SHA carries no review-visibility cost over an unresolvable one
+and, unlike an unresolvable one, never breaks a consumer's `pr-review` job while PR1 and
+PR2 are both in flight.
 
 **No PR to this repo that modifies the composite action can ever be validated live by its own
 CI.** The reusable-workflow pin (`pr-review-caller.yml`'s `uses: go-kure/.github/.github/workflows/pr-review.yml@main`)
@@ -325,12 +295,16 @@ exists — they are the only coverage this class of PR gets before merge.
 
 Every later PR that touches the action's delegate code needs the same two-PR sequence as
 the bootstrap, not a single PR: rebase-merge still rewrites the commit's SHA on landing, so
-no SHA known while the PR is open can be the one that ends up on `main`. The first PR lands the code changes and bumps the pin to a new 40-hex placeholder SHA
-(distinct from the prior real pin, with an inline comment marking it as pending); the
-second bumps it to the real merged SHA. Unlike the bootstrap, `check-pin-bump.sh` requires
-the pin to visibly *move* on the first PR (there is a prior pin to compare against here,
-unlike the bootstrap's "no prior pin" exception) — leaving the previous pin in place would
-fail that check, so the placeholder step is mandatory, not optional. Dependabot cannot open this PR for you — it doesn't track same-repo paths as
+no SHA known while the PR is open can be the one that ends up on `main`. The first PR lands
+the code changes and bumps the pin to a new, real, resolvable, already-merged 40-hex SHA
+(distinct from the prior real pin, never all-zeros or another unresolvable value — see the
+bootstrap note above for why; with an inline comment marking it as pending); the second
+bumps it to the real merged SHA. Unlike the bootstrap, `check-pin-bump.sh` requires the pin
+to visibly *move* on the first PR — the current pin at `main` is not itself a valid
+placeholder value, since leaving it in place would fail that check (there is a prior pin to
+compare against here, unlike the bootstrap's "no prior pin" exception), so the placeholder
+step is mandatory, not optional; any *other* earlier real SHA from the action's history
+works. Dependabot cannot open this PR for you — it doesn't track same-repo paths as
 a dependency, so this stays a manual, two-PR habit for every change to the delegate code.
 
 ### Pin-impact-ack (consumer-side gate on this repo's own pin)

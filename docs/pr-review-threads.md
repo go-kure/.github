@@ -99,7 +99,9 @@ overrides the workflow's own default) is one of three values. An unrecognized va
   status check on kure and launcher (`governance/repository-settings-policy.yaml`), so a red run
   now blocks merge there directly, on top of `required_review_thread_resolution` already gating
   any unresolved thread. `.github` deliberately does not require this check — see
-  docs/standards.md's "Interim outage window" section for why. A run that reports
+  docs/standards.md, "Same-repo composite actions and the pin-bump procedure" ("No PR to
+  this repo that modifies the composite action can ever be validated live by its own CI")
+  for why. A run that reports
   `conclusion: skipped` — fork PRs, `PR_REVIEW_THREADS_MODE=off`, or a `merge_group` run on the
   queue's temporary ref — counts as passing for a required context exactly like any other skipped
   required check (docs/pr-review-threads-live-findings.md V1, V7), so none of those paths are
