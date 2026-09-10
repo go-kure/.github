@@ -106,7 +106,7 @@ prt_render_summary() {
       printf '|----|----------|----------|------|------|---------|\n'
       jq -r '
         def esc: tostring | gsub("\r\n"; " ") | gsub("[\n\r]"; " ") | gsub("\\|"; "\\|");
-        .[] | "| `\(.fp)` | \(.severity|esc) | \(.category|esc) | \(.file|esc) | \(.line // "n/a") | \((.verdict // "n/a")|esc) |"
+        .[] | "| `\(.fp)` | \(.severity|esc) | \(.category|esc) | \(.file|esc) | \((.line // "n/a")|esc) | \((.verdict // "n/a")|esc) |"
       ' <<< "$findings"
     fi
     if [ -n "$incomplete_reasons" ]; then
@@ -151,7 +151,7 @@ prt_render_overflow_comment() {
       # upsert (gmr dot-github#88 round 1).
       jq -r '
         def esc: tostring | gsub("\r\n"; " ") | gsub("[\n\r]"; " ") | gsub("\\|"; "\\|") | gsub("<!-- gokure-pr-review"; "&lt;!-- gokure-pr-review");
-        .[] | "| \(.severity|esc) | \(.category|esc) | \(.file|esc) | \(.line // "n/a") | \(.issue|esc) |"
+        .[] | "| \(.severity|esc) | \(.category|esc) | \(.file|esc) | \((.line // "n/a")|esc) | \(.issue|esc) |"
       ' <<< "$findings"
       printf '\n'
     fi
@@ -176,7 +176,7 @@ prt_render_overflow_comment() {
       # login and carries the identical marker-collision hazard.
       jq -r '
         def esc: tostring | gsub("\r\n"; " ") | gsub("[\n\r]"; " ") | gsub("\\|"; "\\|") | gsub("<!-- gokure-pr-review"; "&lt;!-- gokure-pr-review");
-        .[] | "| \(.severity|esc) | \(.category|esc) | \(.file|esc) | \(.line // "n/a") | \(.issue|esc) | \(.fix|esc) | \(if .persisted_only == true then "persisted (earlier run)" else "this run" end) | \(if .gating == true then "yes (existing thread)" else "no" end) |"
+        .[] | "| \(.severity|esc) | \(.category|esc) | \(.file|esc) | \((.line // "n/a")|esc) | \(.issue|esc) | \(.fix|esc) | \(if .persisted_only == true then "persisted (earlier run)" else "this run" end) | \(if .gating == true then "yes (existing thread)" else "no" end) |"
       ' <<< "$quarantined"
       printf '\n'
     fi
@@ -278,7 +278,7 @@ prt_render_advisory_comment() {
       # scans (gmr dot-github#88 round 1).
       jq -r '
         def esc: tostring | gsub("\r\n"; " ") | gsub("[\n\r]"; " ") | gsub("\\|"; "\\|") | gsub("<!-- gokure-pr-review"; "&lt;!-- gokure-pr-review");
-        .[] | "| \(.severity|esc) | \(.category|esc) | \(.file|esc) | \(.line // "n/a") | \(.issue|esc) | \(.fix|esc) |"
+        .[] | "| \(.severity|esc) | \(.category|esc) | \(.file|esc) | \((.line // "n/a")|esc) | \(.issue|esc) | \(.fix|esc) |"
       ' <<< "$findings"
     fi
     printf '\n---\n*Automated review — advisory only (PR_REVIEW_THREADS_MODE=advisory). '
