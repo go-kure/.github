@@ -1844,6 +1844,22 @@ fake_curl_orchestrator() {
             clean_with_finding)
               printf '%s' '{"choices":[{"message":{"content":"{\"findings\":[{\"file\":\"x.go\",\"line\":1,\"category\":\"other\",\"severity\":\"Medium\",\"issue\":\"i\",\"fix\":\"f\"}]}"}}]}' > "$out"
               ;;
+            fail_first_chunk_review)
+              # go-kure/.github#176 codex review (Critical): a two-chunk run
+              # where chunk 0's REVIEW call itself fails outright (transport
+              # error, no retry on the original attempt — see the ":ne 0"
+              # branch's own comment above it in pr-review-threads.sh) and
+              # chunk 1's review call succeeds with zero findings. Both leave
+              # chunk_findings empty for their index at the coverage-counting
+              # loop; only CHUNK_REVIEW_FAILED distinguishes "review never
+              # ran" from "no findings on a clean review". mc==1 is chunk 0's
+              # one and only (unretried) review call; mc==2 is chunk 1's.
+              if [ "$mc" -le 1 ]; then
+                : > "$out"; echo 500; return 0
+              else
+                printf '%s' '{"choices":[{"message":{"content":"{\"findings\":[]}"}}]}' > "$out"
+              fi
+              ;;
             no_findings_key)
               # Valid JSON, but no `.findings` key at all — the rc=1
               # ("missing/null/non-array") branch of prt_normalize_findings,
@@ -2685,6 +2701,26 @@ assert_eq "orchestrator: zero-chunk (empty diff) run -> no terminal coverage lin
 assert_eq "orchestrator: zero-chunk (empty diff) run -> no per-chunk i/M marker either" \
   "false" "$(grep -qE '^prt: chunk [0-9]+/[0-9]+:' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 PRT_TEST_EMPTY_DIFF=0
+
+# Case xix — Failed-review-with-zero-findings (go-kure/.github#176 codex
+# review, Critical): same two-chunk split as xvi-xviii. Chunk 0's review
+# call fails outright (transport error); chunk 1's reviews cleanly with
+# ZERO findings. Before this fix, both left chunk_findings empty at the
+# coverage loop and chunk_ok_count counted both as "ok" — a run where one
+# chunk was never reviewed at all could still print the terminal "M/M"
+# line. The fixed run must degrade (chunk 0's failure is real) and must
+# NOT claim full coverage.
+PRT_TEST_MODEL_RESPONSE_MODE=fail_first_chunk_review
+PRT_TEST_TWO_FILE_DIFF=1
+rc="$(run_orchestrator advisory 0 0 0 150)"
+assert_eq "orchestrator: one chunk's review fails, sibling reviews clean with zero findings -> exits 0 (degraded, not fatal)" \
+  "0" "$rc"
+assert_eq "orchestrator: one chunk's review fails -> REVIEW_DEGRADED records the failed chunk" \
+  "true" "$(grep -qF 'REVIEW_DEGRADED: review-parse-failed: chunk 0: review call failed' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator: one chunk's review fails, sibling clean-zero -> NO terminal coverage line (this is the Critical finding's exact scenario)" \
+  "false" "$(grep -qF 'prt: coverage:' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_TWO_FILE_DIFF=0
+PRT_TEST_MODEL_RESPONSE_MODE=clean
 
 # Case 3a — permanent metadata-fetch failure (F3): every attempt (matching
 # prt_retry 3's own attempt count) returns 502, unlike meta_fail=1 below
