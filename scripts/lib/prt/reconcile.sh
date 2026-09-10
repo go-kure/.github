@@ -21,11 +21,15 @@
 set -uo pipefail
 
 # prt_decide_finding COLLISION VERDICT THREAD_EXISTS THREAD_RESOLVED \
-#                     RESOLVED_BY_BOT WITHIN_CAP
+#                     RESOLVED_BY_BOT WITHIN_CAP [HAS_HUMAN_REPLY]
 # All boolean args are the literal strings "true" or "false".
 # VERDICT is one of: FALSE_POSITIVE, VALID, PARTIALLY_VALID, NONE (no
 # assessment verdict matched this finding — stays open unreplied, per the
 # chunking/assessment-mapping design).
+# HAS_HUMAN_REPLY defaults to "false" when omitted (matching prt_apply_cap's
+# own SEV_RANK default a few lines down), so every existing call site keeps
+# its current behavior unless it supplies the real value — only row 3 below
+# reads it.
 #
 # Prints one action word:
 #   NONE       — do nothing
@@ -43,7 +47,7 @@ set -uo pipefail
 #                the single non-gating advisory comment instead of a thread
 prt_decide_finding() {
   local collision="$1" verdict="$2" thread_exists="$3" thread_resolved="$4" \
-        resolved_by_bot="$5" within_cap="$6"
+        resolved_by_bot="$5" within_cap="$6" has_human_reply="${7:-false}"
 
   # Row 1: collision beats every other row, matched or absent — withheld
   # (QUARANTINE) rather than reconciled normally, whether or not a thread
@@ -66,8 +70,20 @@ prt_decide_finding() {
   if [ "$verdict" = FALSE_POSITIVE ]; then
     # Row 2: never created in the first place.
     [ "$thread_exists" != true ] && { echo SUPPRESS; return 0; }
-    # Row 3: open thread exists for a now-false-positive finding.
-    [ "$thread_resolved" != true ] && { echo REPLY_RESOLVE; return 0; }
+    # Row 3: open thread exists for a now-false-positive finding — but a
+    # human reply protects it from this automated resolve, mirroring
+    # prt_decide_absent's row 13 (go-kure/.github#177: this branch used to
+    # ignore has_human_reply entirely, so a thread a human was actively
+    # defending got resolved out from under them the next time an assessment
+    # called the finding a false positive). No reply is posted in that case
+    # either — posting "false positive, closing" into a thread a human just
+    # engaged with is still the automated action the guard exists to
+    # prevent, just split into two writes instead of one.
+    if [ "$thread_resolved" != true ]; then
+      [ "$has_human_reply" = true ] && { echo NONE; return 0; }
+      echo REPLY_RESOLVE
+      return 0
+    fi
     # Already resolved (by an earlier run's row 3) — nothing to do.
     echo NONE
     return 0
@@ -271,7 +287,7 @@ prt_reserved_count() {
       resolved="$(jq -r '.resolved' <<< "$row" 2>/dev/null)" || return 1
       [ "$resolved" != true ] && gating=true
     else
-      local o_collision f_collision eff_collision verdict resolved rbb action
+      local o_collision f_collision eff_collision verdict resolved rbb hhr action
       o_collision="$(jq -r '.collision' <<< "$row" 2>/dev/null)" || return 1
       f_collision="$(jq -r '.collision // false' <<< "$match" 2>/dev/null)" || return 1
       eff_collision=false
@@ -282,9 +298,15 @@ prt_reserved_count() {
       verdict="$(jq -r '.verdict // "NONE"' <<< "$match" 2>/dev/null)" || return 1
       resolved="$(jq -r '.resolved' <<< "$row" 2>/dev/null)" || return 1
       rbb="$(jq -r '.resolved_by_bot' <<< "$row" 2>/dev/null)" || return 1
+      # go-kure/.github#177: a FALSE_POSITIVE thread with a human reply now
+      # stays open (row 3's guard, above) instead of resolving — this walk
+      # must read the row's real has_human_reply, or a reserved slot for
+      # exactly that thread goes uncounted and a later CREATE can exceed the
+      # cap by one.
+      hhr="$(jq -r '.has_human_reply' <<< "$row" 2>/dev/null)" || return 1
       # within_cap=false: never read on this path (thread_exists=true, rows
       # 1/5/6/7 all ignore it) — see prt_decide_finding's own comment.
-      action="$(prt_decide_finding "$eff_collision" "$verdict" true "$resolved" "$rbb" false)"
+      action="$(prt_decide_finding "$eff_collision" "$verdict" true "$resolved" "$rbb" false "$hhr")"
       [ "$(prt_thread_stays_gating "$action" "$resolved")" = true ] && gating=true
     fi
 

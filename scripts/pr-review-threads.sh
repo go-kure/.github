@@ -949,11 +949,12 @@ else
     within_cap="$(jq -r '.within_cap' <<< "$f")"
 
     owned_match="$(jq -c --arg fp "$fp" 'map(select(.fp == $fp)) | .[0] // empty' <<< "$OWNED")"
-    thread_exists=false; thread_resolved=false; resolved_by_bot=false
+    thread_exists=false; thread_resolved=false; resolved_by_bot=false; has_human_reply=false
     if [ -n "$owned_match" ]; then
       thread_exists=true
       thread_resolved="$(jq -r '.resolved' <<< "$owned_match")"
       resolved_by_bot="$(jq -r '.resolved_by_bot' <<< "$owned_match")"
+      has_human_reply="$(jq -r '.has_human_reply' <<< "$owned_match")"
       MATCHED_FPS="$(jq -c --arg fp "$fp" '. + [$fp]' <<< "$MATCHED_FPS")"
 
       # Collision quarantine must be durable the moment multiplicity is
@@ -1007,7 +1008,7 @@ else
       [ "$owned_collision_eff" = true ] && effective_collision=true
     fi
 
-    action="$(prt_decide_finding "$effective_collision" "$verdict" "$thread_exists" "$thread_resolved" "$resolved_by_bot" "$within_cap")"
+    action="$(prt_decide_finding "$effective_collision" "$verdict" "$thread_exists" "$thread_resolved" "$resolved_by_bot" "$within_cap" "$has_human_reply")"
     prt_log "fp=$fp -> $action"
 
     case "$action" in
