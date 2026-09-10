@@ -263,23 +263,32 @@ ever be the SHA that ends up on `main`:
    40-hex placeholder SHA and an inline comment marking it as a placeholder pending PR2.
    `check-pin-bump.sh` treats "no prior pin on the base ref" as the documented bootstrap
    exception and passes trivially — there is nothing to compare the bump against yet.
-   **The placeholder must be a real, resolvable, already-merged commit SHA of the action**
-   (any earlier commit in its history is fine) — **never an unresolvable value such as
-   all-zeros.** The only hard requirement, from `check-pin-bump.sh`, is that the pin
-   *differ* from whatever `main` currently carries; resolvability is not checked by any
-   script, but an unresolvable placeholder fails the composite-action step outright for
-   every consumer pinned to `@main` the moment PR1 merges, until PR2 lands (see
-   go-kure/.github#177, go-kure/.github#191, go-kure/.github#195 for what this cost in
-   practice: an org-wide CI outage the first time and a held PR the second).
+   **The placeholder must be `main`'s own tip commit SHA at the moment PR1 branches** —
+   `git rev-parse main` (or the branch's actual merge-base with `main`, if it was created
+   earlier and rebased since) — **never all-zeros or any other unresolvable value, and
+   never an arbitrary earlier real SHA either.** Any commit on `main` at or after the last
+   real pin bump is guaranteed content-identical, for the delegate-code paths, to whatever
+   `main` currently carries — if it weren't, `check-pin-bump.sh` would already have forced
+   a bump on whatever commit changed them. The base-ref tip is therefore both a real,
+   resolvable SHA (satisfying `check-pin-bump.sh`'s only hard requirement, that the pin
+   *differ* from what `main` currently carries) **and** behaviorally identical to the pin
+   it replaces — zero outage *and* zero code-behavior change for the PR1-to-PR2 window.
+   An earlier-but-arbitrary SHA from the action's history does not carry this guarantee: it
+   can silently roll the action's delegate code back to an older, already-superseded
+   version for the whole window instead of merely holding still (caught live on
+   go-kure/.github#193, which had picked a two-generations-back SHA; see
+   go-kure/.github#177, go-kure/.github#191, go-kure/.github#195 for what an unresolvable
+   placeholder cost before that: an org-wide CI outage the first time and a held PR the
+   second).
 2. After PR1 merges, **PR2** replaces the placeholder with the real, now-final SHA of
    the merged commit on `main`.
 
-**Why a real SHA and not just "any distinct 40-hex value":** the inline
+**Why the base-ref tip and not just "any distinct 40-hex value":** the inline
 `# placeholder pending PR2` comment already gives a human reviewer everything the
 all-zeros convention was for — nothing here depends on the SHA itself looking obviously
-fake. A resolvable-but-old SHA carries no review-visibility cost over an unresolvable one
-and, unlike an unresolvable one, never breaks a consumer's `pr-review` job while PR1 and
-PR2 are both in flight.
+fake. The base-ref tip carries no review-visibility cost over an unresolvable one and,
+unlike an unresolvable *or* an arbitrary older SHA, neither breaks a consumer's
+`pr-review` job nor silently changes its behavior while PR1 and PR2 are both in flight.
 
 **No PR to this repo that modifies the composite action can ever be validated live by its own
 CI.** The reusable-workflow pin (`pr-review-caller.yml`'s `uses: go-kure/.github/.github/workflows/pr-review.yml@main`)
@@ -296,15 +305,16 @@ exists — they are the only coverage this class of PR gets before merge.
 Every later PR that touches the action's delegate code needs the same two-PR sequence as
 the bootstrap, not a single PR: rebase-merge still rewrites the commit's SHA on landing, so
 no SHA known while the PR is open can be the one that ends up on `main`. The first PR lands
-the code changes and bumps the pin to a new, real, resolvable, already-merged 40-hex SHA
-(distinct from the prior real pin, never all-zeros or another unresolvable value — see the
-bootstrap note above for why; with an inline comment marking it as pending); the second
-bumps it to the real merged SHA. Unlike the bootstrap, `check-pin-bump.sh` requires the pin
-to visibly *move* on the first PR — the current pin at `main` is not itself a valid
-placeholder value, since leaving it in place would fail that check (there is a prior pin to
-compare against here, unlike the bootstrap's "no prior pin" exception), so the placeholder
-step is mandatory, not optional; any *other* earlier real SHA from the action's history
-works. Dependabot cannot open this PR for you — it doesn't track same-repo paths as
+the code changes and bumps the pin to **the branch's own base-ref tip SHA** (never all-zeros,
+and never an arbitrary earlier real SHA — see the bootstrap note above for why: only the
+base-ref tip is guaranteed both distinct from the current pin *and* content-identical to it
+for the delegate-code paths; with an inline comment marking it as pending); the second bumps
+it to the real merged SHA. Unlike the bootstrap, `check-pin-bump.sh` requires the pin to
+visibly *move* on the first PR — the current pin at `main` is not itself a valid placeholder
+value, since leaving it in place would fail that check (there is a prior pin to compare
+against here, unlike the bootstrap's "no prior pin" exception); the base-ref tip always
+satisfies this too, since `main` advances with every merge. Dependabot cannot open this PR
+for you — it doesn't track same-repo paths as
 a dependency, so this stays a manual, two-PR habit for every change to the delegate code.
 
 ### Pin-impact-ack (consumer-side gate on this repo's own pin)
