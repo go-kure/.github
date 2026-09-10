@@ -259,19 +259,21 @@ Bootstrapping a same-repo action is a two-PR sequence, because this repo merges 
 rebase, which rewrites every commit's SHA — so no SHA known while the PR is open can
 ever be the SHA that ends up on `main`:
 
-1. **PR1** lands the action and its delegate scripts, with the workflow pinned to a
-   40-hex placeholder SHA and an inline comment marking it as a placeholder pending PR2.
-   `check-pin-bump.sh` treats "no prior pin on the base ref" as the documented bootstrap
-   exception and passes trivially — there is nothing to compare the bump against yet.
-   **The bootstrap case is the one place all-zeros (or any other 40-hex value) is
-   genuinely fine, because no SHA drawn from `main`'s own history avoids the outage here:**
-   the action does not exist at any commit reachable from `main` yet, so all-zeros,
-   `main`'s own tip, and every earlier `main` commit alike fail to resolve the action's
-   path for the whole PR1-to-PR2 window. This is the one-time cost of introducing a
-   brand-new same-repo action, not a defect this procedure can design around; see the
-   non-bootstrap rule below for the case that *can* avoid it.
-2. After PR1 merges, **PR2** replaces the placeholder with the real, now-final SHA of
-   the merged commit on `main`.
+1. **PR1** lands the action and its delegate scripts. Prefer landing them **without** wiring
+   up a `uses:` call site at all: `check-pin-bump.sh`'s "no prior pin on the base ref"
+   bootstrap exception passes trivially whether or not a pin line exists yet
+   (`scripts/check-pin-bump.sh:59` returns OK before ever looking for one), so PR2 can add
+   the `uses:` line for the first time, pointing straight at PR1's real merged SHA — no
+   placeholder, no outage window, in one atomic step.
+   **Only if PR1 must also activate the call site** (wiring up `uses:` immediately) is a
+   placeholder needed, and only then is all-zeros (or any other 40-hex value) genuinely the
+   right choice: the action does not exist at any commit reachable from `main` yet, so
+   all-zeros, `main`'s own tip, and every earlier `main` commit alike fail to resolve the
+   action's path for the whole PR1-to-PR2 window — activating early is what creates this
+   cost, not bootstrapping itself; see the non-bootstrap rule below for the case that *can*
+   avoid it while still activating in PR1.
+2. After PR1 merges, **PR2** adds or replaces the `uses:` line with the real, now-final SHA
+   of the merged commit on `main`.
 
 **No PR to this repo that modifies the composite action can ever be validated live by its own
 CI.** The reusable-workflow pin (`pr-review-caller.yml`'s `uses: go-kure/.github/.github/workflows/pr-review.yml@main`)
@@ -284,6 +286,18 @@ mechanics (quarantine outcomes, the accounting invariant, thread create/resolve)
 its own CI log printed `main`'s real SHA instead of the branch's own placeholder pin. The local
 test suite plus a static review lens (`nah run codex`) are not a lesser substitute while this gap
 exists — they are the only coverage this class of PR gets before merge.
+
+**Operational constraints on the PR1-to-PR2 window.** `pr-review / AI Code Review` is a required
+check on kure and launcher (not on `.github` itself — see the pin-bump-deadlock rationale in
+`governance/repository-settings-policy.yaml`), so whatever the placeholder does for that window —
+resolves stale code, or fails to resolve at all in the bootstrap case — is live on every PR to
+*both* consumer repos, not just this one. **PR2 must land as soon as possible after PR1 merges;
+the window must not span a working day.** If it must stay open longer than that, or the placeholder
+breaks review outright, set the **org** variable `PR_REVIEW_THREADS_MODE=off` on **whichever
+consumer repo is affected** (kure or launcher), not on `.github` — the reusable workflow resolves
+this variable against the **caller's** repository, so a repo-level override on `.github` has no
+effect on kure/launcher's own jobs (full mechanics: `docs/pr-review-threads.md`, "Incident
+procedure").
 
 Every later PR that touches the action's delegate code needs the same two-PR sequence as
 the bootstrap, not a single PR: rebase-merge still rewrites the commit's SHA on landing, so
@@ -316,6 +330,14 @@ the actual risk is *earlier*: an unrelated, docs-only commit landing between the
 and the moment PR1 selects its base-ref tip is invisible to the delegate-path guard, so the newly
 selected tip's `docs/standards.md` content can silently differ from what the previous pin carried,
 changing review behavior even though the delegate code stayed content-identical.
+
+Serialization protects delegate-code *content*, not the *interface* between the action and its
+caller: `.github/workflows/pr-review.yml`'s own call site is not pinned — consumers pull it live
+from `main` via `@main` — so if PR1 changes the action's inputs/outputs
+(`.github/actions/pr-review-threads/action.yml`) and updates
+that call site in the same commit, the live call site and the still-pinned old action version go
+out of sync for the whole PR1-to-PR2 window regardless of serialization. Keep the action's
+interface stable across a PR1/PR2 pair, or land the interface change together with PR2 instead.
 
 ### Pin-impact-ack (consumer-side gate on this repo's own pin)
 
