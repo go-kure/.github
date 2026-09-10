@@ -269,7 +269,8 @@ assert_eq "kure main-protection payload rule types" \
 # go-kure/.github#108: pr-review / AI Code Review is now a required context on
 # kure/launcher (the queue_protection override), deliberately NOT on .github
 # (org default) — see governance/repository-settings-policy.yaml's inline
-# comment and docs/standards.md's "Interim outage window" section.
+# comment and docs/standards.md's "Same-repo composite actions and the
+# pin-bump procedure" section.
 assert_eq "kure main-protection payload requires pr-review context" "true" \
     "$(jq -r '.rules[] | select(.type=="required_status_checks") | .parameters.required_status_checks | map(.context) | index("pr-review / AI Code Review") != null' <<<"$main_payload")"
 
