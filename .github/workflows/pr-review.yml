@@ -49,9 +49,10 @@
 # reviewer implementation from `main` at call time, not from the calling
 # branch, so a PR to `.github` that edits the composite action never has
 # that specific change tested by its own required check; requiring it would
-# reintroduce the same merge-before-review race this check exists to close,
-# for the one class of PR it can least afford to rubber-stamp. Full
-# reasoning: docs/standards.md's "Same-repo composite actions and the
+# give a green check the same rubber-stamp weight as a genuinely-tested
+# one, for the one class of PR that most needs real scrutiny — the change
+# the check itself can't see. Full reasoning: docs/standards.md's
+# "Same-repo composite actions and the
 # pin-bump procedure".
 #
 # The job's `if:` no longer excludes drafts (2026-08-19) — this workflow was
