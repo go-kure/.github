@@ -154,9 +154,10 @@ It is always a two-PR sequence:
 2. **PR2**, opened as soon as possible after PR1 merges, replaces the placeholder with the real
    merged SHA of PR1's commit on `main`.
 
-Full procedure, the bootstrap special case (including the V2 caller/callee resolution), and the
-non-bootstrap "every later PR" rule this PR itself follows: `docs/standards.md` ("GitHub Actions
-pinning" → "Same-repo composite actions and the pin-bump procedure").
+Full procedure and the non-bootstrap "every later PR" rule this PR itself follows:
+`docs/standards.md` ("GitHub Actions pinning" → "Same-repo composite actions and the pin-bump
+procedure"). Caller/callee `PR_REVIEW_THREADS_MODE` resolution (V2, resolved 2026-08-18) is
+covered below under "Incident procedure".
 
 ## Failure surface
 
@@ -612,15 +613,16 @@ Landing this fix also required its own same-repo composite-action pin bump (`doc
 "GitHub Actions pinning"): `scripts/pr-review-threads.sh` and `scripts/lib/prt/*.sh` are delegate
 code consumed through `.github/workflows/pr-review.yml`'s pinned `pr-review-threads` action
 reference, so a fix there does not reach any consumer (kure, launcher) until the pin moves. This PR
-is PR1 of that two-PR sequence — it bumps the pin to the branch's own base-ref tip SHA, distinct
-from the real SHA it replaces but content-identical to it for the delegate-code paths — and a PR2
-must land immediately after this one merges, replacing the placeholder with this PR's own merge
-SHA. `check-pin-bump.sh` (run in `scripts-smoke-test`) verifies only that the pin *moved*, not
-that it resolves; the window between PR1 landing and PR2 landing must not span a working day,
-which is also why `.github` itself is excluded from the org-wide `pr-review` required-check
-enforcement (`.github/workflows/pr-review.yml`) — that check would otherwise gate PR2 on a
-reviewer implementation CI cannot validate from the branch (see docs/standards.md, "Same-repo
-composite actions and the pin-bump procedure").
+is PR1 of that two-PR sequence — it bumps the pin to a new all-zeros placeholder, distinct from the
+real SHA it replaces (the convention in force at the time; a later PR, go-kure/.github#197, retires
+all-zeros for non-bootstrap pin bumps in favor of the branch's own base-ref tip SHA — see
+docs/standards.md, "Same-repo composite actions and the pin-bump procedure") — and a PR2 must land
+immediately after this one merges, replacing the placeholder with this PR's own merge SHA.
+`check-pin-bump.sh` (run in `scripts-smoke-test`) verifies only that the pin *moved*, not that it
+resolves; the window between PR1 landing and PR2 landing must not span a working day, which is also
+why `.github` itself is excluded from the org-wide `pr-review` required-check enforcement
+(`.github/workflows/pr-review.yml`) — that check would otherwise gate PR2 on a reviewer
+implementation CI cannot validate from the branch.
 
 All unbounded reconciliation collections obey one additional invariant: thread pages, paginated
 comment nodes, the combined `THREADS` and `OWNED` inventories, and the findings/ownership inputs to
