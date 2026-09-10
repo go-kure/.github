@@ -479,7 +479,7 @@ assert_eq "decide_finding: FALSE_POSITIVE, open thread -> reply+resolve" \
 # was designed to avoid. Both polarities, per the issue's own suggested
 # test: the flag explicitly true protects; the flag explicitly false (not
 # just the 6-arg/omitted default tested two lines up) still resolves.
-assert_eq "decide_finding: FALSE_POSITIVE, open thread, human reply -> protected, not resolved (#177)" \
+assert_eq "decide_finding: FALSE_POSITIVE, open thread, human reply -> protected, not resolved (go-kure/.github#177)" \
   "NONE" "$(prt_decide_finding false FALSE_POSITIVE true false false true true)"
 assert_eq "decide_finding: FALSE_POSITIVE, open thread, no human reply -> still reply+resolve" \
   "REPLY_RESOLVE" "$(prt_decide_finding false FALSE_POSITIVE true false false true false)"
@@ -649,7 +649,7 @@ r3b_owned='[{"fp":"o1","collision":false,"resolved":false,"resolved_by_bot":fals
             {"fp":"o3","collision":false,"resolved":false,"resolved_by_bot":false},
             {"fp":"o4","collision":false,"resolved":false,"resolved_by_bot":false},
             {"fp":"o5","collision":false,"resolved":false,"resolved_by_bot":false,"has_human_reply":true}]'
-assert_eq "reserved_count: FALSE_POSITIVE with human reply -> does NOT free the slot (#177)" \
+assert_eq "reserved_count: FALSE_POSITIVE with human reply -> does NOT free the slot (go-kure/.github#177)" \
   "5" "$(prt_reserved_count "$r3b_owned" "$r3_findings")"
 r3b_capped="$(prt_apply_cap 5 "$r3b_owned" "$r3_findings")"
 assert_eq "apply_cap: human-reply-protected FALSE_POSITIVE leaves zero new findings within_cap" \
