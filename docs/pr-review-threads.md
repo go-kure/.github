@@ -486,14 +486,21 @@ succeeding while the assessment pass is still pending, degraded, or rejected out
 FAILED (...)` lines for a transport fault, a retried transport fault, and an unparseable assess
 response). A consumer keying on `review ok` alone accepts a run whose assessment died on every
 chunk. Only the chunk that both reviewed and assessed cleanly logs `chunk i/M: review ok, assess
-ok`, carrying its own index and the run's total chunk count. After the loop, a run in which every
-chunk reached that fully-good line — and only then — also logs a terminal `coverage: M/M chunks
-review+assess ok` line, `M` matching the `chunks=` value on the earlier diff-split line. The
-terminal line is withheld, not printed with a lower count, whenever any chunk falls short (a
-guard on `chunk_count > 0` in addition to the ok-count match keeps a `prt_split_diff` failure —
-`chunks=0`, nothing reviewed — from vacuously satisfying an `M of M` consumer check). Neither
-marker is added to the four degraded `review ok` sites above; a full-coverage line must never be
-assemblable from a degraded path.
+ok`, carrying its own index (1-based — deliberately distinct from every sibling `chunk N:` log
+line in these loops, which is 0-based; the two conventions coexist by design, not by oversight) and
+the run's total chunk count. A chunk that reviewed cleanly with zero findings never reaches that
+line either — there is nothing to assess — but still counts toward coverage, since zero findings is
+trivially complete, not a failure. After the loop, a run in which every chunk reached that line, or
+had a genuinely clean zero-finding review, counts as full coverage — and only then does it log a
+terminal `coverage: M/M chunks review+assess ok` line, `M` matching the `chunks=` value on the
+earlier diff-split line. **A chunk whose review call itself failed also has zero findings recorded
+against it (nothing was ever appended for that index) — the coverage loop tracks review failures
+separately (`CHUNK_REVIEW_FAILED`) specifically so that case is never confused with a clean empty
+review (go-kure/.github#176 codex review).** The terminal line is withheld, not printed with a
+lower count, whenever any chunk falls short (a guard on `chunk_count > 0` in addition to the
+ok-count match keeps a `prt_split_diff` failure — `chunks=0`, nothing reviewed — from vacuously
+satisfying an `M of M` consumer check). Neither marker is added to the four degraded `review ok`
+sites above; a full-coverage line must never be assemblable from a degraded path.
 
 **A fingerprint-collided finding is withheld, not silently dropped (go-kure/.github#155).**
 `prt_fp_base` (`finding.sh`) keys on `(file, category)` only — deliberately, so a fingerprint

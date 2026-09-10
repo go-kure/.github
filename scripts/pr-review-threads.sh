@@ -320,6 +320,13 @@ chunk_idx=0
 # rejected after its own retry (prt_normalize_findings rc=1) is collected
 # here too, identically. See the decision made right after this loop.
 review_parse_failures=()
+# go-kure/.github#176 codex review (Critical): a chunk whose review call
+# itself never succeeded also appends nothing to ALL_FINDINGS for that
+# index — indistinguishable, at the coverage-counting loop below, from a
+# chunk that reviewed cleanly with zero findings. Recording the failing
+# index here lets that loop tell the two apart instead of crediting a
+# failed review as "ok".
+declare -A CHUNK_REVIEW_FAILED=()
 for chunk_file in "$CHUNK_DIR"/chunk-*.diff; do
   [ -f "$chunk_file" ] || continue
   chunk_diff="$(cat "$chunk_file")"
@@ -342,6 +349,7 @@ for chunk_file in "$CHUNK_DIR"/chunk-*.diff; do
     # reported as "not valid JSON").
     review_parse_failures+=("chunk $chunk_idx: review call failed (transport/proxy error, exit $review_rc) [${PRT_LAST_MODEL_FAILURE:-unknown}]")
     prt_log "chunk $chunk_idx: review FAILED (transport error, exit $review_rc)"
+    CHUNK_REVIEW_FAILED[$chunk_idx]=1
     chunk_idx=$((chunk_idx + 1))
     continue
   fi
@@ -398,6 +406,7 @@ for chunk_file in "$CHUNK_DIR"/chunk-*.diff; do
       # assess call's own retry check above.
       review_parse_failures+=("chunk $chunk_idx: review call failed on retry (transport/proxy error, exit $review_rc) [${PRT_LAST_MODEL_FAILURE:-unknown}]")
       prt_log "chunk $chunk_idx: review FAILED (transport error on retry, exit $review_rc)"
+      CHUNK_REVIEW_FAILED[$chunk_idx]=1
       chunk_idx=$((chunk_idx + 1))
       continue
     fi
@@ -426,6 +435,7 @@ for chunk_file in "$CHUNK_DIR"/chunk-*.diff; do
     shape="$(prt_response_shape "${raw:-}")"
     review_parse_failures+=("chunk $chunk_idx: review response was not valid JSON after retry=$retried, salvage_attempted=true ($shape)")
     prt_log "chunk $chunk_idx: review FAILED (invalid JSON, retried=$retried)"
+    CHUNK_REVIEW_FAILED[$chunk_idx]=1
     chunk_idx=$((chunk_idx + 1))
     continue
   fi
@@ -443,6 +453,7 @@ for chunk_file in "$CHUNK_DIR"/chunk-*.diff; do
     # response this way.
     review_parse_failures+=("chunk $chunk_idx: .findings missing/null/non-array, or all rows malformed and dropped (after retry=$retried)")
     prt_log "chunk $chunk_idx: review FAILED (.findings unusable, retried=$retried)"
+    CHUNK_REVIEW_FAILED[$chunk_idx]=1
     chunk_idx=$((chunk_idx + 1))
     continue
   fi
@@ -511,6 +522,16 @@ ALL_FINDINGS="$(prt_assign_ordinals "$ALL_FINDINGS")"
 # (zero findings is trivially complete, not a failure); a chunk whose file
 # went missing (the :511 continue just below) does NOT count, since that is
 # an anomaly this loop has no other way to surface.
+#
+# go-kure/.github#176 codex review (Critical): "zero findings" here is
+# ambiguous by construction between "reviewed cleanly, nothing to report"
+# and "the review call itself failed" — the review loop above never
+# appends anything to ALL_FINDINGS for a chunk it failed on, so
+# chunk_findings comes back empty either way. CHUNK_REVIEW_FAILED (set at
+# each of that loop's four failure sites) is the only way to tell them
+# apart; without it a failed chunk credited itself toward chunk_ok_count
+# and could make the terminal coverage line claim full coverage on a run
+# that never actually reviewed one of its chunks.
 ASSESSED='[]'
 chunk_ok_count=0
 for ((i = 0; i < chunk_idx; i++)); do
@@ -518,7 +539,7 @@ for ((i = 0; i < chunk_idx; i++)); do
   [ -f "$chunk_file" ] || continue
   chunk_findings="$(jq -c --argjson idx "$i" '[.[] | select(._chunk == $idx)]' <<< "$ALL_FINDINGS")"
   if [ "$(jq 'length' <<< "$chunk_findings")" -eq 0 ]; then
-    chunk_ok_count=$((chunk_ok_count + 1))
+    [ -n "${CHUNK_REVIEW_FAILED[$i]:-}" ] || chunk_ok_count=$((chunk_ok_count + 1))
     continue
   fi
   chunk_diff="$(cat "$chunk_file")"
