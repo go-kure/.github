@@ -143,11 +143,11 @@ github_repos:
         # required check (see docs/standards.md, "Same-repo composite actions and the pin-bump
         # procedure" — "No PR to this repo that modifies the composite action can ever be
         # validated live by its own CI"). This is a deliberate policy tradeoff, not a
-        # technical impossibility: requiring it here would reintroduce the same
-        # merge-before-review race this required check exists to close, for the one class of
-        # PR the check can least afford to rubber-stamp. kure/launcher have no equivalent
-        # problem, since their fix lands in a different repo (.github) than the one enforcing
-        # the check.
+        # technical impossibility: requiring it here would give a green check the same
+        # rubber-stamp weight as a genuinely-tested one, for the one class of PR that most
+        # needs real scrutiny — the change the check itself can't see. kure/launcher have no
+        # equivalent problem, since their fix lands in a different repo (.github) than the
+        # one enforcing the check.
         rules:
           required_status_checks:
             strict: false
