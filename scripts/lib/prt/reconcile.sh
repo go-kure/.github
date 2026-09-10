@@ -217,8 +217,9 @@ prt_decide_absent() {
 #     this branch never does, for any resolved absent thread, regardless of
 #     who resolved it (codex round 1 finding P1-1).
 #   effective collision (this run's or persisted)      -> row 1: gating iff open
-#   verdict FALSE_POSITIVE                              -> row 2/3: never gating
-#     (already resolved, or about to become resolved via REPLY_RESOLVE)
+#   verdict FALSE_POSITIVE                              -> row 2/3: never gating,
+#     unless a human has replied (go-kure/.github#177): then row 3 returns
+#     NONE and the thread stays open, gating
 #   currently open (non-collision, non-FALSE_POSITIVE)  -> row 5: gating
 #   currently resolved, resolved_by_bot                 -> row 7: gating (reopens)
 #   currently resolved, not by bot                       -> row 6: never gating
