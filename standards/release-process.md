@@ -54,11 +54,22 @@ It prints the evidence it used, a recommended action, and exactly one of:
 
 | State | Meaning |
 |-------|---------|
-| `published` | the publishing job concluded success and the release object exists |
-| `partial` | the release exists, but the publishing job did not succeed on its most recent attempt |
+| `published` | the publishing job concluded success in **some** attempt, and the release object exists |
+| `partial` | the release exists and the publishing job **ran**, but never concluded success in any attempt — it failed or was cancelled, so the release may be incomplete |
 | `never-published` | no release object and no successful publishing job |
-| `contradictory` | a release object exists that no recorded attempt produced |
+| `contradictory` | the run record and the release object disagree, in **either** direction: a release exists that the job never ran to produce, or the job succeeded and the release is gone |
 | `no-run-found` | no workflow run for this tag at all |
+
+**`published` deliberately keys on "some attempt", not "the most recent attempt".** A re-run that
+fails in `test` skips the publishing job while the earlier attempt's release still stands, so
+keying on the latest attempt would report a shipped release as unpublished and invite a re-publish.
+That is the same conflation the whole script exists to prevent, so `partial` means *never
+succeeded*, not *most recently failed*.
+
+Both directions of `contradictory` print their own recommended action, because the operator's next
+move differs: a release that nothing produced must not be deleted, while a success whose release
+object has vanished must not be re-run. The state word stays the same so a caller's `case` needs
+only the five branches.
 
 Exit status is `0` when a state was determined and `1` when it was not. **A failed API call
 yields no state** — it reports `undetermined` and exits `1`, because "never published" and
