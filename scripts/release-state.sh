@@ -208,6 +208,19 @@ The state could not be determined: an API call failed for a reason other than a
 persists, check gh auth status and the API's status page.
 EOF
             ;;
+        in-flight)
+            cat <<EOF
+No state yet: the publishing job for this tag has not concluded — it is still
+running. Every state this script reports is a statement about a FINISHED
+publish, so there is nothing to read here yet.
+
+Do NOT re-run, and do not start a second publish for this tag. Two of the states
+below this one recommend a re-run, and the one moment that is wrong is while the
+job is still going: a concurrent publish is how a tag gets published twice.
+
+Wait for the run to finish, then ask again.
+EOF
+            ;;
     esac
 }
 
@@ -237,27 +250,32 @@ gh_json() {
     return 1
 }
 
-# gh_jobs <api-path> -> {"jobs": [...]} on stdout, same three return codes.
+urlencode() { printf '%s' "$1" | jq -sRr @uri; }
+
+# gh_json_paginated <api-path> <envelope-key> -> flat JSON array on stdout,
+# same three return codes as gh_json.
 #
-# The jobs endpoint paginates, and its default page is 30. A matrixed workflow
-# passes 30 jobs without anyone noticing, and a single default page then omits
-# the publishing job entirely — at which point this script reports "no publishing
-# job in this attempt's job list" and concludes `contradictory` for a tag that
-# published perfectly. That failure grows with the caller's job count, so it
-# would have arrived long after the script was trusted.
-gh_jobs() {
-    local path="$1" body err rc
+# EVERY list this script reads is paginated, and every one of them fails open:
+# a short page looks exactly like a complete answer, and the rows it drops are
+# the ones that would have proved a publish happened. Two separate findings on
+# this file were instances of it — the jobs endpoint's 30-item default page, and
+# a 50-run cap on the run list — so the fetch is written once, here, rather than
+# per caller.
+gh_json_paginated() {
+    local path="$1" key="$2" sep body err rc
+    case "$path" in *\?*) sep='&' ;; *) sep='?' ;; esac
     err=$(mktemp) || return 1
-    body=$(gh api --paginate --slurp "${path}?per_page=100" 2>"$err")
+    body=$(gh api --paginate --slurp "${path}${sep}per_page=100" 2>"$err")
     rc=$?
     if [ "$rc" -eq 0 ]; then
         rm -f "$err"
-        # --slurp wraps each page as one element; merge the pages' job arrays
-        # back into the single-object shape the caller reads.
-        printf '%s' "$body" \
-            | jq -c 'if type == "array"
-                     then {jobs: (map(.jobs // []) | add // [])}
-                     else . end'
+        # --slurp wraps each page as one element. A page is either the bare array
+        # (jobs-style endpoints called without an envelope) or an object carrying
+        # the envelope key; flatten both into one array.
+        printf '%s' "$body" | jq -c --arg key "$key" '
+            if type == "array"
+            then map(if type == "array" then . else (.[$key] // []) end) | add // []
+            else (.[$key] // []) end'
         return 0
     fi
     if grep -q 'HTTP 404' "$err"; then
@@ -268,6 +286,22 @@ gh_jobs() {
     sed 's/^/  /' "$err" >&2
     rm -f "$err"
     return 1
+}
+
+# gh_jobs <api-path> -> {"jobs": [...]} on stdout, same three return codes.
+#
+# The jobs endpoint's default page is 30. A matrixed workflow passes 30 jobs
+# without anyone noticing, and a single default page then omits the publishing
+# job entirely — at which point this script reports "no publishing job in this
+# attempt's job list" and concludes `contradictory` for a tag that published
+# perfectly. That failure grows with the caller's job count, so it would have
+# arrived long after the script was trusted.
+gh_jobs() {
+    local flat rc
+    flat=$(gh_json_paginated "$1" jobs)
+    rc=$?
+    [ "$rc" -eq 0 ] || return "$rc"
+    printf '%s' "$flat" | jq -c '{jobs: .}'
 }
 
 # --- 1. the release object ----------------------------------------------------
@@ -293,15 +327,23 @@ esac
 
 # --- 2. the runs for this tag -------------------------------------------------
 
-if ! runs_json=$(gh run list --repo "$REPO" --branch "$TAG" --limit 50 \
-        --json databaseId,workflowName,status,conclusion,createdAt,headBranch 2>/dev/null) \
+# Paginated, not `gh run list --limit N`. That form returns the N most recent
+# runs for the ref and silently drops the rest — and the rest are the OLDEST,
+# which for a tag republished several times is precisely the original tag-push
+# run that succeeded. Losing it flips `published` to `contradictory` or
+# `never-published` with nothing in the output to say a run was dropped: the same
+# fail-open shape as the default-page jobs fetch, one level up. A truncation that
+# removes the evidence of success is the worst possible direction for this
+# script, because every state it can wrongly reach recommends a re-run.
+if ! runs_json=$(gh_json_paginated "repos/$REPO/actions/runs?branch=$(urlencode "$TAG")" workflow_runs) \
    || [ -z "$runs_json" ]; then
     note "run list: LOOKUP FAILED for the tag"
     emit undetermined 1
 fi
 
+# head_branch, not headBranch: this is the REST payload, not gh's own JSON view.
 run_ids=$(printf '%s' "$runs_json" | jq -r --arg tag "$TAG" \
-    '[.[] | select(.headBranch == $tag)] | sort_by(.createdAt) | .[].databaseId')
+    '[.[] | select(.head_branch == $tag)] | sort_by(.created_at) | .[].id')
 
 if [ -z "$run_ids" ]; then
     note "runs for this tag: NONE"
@@ -316,6 +358,10 @@ note "runs for this tag: $(printf '%s\n' "$run_ids" | grep -c .) ($(printf '%s' 
 
 PUBLISH_SUCCEEDED=false
 PUBLISH_RAN_AT_ALL=false
+PUBLISH_IN_FLIGHT=false
+IN_FLIGHT_RUN=""
+IN_FLIGHT_ATTEMPT=""
+IN_FLIGHT_STATUS=""
 LAST_PUBLISH_CONCLUSION=""
 LAST_PUBLISH_RUN=""
 LAST_PUBLISH_ATTEMPT=""
@@ -377,6 +423,24 @@ while read -r run_id; do
             IFS=$'\t' read -r job_name conclusion status origin <<<"$row"
             note "  attempt $n: $job_name conclusion=$conclusion status=$status ($origin)"
 
+            # A null conclusion has TWO causes and they are opposite. The job may
+            # have concluded nothing because it is still going, or because this
+            # attempt never reached it. `status` separates them, and until now it
+            # was captured, printed as evidence, and then never consulted — the
+            # same compute-it-and-ignore-it defect `origin` had. Left unhandled,
+            # an in-flight publish counted as neither ran nor succeeded and fell
+            # through to `never-published`, whose advice is "Re-running the whole
+            # run is safe". Telling an operator to re-run a publish that is
+            # running right now is the double-publish this script exists to
+            # prevent, so it is recorded and answered before any verdict.
+            if [ "$conclusion" = "null" ] && [ "$status" != "completed" ] \
+               && [ "$status" != "null" ]; then
+                PUBLISH_IN_FLIGHT=true
+                IN_FLIGHT_RUN="$run_id"
+                IN_FLIGHT_ATTEMPT="$n"
+                IN_FLIGHT_STATUS="$status"
+            fi
+
             # FACT 6: `skipped` means `needs: [test, validate]` was not satisfied
             # in THIS attempt. It says nothing about any other attempt, so it is
             # not counted as the job having run.
@@ -424,6 +488,15 @@ else
 fi
 
 # --- 4. the verdict -----------------------------------------------------------
+
+# Answered BEFORE any state, because every state below is a statement about a
+# finished publish. A verdict read off a half-finished run is not merely
+# imprecise — `never-published` and `partial` both recommend a re-run, and the
+# one moment a re-run must not happen is while the job is still going.
+if [ "$PUBLISH_IN_FLIGHT" = true ] && [ "$PUBLISH_SUCCEEDED" != true ]; then
+    note "verdict input: '$PUBLISH_JOB' is STILL RUNNING (status '$IN_FLIGHT_STATUS', run $IN_FLIGHT_RUN attempt $IN_FLIGHT_ATTEMPT) — no state is determined yet"
+    emit undetermined 1 in-flight
+fi
 
 # A success in ANY attempt wins, not the most recent one. FACT 3 (a later attempt
 # does not mask an earlier successful publish) and FACT 6 (a re-run failing in
