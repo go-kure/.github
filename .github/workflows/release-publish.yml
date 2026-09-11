@@ -76,11 +76,24 @@ jobs:
             exit 1
           fi
 
-          # Ensure new tag is greater than previous tag
-          LAST=$(git tag --list 'v*' --sort=-v:refname | sed -n '2p' || true)
-          if [ -n "$LAST" ]; then
-            if [ "$(printf '%s\n%s\n' "$LAST" "$TAG" | sort -V | tail -n1)" != "$TAG" ]; then
-              echo "Tag $TAG is not greater than last $LAST"; exit 1;
+          # Ensure a newly pushed tag does not go backwards.
+          #
+          # Skipped on workflow_dispatch, which re-publishes a tag that already
+          # exists: progression is a property of CREATING a tag, and this tag
+          # passed the check when it was created. The `sed -n '2p'` below assumes
+          # the tag under release sorts first, which only holds for a fresh push.
+          # On a historical dispatch with two or more newer tags it picks a tag
+          # NEWER than $TAG and fails, blocking goreleaser (`needs: validate`) in
+          # exactly the long-lived recovery case dispatch exists to serve.
+          # The tag-format check above is what rejects a non-tag ref here.
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            echo "Re-publishing existing tag $TAG: skipping version-progression check"
+          else
+            LAST=$(git tag --list 'v*' --sort=-v:refname | sed -n '2p' || true)
+            if [ -n "$LAST" ]; then
+              if [ "$(printf '%s\n%s\n' "$LAST" "$TAG" | sort -V | tail -n1)" != "$TAG" ]; then
+                echo "Tag $TAG is not greater than last $LAST"; exit 1;
+              fi
             fi
           fi
 
