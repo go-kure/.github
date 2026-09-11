@@ -1044,6 +1044,7 @@ else
               # forward unchanged — this rewrite persists the collision flag
               # only, never recomputes identity from this run's finding.
               cfp="$(jq -r '.content_fp' <<< "$owned_match")"
+              [ "$cfp" = null ] && cfp=""
               new_marker="$(prt_marker_build "$fp" "true" "$fas" "$cfp")"
               new_body="$(prt_marker_replace "$cur_body" "$new_marker")"
               prt_retry 3 prt_gh_rest_fresh PATCH "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA" \
@@ -1096,6 +1097,7 @@ else
       # finding recurs, which is enough — persisting would need its own
       # durability argument this design doesn't need to make.
       owned_content_fp="$(jq -r '.content_fp' <<< "$owned_match")"
+      [ "$owned_content_fp" = null ] && owned_content_fp=""
       if [ -n "$owned_content_fp" ] && [ "$owned_content_fp" != "$content_fp" ]; then
         effective_collision=true
         content_mismatch=true
@@ -1407,6 +1409,7 @@ if [ "$PRT_MODE" = enforce ]; then
     # collision/first_absent_sha state, same as loop 1's collision-persist
     # block above.
     content_fp="$(jq -r '.content_fp' <<< "$th")"
+    [ "$content_fp" = null ] && content_fp=""
 
     # Simplified from the design's full "unanswered MAINT_FAILURE reply"
     # detection (ordering-sensitive scan of every reply): a thread that

@@ -579,7 +579,7 @@ more defects in those very fixes. First, `prt_render_overflow_comment`'s trailin
 "advisory only, not merge-gating" unconditionally, directly contradicting a `Gating` column value of
 "yes (existing thread)" on any row in the same table — a quarantined finding whose pre-collision
 thread is still open genuinely does block merge, so a blanket disclaimer beneath it is a
-false-reassurance defect of the same shape #155 exists to close. The footer is now conditional on
+false-reassurance defect of the same shape go-kure/.github#155 exists to close. The footer is now conditional on
 whether any quarantined row carries `gating: true`, and states the exception instead of overriding
 it. Second, the regression test guarding `none_anchored`'s default value was comparing two identical
 6-argument calls to `prt_render_clean_comment_superseded` — a tautology that could not have caught a
@@ -595,7 +595,7 @@ against `OWNED` — but `prt_assign_ordinals` hands the unsuffixed `fp_base` to 
 group member currently sorts to the lowest `.line`, which can differ from run to run as lines shift.
 An exact-`.fp` lookup therefore attaches "yes (existing thread)" to whichever row happens to hold
 the unsuffixed identity *this* run, potentially misattributing a thread that was created for a
-different member's finding text — the same identity-ambiguity class #155 exists to close, one level
+different member's finding text — the same identity-ambiguity class go-kure/.github#155 exists to close, one level
 up. The lookup now recomputes `fp_base` from `(file, category)` directly and matches on that, so
 every member of the same collision group gets the identical `gating` value, sourced from whether the
 group's shared identity has a pre-existing open thread — not from which row happens to hold it this
@@ -649,9 +649,8 @@ Landing this fix also required its own same-repo composite-action pin bump (`doc
 "GitHub Actions pinning"): `scripts/pr-review-threads.sh` and `scripts/lib/prt/*.sh` are delegate
 code consumed through `.github/workflows/pr-review.yml`'s pinned `pr-review-threads` action
 reference, so a fix there does not reach any consumer (kure, launcher) until the pin moves. This PR
-is PR1 of that two-PR sequence — it bumps the pin to a new all-zeros placeholder, distinct from the
-real SHA it replaces (the convention in force at the time; a later PR, go-kure/.github#197, retires
-all-zeros for non-bootstrap pin bumps in favor of the branch's own base-ref tip SHA — see
+is PR1 of that two-PR sequence — it bumps the pin to the branch's own base-ref tip SHA
+(go-kure/.github#197's convention for non-bootstrap pin bumps, already in force — see
 docs/standards.md, "Same-repo composite actions and the pin-bump procedure") — and a PR2 must land
 immediately after this one merges, replacing the placeholder with this PR's own merge SHA.
 `check-pin-bump.sh` (run in `scripts-smoke-test`) verifies only that the pin *moved*, not that it
@@ -663,15 +662,16 @@ reviewer implementation from `main` at call time, so a PR here can never have it
 implementation change executed by its own required check — see docs/standards.md, "Same-repo
 composite actions and the pin-bump procedure".
 
-**A same-`fp_base`, cross-run collision is a distinct failure from #155's same-run one, and #155's
-fix does not catch it (go-kure/.github#196).** `prt_fp_base` keys on `(file, category)` only, so two
-*different* findings on the same file, same category, in two *different* runs (e.g. one push fixes
-the first finding and a second, unrelated finding lands on a later push, or the file's other
-findings are fixed one push at a time) share one `fp_base` without ever co-occurring in the same
-run — `prt_assign_ordinals` never sees them together, so `collision=true` is never set, and the
-later run's own finding legitimately matches the earlier run's OWNED thread by bare `fp` alone.
-`reconcile.sh`'s row 1 (`OWNED`, no same-run collision) then treats it as the same finding recurring
-— reusing the thread — when it is actually a different finding wearing the same identity.
+**A same-`fp_base`, cross-run collision is a distinct failure from go-kure/.github#155's same-run
+one, and go-kure/.github#155's fix does not catch it (go-kure/.github#196).** `prt_fp_base` keys
+on `(file, category)` only, so two *different* findings on the same file, same category, in two
+*different* runs (e.g. one push fixes the first finding and a second, unrelated finding lands on a
+later push, or the file's other findings are fixed one push at a time) share one `fp_base` without
+ever co-occurring in the same run — `prt_assign_ordinals` never sees them together, so
+`collision=true` is never set, and the later run's own finding legitimately matches the earlier
+run's OWNED thread by bare `fp` alone. `reconcile.sh`'s row 1 (`OWNED`, no same-run collision) then
+treats it as the same finding recurring — reusing the thread — when it is actually a different
+finding wearing the same identity.
 
 The fix adds a second, independent fingerprint: `content_fp` (`prt_content_fp`, `finding.sh`) —
 `sha256(netstring(issue)+netstring(fix))`, truncated to 16 hex chars like `prt_fp_base` itself, and
@@ -684,29 +684,31 @@ comparing what the thread originally said against what this run now sees. At loo
 `OWNED` thread match, this run's finding gets its own fresh `content_fp` computed from its current
 `issue`/`fix` text and compared against the thread's stored value; a mismatch ORs
 `effective_collision=true`, routing the finding through the same, already-existing row 1
-`QUARANTINE` path #155 built — no new row, no change to `prt_decide_finding`'s signature. A thread
-created before this field existed carries no `content_fp` at all; that case is treated as
-unverifiable and trusts the match unchanged, exactly as before #196 — a pre-existing thread is never
-retroactively quarantined just because the field is missing.
+`QUARANTINE` path go-kure/.github#155 built — no new row, no change to `prt_decide_finding`'s
+signature. A thread created before this field existed carries no `content_fp` at all; that case is
+treated as unverifiable and trusts the match unchanged, exactly as before go-kure/.github#196 — a
+pre-existing thread is never retroactively quarantined just because the field is missing.
 
 `content_fp` is an exact hash of the model's raw `issue`+`fix` prose — nothing pins model output
 determinism (no `temperature` override anywhere in `model.sh`), so the *same* still-open defect can
 regenerate with different wording across runs and its `content_fp` drifts with it. This is a
-deliberate, accepted tradeoff (posted to #196's design discussion), not an oversight: the
-alternative (semantic/fuzzy matching) is unbuildable without another model call per comparison.
+deliberate, accepted tradeoff (posted to go-kure/.github#196's design discussion), not an
+oversight: the alternative (semantic/fuzzy matching) is unbuildable without another model call per
+comparison.
 Practical effect: a genuinely unfixed defect whose thread has no same-run collision can re-trigger
 `QUARANTINE` on any push where the regenerated wording isn't byte-identical, repeating in the
 withheld/advisory comment every run instead of being suppressed as already-tracked — the existing
 thread still gates merge (no data loss), but the advisory channel meant to surface new problems
 gets noisy for that finding until it's actually fixed.
 
-This is a strict, additive refinement of #155's own `QUARANTINE` case, not a competing mechanism:
-`QUARANTINE` still never touches the existing thread (no resolve/reply/unresolve), so a content_fp
-mismatch cannot make an already-open thread newly close or reopen — it can only add the mismatched
-finding to the withheld/advisory table instead of letting it silently ride an unrelated thread's
-identity. The interaction with go-kure/.github#193's `HAS_HUMAN_REPLY`-gated row 3 (`NONE`) was
-analyzed and posted to #196 before implementation: row 1 is evaluated first, so a #196-triggered
-collision on a thread with a human reply present resolves via `QUARANTINE`, never reaching row 3's
+This is a strict, additive refinement of go-kure/.github#155's own `QUARANTINE` case, not a
+competing mechanism: `QUARANTINE` still never touches the existing thread (no
+resolve/reply/unresolve), so a content_fp mismatch cannot make an already-open thread newly close
+or reopen — it can only add the mismatched finding to the withheld/advisory table instead of
+letting it silently ride an unrelated thread's identity. The interaction with go-kure/.github#193's
+`HAS_HUMAN_REPLY`-gated row 3 (`NONE`) was analyzed and posted to go-kure/.github#196 before
+implementation: row 1 is evaluated first, so a go-kure/.github#196-triggered collision on a thread
+with a human reply present resolves via `QUARANTINE`, never reaching row 3's
 `NONE` — and `QUARANTINE` strictly dominates `NONE` there (identical non-mutation of the thread,
 plus the finding is surfaced instead of discarded), so the row-precedence is not a regression.
 
