@@ -212,6 +212,39 @@ gh_json() {
     return 1
 }
 
+# gh_jobs <api-path> -> {"jobs": [...]} on stdout, same three return codes.
+#
+# The jobs endpoint paginates, and its default page is 30. A matrixed workflow
+# passes 30 jobs without anyone noticing, and a single default page then omits
+# the publishing job entirely — at which point this script reports "no publishing
+# job in this attempt's job list" and concludes `contradictory` for a tag that
+# published perfectly. That failure grows with the caller's job count, so it
+# would have arrived long after the script was trusted.
+gh_jobs() {
+    local path="$1" body err rc
+    err=$(mktemp) || return 1
+    body=$(gh api --paginate --slurp "${path}?per_page=100" 2>"$err")
+    rc=$?
+    if [ "$rc" -eq 0 ]; then
+        rm -f "$err"
+        # --slurp wraps each page as one element; merge the pages' job arrays
+        # back into the single-object shape the caller reads.
+        printf '%s' "$body" \
+            | jq -c 'if type == "array"
+                     then {jobs: (map(.jobs // []) | add // [])}
+                     else . end'
+        return 0
+    fi
+    if grep -q 'HTTP 404' "$err"; then
+        rm -f "$err"
+        return 44
+    fi
+    echo "release-state.sh: API call failed: $path" >&2
+    sed 's/^/  /' "$err" >&2
+    rm -f "$err"
+    return 1
+}
+
 # --- 1. the release object ----------------------------------------------------
 
 RELEASE_EXISTS=false
@@ -285,7 +318,7 @@ while read -r run_id; do
         esac
         attempt_started=$(printf '%s' "$attempt_json" | jq -r '.run_started_at // ""')
 
-        jobs_json=$(gh_json "repos/$REPO/actions/runs/$run_id/attempts/$n/jobs")
+        jobs_json=$(gh_jobs "repos/$REPO/actions/runs/$run_id/attempts/$n/jobs")
         case $? in
             0) ;;
             44) note "  attempt $n: jobs 404 — skipped"; n=$((n + 1)); continue ;;
@@ -324,14 +357,24 @@ while read -r run_id; do
             # not counted as the job having run.
             if [ "$conclusion" != "skipped" ] && [ "$conclusion" != "null" ]; then
                 PUBLISH_RAN_AT_ALL=true
-                LAST_PUBLISH_CONCLUSION="$conclusion"
-                LAST_PUBLISH_RUN="$run_id"
-                LAST_PUBLISH_ATTEMPT="$n"
                 # FACT 5: key on success, so every other conclusion — failure,
                 # cancelled, timed_out, action_required — falls to the not-success
                 # branch. A `failure`-only test reads a mid-upload cancel as fine.
                 if [ "$conclusion" = "success" ]; then
                     PUBLISH_SUCCEEDED=true
+                fi
+                # FACT 4, applied rather than merely computed. The outcome above
+                # counts from any row — a carried row repeats a real result and
+                # does not stop being true for being copied — but the PROVENANCE
+                # may only come from a row that ran in this attempt. Recording a
+                # carried row's attempt here names an attempt that never executed
+                # the job, which is exactly the conflation `origin` exists to
+                # prevent; computing `origin` and then not consulting it is the
+                # same defect as never computing it.
+                if [ "$origin" = "ran-here" ]; then
+                    LAST_PUBLISH_CONCLUSION="$conclusion"
+                    LAST_PUBLISH_RUN="$run_id"
+                    LAST_PUBLISH_ATTEMPT="$n"
                 fi
             fi
         fi
@@ -343,7 +386,14 @@ done <<<"$run_ids"
 if [ "$PUBLISH_SUCCEEDED" = true ]; then
     note "verdict input: '$PUBLISH_JOB' concluded success in at least one attempt"
 elif [ "$PUBLISH_RAN_AT_ALL" = true ]; then
-    note "verdict input: '$PUBLISH_JOB' ran but never succeeded; last non-skipped conclusion '$LAST_PUBLISH_CONCLUSION' (run $LAST_PUBLISH_RUN attempt $LAST_PUBLISH_ATTEMPT)"
+    if [ -n "$LAST_PUBLISH_RUN" ]; then
+        note "verdict input: '$PUBLISH_JOB' ran but never succeeded; last non-skipped conclusion '$LAST_PUBLISH_CONCLUSION' (run $LAST_PUBLISH_RUN attempt $LAST_PUBLISH_ATTEMPT)"
+    else
+        # Every non-skipped row seen was carried forward, so the attempt that
+        # actually ran the job is not in the record this script could read —
+        # say that, rather than naming an attempt that merely inherited the row.
+        note "verdict input: '$PUBLISH_JOB' ran but never succeeded; every row seen was carried forward, so no attempt here executed it"
+    fi
 else
     note "verdict input: '$PUBLISH_JOB' never ran in any attempt (skipped or absent throughout)"
 fi

@@ -83,7 +83,15 @@ printf '%s\n' "$*" >> "${MOCK_LOG:-/dev/null}"
 
 case "${1:-}" in
   api)
-    path="${2:-}"
+    # The path is the first non-flag argument, not $2: the jobs fetch calls
+    # `gh api --paginate --slurp <path>?per_page=100`, and a stub that assumed $2
+    # would silently start matching on the literal string "--paginate".
+    shift
+    path=""
+    for a in "$@"; do
+      case "$a" in -*) ;; *) path="$a"; break ;; esac
+    done
+    path="${path%%\?*}"
     case "$path" in
       */releases/tags/*)
         if [ -f "$MOCK_DIR/release.status" ]; then
@@ -169,15 +177,37 @@ write_attempt() { # <dir> <run-id> <attempt> <run_started_at>
         >"$1/run-$2-attempt-$3.json"
 }
 
-write_jobs() { # <dir> <run-id> <attempt> <name=conclusion=started_at>...
-    local dir="$1" id="$2" attempt="$3"; shift 3
+job_objects() { # <attempt> <name=conclusion=started_at>... -> JSON array body
+    local attempt="$1"; shift
     local out="" spec name conclusion started
     for spec in "$@"; do
         IFS='=' read -r name conclusion started <<<"$spec"
         [ -z "$out" ] || out="$out,"
         out="$out{\"name\":\"$name\",\"conclusion\":\"$conclusion\",\"status\":\"completed\",\"started_at\":\"$started\",\"run_attempt\":$attempt}"
     done
-    printf '{"total_count":%s,"jobs":[%s]}\n' "$#" "$out" \
+    printf '%s' "$out"
+}
+
+# The fixture is an ARRAY of page objects, because that is what `gh api
+# --paginate --slurp` returns, and the merge back to a single object is
+# production code that has to be exercised rather than assumed.
+write_jobs() { # <dir> <run-id> <attempt> <name=conclusion=started_at>...
+    local dir="$1" id="$2" attempt="$3"; shift 3
+    printf '[{"total_count":%s,"jobs":[%s]}]\n' "$#" "$(job_objects "$attempt" "$@")" \
+        >"$dir/run-$id-attempt-$attempt-jobs.json"
+}
+
+# Two pages, so the case can put the publishing job on the SECOND one.
+write_jobs_paged() { # <dir> <run-id> <attempt> <page1-specs...> -- <page2-specs...>
+    local dir="$1" id="$2" attempt="$3"; shift 3
+    local p1=() p2=() seen=0 spec
+    for spec in "$@"; do
+        if [ "$spec" = "--" ]; then seen=1; continue; fi
+        if [ "$seen" = 0 ]; then p1+=("$spec"); else p2+=("$spec"); fi
+    done
+    printf '[{"total_count":%s,"jobs":[%s]},{"total_count":%s,"jobs":[%s]}]\n' \
+        "${#p1[@]}" "$(job_objects "$attempt" "${p1[@]}")" \
+        "${#p2[@]}" "$(job_objects "$attempt" "${p2[@]}")" \
         >"$dir/run-$id-attempt-$attempt-jobs.json"
 }
 
@@ -324,6 +354,61 @@ assert_contains "FACT 4: a carried-forward row is labelled as carried" \
     "$OUT" "attempt 2: goreleaser conclusion=success status=completed (carried)"
 assert_contains "FACT 4: a row that really ran in its attempt is labelled ran-here" \
     "$OUT" "attempt 1: goreleaser conclusion=success status=completed (ran-here)"
+
+# --- the jobs endpoint paginates ----------------------------------------------
+#
+# GitHub's jobs endpoint defaults to 30 per page, and a matrixed workflow passes
+# 30 without anyone noticing. A single default page then omits the publishing job
+# entirely, and the script concludes `contradictory` for a tag that published
+# perfectly — a failure that grows with the caller's job count, so it would have
+# arrived long after the script was trusted.
+#
+# The publishing job is deliberately on the SECOND page: a fixture with it on
+# page 1 passes whether or not the pages are merged.
+d=$(new_case paginated-jobs)
+write_release "$d" 0
+write_runs "$d" v1.0.0 5013
+write_run "$d" 5013 1
+write_attempt "$d" 5013 1 "2026-09-01T09:00:00Z"
+write_jobs_paged "$d" 5013 1 \
+    "release / Test (1)=success=2026-09-01T09:01:00Z" \
+    "release / Test (2)=success=2026-09-01T09:01:00Z" \
+    -- \
+    "release / Validate tag and changelog=success=2026-09-01T09:02:00Z" \
+    "release / goreleaser=success=2026-09-01T09:05:00Z"
+run_case "$d" go-kure/kure v1.0.0
+assert_eq "a publishing job on page 2 is still found" \
+    "published" "$(printf '%s' "$OUT" | sed -n 's/^STATE: //p')"
+assert_not_contains "page 2 is not reported as an absent job" \
+    "$OUT" "no 'goreleaser' job in this attempt"
+assert_contains "the jobs fetch asks for a full page, not the 30-item default" \
+    "$(cat "$d/requests.log")" "per_page=100"
+
+# --- provenance comes only from a row that ran ---------------------------------
+#
+# Attempt 2 re-ran only `test`; `goreleaser` is carried forward with attempt 1's
+# failure, byte-identical apart from the attempt it was fetched under. The
+# outcome still counts — a carried row repeats a real result — but the attempt
+# NAMED in the evidence must be the one that executed the job. Reporting attempt
+# 2 here is the conflation FACT 4's origin computation exists to prevent, and
+# computing origin without consulting it is the same defect as not computing it.
+d=$(new_case carried-provenance)
+write_release "$d" 0
+write_runs "$d" v1.0.0 5014
+write_run "$d" 5014 2
+write_attempt "$d" 5014 1 "2026-09-01T09:00:00Z"
+write_jobs "$d" 5014 1 \
+    "goreleaser=failure=2026-09-01T09:05:00Z"
+write_attempt "$d" 5014 2 "2026-09-01T15:00:00Z"
+write_jobs "$d" 5014 2 \
+    "goreleaser=failure=2026-09-01T09:05:00Z"
+run_case "$d" go-kure/kure v1.0.0
+assert_eq "the verdict still counts the carried outcome" \
+    "partial" "$(printf '%s' "$OUT" | sed -n 's/^STATE: //p')"
+assert_contains "the evidence names the attempt that actually ran the job" \
+    "$OUT" "(run 5014 attempt 1)"
+assert_not_contains "the evidence does not name the attempt that merely inherited it" \
+    "$OUT" "(run 5014 attempt 2)"
 
 # --- FACT 1 -------------------------------------------------------------------
 #
