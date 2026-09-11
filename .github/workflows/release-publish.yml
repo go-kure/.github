@@ -16,7 +16,9 @@ jobs:
   test:
     name: Test
     runs-on: autops-kube-kure
-    timeout-minutes: 15
+    # 20 to match kure's ci.yml test job: the -race suite needs ~12m for
+    # pkg/kubernetes/internal/gen alone, and 15 left no headroom for setup.
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
@@ -41,7 +43,7 @@ jobs:
       - name: Run tests
         env:
           CGO_ENABLED: "1"
-        run: go test -v -race ./...
+        run: go test -v -race -timeout 15m ./...
 
   validate:
     name: Validate tag and changelog
