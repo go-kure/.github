@@ -257,7 +257,7 @@ Reusable workflows have `on: workflow_call` in their trigger. Caller workflows (
 | `release-create.yml` | `workflow_dispatch` | Pre-flight CI gate + git-cliff tag creation | `type` (required), `scope`, `dry_run` | `KURE_BOT_APP_ID`, `KURE_BOT_APP_PRIVATE_KEY` |
 | `release-bump.yml` | `workflow_dispatch` | Bump `versions.env`/changelog without tagging a release | `scope` (required), `dry_run` | `KURE_BOT_APP_ID`, `KURE_BOT_APP_PRIVATE_KEY` |
 | `release-promote.yml` | `workflow_dispatch` | Promote a prerelease (beta → rc → stable) | `to` (required: `beta`\|`rc`\|`stable`), `dry_run` | `KURE_BOT_APP_ID`, `KURE_BOT_APP_PRIVATE_KEY` |
-| `release-publish.yml` | version tags (`v*`), via `release-publish.yml` caller | GoReleaser, SBOM, docs deploy, Go proxy refresh | `go_module` (required, e.g. `github.com/go-kure/kure`) | none (uses `secrets.GITHUB_TOKEN`) |
+| `release-publish.yml` | version tags (`v*`), and `workflow_dispatch` against an existing tag to re-publish it, via the `release-publish.yml` caller | GoReleaser (which artifacts, if any, is the consumer's `.goreleaser.yml` — a library repo may produce none), docs deploy, Go proxy refresh | `go_module` (required, e.g. `github.com/go-kure/kure`) | none (uses `secrets.GITHUB_TOKEN`) |
 
 Consumer repos call these as:
 ```yaml
@@ -283,6 +283,14 @@ kure/launcher.
 - `release-create.yml`, `release-bump.yml` and `release-promote.yml` all accept `dry_run: true` for
   a preview run. `release-publish.yml` has no `dry_run` input — it triggers on the version tag
   itself, so test changes to it via a caller repo's tag on a fork or a scratch tag first.
+- `release-publish.yml`'s `validate` job **skips the version-progression check on
+  `workflow_dispatch`**. Progression is a property of creating a tag, and a dispatch re-publishes a
+  tag that already passed the check when it was created. Without the skip the check's
+  `git tag --sort=-v:refname | sed -n '2p'` — which assumes the tag under release sorts first —
+  compares the dispatched tag against a *newer* one as soon as two or more newer tags exist, failing
+  `validate` and so blocking `goreleaser` in exactly the long-lived recovery case dispatch serves.
+  Tag-format and CHANGELOG validation still run on every path; the format check is what rejects a
+  branch ref.
 
 ## Composite Actions
 
