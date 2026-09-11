@@ -298,7 +298,8 @@ prt_reserved_count() {
       # routes to QUARANTINE, which keeps the OWNED thread gating exactly like
       # a same-run collision. This upfront cap walk must predict that too, or
       # it under-reserves by one for every singleton content_fp mismatch and
-      # lets a later CREATE exceed PRT_MAX_FINDINGS_TOTAL. "" (pre-#196 thread,
+      # lets a later CREATE exceed PRT_MAX_FINDINGS_TOTAL. "" (a thread that
+      # predates go-kure/.github#196,
       # never a literal "null" — content_fp is built via jq --arg) stays
       # unverifiable and trusts the match unchanged, same as the main loop.
       local owned_content_fp

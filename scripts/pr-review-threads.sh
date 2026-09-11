@@ -1124,8 +1124,8 @@ else
         # shift. Gating by the exact-$fp lookup would attach "yes (existing
         # thread)" to whichever row happens to hold the unsuffixed identity
         # THIS run, misattributing a thread that may have been created for a
-        # different member's text — same mismatch class #155 exists to
-        # close. Every member of the same fp_base group gets the identical
+        # different member's text — same mismatch class go-kure/.github#155
+        # exists to close. Every member of the same fp_base group gets the identical
         # value instead (go-kure/.github#180 codex review, round 3).
         gating_file="$(jq -r '.file' <<< "$f")"
         gating_category="$(jq -r '.category' <<< "$f")"
@@ -1146,9 +1146,9 @@ else
         # run's collision persisted onto the owned thread (:968-993, the
         # other finding that caused it may be gone several pushes ago), or
         # this run's single finding's content_fp doesn't match what the
-        # owned thread was created for (#196 — a different finding wearing
-        # the same fp_base identity). Collapsing both into one
-        # `persisted_only` boolean (pre-#196) mislabeled the content_fp case
+        # owned thread was created for (go-kure/.github#196 — a different
+        # finding wearing the same fp_base identity). Collapsing both into
+        # one `persisted_only` boolean (pre-go-kure/.github#196) mislabeled the content_fp case
         # as "persisted (earlier run)", which is a false claim — no
         # persisted collision flag was ever set on that thread. Track the
         # actual reason so the render layer can tell all three cases apart.
@@ -1354,7 +1354,8 @@ fi
 # advisory comment, or counted in the withheld (SUPPRESS/QUARANTINE)
 # buckets. A run in which findings=N and the four counters below sum to
 # fewer than N is itself a reportable condition, not a silent outcome — it
-# catches a finding lost to any cause, not only the collision path (#155's
+# catches a finding lost to any cause, not only the collision path
+# (go-kure/.github#155's
 # own render/QUARANTINE fix only closes that one path; this is the backstop
 # for a path nobody has found yet, per the issue's closing comment). Only
 # meaningful in enforce mode: advisory posts every finding in one comment

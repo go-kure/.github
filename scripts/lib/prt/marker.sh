@@ -54,8 +54,8 @@ prt_marker_build() {
 
 # prt_marker_parse BODY — scans BODY line by line for the first-comment marker.
 # On match, prints five TAB-separated fields to stdout: fp, collision(true|""),
-# first_absent_sha(40hex|""), content_fp(16hex|"" — absent on a pre-#196
-# thread), and the matched line's 1-based line number. Exits 1 (no output) if
+# first_absent_sha(40hex|""), content_fp(16hex|"" — absent on a
+# pre-go-kure/.github#196 thread), and the matched line's 1-based line number. Exits 1 (no output) if
 # no line matches — the comment is not one this action owns.
 prt_marker_parse() {
   local body="$1" line lineno=0
