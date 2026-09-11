@@ -35,7 +35,9 @@ Releases are **tag-driven** and changelog-first:
 - **`scripts/release-state.sh`** (in `go-kure/.github`, not the release repos) — read-only:
   reports what a tag's publish run actually did. See the next section.
 
-Both are typically invoked through `mise run release …`.
+The first two are typically invoked through `mise run release …`. `release-state.sh` is not:
+it lives in `go-kure/.github` rather than in the release repos, and is run directly from a
+checkout of that repository.
 
 ## Determining what a release actually did
 
