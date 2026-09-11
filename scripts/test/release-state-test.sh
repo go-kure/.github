@@ -461,6 +461,38 @@ write_jobs "$d" 5007 1 "goreleaser=success=2026-09-01T09:05:00Z"
 run_case "$d" go-kure/kure v1.0.0
 assert_eq "a success with no release object is contradictory, not published" \
     "contradictory" "$(printf '%s' "$OUT" | sed -n 's/^STATE: //p')"
+# One state word, two opposite causes, and the advice must follow the cause. The
+# first version printed the other direction's text here, telling the operator a
+# release object existed one line below the evidence saying the lookup 404'd.
+assert_contains "the vanished-release advice states the actual direction" \
+    "$OUT" "object is gone"
+assert_not_contains "the vanished-release advice does not claim a release exists" \
+    "$OUT" "A release object exists that no recorded attempt produced"
+assert_contains "the vanished-release advice forbids the re-run specifically" \
+    "$OUT" "Do not re-run."
+
+# --- a later failure does not unpublish an earlier success ---------------------
+#
+# FACT 3 and FACT 6 together: attempt 1 published, attempt 2 re-ran and failed.
+# The release shipped and still exists, so the state is `published` and the
+# advice is "nothing to do" — keying on the most recent attempt instead would
+# report a shipped release as incomplete and invite a re-publish. This is the
+# case that makes `partial` mean "never succeeded", not "most recently failed".
+d=$(new_case success-then-later-failure)
+write_release "$d" 0
+write_runs "$d" v1.0.0 5015
+write_run "$d" 5015 2
+write_attempt "$d" 5015 1 "2026-09-01T09:00:00Z"
+write_jobs "$d" 5015 1 "goreleaser=success=2026-09-01T09:05:00Z"
+write_attempt "$d" 5015 2 "2026-09-01T12:00:00Z"
+write_jobs "$d" 5015 2 "goreleaser=failure=2026-09-01T12:05:00Z"
+run_case "$d" go-kure/kure v1.0.0
+assert_eq "an earlier success outranks a later failure" \
+    "published" "$(printf '%s' "$OUT" | sed -n 's/^STATE: //p')"
+assert_contains "the published advice tells the operator to do nothing" \
+    "$OUT" "Nothing to do."
+assert_not_contains "a shipped release is never reported as possibly incomplete" \
+    "$OUT" "may be incomplete"
 
 # --- state: never-published ---------------------------------------------------
 d=$(new_case never-published)

@@ -43,11 +43,18 @@
 #   release-state.sh [--state-only] <owner/repo> <tag>
 #
 # States (closed set, one of):
-#   published         a goreleaser job concluded success, and the release exists
-#   partial           the release exists, but the job that publishes it did not
-#                     succeed in the most recent attempt that ran it
+#   published         a goreleaser job concluded success in SOME attempt, and the
+#                     release exists. Deliberately not "the most recent attempt":
+#                     FACT 3 and FACT 6 both say a later attempt must not mask an
+#                     earlier successful publish, so a re-run that fails in `test`
+#                     afterwards leaves the state `published`.
+#   partial           the release exists, the publishing job RAN, and it never
+#                     concluded success in any attempt — it failed or was
+#                     cancelled, so the release may be incomplete
 #   never-published   no release object, and no successful goreleaser job
-#   contradictory     a release exists that no recorded attempt produced
+#   contradictory     the run record and the release object disagree, in either
+#                     direction: a release exists that the job never ran to
+#                     produce, OR the job succeeded and the release is gone
 #   no-run-found      no workflow run for this tag at all
 #
 # Exit: 0 when a state was determined, 1 when it could not be (API failure — the
@@ -113,8 +120,16 @@ done
 EVIDENCE=()
 note() { EVIDENCE+=("$*"); }
 
+# emit <state> <rc> [advice-key]
+#
+# The third argument exists because one state word can be reached from opposite
+# evidence. `contradictory` covers both "a release exists that nothing in the run
+# record produced" and "a success is recorded but the release object is gone" —
+# the operator's next move differs, and printing one text for both told them a
+# release existed when the lookup had just 404'd. The STATE word stays the closed
+# set a caller branches on; only the prose varies.
 emit() {
-    local state="$1" rc="$2"
+    local state="$1" rc="$2" advice_key="${3:-$1}"
     if [ "$STATE_ONLY" = true ]; then
         printf '%s\n' "$state"
     else
@@ -122,7 +137,7 @@ emit() {
         printf '\nEvidence:\n'
         local line
         for line in "${EVIDENCE[@]}"; do printf '  %s\n' "$line"; done
-        printf '\n%s\n' "$(advice "$state")"
+        printf '\n%s\n' "$(advice "$advice_key")"
         printf '\nSTATE: %s\n' "$state"
     fi
     exit "$rc"
@@ -140,8 +155,8 @@ EOF
             ;;
         partial)
             cat <<EOF
-The release object exists but the publishing job did not succeed on its most
-recent attempt, so the release may be incomplete.
+The release object exists, the publishing job ran, and it never concluded success
+in any attempt — it failed or was cancelled, so the release may be incomplete.
 
 Re-run the WHOLE run:      gh run rerun <run-id> --repo $REPO
 Do NOT use --failed or a single-job re-run: those pin the reusable workflow to
@@ -161,12 +176,22 @@ EOF
         contradictory)
             cat <<EOF
 A release object exists that no recorded attempt produced — the publishing job
-never concluded success in any attempt of any run for this tag. Something
-outside the run record created it (a manual release, or a run that no longer
-exists).
+never ran to a conclusion in any attempt of any run for this tag (it was skipped
+or absent throughout). Something outside the run record created it (a manual
+release, or a run that no longer exists).
 
 Do not re-run and do not delete. Escalate: the run record cannot tell you what
 that release object contains.
+EOF
+            ;;
+        contradictory-vanished)
+            cat <<EOF
+The opposite direction: the publishing job DID conclude success, but the release
+object is gone — the lookup returned 404. Something removed it after the fact.
+
+Do not re-run. A re-run would republish under a tag whose previous contents you
+cannot see, and you do not yet know whether the removal was deliberate.
+Escalate: establish who or what deleted it first.
 EOF
             ;;
         no-run-found)
@@ -400,6 +425,13 @@ fi
 
 # --- 4. the verdict -----------------------------------------------------------
 
+# A success in ANY attempt wins, not the most recent one. FACT 3 (a later attempt
+# does not mask an earlier successful publish) and FACT 6 (a re-run failing in
+# `test` skips goreleaser while the earlier release still exists) both require
+# this, so a run whose attempt 1 published and whose attempt 2 failed is
+# `published` — the release did ship, and "Nothing to do" is the correct advice.
+# `partial` is therefore the never-succeeded-but-did-run case, which is reachable
+# and distinct; it is not the most-recent-attempt-failed case.
 if [ "$PUBLISH_SUCCEEDED" = true ]; then
     # A success plus a missing release object is not "published": something
     # removed the release after the fact, and that is exactly the shape that must
@@ -408,7 +440,7 @@ if [ "$PUBLISH_SUCCEEDED" = true ]; then
         emit published 0
     fi
     note "verdict input: success recorded but NO release object — the two disagree"
-    emit contradictory 0
+    emit contradictory 0 contradictory-vanished
 fi
 
 if [ "$RELEASE_EXISTS" = true ]; then
