@@ -117,6 +117,13 @@ case "${1:-}" in
         id=${path##*/actions/runs/}
         f="$MOCK_DIR/run-$id.json"
         ;;
+      # The run LIST, reached as a paginated REST call rather than `gh run list`.
+      # Matched after the per-run arms above, which are strictly longer paths.
+      */actions/runs)
+        if [ -f "$MOCK_DIR/runs.json" ]; then cat "$MOCK_DIR/runs.json"; exit 0; fi
+        echo "gh: Server Error (HTTP 500)" >&2
+        exit 1
+        ;;
       *)
         echo "gh: stub received an unexpected api path: $path" >&2
         exit 1
@@ -157,14 +164,41 @@ write_release() { # <dir> <asset-count>
         "$assets" >"$dir/release.json"
 }
 
+# The run list is the REST payload, paginated and slurped — an array of page
+# objects each carrying a `workflow_runs` envelope, with REST field names
+# (`id`, `head_branch`, `created_at`), not gh's own `--json` view
+# (`databaseId`, `headBranch`, `createdAt`). `gh run list --limit N` was
+# replaced because it silently drops the oldest runs past N, which are the ones
+# that carry the evidence a publish succeeded.
 write_runs() { # <dir> <tag> <run-id>...
     local dir="$1" tag="$2"; shift 2
     local out="" id
     for id in "$@"; do
         [ -z "$out" ] || out="$out,"
-        out="$out{\"databaseId\":$id,\"workflowName\":\"Release / Publish\",\"status\":\"completed\",\"conclusion\":\"failure\",\"createdAt\":\"2026-09-01T09:00:00Z\",\"headBranch\":\"$tag\"}"
+        out="$out{\"id\":$id,\"name\":\"Release / Publish\",\"status\":\"completed\",\"conclusion\":\"failure\",\"created_at\":\"2026-09-01T09:00:00Z\",\"head_branch\":\"$tag\"}"
     done
-    printf '[%s]\n' "$out" >"$dir/runs.json"
+    printf '[{"total_count":%s,"workflow_runs":[%s]}]\n' "$#" "$out" >"$dir/runs.json"
+}
+
+# Two pages of runs, so a case can put the ORIGINAL (oldest) run on page 2 —
+# the exact row a capped, unpaginated list drops.
+write_runs_paged() { # <dir> <tag> <page1-ids...> -- <page2-ids...>
+    local dir="$1" tag="$2"; shift 2
+    local p1=() p2=() seen=0 id out1="" out2=""
+    for id in "$@"; do
+        if [ "$id" = "--" ]; then seen=1; continue; fi
+        if [ "$seen" = 0 ]; then p1+=("$id"); else p2+=("$id"); fi
+    done
+    for id in "${p1[@]}"; do
+        [ -z "$out1" ] || out1="$out1,"
+        out1="$out1{\"id\":$id,\"name\":\"Release / Publish\",\"status\":\"completed\",\"conclusion\":\"failure\",\"created_at\":\"2026-09-02T09:00:00Z\",\"head_branch\":\"$tag\"}"
+    done
+    for id in "${p2[@]}"; do
+        [ -z "$out2" ] || out2="$out2,"
+        out2="$out2{\"id\":$id,\"name\":\"Release / Publish\",\"status\":\"completed\",\"conclusion\":\"success\",\"created_at\":\"2026-09-01T09:00:00Z\",\"head_branch\":\"$tag\"}"
+    done
+    printf '[{"total_count":%s,"workflow_runs":[%s]},{"total_count":%s,"workflow_runs":[%s]}]\n' \
+        "${#p1[@]}" "$out1" "${#p2[@]}" "$out2" >"$dir/runs.json"
 }
 
 write_run() { # <dir> <run-id> <attempt-count>
@@ -177,13 +211,21 @@ write_attempt() { # <dir> <run-id> <attempt> <run_started_at>
         >"$1/run-$2-attempt-$3.json"
 }
 
-job_objects() { # <attempt> <name=conclusion=started_at>... -> JSON array body
+# Spec is <name=conclusion=started_at[=status]>. `status` defaults to
+# `completed`; a spec whose conclusion is the bare word `null` emits JSON null
+# rather than the string, because that is what the forge sends for a job that
+# has not concluded and the two are handled differently.
+job_objects() { # <attempt> <spec>... -> JSON array body
     local attempt="$1"; shift
-    local out="" spec name conclusion started
+    local out="" spec name conclusion started status concl_json
     for spec in "$@"; do
-        IFS='=' read -r name conclusion started <<<"$spec"
+        IFS='=' read -r name conclusion started status <<<"$spec"
+        [ -n "$status" ] || status="completed"
+        if [ "$conclusion" = "null" ]; then concl_json="null"
+        else concl_json="\"$conclusion\""
+        fi
         [ -z "$out" ] || out="$out,"
-        out="$out{\"name\":\"$name\",\"conclusion\":\"$conclusion\",\"status\":\"completed\",\"started_at\":\"$started\",\"run_attempt\":$attempt}"
+        out="$out{\"name\":\"$name\",\"conclusion\":$concl_json,\"status\":\"$status\",\"started_at\":\"$started\",\"run_attempt\":$attempt}"
     done
     printf '%s' "$out"
 }
@@ -493,6 +535,74 @@ assert_contains "the published advice tells the operator to do nothing" \
     "$OUT" "Nothing to do."
 assert_not_contains "a shipped release is never reported as possibly incomplete" \
     "$OUT" "may be incomplete"
+
+# --- the RUN list paginates too -----------------------------------------------
+#
+# `gh run list --limit 50` returns the N most recent runs and drops the rest.
+# The rest are the OLDEST — and for a tag republished a few times the oldest run
+# is the original tag push, the one that actually succeeded. Dropping it flips
+# `published` to `contradictory` with nothing in the output saying a run was
+# lost. Here the successful run is on page 2; a first-page-only fetch sees only
+# the later failing run and gets the answer exactly backwards.
+d=$(new_case paginated-runs)
+write_release "$d" 0
+write_runs_paged "$d" v1.0.0 5016 -- 5017
+write_run "$d" 5016 1
+write_attempt "$d" 5016 1 "2026-09-02T09:00:00Z"
+write_jobs "$d" 5016 1 "release / goreleaser=failure=2026-09-02T09:05:00Z"
+write_run "$d" 5017 1
+write_attempt "$d" 5017 1 "2026-09-01T09:00:00Z"
+write_jobs "$d" 5017 1 "release / goreleaser=success=2026-09-01T09:05:00Z"
+run_case "$d" go-kure/kure v1.0.0
+assert_eq "a successful run on run-list page 2 is still found" \
+    "published" "$(printf '%s' "$OUT" | sed -n 's/^STATE: //p')"
+assert_contains "both runs are reported, not just the first page" \
+    "$OUT" "runs for this tag: 2"
+assert_contains "the run list asks for a full page, not a capped list" \
+    "$(cat "$d/requests.log")" "per_page=100"
+
+# --- an in-flight publish is NOT never-published -------------------------------
+#
+# The worst reachable wrong answer in this script. A publishing job that has not
+# concluded reports conclusion null, which counted as neither ran nor succeeded;
+# with no release object yet the verdict fell through to `never-published`, whose
+# advice is "Re-running the whole run is safe". Re-running a publish that is
+# running right now is the double-publish the whole script exists to prevent.
+# `status` was already being read and printed as evidence — it just was not
+# consulted.
+d=$(new_case in-flight-publish)
+write_runs "$d" v1.0.0 5018
+write_run "$d" 5018 1
+write_attempt "$d" 5018 1 "2026-09-01T09:00:00Z"
+write_jobs "$d" 5018 1 "release / goreleaser=null=2026-09-01T09:05:00Z=in_progress"
+run_case "$d" go-kure/kure v1.0.0
+assert_eq "an unconcluded publish yields no state, not never-published" \
+    "undetermined" "$(printf '%s' "$OUT" | sed -n 's/^STATE: //p')"
+assert_eq "an undetermined state exits 1 so nothing branches on it" 1 "$RC"
+assert_contains "the evidence says the job is still running" \
+    "$OUT" "STILL RUNNING"
+assert_contains "the advice forbids the re-run instead of recommending it" \
+    "$OUT" "Do NOT re-run"
+# The needle is deliberately a fragment that survives the source's line wrap:
+# "Re-running the whole run is safe" is split across two lines in the
+# never-published advice, so the full phrase is a needle that can never match
+# and the assertion would pass for every possible script. Verified by mutation:
+# with the in-flight branch disabled this assertion FAILS.
+assert_not_contains "the safe-to-re-run advice is never shown mid-publish" \
+    "$OUT" "Re-running the whole run is"
+
+# A job that is `completed` with a null conclusion is a different thing and must
+# not be swept into the in-flight branch — without this control the fix could be
+# "treat every null as in-flight", which would make a genuinely absent
+# conclusion undetectable.
+d=$(new_case null-conclusion-completed)
+write_runs "$d" v1.0.0 5019
+write_run "$d" 5019 1
+write_attempt "$d" 5019 1 "2026-09-01T09:00:00Z"
+write_jobs "$d" 5019 1 "release / goreleaser=null=2026-09-01T09:05:00Z=completed"
+run_case "$d" go-kure/kure v1.0.0
+assert_eq "a completed job with no conclusion is not treated as in-flight" \
+    "never-published" "$(printf '%s' "$OUT" | sed -n 's/^STATE: //p')"
 
 # --- state: never-published ---------------------------------------------------
 d=$(new_case never-published)
