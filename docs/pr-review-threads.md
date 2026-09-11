@@ -480,12 +480,12 @@ closed in-repo enum rather than from the response. Adding a field that prints re
 even a truncated prefix — is the change this list forbids.
 
 **`chunk N: review ok` is not the fully-good marker; `chunk i/M: review ok, assess ok` is
-(go-kure/.github#176).** Five sites print a `review ok` prefix; four of them are the review call
+(go-kure/.github#176).** Six sites print a `review ok` prefix; five of them are the review call
 succeeding while the assessment pass is still pending, degraded, or rejected outright
-(`chunk $chunk_idx: review ok ($n findings)` before assess even runs, and three `review ok, assess
-FAILED (...)` lines for a transport fault, a retried transport fault, and an unparseable assess
-response). A consumer keying on `review ok` alone accepts a run whose assessment died on every
-chunk. Only the chunk that both reviewed and assessed cleanly logs `chunk i/M: review ok, assess
+(`chunk $chunk_idx: review ok ($n findings)` before assess even runs, and four `review ok, assess
+FAILED (...)` lines for a transport fault, a retried transport fault, an unparseable assess
+response, and a rejected `.assessments` shape). A consumer keying on `review ok` alone accepts a
+run whose assessment died on every chunk. Only the chunk that both reviewed and assessed cleanly logs `chunk i/M: review ok, assess
 ok`, carrying its own index (1-based — deliberately distinct from every sibling `chunk N:` log
 line in these loops, which is 0-based; the two conventions coexist by design, not by oversight) and
 the run's total chunk count. A chunk that reviewed cleanly with zero findings never reaches that
