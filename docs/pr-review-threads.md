@@ -701,6 +701,18 @@ withheld/advisory comment every run instead of being suppressed as already-track
 thread still gates merge (no data loss), but the advisory channel meant to surface new problems
 gets noisy for that finding until it's actually fixed.
 
+**The PR-wide cap walk (`prt_reserved_count`, `reconcile.sh`) must predict the same QUARANTINE
+outcome, or it under-reserves (Codex review, go-kure/.github#200).** This walk runs once, before
+loop 1, from the same `OWNED`/finding data loop 1 will later see — its own `eff_collision` only
+OR'd same-run collision flags (`o_collision`/`f_collision`), never a content_fp mismatch, so a
+singleton mismatch (no same-run collision otherwise) was predicted `REPLY_RESOLVE` (frees the slot)
+while loop 1 would actually route it through `QUARANTINE` (keeps the slot). The gap let
+`prt_gating_eligible` admit one more `CREATE` than there was room for, exceeding
+`PRT_MAX_FINDINGS_TOTAL` by one whenever this case occurred. The walk now recomputes the matched
+finding's `content_fp` from its `issue`/`fix` text and compares it against the `OWNED` row's own
+stored value, mirroring loop 1's `owned_content_fp` check exactly — an empty stored value gets the
+same "unverifiable, trust unchanged" carve-out as loop 1's, for a thread that predates the field.
+
 This is a strict, additive refinement of go-kure/.github#155's own `QUARANTINE` case, not a
 competing mechanism: `QUARANTINE` still never touches the existing thread (no
 resolve/reply/unresolve), so a content_fp mismatch cannot make an already-open thread newly close

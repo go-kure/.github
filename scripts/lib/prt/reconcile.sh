@@ -293,6 +293,24 @@ prt_reserved_count() {
       f_collision="$(jq -r '.collision // false' <<< "$match" 2>/dev/null)" || return 1
       eff_collision=false
       { [ "$o_collision" = true ] || [ "$f_collision" = true ]; } && eff_collision=true
+      # go-kure/.github#200: a content_fp mismatch also ORs effective_collision
+      # in the main loop's owned_content_fp check (pr-review-threads.sh) and
+      # routes to QUARANTINE, which keeps the OWNED thread gating exactly like
+      # a same-run collision. This upfront cap walk must predict that too, or
+      # it under-reserves by one for every singleton content_fp mismatch and
+      # lets a later CREATE exceed PRT_MAX_FINDINGS_TOTAL. "" (pre-#196 thread,
+      # never a literal "null" — content_fp is built via jq --arg) stays
+      # unverifiable and trusts the match unchanged, same as the main loop.
+      local owned_content_fp
+      owned_content_fp="$(jq -r '.content_fp' <<< "$row" 2>/dev/null)" || return 1
+      [ "$owned_content_fp" = null ] && owned_content_fp=""
+      if [ -n "$owned_content_fp" ]; then
+        local match_issue match_fix match_content_fp
+        match_issue="$(jq -r '.issue' <<< "$match" 2>/dev/null)" || return 1
+        match_fix="$(jq -r '.fix' <<< "$match" 2>/dev/null)" || return 1
+        match_content_fp="$(prt_content_fp "$match_issue" "$match_fix")"
+        [ "$owned_content_fp" != "$match_content_fp" ] && eff_collision=true
+      fi
       # verdict defaults to NONE when the matched finding's own .verdict is
       # absent/null — mirrors pr-review-threads.sh's assessment join, where
       # an unmatched-by-assessment finding stays verdict null.

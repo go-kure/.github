@@ -628,6 +628,23 @@ assert_eq "reserved_count: unassessed (verdict null) behaves like row5 -> reserv
     '[{"fp":"r1","collision":false,"resolved":false,"resolved_by_bot":false}]' \
     '[{"fp":"r1","collision":false,"verdict":null}]')"
 
+# go-kure/.github#200: a singleton content_fp mismatch (no same-run
+# collision) still routes to QUARANTINE in the main loop and keeps the
+# thread gating — this upfront cap walk must predict that, or it
+# under-reserves and lets a later CREATE exceed the cap.
+assert_eq "reserved_count: content_fp mismatch, no same-run collision -> still reserves" \
+  "1" "$(prt_reserved_count \
+    '[{"fp":"r1","collision":false,"resolved":false,"resolved_by_bot":false,"content_fp":"f53017535c431f00"}]' \
+    '[{"fp":"r1","collision":false,"verdict":"FALSE_POSITIVE","issue":"different issue text","fix":"different fix text"}]')"
+assert_eq "reserved_count: content_fp match, FALSE_POSITIVE -> frees, same as no content_fp" \
+  "0" "$(prt_reserved_count \
+    '[{"fp":"r1","collision":false,"resolved":false,"resolved_by_bot":false,"content_fp":"f53017535c431f00"}]' \
+    '[{"fp":"r1","collision":false,"verdict":"FALSE_POSITIVE","issue":"some finding issue text","fix":"some finding fix text"}]')"
+assert_eq "reserved_count: no content_fp on OWNED (pre-#196 thread) -> unverifiable, trusts match unchanged" \
+  "0" "$(prt_reserved_count \
+    '[{"fp":"r1","collision":false,"resolved":false,"resolved_by_bot":false}]' \
+    '[{"fp":"r1","collision":false,"verdict":"FALSE_POSITIVE","issue":"different issue text","fix":"different fix text"}]')"
+
 # --- Regression scenario 1: reordered severities across reruns must not
 # un-reserve an already-gating thread (iteration 3/4/5's bug). 5 OWNED open
 # threads matched to low-priority findings, 7 brand-new high-priority
