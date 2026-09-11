@@ -43,6 +43,7 @@ settings audit/apply, ...); `mise run <task>` runs one, `mise run verify` runs e
 │   ├── check-workflow-refs.sh           # Guards AGENTS.md/standards.md against dead workflow refs
 │   ├── exact-array-member.sh            # Shared helper used by the check-*.sh scripts
 │   ├── pr-review-fail-closed-digest.sh  # Org-wide digest of fail-closed pr-review-threads runs
+│   ├── release-state.sh                 # What a tag's publish run actually did (read-only)
 │   └── lib/api.sh                       # Shared HTTP API utilities
 ├── .github/
 │   ├── workflows/                       # GitHub Actions — self-CI, org settings, and the
