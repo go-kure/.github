@@ -76,6 +76,13 @@ yields no state** — it reports `undetermined` and exits `1`, because "never pu
 "the API did not answer" are different claims, and a recovery path that collapses them
 re-publishes a release that may already exist.
 
+**A publish that is still running also yields no state**, and reports `undetermined` for the same
+reason: every state in the table is a statement about a *finished* publish. This one is called out
+separately because it is the case where acting on a wrong answer does the most damage — two of the
+five states recommend a re-run, and the one moment a re-run must not happen is while the job is
+still going. The evidence block names the run and attempt that is in flight, and the advice says to
+wait rather than to re-run.
+
 Three things the script does that reading the run page by hand does not:
 
 - **It queries every attempt, not the latest.** `gh run view --json jobs` reports only the
