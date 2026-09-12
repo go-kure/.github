@@ -82,9 +82,21 @@ EOF
   git -C "$dir" branch -q base_marker
 }
 
+# Returns the checker's exit code, except that a nonzero exit which did NOT
+# print a `FAIL:` verdict line is reported as 99. The checker runs under
+# `set -e` and its genuine verdict is `exit 1`, so a crash on a code path
+# only the negative fixtures exercise (an unbound variable, a failing
+# command in the zero-match branch) would otherwise also read as rc=1 and
+# every "-> FAIL" assertion below would pass without the gate having judged
+# anything.
 run_gate() {
-  local dir="$1"
-  (cd "$dir" && bash "$CHECKER" base_marker .) >/dev/null 2>&1
+  local dir="$1" out rc
+  out="$(cd "$dir" && bash "$CHECKER" base_marker . 2>/dev/null)"
+  rc=$?
+  if [ "$rc" -ne 0 ] && ! grep -q '^FAIL: ' <<<"$out"; then
+    return 99
+  fi
+  return "$rc"
 }
 
 # --- Provenance-row path (new, go-kure/.github#216) --------------------
