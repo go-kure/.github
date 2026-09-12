@@ -90,7 +90,7 @@ run_gate() {
 # --- Provenance-row path (new, go-kure/.github#216) --------------------
 
 # Fixture 1: both rows' ModuleVersion bumped, nothing else changed, no README
-# touch -> OK. This is the #793/#806 shape.
+# touch -> OK. This is the go-kure/kure#793 / go-kure/kure#806 shape.
 dir="$(new_repo)"; base_fixture "$dir"
 subst 's/v0\.93\.1/v0.94.0/g' "$dir/pkg/tables/zz_generated_tables.go"
 git -C "$dir" add -A && git -C "$dir" commit -q -m "bump ModuleVersion"
