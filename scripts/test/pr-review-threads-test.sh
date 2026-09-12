@@ -2020,6 +2020,23 @@ fake_curl_orchestrator() {
                 printf '%s' '{"choices":[{"message":{"content":"{\"findings\":[]}"}}]}' > "$out"
               fi
               ;;
+            two_chunk_first_partial_drop_second_clean)
+              # go-kure/.github#211: chunk 0's response is Case xii's exact
+              # partial-drop shape (one malformed row dropped, one
+              # survives — rc=2 is usable on the first attempt, no retry, so
+              # mc==1 is chunk 0's only call); chunk 1 (mc==2) reviews
+              # cleanly with one well-formed finding. Both surviving
+              # findings then assess cleanly under the default
+              # PRT_TEST_ASSESS_RESPONSE_MODE, so before the
+              # go-kure/.github#211 fix, chunk_ok_count reached
+              # chunk_count=2 here and the terminal coverage line wrongly
+              # printed despite chunk 0's dropped row.
+              if [ "$mc" -le 1 ]; then
+                printf '%s' '{"choices":[{"message":{"content":"{\"findings\":[{\"file\":\"x.go\",\"line\":1,\"category\":\"other\",\"severity\":\"Medium\",\"issue\":\"i\",\"fix\":\"f\"},{\"file\":\"\",\"category\":\"other\",\"severity\":\"Medium\",\"issue\":\"bad\",\"fix\":\"f\"}]}"}}]}' > "$out"
+              else
+                printf '%s' '{"choices":[{"message":{"content":"{\"findings\":[{\"file\":\"y.go\",\"line\":1,\"category\":\"other\",\"severity\":\"Medium\",\"issue\":\"i2\",\"fix\":\"f2\"}]}"}}]}' > "$out"
+              fi
+              ;;
             collision_triple)
               # go-kure/.github#155: three findings, same file+category
               # (dup.go/other) — prt_assign_ordinals groups them on the same
@@ -2814,6 +2831,29 @@ assert_eq "orchestrator: one chunk's review fails, sibling reviews clean with ze
 assert_eq "orchestrator: one chunk's review fails -> REVIEW_DEGRADED records the failed chunk" \
   "true" "$(grep -qF 'REVIEW_DEGRADED: review-parse-failed: chunk 0: review call failed' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 assert_eq "orchestrator: one chunk's review fails, sibling clean-zero -> NO terminal coverage line (this is the Critical finding's exact scenario)" \
+  "false" "$(grep -qF 'prt: coverage:' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_TWO_FILE_DIFF=0
+PRT_TEST_MODEL_RESPONSE_MODE=clean
+
+# Case xx (go-kure/.github#211, filed against go-kure/.github#199's own
+# coverage-marker review after that PR had already merged): chunk 0
+# partial-drops one malformed row (its surviving finding still assesses
+# cleanly), chunk 1 reviews and assesses cleanly with no degradation at
+# all. Before this fix, chunk_ok_count credited BOTH chunks (partial-drop
+# is not a CHUNK_REVIEW_FAILED case) and the terminal coverage line
+# wrongly printed "2/2" despite chunk 0's dropped row — CHUNK_PARTIAL_DROP
+# must exclude chunk 0 from the numerator even though its own assess call
+# succeeded.
+PRT_TEST_MODEL_RESPONSE_MODE=two_chunk_first_partial_drop_second_clean
+PRT_TEST_TWO_FILE_DIFF=1
+rc="$(run_orchestrator advisory 0 0 0 150)"
+assert_eq "orchestrator: chunk 0 partial-drops, chunk 1 clean -> exits 0 (degraded, not fatal)" \
+  "0" "$rc"
+assert_eq "orchestrator: chunk 0 partial-drops, chunk 1 clean -> REVIEW_DEGRADED names chunk 0's partial-drop" \
+  "true" "$(grep -qF 'REVIEW_DEGRADED: chunk 0: partial-drop' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator: chunk 0 partial-drops, chunk 1 clean -> both chunks still individually reach review ok, assess ok" \
+  "true true" "$(grep -qF 'prt: chunk 1/2: review ok, assess ok' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(grep -qF 'prt: chunk 2/2: review ok, assess ok' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator: chunk 0 partial-drops, chunk 1 clean -> NO terminal coverage line (go-kure/.github#211's exact defect)" \
   "false" "$(grep -qF 'prt: coverage:' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 PRT_TEST_TWO_FILE_DIFF=0
 PRT_TEST_MODEL_RESPONSE_MODE=clean

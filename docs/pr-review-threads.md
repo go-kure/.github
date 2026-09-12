@@ -502,6 +502,18 @@ ok-count match keeps a `prt_split_diff` failure — `chunks=0`, nothing reviewed
 satisfying an `M of M` consumer check). Neither marker is added to the four degraded `review ok`
 sites above; a full-coverage line must never be assemblable from a degraded path.
 
+**A partial-drop chunk (`norm_rc==2`: one or more malformed finding rows dropped, the rest
+reviewed) reaches the ordinary `chunk $chunk_idx: review ok ($n findings)` line, not a distinct one
+— it is not itself a review failure, so `CHUNK_REVIEW_FAILED` doesn't cover it — and its surviving
+findings can go on to assess cleanly (go-kure/.github#211 codex review, filed against
+go-kure/.github#199 after that PR merged).** Without a separate `CHUNK_PARTIAL_DROP` marker, such a
+chunk would credit `chunk_ok_count` the same as a fully clean one, letting the terminal `M/M`
+coverage line print even though a row was silently dropped from `.findings` — exactly the
+degraded-path leak the guard above exists to prevent. `CHUNK_PARTIAL_DROP` is set where
+`prt_mark_degraded` is called for the `partial-drop` reason and checked at the assess loop's one
+fully-good increment site, so a flagged chunk never counts toward coverage regardless of how its
+assessment turns out.
+
 **A fingerprint-collided finding is withheld, not silently dropped (go-kure/.github#155).**
 `prt_fp_base` (`finding.sh`) keys on `(file, category)` only — deliberately, so a fingerprint
 survives a push that shifts line numbers — which means any file with two same-category findings

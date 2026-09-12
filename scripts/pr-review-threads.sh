@@ -327,6 +327,14 @@ review_parse_failures=()
 # index here lets that loop tell the two apart instead of crediting a
 # failed review as "ok".
 declare -A CHUNK_REVIEW_FAILED=()
+# go-kure/.github#211: a chunk whose review response had a malformed row
+# dropped (norm_rc==2, "partial-drop" below) still appends its surviving
+# findings to ALL_FINDINGS and reaches the ordinary "review ok" log line —
+# it is not a review failure, so CHUNK_REVIEW_FAILED can't mark it. Left
+# unrecorded, such a chunk could go on to assess cleanly and credit
+# chunk_ok_count, letting the terminal coverage line claim "M/M" even
+# though a row was silently dropped from this chunk.
+declare -A CHUNK_PARTIAL_DROP=()
 for chunk_file in "$CHUNK_DIR"/chunk-*.diff; do
   [ -f "$chunk_file" ] || continue
   chunk_diff="$(cat "$chunk_file")"
@@ -487,6 +495,7 @@ for chunk_file in "$CHUNK_DIR"/chunk-*.diff; do
     # the first attempt returned rc=1 and the retry's response normalizes
     # with some (not all) rows malformed.
     prt_mark_degraded "chunk $chunk_idx: partial-drop — one or more malformed finding row(s) dropped from .findings, rest of chunk reviewed"
+    CHUNK_PARTIAL_DROP[$chunk_idx]=1
   fi
 
   tagged="$(jq -c --argjson idx "$chunk_idx" 'map(. + {_chunk: $idx})' <<< "$normalized")"
@@ -647,7 +656,12 @@ for ((i = 0; i < chunk_idx; i++)); do
     ASSESSED="$(jq -c -n --argjson a "$ASSESSED" --argjson b "$chunk_findings" '$a + ($b | map(. + {verdict: null, reasoning: null}))')"
     continue
   fi
-  chunk_ok_count=$((chunk_ok_count + 1))
+  # go-kure/.github#211: a chunk flagged CHUNK_PARTIAL_DROP already lost a
+  # malformed finding row during review, above — reaching this fully-good
+  # assess branch doesn't undo that loss, so it must not credit
+  # chunk_ok_count either, or the terminal coverage line below could still
+  # claim "M/M" with a row missing.
+  [ -n "${CHUNK_PARTIAL_DROP[$i]:-}" ] || chunk_ok_count=$((chunk_ok_count + 1))
   prt_log "chunk $((i + 1))/$chunk_count: review ok, assess ok"
   ASSESSED="$(jq -c -n --argjson a "$ASSESSED" --argjson b "$joined" '$a + $b')"
 done
