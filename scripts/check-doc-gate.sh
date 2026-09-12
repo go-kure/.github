@@ -316,7 +316,10 @@ PROVENANCE_FIELDS=("ModuleVersion")
 mask_provenance_field() {
   local line="$1" field="$2" regex count
   regex="${field}: \"[^\"]*\""
-  count="$(grep -coE "$regex" <<<"$line")"
+  # `grep -c` counts matching LINES, not matches — with a single-line input it
+  # is always 0 or 1 even when the pattern occurs twice, so it cannot enforce
+  # "exactly one occurrence". Count actual matches instead (#218 review).
+  count="$(grep -oE "$regex" <<<"$line" | wc -l)"
   [[ "$count" == 1 ]] || return 1
   sed -E "s/${field}: \"[^\"]*\"/${field}: \"<provenance>\"/" <<<"$line"
 }
