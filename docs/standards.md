@@ -734,10 +734,18 @@ row add or remove still fails the hunk-size guard before this check ever runs; a
 file missing the generated-code header is never eligible, exactly as for the marker
 form. This path is independent of the marker form — it is never a fallback that
 loosens the marker check, only an alternative recognizer for a shape the marker
-syntax cannot express. See `trivial_provenance_row()` in
-[`check-doc-gate.sh`](../scripts/check-doc-gate.sh) for the exact mechanics, and
-`scripts/test/check-doc-gate-test.sh` for the fixture coverage (both this path and
-regression coverage for the marker path).
+syntax cannot express. The match is anchored to a struct-literal key position
+(immediately preceded by `{` or `,`) and a full-line comment is rejected outright,
+so a longer field name (`MinimumModuleVersion`) or a comment's own prose can't be
+mistaken for the declared field. This recognizer is regex-based, not a Go parser —
+it does not exclude a field-shaped string inside a string literal (e.g. a backtick
+raw string whose contents happen to read like `{ModuleVersion: "..."}`). No
+`PROVENANCE_FIELDS` entry is or has been such a string in this org's generated
+tables; closing that residual gap would mean maintaining a second Go tokenizer for
+a risk with no known instance, so it is accepted rather than chased. See
+`trivial_provenance_row()` in [`check-doc-gate.sh`](../scripts/check-doc-gate.sh)
+for the exact mechanics, and `scripts/test/check-doc-gate-test.sh` for the fixture
+coverage (both this path and regression coverage for the marker path).
 
 `.github` (docs-only) runs only map validity, link checks, the agentic-file rule,
 and the PR docs checkbox.
