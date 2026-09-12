@@ -50,6 +50,29 @@ assert_contains() {
     esac
 }
 
+# assert_request_has <label> <request-log> <endpoint-substring> <needle>
+#
+# Asserts the needle on the request line for ONE endpoint, not on the whole log.
+# The request log holds every call the run made — the release lookup, the run
+# list and each jobs fetch — so a bare `assert_contains "$(cat requests.log)"
+# "per_page=100"` passes as long as ANY of them paginates. Both pagination cases
+# were written that way, and each would have stayed green with its own endpoint's
+# per_page dropped entirely: a positive clause answered on a surface wider than
+# the claim it is making. Selecting the line first makes the surface the claim.
+assert_request_has() {
+    local label="$1" log="$2" endpoint="$3" needle="$4" lines
+    lines=$(grep -F -- "$endpoint" "$log")
+    if [ -z "$lines" ]; then
+        fail "$label" "no request matching: $endpoint" "requests made:" "$(cat "$log")"
+        return
+    fi
+    case "$lines" in
+        *"$needle"*) pass_count=$((pass_count + 1)) ;;
+        *) fail "$label" "expected the $endpoint request to contain: $needle" \
+                "matching request(s):" "$lines" ;;
+    esac
+}
+
 assert_not_contains() {
     local label="$1" haystack="$2" needle="$3"
     case "$haystack" in
@@ -423,8 +446,8 @@ assert_eq "a publishing job on page 2 is still found" \
     "published" "$(printf '%s' "$OUT" | sed -n 's/^STATE: //p')"
 assert_not_contains "page 2 is not reported as an absent job" \
     "$OUT" "no 'goreleaser' job in this attempt"
-assert_contains "the jobs fetch asks for a full page, not the 30-item default" \
-    "$(cat "$d/requests.log")" "per_page=100"
+assert_request_has "the JOBS fetch asks for a full page, not the 30-item default" \
+    "$d/requests.log" "attempts/1/jobs" "per_page=100"
 
 # --- provenance comes only from a row that ran ---------------------------------
 #
@@ -558,8 +581,8 @@ assert_eq "a successful run on run-list page 2 is still found" \
     "published" "$(printf '%s' "$OUT" | sed -n 's/^STATE: //p')"
 assert_contains "both runs are reported, not just the first page" \
     "$OUT" "runs for this tag: 2"
-assert_contains "the run list asks for a full page, not a capped list" \
-    "$(cat "$d/requests.log")" "per_page=100"
+assert_request_has "the RUN LIST asks for a full page, not a capped list" \
+    "$d/requests.log" "actions/runs?branch=" "per_page=100"
 
 # --- an in-flight publish is NOT never-published -------------------------------
 #
