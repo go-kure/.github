@@ -219,6 +219,11 @@ below this one recommend a re-run, and the one moment that is wrong is while the
 job is still going: a concurrent publish is how a tag gets published twice.
 
 Wait for the run to finish, then ask again.
+
+If the evidence above also records an earlier successful attempt: the release
+does exist, so nothing is missing — but the running attempt writes to that same
+release object, so what it ends up containing is still open. The answer is the
+same, wait.
 EOF
             ;;
         evidence-gap)
@@ -361,6 +366,22 @@ run_ids=$(printf '%s' "$runs_json" | jq -r --arg tag "$TAG" \
 
 if [ -z "$run_ids" ]; then
     note "runs for this tag: NONE"
+    # `no-run-found` is only the right word when there is nothing to contradict.
+    # With a release object in hand, an empty run record is not "no information"
+    # — it is the same disagreement `contradictory` already names, reached by a
+    # shorter route: a release exists that nothing in the run record produced.
+    # This branch returned `no-run-found` unconditionally, whose advice says to
+    # check whether the tag was pushed "before concluding anything about the
+    # release" — for a release that demonstrably exists, that points the operator
+    # at the wrong question and drops the do-not-delete warning entirely.
+    #
+    # Runs age out. A tag published long enough ago reaches exactly this state
+    # with nothing wrong, which is why the advice's escalate-don't-delete wording
+    # matters more here than anywhere else.
+    if [ "$RELEASE_EXISTS" = true ]; then
+        note "verdict input: a release object exists and the run record holds no run at all for this tag — the two disagree"
+        emit contradictory 0
+    fi
     emit no-run-found 0
 fi
 note "runs for this tag: $(printf '%s\n' "$run_ids" | grep -c .) ($(printf '%s' "$run_ids" | tr '\n' ' '))"
@@ -529,8 +550,20 @@ fi
 # finished publish. A verdict read off a half-finished run is not merely
 # imprecise — `never-published` and `partial` both recommend a re-run, and the
 # one moment a re-run must not happen is while the job is still going.
-if [ "$PUBLISH_IN_FLIGHT" = true ] && [ "$PUBLISH_SUCCEEDED" != true ]; then
+#
+# Unconditional, deliberately. This used to carry `&& PUBLISH_SUCCEEDED != true`,
+# by analogy with the evidence-gap guard below — but the two are not analogous. A
+# hole in the record is a fact about the PAST that an observed success already
+# settles; a job running NOW is a fact about the future, and the earlier success
+# says nothing about what this attempt is doing to the release. GoReleaser
+# re-uploads assets to the same release object, so an attempt in flight can still
+# turn a complete release into an incomplete one. `published` there would print
+# "Nothing to do" over a publish that is mid-write.
+if [ "$PUBLISH_IN_FLIGHT" = true ]; then
     note "verdict input: '$PUBLISH_JOB' is STILL RUNNING (status '$IN_FLIGHT_STATUS', run $IN_FLIGHT_RUN attempt $IN_FLIGHT_ATTEMPT) — no state is determined yet"
+    if [ "$PUBLISH_SUCCEEDED" = true ]; then
+        note "verdict input: an EARLIER attempt did conclude success — the release is not missing, but what the running attempt leaves behind is not yet known"
+    fi
     emit undetermined 1 in-flight
 fi
 
