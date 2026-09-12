@@ -173,6 +173,8 @@ jobs:
           sudo chmod +x /usr/local/bin/yq
       - name: check-doc-sync.sh against this repo's own docs-map.yaml
         run: bash scripts/check-doc-sync.sh .
+      - name: check-doc-gate.sh unit test suite
+        run: bash scripts/test/check-doc-gate-test.sh .
       - name: check-doc-gate.sh against the previous commit
         run: bash scripts/check-doc-gate.sh "$(git rev-parse HEAD~1)" .
       - name: check-workflow-refs.sh against AGENTS.md / docs/standards.md

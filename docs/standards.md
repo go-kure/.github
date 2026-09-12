@@ -720,6 +720,25 @@ appearance on a previously-ordinary file is a visible, diffable event a reviewer
 can catch, not a silent one. See `trivial_change()` in
 [`check-doc-gate.sh`](../scripts/check-doc-gate.sh) for the exact mechanics.
 
+**Generated-row exemption (Layer 3, marker-free).** The marker form above assumes a
+`const X = "value"` declaration and cannot apply to a Go struct-literal table row —
+there is no top-level `=` to compare, so any value change fails the whole line even
+when it is pure provenance churn (e.g. a Renovate version bump propagated into every
+row's `ModuleVersion` field). For a file carrying the generated-code header, a 1:1
+row replacement is exempt with no marker at all when every difference between the
+old and new line is confined to a **declared provenance field** (`ModuleVersion` is
+the only one today) and that field's value is a quoted string appearing exactly once
+on the line. Anything else different on the line — a renamed `Kind`, a flipped
+`Namespaced`, or any other field — fails the row, same as an unmarked line would; a
+row add or remove still fails the hunk-size guard before this check ever runs; and a
+file missing the generated-code header is never eligible, exactly as for the marker
+form. This path is independent of the marker form — it is never a fallback that
+loosens the marker check, only an alternative recognizer for a shape the marker
+syntax cannot express. See `trivial_provenance_row()` in
+[`check-doc-gate.sh`](../scripts/check-doc-gate.sh) for the exact mechanics, and
+`scripts/test/check-doc-gate-test.sh` for the fixture coverage (both this path and
+regression coverage for the marker path).
+
 `.github` (docs-only) runs only map validity, link checks, the agentic-file rule,
 and the PR docs checkbox.
 
