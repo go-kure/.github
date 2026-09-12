@@ -85,9 +85,10 @@ run_gate "$dir"
 assert_rc "provenance-only row bump, no doc touch -> OK" "0" "$?"
 rm -rf "$dir"
 
-# Fixture 2: same bump, but also drop the README -> still OK for THIS
-# package's gate (nothing else claims the README), proving the exemption
-# isn't accidentally satisfied by an unrelated doc change either.
+# Fixture 2: the same bump again, as a plain repeat -> OK. Isolation check:
+# confirms fixture 1's result isn't an artifact of some one-shot state left
+# over in the checker (e.g. a cache or a global that only behaves on a
+# fixture's first run).
 dir="$(new_repo)"; base_fixture "$dir"
 sed -i 's/v0\.93\.1/v0.94.0/g' "$dir/pkg/tables/zz_generated_tables.go"
 git -C "$dir" add -A && git -C "$dir" commit -q -m "bump ModuleVersion only"
@@ -155,9 +156,15 @@ run_gate "$dir"
 assert_rc "version bump without generated-code header -> FAIL" "1" "$?"
 rm -rf "$dir"
 
-# Fixture 7: a pathological line carrying the recognized field name twice ->
-# FAIL. mask_provenance_field()'s exactly-one-occurrence check must reject
-# this rather than mask the first (or last) match and call it trivial.
+# Fixture 7: a pathological line carrying the recognized field name twice,
+# with only the FIRST occurrence's value changing -> FAIL.
+# mask_provenance_field()'s exactly-one-occurrence guard must reject this
+# rather than mask just the first match: masking only the first occurrence
+# would make the two lines byte-identical (the untouched second occurrence
+# matches on both sides too), so a broken occurrence count that never
+# rejects a multi-match line would falsely accept this as trivial even
+# though nothing proves the SECOND occurrence didn't also carry a real
+# change hidden behind the mask.
 dir="$(new_repo)"; base_fixture "$dir"
 cat >> "$dir/pkg/tables/zz_generated_tables.go" <<'EOF'
 // pathological: two ModuleVersion occurrences on one line
@@ -165,11 +172,14 @@ var _ = struct{ A, B string }{ModuleVersion: "v0.93.1", ModuleVersion: "v0.93.1"
 EOF
 git -C "$dir" add -A && git -C "$dir" commit -q -m "add pathological line"
 git -C "$dir" branch -qf base_marker HEAD
-sed -i 's/ModuleVersion: "v0.93.1", ModuleVersion: "v0.93.1"/ModuleVersion: "v0.94.0", ModuleVersion: "v0.94.0"/' \
+# Target only the pathological line (an unscoped 0,/pattern/ replaces the
+# FIRST occurrence in the whole file, which is one of the base rows, not
+# this line) and let the lack of /g replace only its first occurrence.
+sed -i '/struct{ A, B string }/s/v0\.93\.1/v0.94.0/' \
   "$dir/pkg/tables/zz_generated_tables.go"
-git -C "$dir" add -A && git -C "$dir" commit -q -m "bump both occurrences"
+git -C "$dir" add -A && git -C "$dir" commit -q -m "bump only the first occurrence"
 run_gate "$dir"
-assert_rc "field name appears twice on one line -> FAIL" "1" "$?"
+assert_rc "field name appears twice, only first occurrence changes -> FAIL" "1" "$?"
 rm -rf "$dir"
 
 # --- Regression: pre-existing marker path must still work unchanged -----
