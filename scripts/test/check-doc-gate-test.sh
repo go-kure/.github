@@ -182,6 +182,42 @@ run_gate "$dir"
 assert_rc "field name appears twice, only first occurrence changes -> FAIL" "1" "$?"
 rm -rf "$dir"
 
+# Fixture 7b: a longer field NAME that merely ends in the recognized field
+# name (e.g. a hypothetical "MinimumModuleVersion") must not be matched as
+# if it were "ModuleVersion" -> FAIL. An unanchored `${field}: "..."` regex
+# matches this as a substring; the struct-literal anchor (must be
+# immediately preceded by `{` or `,`) rules it out.
+dir="$(new_repo)"; base_fixture "$dir"
+cat >> "$dir/pkg/tables/zz_generated_tables.go" <<'EOF'
+var _ = struct{ MinimumModuleVersion string }{MinimumModuleVersion: "v0.93.1"}
+EOF
+git -C "$dir" add -A && git -C "$dir" commit -q -m "add MinimumModuleVersion line"
+git -C "$dir" branch -qf base_marker HEAD
+sed -i 's/MinimumModuleVersion: "v0\.93\.1"/MinimumModuleVersion: "v0.94.0"/' \
+  "$dir/pkg/tables/zz_generated_tables.go"
+git -C "$dir" add -A && git -C "$dir" commit -q -m "bump the longer field name"
+run_gate "$dir"
+assert_rc "field name that merely ends in ModuleVersion -> FAIL" "1" "$?"
+rm -rf "$dir"
+
+# Fixture 7c: a comment line whose PROSE happens to contain
+# "ModuleVersion: \"...\"" (not a struct-literal field) -> FAIL. The
+# unanchored regex would match this as if it were a real row; the
+# struct-literal anchor requires immediate precedence by `{`/`,`, which a
+# comment's "...: " never provides.
+dir="$(new_repo)"; base_fixture "$dir"
+cat >> "$dir/pkg/tables/zz_generated_tables.go" <<'EOF'
+// Compatibility: ModuleVersion: "legacy"
+EOF
+git -C "$dir" add -A && git -C "$dir" commit -q -m "add comment line"
+git -C "$dir" branch -qf base_marker HEAD
+sed -i 's/ModuleVersion: "legacy"/ModuleVersion: "current"/' \
+  "$dir/pkg/tables/zz_generated_tables.go"
+git -C "$dir" add -A && git -C "$dir" commit -q -m "edit the comment prose"
+run_gate "$dir"
+assert_rc "comment prose matching the field pattern -> FAIL" "1" "$?"
+rm -rf "$dir"
+
 # --- Regression: pre-existing marker path must still work unchanged -----
 
 # Fixture 8: marker-path package mapped — const bump WITH marker -> OK.
