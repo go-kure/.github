@@ -310,18 +310,30 @@ is_generated_file() {
 PROVENANCE_FIELDS=("ModuleVersion")
 
 # Does $1 contain exactly one `<field>: "<value>"` occurrence for the given
-# $2 (one entry of PROVENANCE_FIELDS)? Echoes $1 with that value masked to a
-# fixed placeholder on success; prints nothing and fails on zero or multiple
-# occurrences, or when the token after the colon isn't a quoted string.
+# $2 (one entry of PROVENANCE_FIELDS), where that occurrence is an actual
+# struct-literal field key (immediately preceded by `{` or `,`, only
+# whitespace between)? Echoes $1 with that value masked to a fixed
+# placeholder on success; prints nothing and fails on zero or multiple
+# qualifying occurrences, or when the token after the colon isn't a quoted
+# string.
+#
+# The struct-literal anchor is required, not optional (#218 review): an
+# unanchored `${field}: "..."` also matches as a SUBSTRING of a longer field
+# name (`MinimumModuleVersion: "v1"` contains `ModuleVersion: "v1"`) and
+# matches equally well inside a plain comment (`// Compatibility:
+# ModuleVersion: "legacy"` is prose, not a row). Requiring `{`/`,` right
+# before the field name (mod whitespace) rules out both: a longer identifier
+# is never preceded by `{`/`,` at that exact position, and neither is text
+# following a comment's `: `.
 mask_provenance_field() {
   local line="$1" field="$2" regex count
-  regex="${field}: \"[^\"]*\""
+  regex="(^|[{,])[[:space:]]*${field}: \"[^\"]*\""
   # `grep -c` counts matching LINES, not matches — with a single-line input it
   # is always 0 or 1 even when the pattern occurs twice, so it cannot enforce
   # "exactly one occurrence". Count actual matches instead (#218 review).
   count="$(grep -oE "$regex" <<<"$line" | wc -l)"
   [[ "$count" == 1 ]] || return 1
-  sed -E "s/${field}: \"[^\"]*\"/${field}: \"<provenance>\"/" <<<"$line"
+  sed -E "s/(^|[{,])([[:space:]]*)${field}: \"[^\"]*\"/\1\2${field}: \"<provenance>\"/" <<<"$line"
 }
 
 # Is an old/new line pair a provenance-only row replacement? True only when,
