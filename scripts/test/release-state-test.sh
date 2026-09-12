@@ -613,6 +613,15 @@ assert_contains "the advice forbids the re-run instead of recommending it" \
 # with the in-flight branch disabled this assertion FAILS.
 assert_not_contains "the safe-to-re-run advice is never shown mid-publish" \
     "$OUT" "Re-running the whole run is"
+# An in-flight job concludes nothing, so the "did it ever run" summary saw no
+# non-skipped conclusion and asserted the job "never ran in any attempt" — one
+# line above the note saying it is running right now. Two printed evidence lines
+# contradicting each other about the one fact being acted on, and the false one
+# reads like the conclusion.
+assert_not_contains "the evidence never claims a running job never ran" \
+    "$OUT" "never ran in any attempt"
+assert_contains "the summary line says it has not concluded, not that it is absent" \
+    "$OUT" "has not concluded in any attempt"
 
 # A job that is `completed` with a null conclusion is a different thing and must
 # not be swept into the in-flight branch — without this control the fix could be
@@ -626,6 +635,47 @@ write_jobs "$d" 5019 1 "release / goreleaser=null=2026-09-01T09:05:00Z=completed
 run_case "$d" go-kure/kure v1.0.0
 assert_eq "a completed job with no conclusion is not treated as in-flight" \
     "never-published" "$(printf '%s' "$OUT" | sed -n 's/^STATE: //p')"
+
+# --- a hole in the run record is not a fact about publishing -------------------
+#
+# A 404 on the RELEASE object is a fact: nothing published under that tag. A 404
+# on a run, an attempt or an attempt's job list is not a fact about anything —
+# the run was deleted or aged out — yet each was skipped with `continue` and the
+# script went on to emit a definitive state. Every state reachable without a
+# success rests on NOT having seen one, which is precisely what the missing
+# attempt could have contained, and two of them recommend a re-run.
+#
+# Attempt 2 is never written, so the stub 404s it. Attempt 1 skips goreleaser,
+# so nothing else supplies a success: without the guard this is `never-published`
+# and the advice reads "Re-running the whole run is safe".
+d=$(new_case evidence-gap-no-success)
+write_runs "$d" v1.0.0 5020
+write_run "$d" 5020 2
+write_attempt "$d" 5020 1 "2026-09-01T09:00:00Z"
+write_jobs "$d" 5020 1 "release / goreleaser=skipped=2026-09-01T09:05:00Z"
+run_case "$d" go-kure/kure v1.0.0
+assert_eq "an unreadable attempt yields no state, not never-published" \
+    "undetermined" "$(printf '%s' "$OUT" | sed -n 's/^STATE: //p')"
+assert_eq "the evidence gap exits 1 so nothing branches on it" 1 "$RC"
+assert_contains "the evidence names what could not be read" \
+    "$OUT" "run 5020 attempt 2"
+assert_not_contains "a re-run is not recommended on an incomplete record" \
+    "$OUT" "Re-running the whole run is"
+
+# The control, and it is the whole point of the guard's shape: a gap does NOT
+# invalidate a success seen elsewhere. Without this, the fix could be "any 404
+# anywhere means undetermined", which would turn a shipped release into an
+# unanswerable question every time an old attempt aged out.
+d=$(new_case evidence-gap-with-success)
+write_release "$d" 0
+write_runs "$d" v1.0.0 5021
+write_run "$d" 5021 2
+write_attempt "$d" 5021 1 "2026-09-01T09:00:00Z"
+write_jobs "$d" 5021 1 "release / goreleaser=success=2026-09-01T09:05:00Z"
+run_case "$d" go-kure/kure v1.0.0
+assert_eq "a gap elsewhere does not un-see an observed success" \
+    "published" "$(printf '%s' "$OUT" | sed -n 's/^STATE: //p')"
+assert_eq "the published run still exits 0" 0 "$RC"
 
 # --- state: never-published ---------------------------------------------------
 d=$(new_case never-published)

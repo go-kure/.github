@@ -221,6 +221,20 @@ job is still going: a concurrent publish is how a tag gets published twice.
 Wait for the run to finish, then ask again.
 EOF
             ;;
+        evidence-gap)
+            cat <<EOF
+No state: part of the run record could not be read. A run, attempt or job list
+this tag's publish produced returned 404 — it was deleted or has aged out — and
+no success was observed in what remained.
+
+A 404 on the RELEASE object is a fact about publishing. A 404 here is not: it is
+a hole in the evidence, and the states that would be reported from a record with
+a hole in it are the negative ones, which recommend a re-run.
+
+Do not re-run on this answer. Establish what happened to the missing run first,
+or check the release page directly.
+EOF
+            ;;
     esac
 }
 
@@ -365,6 +379,16 @@ IN_FLIGHT_STATUS=""
 LAST_PUBLISH_CONCLUSION=""
 LAST_PUBLISH_RUN=""
 LAST_PUBLISH_ATTEMPT=""
+# What the run record could not tell us. A 404 on the RELEASE object is a fact
+# about publishing — nothing published under that tag. A 404 on a run, an attempt
+# or an attempt's job list is not a fact about anything: it is a gap in the
+# evidence, from a deleted or aged-out run. Skipping the row and then emitting a
+# definitive state is the fail-open this file's own rule forbids for non-404
+# failures, arrived at by a different door.
+EVIDENCE_SKIPPED=""
+skipped_evidence() {
+    EVIDENCE_SKIPPED="${EVIDENCE_SKIPPED:+$EVIDENCE_SKIPPED; }$1"
+}
 
 while read -r run_id; do
     [ -n "$run_id" ] || continue
@@ -372,7 +396,7 @@ while read -r run_id; do
     run_json=$(gh_json "repos/$REPO/actions/runs/$run_id")
     case $? in
         0) ;;
-        44) note "run $run_id: 404 — skipped"; continue ;;
+        44) note "run $run_id: 404 — skipped"; skipped_evidence "run $run_id"; continue ;;
         *) note "run $run_id: LOOKUP FAILED"; emit undetermined 1 ;;
     esac
 
@@ -384,7 +408,9 @@ while read -r run_id; do
         attempt_json=$(gh_json "repos/$REPO/actions/runs/$run_id/attempts/$n")
         case $? in
             0) ;;
-            44) note "  attempt $n: 404 — skipped"; n=$((n + 1)); continue ;;
+            44) note "  attempt $n: 404 — skipped"
+                skipped_evidence "run $run_id attempt $n"
+                n=$((n + 1)); continue ;;
             *) note "  attempt $n: LOOKUP FAILED"; emit undetermined 1 ;;
         esac
         attempt_started=$(printf '%s' "$attempt_json" | jq -r '.run_started_at // ""')
@@ -392,7 +418,9 @@ while read -r run_id; do
         jobs_json=$(gh_jobs "repos/$REPO/actions/runs/$run_id/attempts/$n/jobs")
         case $? in
             0) ;;
-            44) note "  attempt $n: jobs 404 — skipped"; n=$((n + 1)); continue ;;
+            44) note "  attempt $n: jobs 404 — skipped"
+                skipped_evidence "run $run_id attempt $n job list"
+                n=$((n + 1)); continue ;;
             *) note "  attempt $n: jobs LOOKUP FAILED"; emit undetermined 1 ;;
         esac
 
@@ -483,6 +511,14 @@ elif [ "$PUBLISH_RAN_AT_ALL" = true ]; then
         # say that, rather than naming an attempt that merely inherited the row.
         note "verdict input: '$PUBLISH_JOB' ran but never succeeded; every row seen was carried forward, so no attempt here executed it"
     fi
+elif [ "$PUBLISH_IN_FLIGHT" = true ]; then
+    # An in-flight job concludes nothing, so PUBLISH_RAN_AT_ALL is still false
+    # here and the plain else-branch below would assert it "never ran (skipped or
+    # absent throughout)" — one line above the in-flight note saying it is
+    # running right now. Two lines of printed evidence contradicting each other,
+    # about the exact fact the operator is being asked to act on, and the false
+    # one is the one that reads like a conclusion.
+    note "verdict input: '$PUBLISH_JOB' has not concluded in any attempt — one is still running, see below"
 else
     note "verdict input: '$PUBLISH_JOB' never ran in any attempt (skipped or absent throughout)"
 fi
@@ -496,6 +532,17 @@ fi
 if [ "$PUBLISH_IN_FLIGHT" = true ] && [ "$PUBLISH_SUCCEEDED" != true ]; then
     note "verdict input: '$PUBLISH_JOB' is STILL RUNNING (status '$IN_FLIGHT_STATUS', run $IN_FLIGHT_RUN attempt $IN_FLIGHT_ATTEMPT) — no state is determined yet"
     emit undetermined 1 in-flight
+fi
+
+# Same shape as the in-flight guard, and gated the same way. A 404 skipped above
+# left a hole in the run record; a success observed elsewhere cannot be un-seen
+# by that hole, so `published` and `contradictory` still stand. Every remaining
+# state rests on NOT having seen a success — which is exactly the claim a missing
+# attempt could refute — and `partial` and `never-published` both recommend a
+# re-run. So the gap is fatal only when no success was observed.
+if [ -n "$EVIDENCE_SKIPPED" ] && [ "$PUBLISH_SUCCEEDED" != true ]; then
+    note "verdict input: part of the run record was unreadable ($EVIDENCE_SKIPPED) and no success was seen in the rest — a negative state here would rest on a record with a hole in it"
+    emit undetermined 1 evidence-gap
 fi
 
 # A success in ANY attempt wins, not the most recent one. FACT 3 (a later attempt
