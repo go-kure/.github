@@ -67,6 +67,7 @@ bash scripts/test/github-settings-test.sh .
 bash scripts/test/govulncheck-gate-test.sh .
 bash scripts/test/pr-review-threads-test.sh .
 bash scripts/test/check-pin-bump-test.sh .
+bash scripts/test/check-doc-gate-test.sh .
 bash scripts/test/pr-review-fail-closed-digest-test.sh .
 bash scripts/test/review-adapter-test.sh .
 bash scripts/test/build-gold-test.sh .

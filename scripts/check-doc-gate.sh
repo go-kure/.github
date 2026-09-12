@@ -6,11 +6,13 @@
 #
 #   1. Package gate — for every packages[] entry, if a non-test .go file directly in
 #      that package dir changed, the entry's README (and/or its guides) must change —
-#      UNLESS every line the diff touched is marked "// doc-gate:trivial" (see
-#      trivial_change() below): a value that changes with no human documentation
-#      decision behind it, e.g. a generated version const propagated from an upstream
-#      pin bump. Line-level, not file-level — a generated file can mix trivial and
-#      non-trivial content, and only the former is exempt.
+#      UNLESS every line the diff touched is trivial (see trivial_change() below): a
+#      value that changes with no human documentation decision behind it, e.g. a
+#      generated version const propagated from an upstream pin bump (marked
+#      "// doc-gate:trivial"), or a generated struct-literal table row whose only
+#      change is a recognized provenance field's value (PROVENANCE_FIELDS, no marker
+#      needed — go-kure/.github#216). Line-level, not file-level — a generated file
+#      can mix trivial and non-trivial content, and only the former is exempt.
 #      Also covers packages REMOVED from the map between base and head: if a
 #      package's old source path still shows real changes, its old docs must too.
 #   2. review_mappings gate — for every review_mappings[] entry that carries BOTH an
@@ -283,6 +285,58 @@ is_generated_file() {
 # line to carry the marker too — failing closed, not open, but on an
 # ordinary environment-config difference rather than anything about the
 # change itself (go-kure/.github#136 review, round 10).
+# Second, marker-free trivial path (go-kure/.github#216): a generated struct-
+# literal table row — e.g. kure's zz_generated_tables.go, one
+# `{Group: "...", ..., ModuleVersion: "v0.93.1", ...},` line per registered
+# kind/field — carries no top-level "=", so the marker path above can never
+# accept it: `${line%%=*}` returns the whole line unchanged, and the version
+# string always differs old-to-new. A Renovate bump of any module contributing
+# rows to such a table therefore fails doc-gate on pure provenance churn, on
+# every update type, independent of what mapped docs actually say (both
+# reproducers in #216 — kure#793, kure#806 — are exactly this: every changed
+# row differs ONLY in ModuleVersion; no Kind, Namespaced, ScopeSource or
+# Stability changed).
+#
+# Deliberately narrow, not a general struct-field differ, and NOT a fallback
+# that loosens the marker path above: this is a second, independent test the
+# per-line loop also accepts, with its own strict rule; it accepts only a
+# double-quoted string literal immediately following "<Field>: ", and only
+# when that field name appears EXACTLY ONCE on the line. A permissive
+# field-value mask here would be a standing bypass on a gate shared across
+# every go-kure repo — a materially worse failure than "the exemption didn't
+# fire" (#216 review). Add a field name to PROVENANCE_FIELDS only when a real
+# generated-table column is provenance-only by construction, never to work
+# around a specific PR.
+PROVENANCE_FIELDS=("ModuleVersion")
+
+# Does $1 contain exactly one `<field>: "<value>"` occurrence for the given
+# $2 (one entry of PROVENANCE_FIELDS)? Echoes $1 with that value masked to a
+# fixed placeholder on success; prints nothing and fails on zero or multiple
+# occurrences, or when the token after the colon isn't a quoted string.
+mask_provenance_field() {
+  local line="$1" field="$2" regex count
+  regex="${field}: \"[^\"]*\""
+  count="$(grep -coE "$regex" <<<"$line")"
+  [[ "$count" == 1 ]] || return 1
+  sed -E "s/${field}: \"[^\"]*\"/${field}: \"<provenance>\"/" <<<"$line"
+}
+
+# Is an old/new line pair a provenance-only row replacement? True only when,
+# for the SAME recognized field, both sides carry exactly one occurrence and
+# masking that occurrence makes the two lines byte-identical — i.e. nothing
+# else on the line changed. A Kind rename, a Namespaced flip, a re-scoped
+# ScopeSource, or an added/removed row (caught upstream by the hunk-size guard)
+# all fail this: the masked lines would still differ.
+trivial_provenance_row() {
+  local oldl="$1" newl="$2" field omasked nmasked
+  for field in "${PROVENANCE_FIELDS[@]}"; do
+    omasked="$(mask_provenance_field "$oldl" "$field")" || continue
+    nmasked="$(mask_provenance_field "$newl" "$field")" || continue
+    [[ "$omasked" == "$nmasked" ]] && return 0
+  done
+  return 1
+}
+
 trivial_change() {
   local f="$1" hunk oldstart oldcount newstart newcount i saw_hunk=0 mb newl oldl
   local -a new_lines old_lines new_words old_words
@@ -301,11 +355,14 @@ trivial_change() {
     for ((i = 0; i < newcount; i++)); do
       newl="${new_lines[newstart + i - 1]-}"
       oldl="${old_lines[oldstart + i - 1]-}"
-      [[ "$newl" =~ //\ doc-gate:trivial[[:space:]]*$ ]] || return 1
-      [[ "$oldl" =~ //\ doc-gate:trivial[[:space:]]*$ ]] || return 1
-      read -ra new_words <<<"${newl%%=*}"
-      read -ra old_words <<<"${oldl%%=*}"
-      [[ "${new_words[*]}" == "${old_words[*]}" ]] || return 1
+      if [[ "$newl" =~ //\ doc-gate:trivial[[:space:]]*$ && "$oldl" =~ //\ doc-gate:trivial[[:space:]]*$ ]]; then
+        read -ra new_words <<<"${newl%%=*}"
+        read -ra old_words <<<"${oldl%%=*}"
+        [[ "${new_words[*]}" == "${old_words[*]}" ]] || return 1
+        continue
+      fi
+      trivial_provenance_row "$oldl" "$newl" && continue
+      return 1
     done
   done < <(git -C "$ROOT" diff -U0 --inter-hunk-context=0 "${BASE}...HEAD" -- "$f" | grep -E '^@@ ')
   [[ "$saw_hunk" == 1 ]]
