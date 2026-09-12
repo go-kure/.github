@@ -221,8 +221,9 @@ rm -rf "$dir"
 # Fixture 7d: a comment line whose example text happens to satisfy the
 # struct-literal anchor too (`{ModuleVersion: "..."}` appearing right after
 # `//`) -> FAIL. The `{`/`,` anchor alone doesn't prove real Go syntax --
-# those characters can appear inside a comment's own prose. Reject any
-# line that is itself a full-line comment before matching at all.
+# those characters can appear inside a comment's own prose. code_part()
+# strips everything from the line's first `//`/`/*` before matching, so a
+# full-line comment's code part is empty and never matches.
 dir="$(new_repo)"; base_fixture "$dir"
 cat >> "$dir/pkg/tables/zz_generated_tables.go" <<'EOF'
 // Example: {ModuleVersion: "v0.93.1"}
@@ -234,6 +235,24 @@ sed -i 's/{ModuleVersion: "v0\.93\.1"}/{ModuleVersion: "v0.94.0"}/' \
 git -C "$dir" add -A && git -C "$dir" commit -q -m "edit the example comment"
 run_gate "$dir"
 assert_rc "comment example satisfying the struct-literal anchor -> FAIL" "1" "$?"
+rm -rf "$dir"
+
+# Fixture 7e: the same trap, but as a comment trailing real code on the
+# SAME line rather than a full line to itself -> FAIL. A line that merely
+# starts with non-comment code but ends in a matching comment doesn't
+# start with `//`, so an earlier full-line-only check would miss it;
+# code_part() strips from the first `//` regardless of what precedes it.
+dir="$(new_repo)"; base_fixture "$dir"
+cat >> "$dir/pkg/tables/zz_generated_tables.go" <<'EOF'
+var sentinel = 1 // Example: {ModuleVersion: "v0.93.1"}
+EOF
+git -C "$dir" add -A && git -C "$dir" commit -q -m "add trailing-comment line"
+git -C "$dir" branch -qf base_marker HEAD
+sed -i 's/{ModuleVersion: "v0\.93\.1"}/{ModuleVersion: "v0.94.0"}/' \
+  "$dir/pkg/tables/zz_generated_tables.go"
+git -C "$dir" add -A && git -C "$dir" commit -q -m "edit the trailing comment"
+run_gate "$dir"
+assert_rc "comment trailing real code on the same line -> FAIL" "1" "$?"
 rm -rf "$dir"
 
 # --- Regression: pre-existing marker path must still work unchanged -----
