@@ -329,24 +329,43 @@ PROVENANCE_FIELDS=("ModuleVersion")
 # The `{`/`,` anchor alone is not sufficient (#218 review, round 2): those
 # characters can themselves appear inside a comment's own example text
 # (`// Example: {ModuleVersion: "v1"}`), which still satisfies the anchor.
-# Reject a line that is itself a full-line comment before matching at all —
-# this closes exactly that case with no false-negative risk on a real row
-# (a real row is never itself a `//`-prefixed line). It does not chase every
-# remaining case a Go tokenizer would catch (e.g. a backtick raw-string
-# value whose contents happen to look like a field); no PROVENANCE_FIELDS
-# entry in this repo's generated tables is or has ever been such a string,
-# and reaching for full Go parsing here would trade a heuristic gate for a
-# second parser to maintain, for a risk with no known real instance.
+# A full-line-comment check closed that case, but not a comment trailing
+# real code on the same line (#218 review, round 3): `var x = 1 // Example:
+# {ModuleVersion: "legacy"}` doesn't start with `//`, so it survived. Match
+# only against the CODE portion of the line — everything before the first
+# `//` or `/*`, whichever comes first — via code_part() below, dropping the
+# full-line-comment special case (a full-line comment's code part is simply
+# empty, handled the same way as any other zero-match line).
+#
+# code_part() does not track whether that `//`/`/*` itself sits inside an
+# open string literal (a real generated row here never contains one, so a
+# hand-written adversarial value is the only way to trigger it) — a false
+# positive there truncates too early and REJECTS a legitimate row (forces a
+# real doc touch, the safe direction), never accepts a bad one. It does not
+# chase every remaining case a Go tokenizer would catch either (e.g. a
+# backtick raw-string value whose contents happen to look like a field, or
+# a multi-line `/* */` block comment wrapping a row across two diff lines);
+# no PROVENANCE_FIELDS entry in this repo's generated tables is or has ever
+# been such a string, and reaching for full Go parsing here would trade a
+# heuristic gate for a second parser to maintain, for risks with no known
+# real instance.
+code_part() {
+  local line="$1" a b
+  a="${line%%//*}"
+  b="${line%%/\**}"
+  [[ ${#a} -le ${#b} ]] && printf '%s' "$a" || printf '%s' "$b"
+}
+
 mask_provenance_field() {
-  local line="$1" field="$2" regex count
-  [[ "$line" =~ ^[[:space:]]*// ]] && return 1
+  local line="$1" field="$2" code regex count
+  code="$(code_part "$line")"
   regex="(^|[{,])[[:space:]]*${field}: \"[^\"]*\""
   # `grep -c` counts matching LINES, not matches — with a single-line input it
   # is always 0 or 1 even when the pattern occurs twice, so it cannot enforce
   # "exactly one occurrence". Count actual matches instead (#218 review).
-  count="$(grep -oE "$regex" <<<"$line" | wc -l)"
+  count="$(grep -oE "$regex" <<<"$code" | wc -l)"
   [[ "$count" == 1 ]] || return 1
-  sed -E "s/(^|[{,])([[:space:]]*)${field}: \"[^\"]*\"/\1\2${field}: \"<provenance>\"/" <<<"$line"
+  sed -E "s/(^|[{,])([[:space:]]*)${field}: \"[^\"]*\"/\1\2${field}: \"<provenance>\"/" <<<"$code"
 }
 
 # Is an old/new line pair a provenance-only row replacement? True only when,

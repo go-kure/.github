@@ -735,14 +735,21 @@ file missing the generated-code header is never eligible, exactly as for the mar
 form. This path is independent of the marker form — it is never a fallback that
 loosens the marker check, only an alternative recognizer for a shape the marker
 syntax cannot express. The match is anchored to a struct-literal key position
-(immediately preceded by `{` or `,`) and a full-line comment is rejected outright,
-so a longer field name (`MinimumModuleVersion`) or a comment's own prose can't be
-mistaken for the declared field. This recognizer is regex-based, not a Go parser —
-it does not exclude a field-shaped string inside a string literal (e.g. a backtick
-raw string whose contents happen to read like `{ModuleVersion: "..."}`). No
-`PROVENANCE_FIELDS` entry is or has been such a string in this org's generated
-tables; closing that residual gap would mean maintaining a second Go tokenizer for
-a risk with no known instance, so it is accepted rather than chased. See
+(immediately preceded by `{` or `,`), so a longer field name
+(`MinimumModuleVersion`) can't be mistaken for the declared field, and it only
+runs against the CODE portion of the line — everything before the line's first
+`//` or `/*`, whichever comes first — so neither a full-line comment nor a
+comment trailing real code on the same line can supply a fake match. This
+recognizer is regex-based, not a Go parser: it doesn't track whether that
+comment marker itself sits inside an open string literal (a false split there
+only makes the check reject a row it should have accepted, never the reverse),
+and it doesn't exclude a field-shaped string inside a string literal spanning
+the whole match (e.g. a backtick raw string whose contents happen to read like
+`{ModuleVersion: "..."}`), nor a multi-line `/* */` block comment wrapping a
+row across two separate diff lines. No `PROVENANCE_FIELDS` entry is or has been
+such a string in this org's generated tables; closing these residual gaps would
+mean maintaining a second Go tokenizer for risks with no known instance, so
+they are accepted rather than chased. See
 `trivial_provenance_row()` in [`check-doc-gate.sh`](../scripts/check-doc-gate.sh)
 for the exact mechanics, and `scripts/test/check-doc-gate-test.sh` for the fixture
 coverage (both this path and regression coverage for the marker path).
