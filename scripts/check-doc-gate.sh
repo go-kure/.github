@@ -325,8 +325,21 @@ PROVENANCE_FIELDS=("ModuleVersion")
 # before the field name (mod whitespace) rules out both: a longer identifier
 # is never preceded by `{`/`,` at that exact position, and neither is text
 # following a comment's `: `.
+#
+# The `{`/`,` anchor alone is not sufficient (#218 review, round 2): those
+# characters can themselves appear inside a comment's own example text
+# (`// Example: {ModuleVersion: "v1"}`), which still satisfies the anchor.
+# Reject a line that is itself a full-line comment before matching at all —
+# this closes exactly that case with no false-negative risk on a real row
+# (a real row is never itself a `//`-prefixed line). It does not chase every
+# remaining case a Go tokenizer would catch (e.g. a backtick raw-string
+# value whose contents happen to look like a field); no PROVENANCE_FIELDS
+# entry in this repo's generated tables is or has ever been such a string,
+# and reaching for full Go parsing here would trade a heuristic gate for a
+# second parser to maintain, for a risk with no known real instance.
 mask_provenance_field() {
   local line="$1" field="$2" regex count
+  [[ "$line" =~ ^[[:space:]]*// ]] && return 1
   regex="(^|[{,])[[:space:]]*${field}: \"[^\"]*\""
   # `grep -c` counts matching LINES, not matches — with a single-line input it
   # is always 0 or 1 even when the pattern occurs twice, so it cannot enforce

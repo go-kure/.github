@@ -218,6 +218,24 @@ run_gate "$dir"
 assert_rc "comment prose matching the field pattern -> FAIL" "1" "$?"
 rm -rf "$dir"
 
+# Fixture 7d: a comment line whose example text happens to satisfy the
+# struct-literal anchor too (`{ModuleVersion: "..."}` appearing right after
+# `//`) -> FAIL. The `{`/`,` anchor alone doesn't prove real Go syntax --
+# those characters can appear inside a comment's own prose. Reject any
+# line that is itself a full-line comment before matching at all.
+dir="$(new_repo)"; base_fixture "$dir"
+cat >> "$dir/pkg/tables/zz_generated_tables.go" <<'EOF'
+// Example: {ModuleVersion: "v0.93.1"}
+EOF
+git -C "$dir" add -A && git -C "$dir" commit -q -m "add example comment"
+git -C "$dir" branch -qf base_marker HEAD
+sed -i 's/{ModuleVersion: "v0\.93\.1"}/{ModuleVersion: "v0.94.0"}/' \
+  "$dir/pkg/tables/zz_generated_tables.go"
+git -C "$dir" add -A && git -C "$dir" commit -q -m "edit the example comment"
+run_gate "$dir"
+assert_rc "comment example satisfying the struct-literal anchor -> FAIL" "1" "$?"
+rm -rf "$dir"
+
 # --- Regression: pre-existing marker path must still work unchanged -----
 
 # Fixture 8: marker-path package mapped — const bump WITH marker -> OK.
