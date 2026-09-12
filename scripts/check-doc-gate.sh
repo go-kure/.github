@@ -364,7 +364,11 @@ mask_provenance_field() {
   # is always 0 or 1 even when the pattern occurs twice, so it cannot enforce
   # "exactly one occurrence". Count actual matches instead (#218 review).
   count="$(grep -oE "$regex" <<<"$code" | wc -l)"
-  [[ "$count" == 1 ]] || return 1
+  # BSD/macOS `wc -l` right-pads its output with leading spaces, so a
+  # genuine single match reads "       1"; compare numerically, not as a
+  # string, or that padding fails the comparison on every non-GNU wc
+  # (#218 review, round 4).
+  [[ "$count" -eq 1 ]] || return 1
   sed -E "s/(^|[{,])([[:space:]]*)${field}: \"[^\"]*\"/\1\2${field}: \"<provenance>\"/" <<<"$code"
 }
 
