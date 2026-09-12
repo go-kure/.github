@@ -299,7 +299,10 @@ is_generated_file() {
 #
 # Deliberately narrow, not a general struct-field differ, and NOT a fallback
 # that loosens the marker path above: this is a second, independent test the
-# per-line loop also accepts, with its own strict rule; it accepts only a
+# per-line loop also accepts, with its own strict rule. "Independent" is
+# literal — a line that carries the marker but fails the marker path's
+# word-compare is still offered to this test, so carrying the marker can
+# never make a line stricter than the same line without it. It accepts only a
 # double-quoted string literal immediately following "<Field>: ", and only
 # when that field name appears EXACTLY ONCE on the line. A permissive
 # field-value mask here would be a standing bypass on a gate shared across
@@ -419,8 +422,17 @@ trivial_change() {
       if [[ "$newl" =~ //\ doc-gate:trivial[[:space:]]*$ && "$oldl" =~ //\ doc-gate:trivial[[:space:]]*$ ]]; then
         read -ra new_words <<<"${newl%%=*}"
         read -ra old_words <<<"${oldl%%=*}"
-        [[ "${new_words[*]}" == "${old_words[*]}" ]] || return 1
-        continue
+        # Fall THROUGH on a failed word-compare rather than rejecting the
+        # file: the two recognizers are independent tests the loop accepts,
+        # not a chain where the first one to match decides. Rejecting here
+        # made the marker a trap — a generated struct-literal row carrying
+        # the marker has no top-level "=", so `${line%%=*}` compares the
+        # whole line and a provenance bump always fails it, meaning a MARKED
+        # row was rejected where the identical UNMARKED row passed
+        # (go-kure/.github#218 review, round 7). Falling through cannot
+        # loosen anything: it only offers a marked line the same strict
+        # provenance test an unmarked line already gets.
+        [[ "${new_words[*]}" == "${old_words[*]}" ]] && continue
       fi
       trivial_provenance_row "$oldl" "$newl" && continue
       return 1

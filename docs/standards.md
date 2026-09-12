@@ -732,9 +732,10 @@ on the line. Anything else different on the line — a renamed `Kind`, a flipped
 `Namespaced`, or any other field — fails the row, same as an unmarked line would; a
 row add or remove still fails the hunk-size guard before this check ever runs; and a
 file missing the generated-code header is never eligible, exactly as for the marker
-form. This path is independent of the marker form — it is never a fallback that
-loosens the marker check, only an alternative recognizer for a shape the marker
-syntax cannot express. The match is anchored to a struct-literal key position
+form. This path is independent of the marker form in both directions — it never
+loosens the marker check, and a line that carries the marker but fails the marker
+check is still offered to it, so adding the marker to a row can never make that
+row stricter than the same row without it. The match is anchored to a struct-literal key position
 (immediately preceded by `{` or `,`), so a longer field name
 (`MinimumModuleVersion`) can't be mistaken for the declared field, and it only
 runs against the CODE portion of the line — everything before the line's first
