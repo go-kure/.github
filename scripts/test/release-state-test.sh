@@ -559,6 +559,32 @@ assert_contains "the published advice tells the operator to do nothing" \
 assert_not_contains "a shipped release is never reported as possibly incomplete" \
     "$OUT" "may be incomplete"
 
+# Same run record as above plus one difference: the later attempt has not
+# finished. The earlier success is still there, so the release is not missing —
+# but the running attempt writes to that same release object, and `published`
+# would print "Nothing to do" over a publish that is mid-write.
+#
+# The case above is this one's control, and the pair is the whole point: an
+# earlier success DOES outrank a later conclusion, and does NOT outrank a later
+# attempt that has not reached one. The in-flight guard used to carry
+# `&& PUBLISH_SUCCEEDED != true`, which collapsed the two.
+d=$(new_case in-flight-after-success)
+write_release "$d" 0
+write_runs "$d" v1.0.0 5022
+write_run "$d" 5022 2
+write_attempt "$d" 5022 1 "2026-09-01T09:00:00Z"
+write_jobs "$d" 5022 1 "goreleaser=success=2026-09-01T09:05:00Z"
+write_attempt "$d" 5022 2 "2026-09-01T12:00:00Z"
+write_jobs "$d" 5022 2 "goreleaser=null=2026-09-01T12:05:00Z=in_progress"
+run_case "$d" go-kure/kure v1.0.0
+assert_eq "an unfinished attempt is not outranked by an earlier success" \
+    "undetermined" "$(printf '%s' "$OUT" | sed -n 's/^STATE: //p')"
+assert_eq "the in-flight answer exits 1 even when a success is on record" 1 "$RC"
+assert_not_contains "nothing-to-do is never printed over a publish in progress" \
+    "$OUT" "Nothing to do."
+assert_contains "the evidence still records the earlier success, so the operator is not told it is missing" \
+    "$OUT" "EARLIER attempt did conclude success"
+
 # --- the RUN list paginates too -----------------------------------------------
 #
 # `gh run list --limit 50` returns the N most recent runs and drops the rest.
@@ -695,6 +721,29 @@ printf '[]\n' >"$d/runs.json"
 run_case "$d" go-kure/kure v1.0.0
 assert_eq "no run for the tag is its own state" \
     "no-run-found" "$(printf '%s' "$OUT" | sed -n 's/^STATE: //p')"
+
+# The case above is the control for this one: with no release object, an empty
+# run record really is "no information" and `no-run-found` is the right word.
+# With a release object it is not — it is the same disagreement `contradictory`
+# already names, reached by a shorter route. `no-run-found`'s advice sends the
+# operator to check whether the tag was pushed "before concluding anything about
+# the release", which is the wrong question for a release that demonstrably
+# exists, and it carries none of the do-not-delete warning.
+#
+# Runs age out, so this state arrives with nothing wrong at all — which is
+# exactly why it must not read as "no run ever published this".
+d=$(new_case release-without-runs)
+write_release "$d" 3
+printf '[]\n' >"$d/runs.json"
+run_case "$d" go-kure/kure v1.0.0
+assert_eq "a release with an empty run record is a disagreement, not an absence" \
+    "contradictory" "$(printf '%s' "$OUT" | sed -n 's/^STATE: //p')"
+assert_contains "the advice forbids deleting the release" \
+    "$OUT" "do not delete"
+assert_not_contains "the operator is not sent to check whether the tag was pushed" \
+    "$OUT" "Check that the tag was actually pushed"
+assert_contains "the evidence names the disagreement it found" \
+    "$OUT" "no run at all for this tag"
 
 # --- a run for a DIFFERENT tag is not this tag's run ---------------------------
 #

@@ -60,7 +60,7 @@ It prints the evidence it used, a recommended action, and exactly one of:
 | `partial` | the release exists and the publishing job **ran**, but never concluded success in any attempt — it failed or was cancelled, so the release may be incomplete |
 | `never-published` | no release object and no successful publishing job |
 | `contradictory` | the run record and the release object disagree, in **either** direction: a release exists that the job never ran to produce, or the job succeeded and the release is gone |
-| `no-run-found` | no workflow run for this tag at all |
+| `no-run-found` | no workflow run for this tag at all **and no release object** |
 
 **`published` deliberately keys on "some attempt", not "the most recent attempt".** A re-run that
 fails in `test` skips the publishing job while the earlier attempt's release still stands, so
@@ -73,6 +73,13 @@ move differs: a release that nothing produced must not be deleted, while a succe
 object has vanished must not be re-run. The state word stays the same so a caller's `case` needs
 only the five branches.
 
+**An empty run record is `no-run-found` only when there is no release to contradict.** Runs age
+out, so a tag published long enough ago reaches "a release exists and the run record holds no run
+at all" with nothing wrong — and that is the first direction of `contradictory`, reached by a
+shorter route, not an absence of information. Reporting `no-run-found` there would send the
+operator to check whether the tag was pushed, which is the wrong question for a release that
+demonstrably exists, and would drop the do-not-delete warning.
+
 Exit status is `0` when a state was determined and `1` when it was not. **A failed API call
 yields no state** — it reports `undetermined` and exits `1`, because "never published" and
 "the API did not answer" are different claims, and a recovery path that collapses them
@@ -84,6 +91,12 @@ separately because it is the case where acting on a wrong answer does the most d
 five states recommend a re-run, and the one moment a re-run must not happen is while the job is
 still going. The evidence block names the run and attempt that is in flight, and the advice says to
 wait rather than to re-run.
+
+This outranks an earlier success, and that is the one place where "a success in some attempt wins"
+does not apply. A success settles what the *past* attempts did; a job running now is about the
+future, and GoReleaser re-uploads to the same release object — so an attempt in flight can still
+turn a complete release into an incomplete one. The evidence block records the earlier success
+explicitly, so the answer is "wait", never "the release is missing".
 
 **A hole in the run record yields no state either, but only when nothing else showed a success.**
 A `404` on the *release object* is a fact about publishing; a `404` on a run, an attempt or an
