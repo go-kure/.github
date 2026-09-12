@@ -85,6 +85,14 @@ five states recommend a re-run, and the one moment a re-run must not happen is w
 still going. The evidence block names the run and attempt that is in flight, and the advice says to
 wait rather than to re-run.
 
+**A hole in the run record yields no state either, but only when nothing else showed a success.**
+A `404` on the *release object* is a fact about publishing; a `404` on a run, an attempt or an
+attempt's job list is not — the record was deleted or aged out, and what it contained is exactly
+what the negative states claim was never there. So a gap plus no observed success reports
+`undetermined`; a gap alongside a success observed elsewhere still reports `published`, because a
+missing record cannot un-see a success that was read. The evidence block names each part that
+could not be read.
+
 Three things the script does that reading the run page by hand does not:
 
 - **It queries every attempt, not the latest.** `gh run view --json jobs` reports only the
