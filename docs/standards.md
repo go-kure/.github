@@ -739,8 +739,12 @@ syntax cannot express. The match is anchored to a struct-literal key position
 (`MinimumModuleVersion`) can't be mistaken for the declared field, and it only
 runs against the CODE portion of the line — everything before the line's first
 `//` or `/*`, whichever comes first — so neither a full-line comment nor a
-comment trailing real code on the same line can supply a fake match. This
-recognizer is regex-based, not a Go parser: it doesn't track whether that
+comment trailing real code on the same line can supply a fake match. The
+comment suffix itself is preserved verbatim into the compared value rather
+than dropped, so a real row whose trailing comment changes independently of
+its provenance value still fails the equality check, the same as any other
+unrelated change on the line. This recognizer is regex-based, not a Go
+parser: it doesn't track whether that
 comment marker itself sits inside an open string literal (a false split there
 only makes the check reject a row it should have accepted, never the reverse),
 and it doesn't exclude a field-shaped string inside a string literal spanning
