@@ -293,9 +293,9 @@ is_generated_file() {
 # string always differs old-to-new. A Renovate bump of any module contributing
 # rows to such a table therefore fails doc-gate on pure provenance churn, on
 # every update type, independent of what mapped docs actually say (both
-# reproducers in #216 — kure#793, kure#806 — are exactly this: every changed
-# row differs ONLY in ModuleVersion; no Kind, Namespaced, ScopeSource or
-# Stability changed).
+# reproducers in go-kure/.github#216 — go-kure/kure#793, go-kure/kure#806 — are
+# exactly this: every changed row differs ONLY in ModuleVersion; no Kind,
+# Namespaced, ScopeSource or Stability changed).
 #
 # Deliberately narrow, not a general struct-field differ, and NOT a fallback
 # that loosens the marker path above: this is a second, independent test the
@@ -304,9 +304,9 @@ is_generated_file() {
 # when that field name appears EXACTLY ONCE on the line. A permissive
 # field-value mask here would be a standing bypass on a gate shared across
 # every go-kure repo — a materially worse failure than "the exemption didn't
-# fire" (#216 review). Add a field name to PROVENANCE_FIELDS only when a real
-# generated-table column is provenance-only by construction, never to work
-# around a specific PR.
+# fire" (go-kure/.github#216 review). Add a field name to PROVENANCE_FIELDS
+# only when a real generated-table column is provenance-only by construction,
+# never to work around a specific PR.
 PROVENANCE_FIELDS=("ModuleVersion")
 
 # Does $1 contain exactly one `<field>: "<value>"` occurrence for the given
@@ -317,25 +317,31 @@ PROVENANCE_FIELDS=("ModuleVersion")
 # qualifying occurrences, or when the token after the colon isn't a quoted
 # string.
 #
-# The struct-literal anchor is required, not optional (#218 review): an
-# unanchored `${field}: "..."` also matches as a SUBSTRING of a longer field
-# name (`MinimumModuleVersion: "v1"` contains `ModuleVersion: "v1"`) and
-# matches equally well inside a plain comment (`// Compatibility:
-# ModuleVersion: "legacy"` is prose, not a row). Requiring `{`/`,` right
-# before the field name (mod whitespace) rules out both: a longer identifier
-# is never preceded by `{`/`,` at that exact position, and neither is text
-# following a comment's `: `.
+# The struct-literal anchor is required, not optional (go-kure/.github#218
+# review): an unanchored `${field}: "..."` also matches as a SUBSTRING of a
+# longer field name (`MinimumModuleVersion: "v1"` contains
+# `ModuleVersion: "v1"`) and matches equally well inside a plain comment
+# (`// Compatibility: ModuleVersion: "legacy"` is prose, not a row).
+# Requiring `{`/`,` right before the field name (mod whitespace) rules out
+# both: a longer identifier is never preceded by `{`/`,` at that exact
+# position, and neither is text following a comment's `: `.
 #
-# The `{`/`,` anchor alone is not sufficient (#218 review, round 2): those
-# characters can themselves appear inside a comment's own example text
-# (`// Example: {ModuleVersion: "v1"}`), which still satisfies the anchor.
-# A full-line-comment check closed that case, but not a comment trailing
-# real code on the same line (#218 review, round 3): `var x = 1 // Example:
-# {ModuleVersion: "legacy"}` doesn't start with `//`, so it survived. Match
-# only against the CODE portion of the line — everything before the first
-# `//` or `/*`, whichever comes first — via code_part() below, dropping the
-# full-line-comment special case (a full-line comment's code part is simply
-# empty, handled the same way as any other zero-match line).
+# The `{`/`,` anchor alone is not sufficient (go-kure/.github#218 review,
+# round 2): those characters can themselves appear inside a comment's own
+# example text (`// Example: {ModuleVersion: "v1"}`), which still satisfies
+# the anchor. A full-line-comment check closed that case, but not a comment
+# trailing real code on the same line (go-kure/.github#218 review, round 3):
+# `var x = 1 // Example: {ModuleVersion: "legacy"}` doesn't start with `//`,
+# so it survived. Match only against the CODE portion of the line —
+# everything before the first `//` or `/*`, whichever comes first — via
+# code_part() below, dropping the full-line-comment special case (a
+# full-line comment's code part is simply empty, handled the same way as
+# any other zero-match line). mask_provenance_field() re-attaches the
+# untouched comment suffix onto its returned value (go-kure/.github#218
+# review, round 5) rather than discarding it, so a real row's trailing
+# comment changing independently of its provenance value still fails the
+# equality check in trivial_provenance_row() below, the same as any other
+# unrelated change on the line.
 #
 # code_part() does not track whether that `//`/`/*` itself sits inside an
 # open string literal (a real generated row here never contains one, so a
@@ -357,19 +363,23 @@ code_part() {
 }
 
 mask_provenance_field() {
-  local line="$1" field="$2" code regex count
+  local line="$1" field="$2" code comment regex count masked
   code="$(code_part "$line")"
+  # Quoted removal treats "$code" as a literal prefix, not a glob pattern.
+  comment="${line#"$code"}"
   regex="(^|[{,])[[:space:]]*${field}: \"[^\"]*\""
   # `grep -c` counts matching LINES, not matches — with a single-line input it
   # is always 0 or 1 even when the pattern occurs twice, so it cannot enforce
-  # "exactly one occurrence". Count actual matches instead (#218 review).
+  # "exactly one occurrence". Count actual matches instead (go-kure/.github#218
+  # review).
   count="$(grep -oE "$regex" <<<"$code" | wc -l)"
   # BSD/macOS `wc -l` right-pads its output with leading spaces, so a
   # genuine single match reads "       1"; compare numerically, not as a
   # string, or that padding fails the comparison on every non-GNU wc
-  # (#218 review, round 4).
+  # (go-kure/.github#218 review, round 4).
   [[ "$count" -eq 1 ]] || return 1
-  sed -E "s/(^|[{,])([[:space:]]*)${field}: \"[^\"]*\"/\1\2${field}: \"<provenance>\"/" <<<"$code"
+  masked="$(sed -E "s/(^|[{,])([[:space:]]*)${field}: \"[^\"]*\"/\1\2${field}: \"<provenance>\"/" <<<"$code")"
+  printf '%s%s' "$masked" "$comment"
 }
 
 # Is an old/new line pair a provenance-only row replacement? True only when,
