@@ -15,10 +15,14 @@
 //     comparison alone would never catch it. A case may also set
 //     `expectDashboardApproval` to assert dependencyDashboardApproval
 //     directly (opt-in on key presence, not on the value — see the
-//     comparison below for why), or `expectEnabled` to assert the resolved
+//     comparison below for why), `expectEnabled` to assert the resolved
 //     `enabled` value strictly (same opt-in; `undefined` with the key
 //     present asserts the value is absent, i.e. no enabled:false rule
-//     matched). Also asserts every packageRules index is
+//     matched), or `expectGroupName` to assert the resolved `groupName`
+//     (same opt-in) — the lane label proves automerge eligibility, not
+//     which branch a dep lands on, and Renovate ANDs automerge across every
+//     member of one grouped branch, so two deps sharing a groupName share a
+//     branch regardless of what their own labels say. Also asserts every packageRules index is
 //     exercised, so a new rule with no matrix case fails loudly instead of
 //     going unexercised — and, separately, that every hand-declared
 //     ruleIndices entry actually matches that case's input (via renovate's
@@ -196,25 +200,38 @@ const LANES = ["unattended", "needs-human"];
 // resolution in a real run. Omitting that default would silently skip every
 // matchPackageNames rule and pass for the wrong reason.
 const MATRIX = [
-  { name: "mise toolchain minor (e.g. hugo)", ruleIndices: [0, 13], input: { manager: "mise", updateType: "minor", depName: "hugo" }, expect: "unattended" },
-  { name: "mise toolchain patch", ruleIndices: [0, 13], input: { manager: "mise", updateType: "patch", depName: "yq" }, expect: "unattended" },
-  { name: "mise toolchain digest", ruleIndices: [0, 13], input: { manager: "mise", updateType: "digest", depName: "hugo" }, expect: "unattended" },
+  { name: "mise toolchain minor (e.g. hugo)", ruleIndices: [0, 14], input: { manager: "mise", updateType: "minor", depName: "hugo" }, expect: "unattended" },
+  { name: "mise toolchain patch", ruleIndices: [0, 14], input: { manager: "mise", updateType: "patch", depName: "yq" }, expect: "unattended" },
+  { name: "mise toolchain digest", ruleIndices: [0, 14], input: { manager: "mise", updateType: "digest", depName: "hugo" }, expect: "unattended" },
   { name: "mise toolchain major (excluded from the automerge group)", ruleIndices: [11], input: { manager: "mise", updateType: "major", depName: "hugo" }, expect: "needs-human" },
   { name: "go itself via mise (dashboard-gated, never automerged)", ruleIndices: [9], input: { manager: "mise", updateType: "minor", depName: "go" }, expect: "needs-human" },
   { name: "go itself via gomod (dashboard-gated, never automerged)", ruleIndices: [9], input: { manager: "gomod", updateType: "patch", depName: "go", packageName: "go" }, expect: "needs-human" },
   { name: "golang dockerfile tag (dashboard-gated, never automerged)", ruleIndices: [10], input: { manager: "dockerfile", updateType: "minor", depName: "golang", packageName: "golang" }, expect: "needs-human" },
   { name: "gomod minor, kubernetes (no automerge rule matches minor)", ruleIndices: [1, 3], input: { manager: "gomod", updateType: "minor", depName: "k8s.io/api", packageName: "k8s.io/api" }, expect: "needs-human" },
-  { name: "gomod patch, kubernetes (automerges)", ruleIndices: [2, 3, 14], input: { manager: "gomod", updateType: "patch", depName: "k8s.io/api", packageName: "k8s.io/api" }, expect: "unattended" },
-  { name: "gomod digest, sigs.k8s.io (automerges)", ruleIndices: [2, 4, 14], input: { manager: "gomod", updateType: "digest", depName: "sigs.k8s.io/controller-runtime", packageName: "sigs.k8s.io/controller-runtime" }, expect: "unattended" },
-  { name: "gomod patch, fluxcd (automerges)", ruleIndices: [2, 5, 14], input: { manager: "gomod", updateType: "patch", depName: "github.com/fluxcd/pkg/oci", packageName: "github.com/fluxcd/pkg/oci" }, expect: "unattended" },
-  { name: "gomod patch, cloudnative-pg (automerges)", ruleIndices: [2, 6, 14], input: { manager: "gomod", updateType: "patch", depName: "github.com/cloudnative-pg/machinery", packageName: "github.com/cloudnative-pg/machinery" }, expect: "unattended" },
-  // Deliberately does NOT declare 14 here: rule 14's own matchPackageNames excludes
+  { name: "gomod patch, kubernetes (automerges)", ruleIndices: [2, 3, 15], input: { manager: "gomod", updateType: "patch", depName: "k8s.io/api", packageName: "k8s.io/api" }, expect: "unattended" },
+  { name: "gomod digest, sigs.k8s.io (automerges)", ruleIndices: [2, 4, 15], input: { manager: "gomod", updateType: "digest", depName: "sigs.k8s.io/controller-runtime", packageName: "sigs.k8s.io/controller-runtime" }, expect: "unattended" },
+  { name: "gomod patch, fluxcd (automerges)", ruleIndices: [2, 5, 15], input: { manager: "gomod", updateType: "patch", depName: "github.com/fluxcd/pkg/oci", packageName: "github.com/fluxcd/pkg/oci" }, expect: "unattended" },
+  { name: "gomod patch, cloudnative-pg (automerges)", ruleIndices: [2, 6, 15], input: { manager: "gomod", updateType: "patch", depName: "github.com/cloudnative-pg/machinery", packageName: "github.com/cloudnative-pg/machinery" }, expect: "unattended" },
+  // Deliberately does NOT declare 15 here: rule 15's own matchPackageNames excludes
   // github.com/go-kure/**, so it never matches this case — that exclusion is the point being
-  // proven (needs-human survives despite sitting right next to the automerge rule). Rule 14's
+  // proven (needs-human survives despite sitting right next to the automerge rule). Rule 15's
   // coverage comes from the four automerge cases above that it actually matches.
   { name: "gomod patch, first-party go-kure (never automerged)", ruleIndices: [2, 7], input: { manager: "gomod", updateType: "patch", depName: "github.com/go-kure/kure", packageName: "github.com/go-kure/kure" }, expect: "needs-human" },
   { name: "gomod major, any dep (dashboard-gated, never automerged)", ruleIndices: [11], input: { manager: "gomod", updateType: "major", depName: "github.com/some/other", packageName: "github.com/some/other" }, expect: "needs-human", expectDashboardApproval: true },
-  { name: "github-actions bump (never automerged)", ruleIndices: [8], input: { manager: "github-actions", updateType: "minor", depName: "actions/checkout", packageName: "actions/checkout" }, expect: "needs-human" },
+  // The trusted GitHub Actions lane (go-kure/kure#813's dependency; go-kure/.github#217): tier 1
+  // (go-kure/.github itself) and tier 2 (the five listed GitHub-maintained actions) automerge on
+  // digest/minor/patch via rule 13's own groupName, separate from rule 8's plain github-actions
+  // group that every OTHER action still resolves into. expectGroupName pins the split itself, not
+  // just the label: a regression that dropped rule 13's matchDepNames but left automerge:true
+  // would still flip these two lanes correctly while silently merging the branch back with tier 3.
+  { name: "github-actions tier 1 (go-kure/.github, automerges via its own group)", ruleIndices: [8, 13], input: { manager: "github-actions", updateType: "digest", depName: "go-kure/.github", packageName: "go-kure/.github" }, expect: "unattended", expectGroupName: "github-actions-trusted" },
+  { name: "github-actions tier 2 (actions/checkout, automerges via its own group)", ruleIndices: [8, 13], input: { manager: "github-actions", updateType: "minor", depName: "actions/checkout", packageName: "actions/checkout" }, expect: "unattended", expectGroupName: "github-actions-trusted" },
+  { name: "github-actions tier 3 (third-party action, never automerged, stays in the plain group)", ruleIndices: [8], input: { manager: "github-actions", updateType: "minor", depName: "codecov/codecov-action", packageName: "codecov/codecov-action" }, expect: "needs-human", expectGroupName: "github-actions" },
+  { name: "github-actions unlisted/unknown action (never automerged, stays in the plain group)", ruleIndices: [8], input: { manager: "github-actions", updateType: "patch", depName: "some-org/some-action", packageName: "some-org/some-action" }, expect: "needs-human", expectGroupName: "github-actions" },
+  // Major excluded by rule 13's own matchUpdateTypes, not merely by rule 11's dashboard gate
+  // (which only blocks branch/PR creation, not merging one already open) — proven by using a
+  // tier-2 depName that WOULD automerge on a non-major update (the case just above).
+  { name: "github-actions tier-2 dep, major (dashboard-gated, excluded from the trusted lane by update type)", ruleIndices: [8, 11], input: { manager: "github-actions", updateType: "major", depName: "actions/checkout", packageName: "actions/checkout" }, expect: "needs-human", expectDashboardApproval: true, expectGroupName: "github-actions" },
   { name: "npm major (dashboard-gated, never automerged)", ruleIndices: [11], input: { manager: "npm", updateType: "major", depName: "some-pkg", packageName: "some-pkg" }, expect: "needs-human" },
   { name: "dockerfile dep matching no groupRule at all (top-level default)", ruleIndices: [], input: { manager: "dockerfile", updateType: "minor", depName: "alpine", packageName: "alpine" }, expect: "needs-human", expectDashboardApproval: false },
   // customManagers (regex/jsonata) entries report here as "custom.<customType>" (renovate's
@@ -255,7 +272,7 @@ const MATRIX = [
   // A directory whose name merely contains "testdata" is not a testdata tree: both the rule's
   // globs and the ignorePaths entry are segment-anchored, and filterIgnoredFiles' substring
   // fallback (`file.includes(ignorePath)`) never matches a literal glob against a real path.
-  { name: "gomod dep in a directory merely named like testdata (neither disabled nor dropped)", ruleIndices: [2, 14], input: { manager: "gomod", updateType: "patch", depName: "github.com/some/other", packageName: "github.com/some/other", packageFile: "pkg/testdata_helper/go.mod" }, expect: "unattended", expectEnabled: undefined, expectExtracted: true },
+  { name: "gomod dep in a directory merely named like testdata (neither disabled nor dropped)", ruleIndices: [2, 15], input: { manager: "gomod", updateType: "patch", depName: "github.com/some/other", packageName: "github.com/some/other", packageFile: "pkg/testdata_helper/go.mod" }, expect: "unattended", expectEnabled: undefined, expectExtracted: true },
   // nuget is the one manager :ignoreModulesAndTests overrides (nuget.ignorePaths, which keeps
   // test/ and tests/ in scope), and getManagerConfig merges that override OVER the top-level
   // list, so the top-level **/testdata/** never reaches nuget on its own — the preset restates
@@ -274,7 +291,7 @@ const MATRIX = [
 // major/toolchain-gate path proves the CVE bypasses that gate, not just
 // that a lane survived.
 const VULN_MATRIX = [
-  { name: "vulnerability alert on an automerging gomod patch (lane survives, still automerges)", ruleIndices: [2, 3, 14], input: { manager: "gomod", datasource: "go", updateType: "patch", depName: "k8s.io/api", packageName: "k8s.io/api" }, expect: "unattended", expectAutomerge: true },
+  { name: "vulnerability alert on an automerging gomod patch (lane survives, still automerges)", ruleIndices: [2, 3, 15], input: { manager: "gomod", datasource: "go", updateType: "patch", depName: "k8s.io/api", packageName: "k8s.io/api" }, expect: "unattended", expectAutomerge: true },
   { name: "vulnerability alert on a dashboard-gated major (gate bypassed, lane still needs-human)", ruleIndices: [11], input: { manager: "gomod", datasource: "go", updateType: "major", depName: "github.com/some/other", packageName: "github.com/some/other" }, expect: "needs-human", expectDashboardApproval: false },
   // Rule 12's enabled:false does NOT survive the synthetic rule: force.enabled:true clears the
   // skipReason rule 12 set and overwrites enabled (verified on 44.14.10, 44.42.0 and 44.65.3,
@@ -282,7 +299,55 @@ const VULN_MATRIX = [
   // the reason ignorePaths carries the guarantee stays a tested fact rather than a comment — if
   // this ever fails, renovate changed force precedence and the rule-12 description is stale.
   // `expectExtracted: false` is the guarantee itself: the file never reaches package rules.
-  { name: "vulnerability alert on a gomod dep inside a testdata tree (force re-enables rule 12; extraction is what keeps it out)", ruleIndices: [2, 12, 14], input: { manager: "gomod", datasource: "go", updateType: "patch", depName: "github.com/some/vulnerable", packageName: "github.com/some/vulnerable", packageFile: "pkg/foo/testdata/mod/go.mod" }, expect: "unattended", expectEnabled: true, expectExtracted: false },
+  { name: "vulnerability alert on a gomod dep inside a testdata tree (force re-enables rule 12; extraction is what keeps it out)", ruleIndices: [2, 12, 15], input: { manager: "gomod", datasource: "go", updateType: "patch", depName: "github.com/some/vulnerable", packageName: "github.com/some/vulnerable", packageFile: "pkg/foo/testdata/mod/go.mod" }, expect: "unattended", expectEnabled: true, expectExtracted: false },
+];
+
+// Consumer-effective cases (go-kure/.github#217, go-kure/kure#813): the checks above resolve the
+// shared preset alone, but a real repo's renovate.json extends it and then appends its own
+// packageRules, which a real run concatenates AFTER the preset's array (extends resolves first;
+// consumer rules are later array members, so they can override a scalar the preset set, same
+// later-overwrites-earlier rule as within the preset itself). A consumer override can silently
+// defeat the trusted lane's whole point — bundling tier 1/2 with tier 3 back onto one branch — in
+// a way none of the checks above can see, because they never load a consumer file. Each case's
+// `consumerRules` is spliced onto `preset.packageRules` exactly the way `extends` + local
+// packageRules composes in a real run.
+const CONSUMER_MATRIX = [
+  {
+    name: "kure's CURRENT renovate.json override still re-merges go-kure/.github into the plain group (go-kure/kure#813 not yet applied)",
+    consumerRules: [
+      {
+        matchDepNames: ["go-kure/.github"],
+        groupName: "github-actions",
+        postUpgradeTasks: { commands: ["./scripts/vendor-guard.sh"], fileFilters: ["site/scripts/check-forbidden-terms.sh"], executionMode: "branch" },
+      },
+    ],
+    input: { manager: "github-actions", updateType: "digest", depName: "go-kure/.github", packageName: "go-kure/.github" },
+    // automerge itself survives (the consumer rule sets no automerge key, so rule 13's automerge:
+    // true stands), but groupName resolves back to the plain "github-actions" group tier 3 also
+    // shares — the exact defeat go-kure/kure#813 exists to fix, pinned here so a fix to the
+    // preset alone can never be mistaken for a fix to this.
+    expect: "unattended",
+    expectGroupName: "github-actions",
+  },
+  {
+    name: "kure's PROPOSED renovate.json (go-kure/kure#813 applied) keeps go-kure/.github in the trusted group",
+    consumerRules: [
+      {
+        matchDepNames: ["go-kure/.github"],
+        postUpgradeTasks: { commands: ["./scripts/vendor-guard.sh"], fileFilters: ["site/scripts/check-forbidden-terms.sh"], executionMode: "branch" },
+      },
+    ],
+    input: { manager: "github-actions", updateType: "digest", depName: "go-kure/.github", packageName: "go-kure/.github" },
+    expect: "unattended",
+    expectGroupName: "github-actions-trusted",
+  },
+  {
+    name: "launcher's current renovate.json has no override at all — the trusted lane applies untouched",
+    consumerRules: [],
+    input: { manager: "github-actions", updateType: "minor", depName: "actions/checkout", packageName: "actions/checkout" },
+    expect: "unattended",
+    expectGroupName: "github-actions-trusted",
+  },
 ];
 
 let failures = 0;
@@ -331,6 +396,17 @@ for (const c of MATRIX) {
   // regression that set it to false everywhere.
   if ("expectEnabled" in c && result.enabled !== c.expectEnabled) {
     console.error(`FAIL [outcome] ${c.name}: expected enabled=${c.expectEnabled}, got ${result.enabled}`);
+    failures++;
+  }
+  // The lane label proves automerge eligibility, not which BRANCH a dep lands on — two rules can
+  // both automerge yet still be safe to bundle only if Renovate would ever group them onto one
+  // branch, and Renovate ANDs automerge across every member of a grouped branch (go-minor's
+  // description above). groupName is the resolved value that answers that: two deps sharing one
+  // groupName share one branch. Opt-in on key presence, strict comparison — same convention as
+  // expectEnabled — so a rule that silently stopped setting its own groupName (falling through to
+  // an earlier or later rule's value) fails loudly instead of merely losing test coverage.
+  if ("expectGroupName" in c && result.groupName !== c.expectGroupName) {
+    console.error(`FAIL [outcome] ${c.name}: expected groupName=${JSON.stringify(c.expectGroupName)}, got ${JSON.stringify(result.groupName)}`);
     failures++;
   }
   // The lane label alone doesn't prove the behavior it names: a rule could keep the
@@ -390,6 +466,33 @@ for (const c of VULN_MATRIX) {
   // Key-presence opt-in and strict comparison, same as MATRIX's expectEnabled above.
   if ("expectEnabled" in c && result.enabled !== c.expectEnabled) {
     console.error(`FAIL [vuln-outcome] ${c.name}: expected enabled=${c.expectEnabled}, got ${result.enabled}`);
+    failures++;
+  }
+}
+
+// Check 5 — consumer-effective. Not scoped to touchedIndices/coverage: consumerRules are spliced
+// onto a CLONE of preset.packageRules for each case, never onto the shared array these indices
+// index into, so this loop cannot contribute to (or corrupt) check 1's per-rule coverage.
+for (const c of CONSUMER_MATRIX) {
+  const input = {
+    ...preset,
+    packageRules: [...preset.packageRules, ...c.consumerRules],
+    ...c.input,
+  };
+  const result = await applyPackageRules(input);
+  const labelSet = new Set([...(result.labels ?? []), ...(result.addLabels ?? [])]);
+  const lanes = LANES.filter((l) => labelSet.has(l));
+  if (lanes.length !== 1) {
+    console.error(`FAIL [consumer-outcome] ${c.name}: expected exactly one lane, got [${lanes.join(", ")}] (labels=${JSON.stringify(result.labels)})`);
+    failures++;
+    continue;
+  }
+  if (lanes[0] !== c.expect) {
+    console.error(`FAIL [consumer-outcome] ${c.name}: expected ${c.expect}, got ${lanes[0]}`);
+    failures++;
+  }
+  if ("expectGroupName" in c && result.groupName !== c.expectGroupName) {
+    console.error(`FAIL [consumer-outcome] ${c.name}: expected groupName=${JSON.stringify(c.expectGroupName)}, got ${JSON.stringify(result.groupName)}`);
     failures++;
   }
 }
@@ -508,4 +611,4 @@ if (failures > 0) {
   console.error(`\n${failures} failure(s).`);
   process.exit(1);
 }
-console.log(`renovate-lane-policy-test: OK (${MATRIX.length} matrix cases, ${VULN_MATRIX.length} vuln cases, ${extractionCases} extraction cases, ${ruleCount} packageRules all covered)`);
+console.log(`renovate-lane-policy-test: OK (${MATRIX.length} matrix cases, ${VULN_MATRIX.length} vuln cases, ${CONSUMER_MATRIX.length} consumer-effective cases, ${extractionCases} extraction cases, ${ruleCount} packageRules all covered)`);

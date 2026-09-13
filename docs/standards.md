@@ -80,10 +80,26 @@ What it encodes:
   require dashboard approval and carry an `allowedVersions` ceiling that tracks
   Go's two-release support window. The ceiling is lifted deliberately when the next
   Go major ships, never by a bot.
-- **Automerge** only for mise minor/patch/digest and gomod patch/digest, and never
-  for `github.com/go-kure/**` — cross-repo bumps carry release-ordering constraints
-  (launcher must not lead the kure release it imports; see launcher's
-  `check-kure-dep-sync` guard).
+- **Automerge** for mise minor/patch/digest, gomod patch/digest, and the trusted
+  GitHub Actions lane described below — never for `github.com/go-kure/**` gomod
+  deps, since cross-repo bumps carry release-ordering constraints (launcher must
+  not lead the kure release it imports; see launcher's `check-kure-dep-sync`
+  guard).
+- **Trusted GitHub Actions lane** (`groupName: "github-actions-trusted"`) — a
+  small, deliberately short allowlist of low-blast-radius actions (`go-kure/.github`
+  itself, plus `actions/checkout`, `actions/cache`, `actions/setup-go`,
+  `actions/download-artifact`, `actions/upload-artifact`) automerges on
+  digest/minor/patch; every other GitHub Action, trusted or not, stays in the
+  plain `github-actions` group and needs human review (`needs-human`). A major on
+  a trusted-lane action is excluded from automerge by this rule's own
+  `matchUpdateTypes`, not merely by the dashboard-approval gate above — that gate
+  blocks branch/PR creation, not merging a branch a human already approved. The
+  two groups are kept separate (not one `github-actions` group with mixed
+  automerge) because Renovate ANDs automerge across every member of one grouped
+  branch — folding a trusted action into the same branch as an untrusted one
+  would either wrongly automerge the untrusted bump or wrongly hold the trusted
+  one hostage. See "Adopting the trusted Actions lane" below for what a consumer
+  repo must check before relying on this.
 - **Vulnerability alerts** — `vulnerabilityAlerts.enabled: true` raises a PR for a known-CVE
   dependency immediately, bypassing `minimumReleaseAge`/schedule/`dependencyDashboardApproval`
   gates (Renovate's own default for the block already does this; nothing here restates it).
@@ -131,6 +147,57 @@ What it encodes:
 Repos add repo-specific rules (e.g. `postUpgradeTasks` running the repo's own
 `scripts/sync-versions.sh generate` so generated docs move in the same commit as the
 version bump) in their own `renovate.json` on top of the preset.
+
+#### Adopting the trusted Actions lane
+
+A consumer repo gets the trusted lane automatically by extending the preset — but
+inheriting the preset is not the whole job. Before relying on it:
+
+1. **Know what's inherited.** The trusted allowlist, its `digest`/`minor`/`patch`
+   restriction, the `github-actions-trusted` grouping, and the `unattended` /
+   `needs-human` lane labels all come from this preset unchanged. A consumer does
+   not repeat any of this in its own `renovate.json`.
+2. **Check for a consumer override that would undo the split.** A `packageRules`
+   entry in the consumer's own `renovate.json` matching one of the trusted
+   `matchDepNames` can re-fold it into a different group or turn off its
+   automerge, silently defeating the tier separation — later rules overwrite
+   earlier scalars, and a consumer's own rules apply after the extended preset's.
+   `go-kure/kure`'s `renovate.json` did exactly this: a `groupName: "github-actions"`
+   override on `go-kure/.github`, added to fold in a since-removed customManager
+   dependency (go-kure/kure#813), re-merged that one trusted dep back into the
+   plain, human-reviewed group. Removing the override once its original purpose
+   is gone is the fix — not adding a competing rule.
+3. **Derive any second checkout of a pinned action from its own `uses:@<sha>`
+   pin, never a second literal pin.** A consumer that checks out `go-kure/.github`
+   a second time — to byte-compare a vendored script against its canonical source,
+   for example — must resolve that checkout's `ref:` from the action's own pin at
+   CI-run time, not from an independent `ref: <sha>` literal a human or a
+   customManager has to keep in step by hand. See go-kure/kure#813 for the
+   worked migration off a two-pin, customManager-assisted design onto this
+   single-pin one.
+4. **Wire up re-vendoring if a local copy exists.** A consumer keeping its own
+   copy of a canonical script needs a `postUpgradeTasks` entry on that dep's
+   `packageRules` matcher (command, `fileFilters`, and the runner-side command
+   authorization that lets Renovate actually execute it) so the vendored copy
+   updates in the same PR as the pin bump — otherwise the pin and the vendored
+   content drift apart silently.
+5. **Inheriting the preset does not install the consumer-side safeguards.**
+   The required consumer CI checks and the pin-impact-acknowledgment behaviour
+   (see "Pin-impact-ack" below) are each repo's own responsibility, defined in
+   that repo's own `.github/workflows/ci.yml` and `scripts/check-pin-impact.sh`
+   — the shared preset only decides which updates get created and which
+   automerge without review.
+6. **Verify the effective configuration before considering adoption complete.**
+   Resolve the consumer's actual `renovate.json` (preset plus any local
+   overrides) and confirm a representative trusted-lane dependency bump lands in
+   `github-actions-trusted` with `automerge: true`, and that any first-party
+   dependency the consumer excludes from automerge still resolves to
+   `needs-human`. Do not assume extending the preset is sufficient without this
+   check — item 2 above is exactly the failure mode it would have caught.
+
+This procedure is documentation for adopting the existing trusted lane in a repo
+that already extends this preset — it does not enlarge the trusted allowlist and
+it is not a general onboarding framework for new repositories.
 
 #### Policy test
 
