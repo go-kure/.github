@@ -125,6 +125,22 @@
       "enabled": false
     },
     {
+      "description": "Automerge for the trusted GitHub Actions lane: go-kure/.github itself, plus small, widely-used GitHub-maintained actions with a low blast radius (actions/checkout, actions/cache, actions/setup-go, actions/download-artifact, actions/upload-artifact). digest/minor/patch only — a major is excluded by this rule's own matchUpdateTypes, not merely by relying on the dashboard-approval gate above (that gate blocks branch/PR creation, not merging a branch once created). Needs its own groupName, separate from the plain github-actions group below: Renovate ANDs automerge across every member of one grouped branch (see the go-minor rule's description above), and the github-actions group also carries every untrusted third-party action — folding this lane into it would either wrongly automerge a third-party bump riding the same branch, or wrongly hold a trusted bump hostage to one still needing human review. MUST stay before the two automerge rules below so their 'last rule in this preset' invariant stays literal; scoped to matchManagers: [\"github-actions\"] only, distinct from those rules' gomod/mise scope. A downstream consumer with its own groupName override on any of these depNames (e.g. one re-folding go-kure/.github into a different group for its own vendor-guard tooling) must reconcile that override so it doesn't silently defeat this separation — see go-kure/kure#813.",
+      "groupName": "github-actions-trusted",
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["digest", "minor", "patch"],
+      "matchDepNames": [
+        "go-kure/.github",
+        "actions/checkout",
+        "actions/cache",
+        "actions/setup-go",
+        "actions/download-artifact",
+        "actions/upload-artifact"
+      ],
+      "automerge": true,
+      "labels": ["dependencies", "unattended"]
+    },
+    {
       "description": "Automerge: mise toolchain minor/patch/digest, excl. go. Kept as its own rule, not bolted onto the go-version gate rule, because automerge follows the same later-overwrites-earlier merge order as groupName — bolting it on would leak onto every matchPackageNames group above.",
       "matchManagers": ["mise"],
       "matchUpdateTypes": ["minor", "patch", "digest"],
