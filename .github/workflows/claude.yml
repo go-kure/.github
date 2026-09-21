@@ -5,8 +5,9 @@ on:
 
 jobs:
   claude:
+    # No `pull_request` arm: a pull_request event carries no @claude comment, so
+    # the action found no trigger and the job ended green having done nothing.
     if: |
-      (github.event_name == 'pull_request') ||
       (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
       (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
       (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
