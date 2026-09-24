@@ -254,6 +254,15 @@ the same PAT already reaches it. `go-kure.github.io` (not a member of this
 table — it hosts rendered site content, not application code) is the one
 repo left in the org on Dependabot, for its single `github-actions` ecosystem.
 
+`.github`'s own `renovate.json` adds one `customManagers` regex entry, for the
+git-cliff version the shared release workflows install (`CLIFF_VERSION` in
+`release-create.yml` and `release-promote.yml`, the `setup-git-cliff`
+`version:` input in `release-publish.yml`). Each site carries a
+`# renovate: datasource=github-releases depName=orhun/git-cliff` line, and one
+depName means a bump moves all three in the same PR. A consumer's `mise.toml`
+git-cliff pin is tracked separately by that consumer's Renovate, so the release
+binary and a local preview can still differ for the time between the two bumps.
+
 ### GitHub Actions pinning
 
 Every third-party action is pinned to a full 40-character commit SHA, with the

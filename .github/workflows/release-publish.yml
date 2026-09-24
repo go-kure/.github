@@ -144,11 +144,12 @@ jobs:
       - name: Install git-cliff
         uses: kenji-miyake/setup-git-cliff@2778609c643a39a2576c4bae2e493b855eb4aee8 # v2
         with:
-          # Keep in step with meta's REQUIRED_GIT_CLIFF_VERSION (org-wide authority)
-          # and release-create.yml/release-promote.yml's CLIFF_VERSION. Was unset
-          # (defaults to latest), so the changelog rendering a release actually ships
-          # with could silently drift from what every author previews locally.
-          version: "2.13.1"
+          # Pinned, not left at the action's default of latest, so the notes a
+          # release ships are rendered by a known binary. Renovate bumps this pin
+          # together with release-create.yml's and release-promote.yml's
+          # CLIFF_VERSION (customManagers in renovate.json, one depName).
+          # renovate: datasource=github-releases depName=orhun/git-cliff
+          version: "2.14.2"
 
       - name: Extract release notes
         run: git-cliff --latest --strip header -o release-notes.md
