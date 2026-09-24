@@ -84,7 +84,8 @@ What it encodes:
   GitHub Actions lane described below — never for `github.com/go-kure/**` gomod
   deps, since cross-repo bumps carry release-ordering constraints (launcher must
   not lead the kure release it imports; see launcher's `check-kure-dep-sync`
-  guard).
+  guard). `automergeStrategy: "rebase"` makes an automerged PR request the same
+  rebase method the merge queue uses, never squash.
 - **Trusted GitHub Actions lane** (`groupName: "github-actions-trusted"`) — a
   small, deliberately short allowlist of low-blast-radius actions (`go-kure/.github`
   itself, plus `actions/checkout`, `actions/cache`, `actions/setup-go`,

@@ -33,6 +33,7 @@
   "branchConcurrentLimit": 8,
   "postUpdateOptions": ["gomodTidy"],
   "rebaseWhen": "behind-base-branch",
+  "automergeStrategy": "rebase",
   "osvVulnerabilityAlerts": true,
   "vulnerabilityAlerts": {
     "enabled": true,
