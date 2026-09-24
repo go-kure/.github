@@ -1,4 +1,15 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["github>go-kure/.github//renovate/shared"]
+  "extends": ["github>go-kure/.github//renovate/shared"],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "git-cliff pins in the shared release workflows (CLIFF_VERSION in release-create/release-promote, setup-git-cliff's version input in release-publish). One depName, so a bump moves all three sites in one PR.",
+      "managerFilePatterns": ["/^\\.github/workflows/release-(create|promote|publish)\\.yml$/"],
+      "matchStrings": [
+        "#\\s*renovate:\\s*datasource=(?<datasource>\\S+)\\s+depName=(?<depName>\\S+)\\s*\\n\\s*(?:CLIFF_VERSION=|version:\\s*)\"(?<currentValue>[^\"]+)\""
+      ],
+      "extractVersionTemplate": "^v(?<version>.*)$"
+    }
+  ]
 }
