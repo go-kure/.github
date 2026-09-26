@@ -16,7 +16,7 @@ run = "actionlint"
 
 [tasks."lint:shell"]
 description = "shellcheck the scripts this repo ships"
-run = "shellcheck scripts/check-doc-sync.sh scripts/check-doc-gate.sh scripts/check-links.sh scripts/exact-array-member.sh scripts/check-workflow-refs.sh scripts/github-settings.sh scripts/check-settings-doc.sh scripts/check-action-pins.sh scripts/check-label-docs.sh scripts/govulncheck-gate.sh scripts/check-forbidden-terms.sh scripts/check-pin-bump.sh scripts/pr-review-threads.sh scripts/lib/prt/state.sh scripts/lib/prt/json.sh scripts/lib/prt/marker.sh scripts/lib/prt/finding.sh scripts/lib/prt/gh.sh scripts/lib/prt/diff.sh scripts/lib/prt/render.sh scripts/lib/prt/model.sh scripts/lib/prt/reconcile.sh scripts/pr-review-fail-closed-digest.sh scripts/lib/api.sh scripts/pr-ci-health.sh scripts/eval/build-gold.sh scripts/eval/check-gold.sh scripts/eval/review-adapter.sh scripts/eval/judge.sh scripts/eval/run.sh scripts/eval/compare.sh scripts/eval/parse-reviews.sh scripts/test/review-adapter-test.sh scripts/test/build-gold-test.sh scripts/test/judge-test.sh scripts/test/compare-test.sh scripts/release-state.sh scripts/test/release-state-test.sh"
+run = "shellcheck scripts/check-doc-sync.sh scripts/check-doc-gate.sh scripts/check-links.sh scripts/exact-array-member.sh scripts/check-workflow-refs.sh scripts/github-settings.sh scripts/check-settings-doc.sh scripts/check-action-pins.sh scripts/check-label-docs.sh scripts/govulncheck-gate.sh scripts/check-forbidden-terms.sh scripts/test/check-forbidden-terms-test.sh scripts/check-pin-bump.sh scripts/pr-review-threads.sh scripts/lib/prt/state.sh scripts/lib/prt/json.sh scripts/lib/prt/marker.sh scripts/lib/prt/finding.sh scripts/lib/prt/gh.sh scripts/lib/prt/diff.sh scripts/lib/prt/render.sh scripts/lib/prt/model.sh scripts/lib/prt/reconcile.sh scripts/pr-review-fail-closed-digest.sh scripts/lib/api.sh scripts/pr-ci-health.sh scripts/eval/build-gold.sh scripts/eval/check-gold.sh scripts/eval/review-adapter.sh scripts/eval/judge.sh scripts/eval/run.sh scripts/eval/compare.sh scripts/eval/parse-reviews.sh scripts/test/review-adapter-test.sh scripts/test/build-gold-test.sh scripts/test/judge-test.sh scripts/test/compare-test.sh scripts/release-state.sh scripts/test/release-state-test.sh"
 
 [tasks."check:links"]
 description = "Check every internal markdown link resolves"
@@ -62,6 +62,7 @@ depends = ["lint:shell", "check:doc-sync", "check:doc-gate", "check:workflow-ref
 description = "Run this repo's own script test suites"
 run = """
 bash scripts/test/check-action-pins-test.sh .
+bash scripts/test/check-forbidden-terms-test.sh .
 bash scripts/test/check-label-docs-test.sh .
 bash scripts/test/github-settings-test.sh .
 bash scripts/test/govulncheck-gate-test.sh .
