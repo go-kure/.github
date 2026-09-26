@@ -22,6 +22,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
+# shellcheck source=scripts/exact-array-member.sh
+source "$SCRIPT_DIR/exact-array-member.sh"
 
 # Default organization and repos (override via environment variables).
 # GITHUB_REPOS_DEFAULT stays fixed even when GITHUB_REPOS is narrowed to a
@@ -1130,7 +1132,11 @@ audit_labels() {
             continue
         fi
 
-        if printf '%s\n' "$existing_labels" | grep -qxF -- "$name"; then
+        # Here-strings, not `printf | grep -q`, for every membership test on
+        # $existing_labels: grep -q exits on the first match, and under
+        # pipefail a printf still writing into the closed pipe fails the
+        # test even though the label is there.
+        if grep -qxF -- "$name" <<<"$existing_labels"; then
             # Compare metadata, not just the name — a name match alone used
             # to short-circuit as OK, so an edited color/description in
             # labels.json could never reach a repo where the label already
@@ -1166,7 +1172,7 @@ audit_labels() {
             # unconditionally skipped by the extra-label loop, so nothing else
             # ever flags the orphaned old name. Surface it instead.
             local old_name="${REVERSE_RENAME_MAP[$name]:-}"
-            if [ -n "$old_name" ] && printf '%s\n' "$existing_labels" | grep -qxF -- "$old_name" \
+            if [ -n "$old_name" ] && grep -qxF -- "$old_name" <<<"$existing_labels" \
                 && ! label_expected_on_repo "$old_name" "$repo"; then
                 echo -e "  ${YELLOW}DUPLICATE${NC}: $old_name coexists with $name — reconcile issues onto $name and delete $old_name manually (not automated: could drop issue associations)"
                 LABELS_DUPLICATE=$((LABELS_DUPLICATE + 1))
@@ -1179,7 +1185,7 @@ audit_labels() {
             # (go-kure/.github#154 review finding). Same rule in the DUPLICATE
             # and extra-label branches.
             local old_name="${REVERSE_RENAME_MAP[$name]:-}"
-            if [ -n "$old_name" ] && printf '%s\n' "$existing_labels" | grep -qxF -- "$old_name" \
+            if [ -n "$old_name" ] && grep -qxF -- "$old_name" <<<"$existing_labels" \
                 && ! label_expected_on_repo "$old_name" "$repo"; then
                 # Rename candidate exists
                 LABELS_RENAMED=$((LABELS_RENAMED + 1))
@@ -1544,14 +1550,14 @@ ruleset_diff() {
 
     local t
     for t in "${expected_types[@]}"; do
-        if printf '%s\n' "${actual_types[@]}" | grep -qx "$t"; then
+        if exact_array_member "$t" "${actual_types[@]}"; then
             printf 'OK\trules.%s\tpresent\tpresent\n' "$t"
         else
             printf 'MISSING\trules.%s\t-\t-\n' "$t"
         fi
     done
     for t in "${actual_types[@]}"; do
-        if ! printf '%s\n' "${expected_types[@]}" | grep -qx "$t"; then
+        if ! exact_array_member "$t" "${expected_types[@]}"; then
             printf 'EXTRA\trules.%s\t-\t-\n' "$t"
         fi
     done
@@ -1560,7 +1566,7 @@ ruleset_diff() {
     rules_json=$(ruleset_rules_json "$repo" "$ruleset_name")
 
     for t in "${expected_types[@]}"; do
-        printf '%s\n' "${actual_types[@]}" | grep -qx "$t" || continue
+        exact_array_member "$t" "${actual_types[@]}" || continue
         [ "$(rule_kind "$t")" = "flag" ] && continue
 
         local expected_params actual_params
