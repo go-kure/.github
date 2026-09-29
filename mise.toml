@@ -4,7 +4,7 @@
 # is the only edit needed — local runs and CI can no longer diverge.
 actionlint = "1.7.12"
 shellcheck = "0.11.0"
-yq = "4.53.6"
+yq = "4.54.1"
 lychee = "0.24.2"
 # renovate 44 declares engines.node ^24.11.0 (npm refuses to install it on an
 # older runtime) -- needed only to run scripts/test/renovate-lane-policy-test.mjs.
