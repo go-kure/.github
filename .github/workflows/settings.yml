@@ -160,8 +160,9 @@ jobs:
           with open("pr-ci-health-report.json") as f:
               data = json.load(f)
           failing = data["failing"]
+          no_checks = data["no_checks"]
           query_errors = data["query_errors"]
-          if not failing and not query_errors:
+          if not failing and not query_errors and not no_checks:
               print("All open, non-draft PRs green (or none open).")
           else:
               # Coverage-incomplete is stated up front and unconditionally whenever
@@ -185,6 +186,21 @@ jobs:
                       print(f"| `{p['repo']}` | [#{p['number']}]({p['url']}) | {p['state']} | {title} |")
               elif query_errors:
                   print("No failing PRs found among the repos that were queried.")
+              else:
+                  print("No open, non-draft PR has failing checks.")
+              # A PR with no checks at all never makes the job red (a PR opened
+              # seconds ago has none yet), but it must not read as green either:
+              # a workflow that never triggered looks exactly like this
+              # (go-kure/.github#175).
+              if no_checks:
+                  print()
+                  print(f"**{len(no_checks)} open PR(s) with no checks reported on the head commit (warning, not counted as failing):**")
+                  print()
+                  print("| Repo | PR | Title |")
+                  print("|------|----|-------|")
+                  for p in no_checks:
+                      title = p['title'].replace('|', '\\|')
+                      print(f"| `{p['repo']}` | [#{p['number']}]({p['url']}) | {title} |")
           EOF
             else
               echo "_Report file missing — the health-check script likely aborted before finishing;_"

@@ -16,8 +16,18 @@
 # distinct ERROR-prefixed line says which, so the two causes aren't
 # confused); 0 otherwise. A red run here is meant to be the notification.
 #
+# Open, non-draft PRs whose head commit has no statusCheckRollup at all are
+# listed separately as "no checks" (JSON key no_checks) without affecting the
+# exit status: a PR whose workflow never triggered (for example a base-branch
+# filter that skipped a stacked PR, go-kure/.github#175) is otherwise
+# invisible here, but a PR opened seconds ago legitimately has no rollup yet,
+# so this is a listed warning, not a red run.
+#
 # Known gaps (see docs/standards.md, "PR CI Health" for the full writeup):
-#  - Drafts are excluded (isDraft). A "dependency-dashboard-gated" exclusion
+#  - Drafts are excluded (isDraft), from both lists: a draft is declared work
+#    in progress, and red or missing checks there are expected rather than a
+#    health signal. The cost is that a draft whose workflow never triggered
+#    is not reported either. A "dependency-dashboard-gated" exclusion
 #    was considered and deferred — Renovate has no distinct API-visible
 #    state for "on hold via the Dependency Dashboard" that this script could
 #    key on; such PRs simply don't exist as open PRs yet, so nothing here
@@ -83,6 +93,7 @@ query($owner: String!, $repo: String!) {
 }'
 
 failing_json="[]"
+no_checks_json="[]"
 query_error_count=0
 query_error_repos="[]"
 for repo in $GITHUB_REPOS; do
@@ -117,14 +128,29 @@ for repo in $GITHUB_REPOS; do
             | select($state == "FAILURE" or $state == "ERROR")
             | {repo: $repo, number: $pr.number, title: $pr.title, url: $pr.url, state: $state}]')
 
+    # A null statusCheckRollup (no status and no check run reported on the
+    # head commit) and a missing head commit both read as "" here. Any
+    # non-empty state, PENDING and EXPECTED included, means something did
+    # report, so it is not "no checks".
+    page_no_checks=$(echo "$resp" | jq --arg repo "$repo" '
+        [.data.repository.pullRequests.nodes[]
+            | select(.isDraft == false)
+            | . as $pr
+            | ($pr.commits.nodes[0].commit.statusCheckRollup.state // "") as $state
+            | select($state == "")
+            | {repo: $repo, number: $pr.number, title: $pr.title, url: $pr.url}]')
+
     failing_json=$(jq -s 'add' <(echo "$failing_json") <(echo "$page_failing"))
+    no_checks_json=$(jq -s 'add' <(echo "$no_checks_json") <(echo "$page_no_checks"))
 done
 
 count=$(echo "$failing_json" | jq 'length')
+no_checks_count=$(echo "$no_checks_json" | jq 'length')
 
 if [ "$JSON_MODE" = true ]; then
-    jq -n --argjson failing "$failing_json" --argjson query_errors "$query_error_repos" \
-        '{failing: $failing, query_errors: $query_errors}' > pr-ci-health-report.json
+    jq -n --argjson failing "$failing_json" --argjson no_checks "$no_checks_json" \
+        --argjson query_errors "$query_error_repos" \
+        '{failing: $failing, no_checks: $no_checks, query_errors: $query_errors}' > pr-ci-health-report.json
 fi
 
 if [ "$count" -eq 0 ] && [ "$query_error_count" -eq 0 ]; then
@@ -138,6 +164,14 @@ else
     if [ "$query_error_count" -gt 0 ]; then
         echo "${RED}pr-ci-health: $query_error_count repo(s) could not be queried — coverage incomplete, see ERROR lines above${RESET}"
     fi
+fi
+
+# Listed after the verdict and never part of it: see the header for why a PR
+# with no checks is a warning, not a failure.
+if [ "$no_checks_count" -gt 0 ]; then
+    echo "WARNING: pr-ci-health: $no_checks_count open PR(s) with no checks reported on the head commit (not counted as failing)"
+    echo "$no_checks_json" | jq -r \
+        '.[] | "  " + .repo + "#" + (.number|tostring) + "  NO_CHECKS  " + .title + "  " + .url'
 fi
 
 [ "$count" -eq 0 ] && [ "$query_error_count" -eq 0 ]
