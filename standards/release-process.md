@@ -57,7 +57,7 @@ It prints the evidence it used, a recommended action, and exactly one of:
 | State | Meaning |
 |-------|---------|
 | `published` | the publishing job concluded success in **some** attempt, and the release object exists |
-| `partial` | the release exists and the publishing job **ran**, but never concluded success in any attempt — it failed or was cancelled, so the jobs that follow publication never ran; the recovery is by hand, not a re-run (below) |
+| `partial` | the release exists and the publishing job **ran**, but never concluded success in any attempt — it failed or was cancelled, so the run skipped the jobs that follow publication; the recovery is by hand, not a re-run, and leaves the state `partial` (below) |
 | `never-published` | no release object and no successful publishing job |
 | `contradictory` | the run record and the release object disagree, in **either** direction: a release exists that the job never ran to produce, or the job succeeded and the release is gone |
 | `no-run-found` | no workflow run for this tag at all **and no release object** |
@@ -121,16 +121,31 @@ Three things the script does that reading the run page by hand does not:
 
 The advice that recommends a re-run, `never-published`'s, names the **full** `gh run rerun <id>`
 and warns against `--failed` or single-job re-runs, which pin the reusable workflow to the first
-attempt's commit and so silently skip any fix merged to it since.
+attempt's commit and so silently skip any fix merged to it since. It also warns that on a stable tag
+the re-run deploys the docs as the newest release, into the tag's `vX.Y` slot and at the docs root:
+if a newer stable release has shipped since, its docs need redeploying afterwards.
 
 **`partial` is recovered by hand, not by a re-run.** While the release exists every path into
 publication refuses (the shared publisher's check, below, and each caller's own guard), and the
 release object is not what is missing: the lookup sees published releases only, and GoReleaser
-publishes a release only once its uploads finish, so what failed came after publication. What never
-ran are the caller's jobs that need a successful publishing job — the versioned docs deployment
-(stable tags only) and the module-proxy refresh. The advice prints the command for each one that
-applies to the tag, after a check of the assets against that tag's `.goreleaser.yml`. Missing assets
-(a leftover draft someone published by hand, say) are an escalation, and so is deleting the release.
+publishes a release only once its uploads finish, so what failed came after publication. What the
+run skipped are the caller's jobs that need a successful publishing job — the versioned docs
+deployment (stable tags only) and the module-proxy refresh. The advice prints the command for each
+one that applies to the tag, after a check of the assets against that tag's `.goreleaser.yml`.
+Missing assets (a leftover draft someone published by hand, say) are an escalation, and so is
+deleting the release.
+
+The docs command is not the publish workflow's own. That workflow always passes `set_latest=true`,
+which also deploys the tag to the docs root as the latest stable, because at publish time it takes
+the tag to be the newest release. A recovery can come after a newer one, so the advice has the
+operator list the stable releases first: a newer release in the same `vX.Y` line means no docs step
+(the slot already carries it), and otherwise `set_latest=true` only if the tag is still the newest
+stable release, `false` if not.
+
+`partial` describes the run record, not the follow-up work: doing the steps by hand changes nothing
+the script reads, so the state stays `partial` afterwards, and the steps may already have been done.
+Repeating them is safe: a docs deployment rebuilds the same slot from the tag (the check above made
+again), and the proxy refresh is a read.
 
 Every one of those behaviours is pinned by a case in `scripts/test/release-state-test.sh`,
 which stubs `gh` and needs no token and no network. A new fact about how GitHub reports

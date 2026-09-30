@@ -53,9 +53,11 @@
 #                     concluded success in any attempt — it failed or was
 #                     cancelled. The lookup sees published releases only, and
 #                     GoReleaser publishes once its uploads finish, so what
-#                     failed came after publication: the jobs that follow it
-#                     never ran. No re-run can finish it (the release guards
-#                     refuse while the release exists); the advice is by hand.
+#                     failed came after publication: the run skipped the jobs
+#                     that follow it. No re-run can finish it (the release
+#                     guards refuse while the release exists); the advice is by
+#                     hand. Doing it by hand changes nothing read here, so the
+#                     state stays `partial` afterwards.
 #   never-published   no release object, and no successful goreleaser job
 #   contradictory     the run record and the release object disagree, in either
 #                     direction: a release exists that the job never ran to
@@ -162,6 +164,9 @@ EOF
             # The docs slot is computed exactly as the shared workflow's
             # deploy-docs job computes it (v0.2.3 -> v0.2), and that job runs
             # only for a tag without a '-', so a prerelease gets no docs step.
+            # That job always passes set_latest=true: at publish time the tag
+            # is taken to be the newest release. A recovery can come after a
+            # newer one, so the advice prints the check, not the value.
             local minor="${TAG%.*}"
             cat <<EOF
 The release object exists and the publishing job ran, but it never concluded
@@ -172,7 +177,13 @@ keeps a release a draft until its uploads finish. So the uploads finished and
 the release was published; whatever failed, or cancelled the job, came after
 that (unless someone published a leftover draft by hand: step 1 checks). The
 release object is not the incomplete part; the jobs that need a successful
-publishing job are, because they were skipped.
+publishing job are, because the run skipped them.
+
+This state describes the run record, not that follow-up work: doing the steps
+below by hand changes nothing read here, so the state stays partial afterwards
+and they may already have been done. Repeating them is safe: a docs deployment
+rebuilds the same slot from the tag (make step 2's check again), and the proxy
+refresh is a read.
 
 Do NOT re-run, in any form. It is not a recovery here: while this release
 exists every path into publication refuses, the caller's guard-tag-ref job on a
@@ -196,8 +207,16 @@ EOF
                     ;;
                 *)
                     cat <<EOF
-2. Deploy the versioned docs, as the publish workflow does for a stable tag:
-     gh workflow run deploy-docs.yml --repo $REPO --ref $TAG -f version_slot=$minor -f version_label=$TAG -f set_latest=true
+2. Deploy the versioned docs the run skipped, unless a newer release has made
+   that wrong. The publish workflow takes the tag to be the newest release; a
+   recovery can come after a newer one. List the stable releases (the list is
+   in date order; compare versions):
+     gh release list --repo $REPO --exclude-drafts --exclude-pre-releases
+   If a newer $minor.x release is listed, skip this step: the $minor slot
+   already carries it. Otherwise pass set_latest=true only if $TAG is still the
+   newest stable release, and set_latest=false if not (true redeploys the docs
+   root as $TAG):
+     gh workflow run deploy-docs.yml --repo $REPO --ref $TAG -f version_slot=$minor -f version_label=$TAG -f set_latest=<true|false>
 EOF
                     ;;
             esac
@@ -214,6 +233,14 @@ safe:                      gh run rerun <run-id> --repo $REPO
 Do NOT use --failed or a single-job re-run: those pin the reusable workflow to
 the FIRST attempt's commit, so a fix merged to the shared workflow since then
 will not be picked up (FACT 1).
+
+On a stable tag the re-run also deploys the docs as if the tag were the newest
+release: into its vX.Y slot and at the docs root. If a newer stable release has
+shipped since (gh release list --repo $REPO --exclude-drafts --exclude-pre-releases),
+redeploy what that overwrote once the re-run finishes: the newest release of
+the tag's vX.Y line into that slot, and the newest stable release with
+set_latest=true (false for any other):
+  gh workflow run deploy-docs.yml --repo $REPO --ref <tag> -f version_slot=<vX.Y> -f version_label=<tag> -f set_latest=<true|false>
 
 "No release object" means no PUBLISHED one: this lookup cannot see drafts, and
 a failure mid-upload leaves one behind. If the releases page shows a draft for
