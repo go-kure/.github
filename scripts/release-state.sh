@@ -14,8 +14,9 @@
 #
 #   FACT 1  A full `gh run rerun <id>` re-resolves a reusable workflow at @main;
 #           `--failed` and single-job re-runs pin to the FIRST attempt's SHA. The
-#           two are not interchangeable, so the recovery advice names one and
-#           warns off the other rather than saying "re-run it".
+#           two are not interchangeable, so the advice that recommends a re-run
+#           (`never-published`) names one and warns off the other rather than
+#           saying "re-run it".
 #   FACT 2  The release's asset count is NOT an oracle. How many assets a complete
 #           release carries is decided by that tag's own .goreleaser.yml, and for a
 #           library repo the correct count is zero. The count is REPORTED as
@@ -50,7 +51,11 @@
 #                     afterwards leaves the state `published`.
 #   partial           the release exists, the publishing job RAN, and it never
 #                     concluded success in any attempt — it failed or was
-#                     cancelled, so the release may be incomplete
+#                     cancelled. The lookup sees published releases only, and
+#                     GoReleaser publishes once its uploads finish, so what
+#                     failed came after publication: the jobs that follow it
+#                     never ran. No re-run can finish it (the release guards
+#                     refuse while the release exists); the advice is by hand.
 #   never-published   no release object, and no successful goreleaser job
 #   contradictory     the run record and the release object disagree, in either
 #                     direction: a release exists that the job never ran to
@@ -154,23 +159,68 @@ number of assets proves nothing on its own (FACT 2).
 EOF
             ;;
         partial)
+            # The docs slot is computed exactly as the shared workflow's
+            # deploy-docs job computes it (v0.2.3 -> v0.2), and that job runs
+            # only for a tag without a '-', so a prerelease gets no docs step.
+            local minor="${TAG%.*}"
             cat <<EOF
-The release object exists, the publishing job ran, and it never concluded success
-in any attempt — it failed or was cancelled, so the release may be incomplete.
+The release object exists and the publishing job ran, but it never concluded
+success in any attempt: it failed or was cancelled.
 
-Re-run the WHOLE run:      gh run rerun <run-id> --repo $REPO
-Do NOT use --failed or a single-job re-run: those pin the reusable workflow to
-the FIRST attempt's commit, so a fix merged to the shared workflow since then
-will not be picked up (FACT 1).
+What that means: the lookup above sees published releases only, and GoReleaser
+keeps a release a draft until its uploads finish. So the uploads finished and
+the release was published; whatever failed, or cancelled the job, came after
+that (unless someone published a leftover draft by hand: step 1 checks). The
+release object is not the incomplete part; the jobs that need a successful
+publishing job are, because they were skipped.
 
+Do NOT re-run, in any form. It is not a recovery here: while this release
+exists every path into publication refuses, the caller's guard-tag-ref job on a
+full re-run and the first step of the shared publishing job on every path.
+(--failed and single-job re-runs carry that step only if the run's first
+attempt did, FACT 1; without it they would publish over the live release.)
 Deleting the release object is an escalation, not a step in this path.
+
+Recover by hand instead:
+
+1. Check the assets against that TAG's own .goreleaser.yml. The count above is
+   evidence, not an oracle (FACT 2). If anything is missing, for instance
+   because someone published a leftover draft by hand, stop and escalate.
+EOF
+            case "$TAG" in
+                *-*)
+                    cat <<EOF
+2. No docs deployment: $TAG is a prerelease,
+   and the publish workflow deploys versioned docs for stable tags only.
+EOF
+                    ;;
+                *)
+                    cat <<EOF
+2. Deploy the versioned docs, as the publish workflow does for a stable tag:
+     gh workflow run deploy-docs.yml --repo $REPO --ref $TAG -f version_slot=$minor -f version_label=$TAG -f set_latest=true
+EOF
+                    ;;
+            esac
+            cat <<EOF
+3. Refresh the Go module proxy. The module path is the go_module input the
+   caller's release-publish.yml passes; this line assumes github.com/$REPO:
+     curl -fsS https://proxy.golang.org/github.com/$REPO/@v/$TAG.info
 EOF
             ;;
         never-published)
             cat <<EOF
 No release object and no successful publishing job. Re-running the whole run is
 safe:                      gh run rerun <run-id> --repo $REPO
-Do NOT use --failed or a single-job re-run (FACT 1).
+Do NOT use --failed or a single-job re-run: those pin the reusable workflow to
+the FIRST attempt's commit, so a fix merged to the shared workflow since then
+will not be picked up (FACT 1).
+
+"No release object" means no PUBLISHED one: this lookup cannot see drafts, and
+a failure mid-upload leaves one behind. If the releases page shows a draft for
+this tag, the re-run creates a new release beside it; delete the stale draft
+afterwards (it was never public) by its release id or on the releases page, not
+with gh release delete $TAG, which can resolve the tag to the published release
+instead.
 EOF
             ;;
         contradictory)
@@ -214,9 +264,11 @@ No state yet: the publishing job for this tag has not concluded — it is still
 running. Every state this script reports is a statement about a FINISHED
 publish, so there is nothing to read here yet.
 
-Do NOT re-run, and do not start a second publish for this tag. Two of the states
-below this one recommend a re-run, and the one moment that is wrong is while the
-job is still going: a concurrent publish is how a tag gets published twice.
+Do NOT re-run, and do not start a second publish for this tag. The states below
+this one recommend acting on a finished publish, never-published by re-running
+it and partial by running its follow-up jobs by hand, and the one moment either
+is wrong is while the job is still going: a concurrent publish is how a tag gets
+published twice.
 
 Wait for the run to finish, then ask again.
 
@@ -234,7 +286,9 @@ no success was observed in what remained.
 
 A 404 on the RELEASE object is a fact about publishing. A 404 here is not: it is
 a hole in the evidence, and the states that would be reported from a record with
-a hole in it are the negative ones, which recommend a re-run.
+a hole in it are the negative ones, among them never-published, which recommends
+a re-run, and partial, which declares the publish failed and hands out manual
+steps.
 
 Do not re-run on this answer. Establish what happened to the missing run first,
 or check the release page directly.
@@ -353,7 +407,9 @@ esac
 # `never-published` with nothing in the output to say a run was dropped: the same
 # fail-open shape as the default-page jobs fetch, one level up. A truncation that
 # removes the evidence of success is the worst possible direction for this
-# script, because every state it can wrongly reach recommends a re-run.
+# script, because every state it can wrongly reach tells the operator to act on a
+# release that shipped: a re-run (`never-published`), manual follow-up steps over
+# a publish declared failed (`partial`), or an escalation (`contradictory`).
 if ! runs_json=$(gh_json_paginated "repos/$REPO/actions/runs?branch=$(urlencode "$TAG")" workflow_runs) \
    || [ -z "$runs_json" ]; then
     note "run list: LOOKUP FAILED for the tag"
@@ -548,8 +604,9 @@ fi
 
 # Answered BEFORE any state, because every state below is a statement about a
 # finished publish. A verdict read off a half-finished run is not merely
-# imprecise — `never-published` and `partial` both recommend a re-run, and the
-# one moment a re-run must not happen is while the job is still going.
+# imprecise — `never-published` recommends a re-run and `partial` recommends
+# running the publish's follow-up jobs by hand, and the one moment neither may
+# happen is while the job is still going.
 #
 # Unconditional, deliberately. This used to carry `&& PUBLISH_SUCCEEDED != true`,
 # by analogy with the evidence-gap guard below — but the two are not analogous. A
@@ -571,8 +628,9 @@ fi
 # left a hole in the run record; a success observed elsewhere cannot be un-seen
 # by that hole, so `published` and `contradictory` still stand. Every remaining
 # state rests on NOT having seen a success — which is exactly the claim a missing
-# attempt could refute — and `partial` and `never-published` both recommend a
-# re-run. So the gap is fatal only when no success was observed.
+# attempt could refute — and each acts on that claim: `never-published`
+# recommends a re-run, and `partial` declares the publish failed and prescribes
+# manual steps. So the gap is fatal only when no success was observed.
 if [ -n "$EVIDENCE_SKIPPED" ] && [ "$PUBLISH_SUCCEEDED" != true ]; then
     note "verdict input: part of the run record was unreadable ($EVIDENCE_SKIPPED) and no success was seen in the rest — a negative state here would rest on a record with a hole in it"
     emit undetermined 1 evidence-gap

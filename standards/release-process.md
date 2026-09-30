@@ -57,7 +57,7 @@ It prints the evidence it used, a recommended action, and exactly one of:
 | State | Meaning |
 |-------|---------|
 | `published` | the publishing job concluded success in **some** attempt, and the release object exists |
-| `partial` | the release exists and the publishing job **ran**, but never concluded success in any attempt — it failed or was cancelled, so the release may be incomplete |
+| `partial` | the release exists and the publishing job **ran**, but never concluded success in any attempt — it failed or was cancelled, so the jobs that follow publication never ran; the recovery is by hand, not a re-run (below) |
 | `never-published` | no release object and no successful publishing job |
 | `contradictory` | the run record and the release object disagree, in **either** direction: a release exists that the job never ran to produce, or the job succeeded and the release is gone |
 | `no-run-found` | no workflow run for this tag at all **and no release object** |
@@ -87,10 +87,11 @@ re-publishes a release that may already exist.
 
 **A publish that is still running also yields no state**, and reports `undetermined` for the same
 reason: every state in the table is a statement about a *finished* publish. This one is called out
-separately because it is the case where acting on a wrong answer does the most damage — two of the
-five states recommend a re-run, and the one moment a re-run must not happen is while the job is
-still going. The evidence block names the run and attempt that is in flight, and the advice says to
-wait rather than to re-run.
+separately because it is the case where acting on a wrong answer does the most damage —
+`never-published` recommends a re-run and `partial` recommends running the publication's follow-up
+jobs by hand, and the one moment neither may happen is while the job is still going. The evidence
+block names the run and attempt that is in flight, and the advice says to wait rather than to
+re-run.
 
 This outranks an earlier success, and that is the one place where "a success in some attempt wins"
 does not apply. A success settles what the *past* attempts did; a job running now is about the
@@ -118,9 +119,18 @@ Three things the script does that reading the run page by hand does not:
   non-rerun jobs forward unchanged, so an attempt's job list mixes attempts, and the
   conclusions are identical either way — only the timestamps separate them.
 
-The recovery advice always names the **full** `gh run rerun <id>` and warns against
-`--failed` or single-job re-runs, which pin the reusable workflow to the first attempt's
-commit and so silently skip any fix merged to it since.
+The advice that recommends a re-run, `never-published`'s, names the **full** `gh run rerun <id>`
+and warns against `--failed` or single-job re-runs, which pin the reusable workflow to the first
+attempt's commit and so silently skip any fix merged to it since.
+
+**`partial` is recovered by hand, not by a re-run.** While the release exists every path into
+publication refuses (the shared publisher's check, below, and each caller's own guard), and the
+release object is not what is missing: the lookup sees published releases only, and GoReleaser
+publishes a release only once its uploads finish, so what failed came after publication. What never
+ran are the caller's jobs that need a successful publishing job — the versioned docs deployment
+(stable tags only) and the module-proxy refresh. The advice prints the command for each one that
+applies to the tag, after a check of the assets against that tag's `.goreleaser.yml`. Missing assets
+(a leftover draft someone published by hand, say) are an escalation, and so is deleting the release.
 
 Every one of those behaviours is pinned by a case in `scripts/test/release-state-test.sh`,
 which stubs `gh` and needs no token and no network. A new fact about how GitHub reports
@@ -134,13 +144,17 @@ because `--failed` reschedules the failed publishing job but carries a separate 
 succeeded over without running it. An answer that is neither "exists" nor a `404` refuses as
 well, except on attempt 1 of a tag push, where it warns and proceeds. So a re-run is a
 recovery only while no release exists: while one does, every attempt that reaches this check
-is refused, including the full re-run the `partial` advice above names. One limit:
+is refused, which is why the `partial` advice above recommends no re-run at all. One limit:
 `--failed` and single-job re-runs resolve the workflow at the first attempt's commit, so they
 carry the check only for a run whose first attempt already used a version with it. The check
 sees published releases only, by design: GoReleaser keeps a release a draft until its uploads
 finish, so a draft left by a failure during upload is not refused, and a re-run then creates a
 new release and leaves that draft behind. `release-state.sh` reads the same published-release
-lookup, so such a run reports `never-published`, not `partial`.
+lookup, so such a run reports `never-published`, not `partial` — provided its run record is fully
+readable and no attempt is still running; otherwise it reports `undetermined` (a failed lookup, a
+publish still in flight, or a hole in the run record). The `never-published` advice says to delete
+the stale draft once the re-run has published, by its release id or on the releases page, never by
+tag.
 
 ## CI, tags, and identity
 
