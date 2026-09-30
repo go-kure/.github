@@ -156,6 +156,9 @@ echo "other $n" > "$RACE_DIR/other/kure/v9.$n/index.html"
 git -C "$RACE_DIR/other" add -A
 git -C "$RACE_DIR/other" commit --quiet -m "deploy: other slot $n"
 git -C "$RACE_DIR/other" push --quiet origin HEAD:main
+# With RACE_FETCH set, the deploying clone learns the other deploy's commit,
+# so git refuses the push as non-fast-forward rather than fetch first.
+[ -z "${RACE_FETCH:-}" ] || git -C "$RACE_DIR/target" fetch --quiet origin
 if [ -n "${RACE_TAG:-}" ]; then
     git -C "$RACE_DIR/srcwork" tag "$RACE_TAG"
     git -C "$RACE_DIR/srcwork" push --quiet origin "$RACE_TAG"
@@ -170,7 +173,7 @@ EOF
 deploy() {
     local d="$WORK/$1" slot="$2" label="$3" set_latest="$4"
     shift 4
-    OUT=$(RACE_DIR="$d" RACE_LIMIT="${RACE_LIMIT:-0}" RACE_TAG="${RACE_TAG:-}" \
+    OUT=$(RACE_DIR="$d" RACE_LIMIT="${RACE_LIMIT:-0}" RACE_TAG="${RACE_TAG:-}" RACE_FETCH="${RACE_FETCH:-}" \
         bash "${SCRIPT_UNDER_TEST:-$SCRIPT}" --source "$d/source" --target "$d/target" \
         --site-subdir kure --slot "$slot" --label "$label" --set-latest "$set_latest" \
         --slot-site "$d/build/slot" --root-site "$d/build/root" \
@@ -315,6 +318,17 @@ assert_contains "fetch first: the rejection is reported" "$OUT" "push to main re
 assert_eq "fetch first: two commits" 2 "$(cat "$WORK/fetchfirst/push-count")"
 assert_eq "fetch first: the other slot's deploy is kept" "other 1" "$(pages_file fetchfirst kure/v9.1/index.html)"
 assert_eq "fetch first: the slot is written" "slot v1.2.0" "$(pages_file fetchfirst kure/v1.2/index.html)"
+
+# The same race when the deploying clone already has the other deploy's
+# commit: git refuses the push as non-fast-forward.
+new_case nonff v1.1.0 v1.2.0
+builds nonff v1.2.0
+racer nonff post-commit
+RACE_LIMIT=1 RACE_FETCH=1 deploy nonff v1.2 v1.2.0 true
+assert_eq "non-fast-forward: exit 0" 0 "$RC"
+assert_contains "non-fast-forward: the rejection is reported" "$OUT" "push to main rejected (attempt 1/3)"
+assert_eq "non-fast-forward: the other slot's deploy is kept" "other 1" "$(pages_file nonff kure/v9.1/index.html)"
+assert_eq "non-fast-forward: the slot is written" "slot v1.2.0" "$(pages_file nonff kure/v1.2/index.html)"
 
 # ── 6c. refused for a reason other than a moved branch: no retry ──────────
 
