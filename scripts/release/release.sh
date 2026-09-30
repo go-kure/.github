@@ -143,12 +143,29 @@ validate_git_state() {
     fi
 }
 
-# A replacement is a local directory when it starts with ./, ../ or /. Only
-# replace directives use =>, on their own line or inside a replace ( ) block,
-# so every line is checked after its // comment is dropped.
+# A replacement is a local directory when its target, quoted or not, is . or ..
+# or starts with ./, ../ or / (or \ or C: as written on Windows): Go's own
+# rule. Only replace directives use =>, on their own line or inside a
+# replace ( ) block, so every line is checked; a // outside quotes ends it.
 check_local_replaces() {
     [ -f go.mod ] || return 0
-    if awk '{ sub(/\/\/.*/, "") } /=>[ \t]*(\.\.?)?\// { found = 1 } END { exit !found }' go.mod; then
+    if awk '
+        {
+            line = ""; quote = ""
+            for (i = 1; i <= length($0); i++) {
+                c = substr($0, i, 1)
+                if (quote == "" && substr($0, i, 2) == "//") break
+                if (quote == "" && (c == "\"" || c == "`")) quote = c
+                else if (c == quote) quote = ""
+                else if (quote == "\"" && c == "\\") { line = line c; i++; c = substr($0, i, 1) }
+                line = line c
+            }
+            if (!match(line, /=>[ \t]*/)) next
+            target = substr(line, RSTART + RLENGTH)
+            sub(/^["`]/, "", target)
+            if (target ~ /^(\.\.?([\/\\ \t\r"`]|$)|[\/\\]|[A-Za-z]:)/) found = 1
+        }
+        END { exit !found }' go.mod; then
         die "go.mod has a local replace directive; remove it before releasing."
     fi
 }
