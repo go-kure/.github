@@ -216,16 +216,20 @@ PROTECTIVE_RULE_TYPES=(
 # through unchanged ("."). Only required_status_checks needs a real remap:
 # policy uses {strict, contexts}, the API uses
 # {strict_required_status_checks_policy, required_status_checks: [{context}]}.
+# Its optional do_not_enforce_on_create keeps its API name and is sent only
+# when policy declares it; the API defaults it to false.
 declare -A RULE_TO_API_JQ=(
-    [required_status_checks]='{strict_required_status_checks_policy: .strict, required_status_checks: [.contexts[] | {context: .}]}'
+    [required_status_checks]='{strict_required_status_checks_policy: .strict, required_status_checks: [.contexts[] | {context: .}]} + (if has("do_not_enforce_on_create") then {do_not_enforce_on_create} else {} end)'
 )
 
 # API "parameters" object -> policy rule params. Types not listed here pass
 # through unchanged ("."). pull_request additionally drops dismissal_restriction
 # and required_reviewers: the live API returns them, but they're read-shaped —
 # pasting them back into policy and applying would risk a 422 on write.
+# required_status_checks keeps do_not_enforce_on_create only when true, so a
+# ruleset left at the API default imports without it.
 declare -A RULE_FROM_API_JQ=(
-    [required_status_checks]='{strict: .strict_required_status_checks_policy, contexts: [.required_status_checks[].context]}'
+    [required_status_checks]='{strict: .strict_required_status_checks_policy, contexts: [.required_status_checks[].context]} + (if .do_not_enforce_on_create == true then {do_not_enforce_on_create: true} else {} end)'
     [pull_request]='del(.dismissal_restriction, .required_reviewers)'
 )
 
