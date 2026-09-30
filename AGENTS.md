@@ -258,9 +258,6 @@ Reusable workflows have `on: workflow_call` in their trigger. Caller workflows (
 | `claude.yml` | issue, comment and review events containing `@claude` (via `claude-caller.yml`); no `pull_request` trigger — a PR event carries no mention, so the job would only start and skip | @claude AI assistant on PRs and issues | — | `CLAUDE_CODE_OAUTH_TOKEN` |
 | `pr-review.yml` | PR open/sync/reopen, drafts included (via `pr-review-caller.yml`; `ready_for_review` dropped once the rollout window closed — see `docs/pr-review-threads.md` § Draft PRs) | 2-pass AI code review via the `pr-review-threads` composite action; one resolvable, merge-gating PR review thread per finding (deduped by fingerprint, auto-resolved when fixed or judged a false positive). `pr-review.yml`'s own default `PR_REVIEW_THREADS_MODE` is now `enforce` (go-kure/.github#108), matching the org variable's live value since 2026-08-18. `pr-review / AI Code Review` is a required status check on kure/launcher only, deliberately excluded from `.github` — see `governance/repository-settings-policy.yaml` and `docs/standards.md` § Same-repo composite actions and the pin-bump procedure | `pr_review_context` (string, optional) | `KURE_BOT_PAT` (optional — falls back to `github.token`, which can create but never resolve its own threads; see "Token and bot identity" in `docs/pr-review-threads.md`) |
 | `release.yml` | `workflow_dispatch` from `main` or `release/vX.Y` (via the caller's `release.yml`, which offers `action` as a choice list) | The one manual release workflow: branch/action guard → CI wait (real `release*` runs only) → `scripts/release/release.sh` at this workflow's own commit (tag, CHANGELOG section, VERSION bump, and on `start-next-*` the old line's `release/vX.Y` branch, in one atomic push) → wait for Publish. Guide: `standards/release-process.md` | `action` (string, default `release`), `dry_run` | `KURE_BOT_APP_ID`, `KURE_BOT_APP_PRIVATE_KEY` |
-| `release-create.yml` | `workflow_dispatch` | Superseded by `release.yml`; removed once no caller uses it. Pre-flight CI gate + git-cliff tag creation | `type` (required), `scope`, `dry_run` | `KURE_BOT_APP_ID`, `KURE_BOT_APP_PRIVATE_KEY` |
-| `release-bump.yml` | `workflow_dispatch` | Superseded by `release.yml`; removed once no caller uses it. Bump `versions.env`/changelog without tagging a release | `scope` (required), `dry_run` | `KURE_BOT_APP_ID`, `KURE_BOT_APP_PRIVATE_KEY` |
-| `release-promote.yml` | `workflow_dispatch` | Superseded by `release.yml`; removed once no caller uses it. Promote a prerelease (beta → rc → stable) | `to` (required: `beta`\|`rc`\|`stable`), `dry_run` | `KURE_BOT_APP_ID`, `KURE_BOT_APP_PRIVATE_KEY` |
 | `release-publish.yml` | version tags (`v*`), and `workflow_dispatch` against an existing tag to re-publish it, via the `release-publish.yml` caller | GoReleaser (which artifacts, if any, is the consumer's `.goreleaser.yml` — a library repo may produce none), docs deploy, Go proxy refresh | `go_module` (required, e.g. `github.com/go-kure/kure`) | none (uses `secrets.GITHUB_TOKEN`) |
 
 Consumer repos call these as:
@@ -284,9 +281,8 @@ kure/launcher.
 - Changes take effect for **all consumer repos immediately** after merge to `main`
 - Test by triggering the corresponding `-caller.yml` workflow manually before merging (or, for the
   release workflows, by running the workflow itself via `workflow_dispatch` with `dry_run: true`)
-- `release.yml` (and the superseded `release-create.yml`, `release-bump.yml` and
-  `release-promote.yml`) accept `dry_run: true` for a preview run; a dry run of `release.yml` is
-  allowed from any branch and changes nothing. `release-publish.yml` has no `dry_run` input — it
+- `release.yml` accepts `dry_run: true` for a preview run; a dry run is allowed from any branch
+  and changes nothing. `release-publish.yml` has no `dry_run` input — it
   triggers on the version tag itself, so test changes to it via a caller repo's tag on a fork or a
   scratch tag first.
 - `release.yml` and `release-publish.yml`'s `validate` job check out `scripts/release/` from

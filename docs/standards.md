@@ -256,8 +256,8 @@ repo left in the org on Dependabot, for its single `github-actions` ecosystem.
 
 `.github`'s own `renovate.json` adds one `customManagers` regex entry, for the
 git-cliff version the shared release workflows install (`CLIFF_VERSION` in
-`release.yml`, `release-create.yml` and `release-promote.yml`, the
-`setup-git-cliff` `version:` input in `release-publish.yml`) and the one
+`release.yml`, the `setup-git-cliff` `version:` input in
+`release-publish.yml`) and the one
 `ci.yml` installs for `scripts/test/release-test.sh`. Each site carries a
 `# renovate: datasource=github-releases depName=orhun/git-cliff` line, and one
 depName means a bump moves every site in the same PR, so the release tests run

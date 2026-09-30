@@ -22,8 +22,8 @@ on:
         type: boolean
         default: false
 
-# One release at a time per repository. The group is the one the retired
-# Bump / Create / Promote workflows used, so none of them runs beside this one.
+# One release at a time per repository. The group keeps the name the retired
+# Release / Create workflow used.
 concurrency:
   group: release-create
   cancel-in-progress: false
