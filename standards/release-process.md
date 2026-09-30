@@ -13,7 +13,7 @@ A release takes two workflows. You run the first; the second runs by itself.
 | Workflow | Started by | What it does |
 |----------|------------|--------------|
 | **Release** | you, from the Actions tab | Checks the branch, waits for CI, writes the `CHANGELOG.md` section, commits, tags, moves `VERSION` on, and pushes all of it in one atomic push |
-| **Release / Publish** | the tag Release pushes | Tests, validates the tag, creates the GitHub release, deploys the versioned docs, refreshes the Go module proxy |
+| **Release / Publish** | the tag Release pushes | Tests, validates the tag, creates the GitHub release, starts the versioned docs deploy, refreshes the Go module proxy |
 
 ```text
 you ──▶ Release (main or release/vX.Y)
@@ -66,8 +66,10 @@ Release                                     [Run workflow ▾]
   and a GitHub release; every other option only moves `VERSION`.**
 - **Dry run** combines with every option. It changes nothing — no commit, no tag, no push — skips
   the CI and Publish waits, and prints the plan in the run's summary. It is allowed from any
-  branch, so a preview works on a branch that has no CI run. It still refuses a tag that already
-  exists, so a preview never promises a release the real run cannot make.
+  branch, so a preview works on a branch that has no CI run. It still refuses a tag or a next
+  `VERSION` that already exists. The real run checks more (green CI, a clean tree, no local
+  `replace` in `go.mod`, an unmoved branch tip), so a clean preview does not guarantee the real
+  run succeeds.
 
 ## Which option when
 
@@ -188,8 +190,9 @@ is started meanwhile, GitHub cancels the waiting one.
 3. **GoReleaser** — refuses if the tag already has a GitHub release, then renders the release
    notes (the commits since the previous tag on the same branch) and creates the release. What it
    attaches is set by this repository's `.goreleaser.yml`; a library may ship none.
-4. **Deploy versioned docs** — stable tags only: the `vX.Y` slot of the docs site, and the site's
-   `latest` only when this is the Latest release.
+4. **Start the versioned docs deploy** — stable tags only: the `vX.Y` slot of the docs site, and
+   the site's `latest` only when this is the Latest release. Publish does not wait for that run;
+   check it in the Actions tab.
 5. **Refresh the Go module proxy** — requests the new version from `proxy.golang.org`.
 
 ## When a release fails
