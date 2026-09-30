@@ -51,11 +51,38 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
+    outputs:
+      # `true` only for the highest stable tag; goreleaser's MAKE_LATEST and
+      # deploy-docs' set_latest both come from it.
+      latest: ${{ steps.latest.outputs.latest }}
     steps:
       - name: Check out code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
+
+      # actions/checkout reads an empty `ref` as "the default branch", which would
+      # pair this workflow with whatever policy script main holds. Refuse instead.
+      - name: Require this workflow's own commit
+        env:
+          WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          if [ -z "$WORKFLOW_REPOSITORY" ] || [ -z "$WORKFLOW_SHA" ]; then
+            echo "::error::job.workflow_repository or job.workflow_sha is empty, so the publish policy cannot be checked out at this workflow's own commit."
+            exit 1
+          fi
+
+      # Into a directory the caller's tree ignores for this job: nothing here
+      # commits, and goreleaser runs in a job of its own.
+      - name: Check out the publish policy
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .release-tools
+          sparse-checkout: scripts/release
+          persist-credentials: false
 
       - name: Validate tag format and CHANGELOG
         shell: bash
@@ -76,26 +103,26 @@ jobs:
             exit 1
           fi
 
-          # Ensure a newly pushed tag does not go backwards.
-          #
-          # Skipped on workflow_dispatch, which re-publishes a tag that already
-          # exists: progression is a property of CREATING a tag, and this tag
-          # passed the check when it was created. The `sed -n '2p'` below assumes
-          # the tag under release sorts first, which only holds for a fresh push.
-          # On a historical dispatch with two or more newer tags it picks a tag
-          # NEWER than $TAG and fails, blocking goreleaser (`needs: validate`) in
-          # exactly the long-lived recovery case dispatch exists to serve.
-          # The tag-format check above is what rejects a non-tag ref here.
-          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
-            echo "Re-publishing existing tag $TAG: skipping version-progression check"
-          else
-            LAST=$(git tag --list 'v*' --sort=-v:refname | sed -n '2p' || true)
-            if [ -n "$LAST" ]; then
-              if [ "$(printf '%s\n%s\n' "$LAST" "$TAG" | sort -V | tail -n1)" != "$TAG" ]; then
-                echo "Tag $TAG is not greater than last $LAST"; exit 1;
-              fi
-            fi
-          fi
+      # Ensure a newly pushed tag does not go backwards within its own line
+      # (vX.Y), in semver order; a backport on release/vX.Y is compared with its
+      # own line only.
+      #
+      # Skipped on workflow_dispatch, which re-publishes a tag that already
+      # exists: progression is a property of CREATING a tag, and this tag passed
+      # the check when it was created. Checked again, a dispatch of an older tag
+      # fails against a newer tag of its line, blocking goreleaser
+      # (`needs: validate`) in exactly the recovery case dispatch exists to serve.
+      # The tag-format check above is what rejects a non-tag ref here.
+      - name: Check version progression
+        if: ${{ github.event_name != 'workflow_dispatch' }}
+        run: bash .release-tools/scripts/release/publish-policy.sh progression "$GITHUB_REF_NAME"
+
+      - name: Decide whether this is the Latest release
+        id: latest
+        run: |
+          LATEST=$(bash .release-tools/scripts/release/publish-policy.sh latest "$GITHUB_REF_NAME")
+          echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "Latest release: $LATEST"
 
   goreleaser:
     needs: [test, validate]
@@ -250,13 +277,30 @@ jobs:
         with:
           # Pinned, not left at the action's default of latest, so the notes a
           # release ships are rendered by a known binary. Renovate bumps this pin
-          # together with release-create.yml's and release-promote.yml's
-          # CLIFF_VERSION (customManagers in renovate.json, one depName).
+          # together with the other git-cliff pins (customManagers in
+          # renovate.json, one depName).
           # renovate: datasource=github-releases depName=orhun/git-cliff
           version: "2.14.2"
 
+      # --use-branch-tags: the notes run from the previous tag on this tag's own
+      # branch, so a backport's notes hold only the backport, and a main release
+      # after a backport does not repeat it. scripts/test/release-test.sh runs
+      # this exact command.
       - name: Extract release notes
-        run: git-cliff --latest --strip header -o release-notes.md
+        run: git-cliff --latest --use-branch-tags --strip header -o release-notes.md
+
+      # The callers' .goreleaser.yml sets `make_latest: "{{ .Env.MAKE_LATEST }}"`,
+      # and GoReleaser fails on an unset variable, so it is set on every path.
+      # Empty means validate's output did not reach this job; refuse rather than
+      # guess which release GitHub should call Latest.
+      - name: Require the Latest decision
+        env:
+          MAKE_LATEST: ${{ needs.validate.outputs.latest }}
+        run: |
+          case "$MAKE_LATEST" in
+            true|false) echo "MAKE_LATEST=$MAKE_LATEST" ;;
+            *) echo "::error::validate did not decide whether $GITHUB_REF_NAME is the Latest release (got '$MAKE_LATEST'). Re-run the whole run, not only the failed jobs."; exit 1 ;;
+          esac
 
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7
@@ -269,10 +313,11 @@ jobs:
           args: release --clean --release-notes release-notes.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MAKE_LATEST: ${{ needs.validate.outputs.latest }}
 
   deploy-docs:
     name: Deploy versioned docs
-    needs: goreleaser
+    needs: [validate, goreleaser]
     runs-on: autops-kube-kure
     timeout-minutes: 5
     if: "!contains(github.ref_name, '-')"
@@ -283,7 +328,14 @@ jobs:
       - name: Trigger versioned docs deployment
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Only the highest stable tag moves the docs site's `latest`; a
+          # backport or an older tag re-published deploys its own slot only.
+          SET_LATEST: ${{ needs.validate.outputs.latest }}
         run: |
+          case "$SET_LATEST" in
+            true|false) ;;
+            *) echo "::error::validate did not decide whether $GITHUB_REF_NAME is the Latest release (got '$SET_LATEST')."; exit 1 ;;
+          esac
           TAG="${GITHUB_REF##*/}"
           # Extract minor version: v0.1.0 → v0.1
           MINOR="${TAG%.*}"
@@ -293,7 +345,7 @@ jobs:
             --ref "${TAG}" \
             -f version_slot="${MINOR}" \
             -f version_label="${TAG}" \
-            -f set_latest=true
+            -f set_latest="${SET_LATEST}"
 
   post-release:
     needs: goreleaser
