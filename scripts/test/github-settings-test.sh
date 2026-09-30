@@ -441,17 +441,28 @@ assert_contains "a merge_queue on release-protection is reported EXTRA" "$diff_r
 release_live_enforced_on_create=$(jq '(.rules[] | select(.type == "required_status_checks") | .parameters.do_not_enforce_on_create) = false' <<<"$release_live_match")
 diff_release_on_create=$(ruleset_diff "kure" "release-protection" "$release_live_enforced_on_create")
 assert_contains "checks enforced on branch creation are reported WRONG on release-protection" "$diff_release_on_create" \
-    "$(printf 'WRONG\trules.required_status_checks.do_not_enforce_on_create\ttrue\tnull')"
+    "$(printf 'WRONG\trules.required_status_checks.do_not_enforce_on_create\ttrue\tfalse')"
 
-# A policy declaring do_not_enforce_on_create: false (the API default) is clean
-# after an apply, whether the API echoes false or omits the key.
-explicit_false_json=$(jq '.github_defaults.rulesets["release-protection"].rules.required_status_checks.do_not_enforce_on_create = false' <<<"$POLICY_JSON")
+# do_not_enforce_on_create: false is the API default. A policy declaring it
+# (here as kure's override of the inherited true) is clean whether the API
+# echoes false or omits the key, and a live true is drift against it, as it is
+# against main-protection, which leaves it unset.
+explicit_false_json=$(jq '.github_repos.kure.rulesets["release-protection"].rules.required_status_checks.do_not_enforce_on_create = false' <<<"$POLICY_JSON")
+assert_eq "a repo override of the inherited do_not_enforce_on_create: true sends false" "false" \
+    "$(POLICY_JSON="$explicit_false_json" build_ruleset_payload "kure" "release-protection" | jq -r '.rules[] | select(.type=="required_status_checks") | .parameters.do_not_enforce_on_create')"
 release_live_omitted=$(jq '(.rules[] | select(.type == "required_status_checks") | .parameters) |= del(.do_not_enforce_on_create)' <<<"$release_live_match")
 for live in "$release_live_enforced_on_create" "$release_live_omitted"; do
     diff_explicit_false=$(POLICY_JSON="$explicit_false_json" ruleset_diff "kure" "release-protection" "$live")
     assert_eq "explicit do_not_enforce_on_create: false produces zero non-OK records" "" \
         "$(awk -F'\t' '$1 != "OK"' <<<"$diff_explicit_false")"
 done
+diff_false_live_true=$(POLICY_JSON="$explicit_false_json" ruleset_diff "kure" "release-protection" "$release_live_match")
+assert_contains "a live do_not_enforce_on_create: true against a policy false is reported WRONG" "$diff_false_live_true" \
+    "$(printf 'WRONG\trules.required_status_checks.do_not_enforce_on_create\tfalse\ttrue')"
+main_live_create_exempt=$(jq '(.rules[] | select(.type == "required_status_checks") | .parameters.do_not_enforce_on_create) = true' <<<"$main_live_match")
+diff_main_create_exempt=$(ruleset_diff "kure" "main-protection" "$main_live_create_exempt")
+assert_contains "a live do_not_enforce_on_create: true where policy leaves it unset is reported WRONG" "$diff_main_create_exempt" \
+    "$(printf 'WRONG\trules.required_status_checks.do_not_enforce_on_create\tfalse\ttrue')"
 
 # ---- build_ruleset_import_jq: strips API-only pull_request fields, flags
 # an injected unmodeled rule type instead of silently dropping it. ----
@@ -460,8 +471,12 @@ import_filter=$(build_ruleset_import_jq)
 imported=$(jq "$import_filter" <<<"$main_live_match")
 assert_eq "import strips dismissal_restriction from pull_request" "null" \
     "$(jq -r '.rules.pull_request.dismissal_restriction // "null"' <<<"$imported")"
-assert_eq "import maps required_status_checks to policy shape" '{"contexts":["lint","test","build","pr-review / AI Code Review"],"strict":false}' \
+assert_eq "import maps required_status_checks to policy shape" '{"contexts":["lint","test","build","pr-review / AI Code Review"],"do_not_enforce_on_create":false,"strict":false}' \
     "$(jq -Sc '.rules.required_status_checks' <<<"$imported")"
+assert_eq "import keeps a live do_not_enforce_on_create: true" "true" \
+    "$(jq "$import_filter" <<<"$release_live_match" | jq -r '.rules.required_status_checks.do_not_enforce_on_create')"
+assert_eq "import reads a live ruleset without do_not_enforce_on_create as false" "false" \
+    "$(jq "$import_filter" <<<"$release_live_omitted" | jq -r '.rules.required_status_checks.do_not_enforce_on_create')"
 assert_eq "import reports no unmapped rule types for a fully-modeled ruleset" "[]" \
     "$(jq -c '.unmapped_rule_types' <<<"$imported")"
 
