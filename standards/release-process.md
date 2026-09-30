@@ -204,6 +204,11 @@ commit a tag points at the first time anyone fetches it and never lets it change
 release cannot be told apart from one that never existed. Every recovery below works with the tag
 where it is.
 
+**Don't start a Release while a Publish run for another tag of this repository is still running.**
+Release runs one at a time and waits for its own tag's Publish, but a Publish you start by hand (a
+re-run or a dispatch) runs beside it. Publish decides the docs `latest` and the `vX.Y` slot from
+the tags it sees when it starts, so a newer tag pushed meanwhile can have its docs replaced.
+
 ### Release failed before pushing
 
 If Release failed in the checks, the CI wait, or the release job before its push, **nothing was
