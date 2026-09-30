@@ -46,6 +46,7 @@ settings audit/apply, ...); `mise run <task>` runs one, `mise run verify` runs e
 │   ├── release-state.sh                 # What a tag's publish run actually did (read-only)
 │   ├── release/release.sh               # The release script release.yml runs in every caller — canonical
 │   ├── release/publish-policy.sh        # Publish's per-line progression and Latest decisions
+│   ├── release/deploy-docs-push.sh      # The docs deploy's write and push (deploy-docs-push action)
 │   └── lib/api.sh                       # Shared HTTP API utilities
 ├── .github/
 │   ├── workflows/                       # GitHub Actions — self-CI, org settings, and the
@@ -333,6 +334,7 @@ workflows, which are job-level). Consumer repos reference one as a step:
 | `check-doc-sync` | Documentation-sync Layer 2 (structure). Runs `scripts/check-doc-sync.sh` against the caller's `docs-map.yaml`. Requires `yq` on `PATH` — install it in the consumer's job before this step. |
 | `check-doc-gate` | Documentation-sync Layer 3 (change-gate). Runs `scripts/check-doc-gate.sh` with `base-ref`/`root`/`skip` inputs. Requires `yq` on `PATH`. |
 | `check-links` | Documentation-sync Layer 1 (link check). Runs `scripts/check-links.sh` against a `built-dir` the caller has already rendered (e.g. a Hugo build). Requires `lychee` on `PATH`. |
+| `deploy-docs-push` | The write-and-push step of the callers' Deploy Docs workflow. Runs `scripts/release/deploy-docs-push.sh`: writes the version slot into the pages checkout, writes the site root only if `publish-policy.sh latest <label>` still prints `true` after a fresh tag fetch (a policy error fails the step), and on a rejected push starts again from the new tip, keeping other slots' deploys, up to 5 attempts. The caller builds the site and checks out the pages repository with its token. One `run:` step and `$SCRIPT_DIR` sibling calls only, so the consumers' `check-pin-impact.sh` follows everything it runs. Tests: `scripts/test/deploy-docs-push-test.sh`. |
 | `pr-review-threads` | Runs `scripts/pr-review-threads.sh`: 2-pass AI review + assessment, then reconciles findings into resolvable PR review threads (create/reply/resolve/unresolve via the GraphQL API), deduped by fingerprint and auto-resolved on fix or false-positive verdict. Used only by `pr-review.yml` in this repo — a same-repo action, so it is pinned by SHA like any other (see `docs/standards.md`, "Same-repo composite actions and the pin-bump procedure"), not referenced with a relative `./` path. |
 
 ## Git Workflow
