@@ -1573,8 +1573,10 @@ ruleset_diff() {
         exact_array_member "$t" "${actual_types[@]}" || continue
         [ "$(rule_kind "$t")" = "flag" ] && continue
 
+        # An explicit do_not_enforce_on_create: false is the API default, which
+        # RULE_FROM_API_JQ drops from the live side, so it compares as absent.
         local expected_params actual_params
-        expected_params=$(jq -c --arg t "$t" '.[$t] // {}' <<<"$rules_json")
+        expected_params=$(jq -c --arg t "$t" '.[$t] // {} | if .do_not_enforce_on_create == false then del(.do_not_enforce_on_create) else . end' <<<"$rules_json")
         actual_params=$(jq -c --arg t "$t" '.rules[] | select(.type == $t) | .parameters' <<<"$full_ruleset" \
             | jq -c "$(rule_from_api_jq "$t")")
 
