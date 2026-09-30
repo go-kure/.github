@@ -364,9 +364,10 @@ a newer one exists ([go-kure/.github#239](https://github.com/go-kure/.github/iss
 If `goreleaser` concluded `success` and only a later job failed (docs deploy or proxy refresh),
 **do not publish again**:
 
-- The later job concluded `failure` and the cause was transient: `gh run rerun --failed <run-id>`.
-  This re-runs the failed job only; the release is not touched. If the docs deploy then refuses
-  because validate did not decide the docs deploy, continue with the next bullet.
+- The later job concluded `failure` and the cause was transient:
+  `gh run rerun --failed <run-id> --repo go-kure/<repo>`. This re-runs the failed job only; the
+  release is not touched. If the docs deploy then refuses because validate did not decide the
+  docs deploy, continue with the next bullet.
 - The later job concluded `cancelled` or `timed_out`, or the shared workflow needs a fix: a full
   re-run would redo publication and is refused. Do the follow-up work directly:
 
