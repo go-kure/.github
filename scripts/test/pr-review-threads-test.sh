@@ -2248,14 +2248,17 @@ fake_curl_orchestrator() {
                   }]
                 }}}}}')"
             else
-              resp="$(jq -n --arg body "$(_prt_test_owned_thread_body)" '
+              # PRT_TEST_OWNED_AUTHOR (go-kure/.github#153): the first
+              # comment's author. Default "test-bot" matches the harness's
+              # PRT_BOT_LOGIN; anything else makes the marked thread foreign.
+              resp="$(jq -n --arg body "$(_prt_test_owned_thread_body)" --arg author "${PRT_TEST_OWNED_AUTHOR:-test-bot}" '
                 {data:{repository:{pullRequest:{reviewThreads:{
                   pageInfo:{hasNextPage:false,endCursor:null},
                   nodes:[{
                     id:"THREAD1", isResolved:false, isOutdated:false,
                     resolvedBy:null, viewerCanResolve:true, viewerCanUnresolve:true,
                     comments:{pageInfo:{hasNextPage:false,endCursor:null},
-                      nodes:[{id:"C1", databaseId:1, body:$body, author:{login:"test-bot"}}]}
+                      nodes:[{id:"C1", databaseId:1, body:$body, author:{login:$author}}]}
                   }]
                 }}}}}')"
             fi
@@ -2444,6 +2447,7 @@ run_orchestrator() {
     PRT_TEST_PR_READ_FAIL_AFTER_CALL="${PRT_TEST_PR_READ_FAIL_AFTER_CALL:-0}" \
     PRT_TEST_TWO_FILE_DIFF="${PRT_TEST_TWO_FILE_DIFF:-0}" \
     PRT_TEST_ISSUE_COMMENT_LOG="${PRT_TEST_ISSUE_COMMENT_LOG:-}" \
+    PRT_TEST_OWNED_AUTHOR="${PRT_TEST_OWNED_AUTHOR:-test-bot}" \
     PRT_TEST_ISSUE_COMMENTS_LIST="${PRT_TEST_ISSUE_COMMENTS_LIST:-}" \
     PRT_TEST_PARTIAL_WRITE_FAIL="${PRT_TEST_PARTIAL_WRITE_FAIL:-}" \
     PRT_TEST_WRITE_FAIL_BODY_MATCH="${PRT_TEST_WRITE_FAIL_BODY_MATCH:-}" \
@@ -3689,6 +3693,13 @@ assert_eq "orchestrator: 50/50/20 thread inventory retains and logs all 120 thre
   "true" "$(grep -q 'threads listed: 120, owned=0' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 assert_eq "orchestrator: 50/50/20 thread inventory never hits argv E2BIG" \
   "false" "$(grep -q 'Argument list too long' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+# The 120 threads are human threads with no marker: none may count as a
+# foreign-marked bot thread (go-kure/.github#153's detector keys on the marker,
+# not on the author alone).
+assert_eq "orchestrator: 120 unmarked human threads -> foreign_marked=0" \
+  "true" "$(grep -qF 'threads listed: 120, owned=0, foreign_marked=0' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator: 120 unmarked human threads -> no foreign-marked-threads reason" \
+  "false" "$(grep -qF 'foreign-marked-threads' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 
 # The first 50 comments plus 50/20 follow-up pages leave the combined extra
 # comment accumulator above 131072 bytes. The final reply is human-authored;
@@ -3733,6 +3744,36 @@ assert_eq "orchestrator: inventory HTTP failure makes zero PATCH/create/reply/re
 PRT_TEST_INVENTORY_MODE=single
 PRT_TEST_EMPTY_DIFF=0
 PRT_TEST_FIRST_ABSENT_SHA=''
+
+# go-kure/.github#153 (interim detector): a thread whose first comment
+# carries a valid marker but was opened by another login is not owned —
+# correctly, this run may not edit another account's comment — but after a
+# bot-identity change every thread is orphaned that way, silently. It must
+# now surface as a REVIEW_DEGRADED foreign-marked-threads reason (exit 0, a
+# ::warning) and a foreign_marked= count on the threads-listed line, without
+# the thread being reconciled or the clean verdict being withheld.
+PRT_TEST_OWNED_AUTHOR=github-actions
+PRT_TEST_ISSUE_COMMENT_BODY_FILE="$(mktemp)"
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator: foreign-marked thread -> exits 0 (degraded, not incomplete)" "0" "$rc"
+assert_eq "orchestrator: foreign-marked thread -> REVIEW_DEGRADED names the count, the foreign login and the configured one" \
+  "true" "$(grep -qF 'REVIEW_DEGRADED: foreign-marked-threads: 1 thread(s) carry this action'"'"'s marker but were opened by github-actions, not the configured bot login test-bot;' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator: foreign-marked thread -> ::warning on stdout, no ::error" \
+  "true false" "$(grep -q '::warning title=PR review threads degraded::foreign-marked-threads' "$PRT_TEST_STDOUT_FILE" && echo true || echo false) $(grep -q '::error title=' "$PRT_TEST_STDOUT_FILE" && echo true || echo false)"
+assert_eq "orchestrator: foreign-marked thread -> threads-listed line counts it, and it is not owned" \
+  "true" "$(grep -qF 'threads listed: 1, owned=0, foreign_marked=1' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator: foreign-marked thread -> never reconciled (no PATCH/resolve/unresolve/reply)" \
+  "0 0 0 0" "$(cat "$PRT_TEST_PATCH_COUNTFILE") $(cat "$PRT_TEST_RESOLVE_COUNTFILE") $(cat "$PRT_TEST_UNRESOLVE_COUNTFILE") $(cat "$PRT_TEST_REPLY_COUNTFILE")"
+assert_eq "orchestrator: foreign-marked thread -> the clean verdict is still posted (the reason is not a parse failure)" \
+  "true" "$(grep -qF 'Reviewed, no findings' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && echo true || echo false)"
+PRT_TEST_OWNED_AUTHOR=test-bot
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator: normal run -> threads-listed line reports foreign_marked=0" \
+  "true" "$(grep -qF 'threads listed: 1, owned=1, foreign_marked=0' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator: normal run -> no foreign-marked-threads reason" \
+  "false" "$(grep -qF 'foreign-marked-threads' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+rm -f "$PRT_TEST_ISSUE_COMMENT_BODY_FILE"
+unset PRT_TEST_ISSUE_COMMENT_BODY_FILE PRT_TEST_OWNED_AUTHOR
 
 rm -f "$PRT_TEST_DIFF_COUNTFILE" "$PRT_TEST_META_COUNTFILE" "$PRT_TEST_MODEL_COUNTFILE" \
       "$PRT_TEST_ASSESS_COUNTFILE" \
