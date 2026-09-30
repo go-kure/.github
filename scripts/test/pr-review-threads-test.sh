@@ -1198,6 +1198,25 @@ assert_eq "prt_render_clean_comment_superseded: overflow-comment POST failed (ar
 assert_eq "prt_render_clean_comment_superseded: overflow-comment POST failed (args zeroed) -> takes the unaccounted branch instead" \
   "true" "$(grep -qF 'reach any durable outcome' <<< "$superseded_overflow_post_failed" && echo true || echo false)"
 
+# go-kure/.github#150: a superseded clean-verdict comment carries a separate
+# state line directly before the identity marker, in every one of the four
+# branches (unaccounted, threads-only, advisory, suppressed-only), so a
+# reader can tell it from a live clean verdict without parsing the heading.
+# The identity marker stays the last line (asserted per branch above), and
+# the state line must never parse as a thread marker.
+for superseded_case in "$superseded_unaccounted" "$superseded_body" "$superseded_mixed" "$superseded_suppressed_only"; do
+  assert_eq "prt_render_clean_comment_superseded: state line sits directly before the marker ($(sed -n 3p <<< "$superseded_case" | cut -c1-40)...)" \
+    "$PRT_MARKER_STATE_SUPERSEDED" "$(tail -2 <<< "$superseded_case" | head -1)"
+  assert_eq "prt_render_clean_comment_superseded: identity marker is still the last line ($(sed -n 3p <<< "$superseded_case" | cut -c1-40)...)" \
+    "$PRT_MARKER_CLEAN" "$(tail -1 <<< "$superseded_case")"
+done
+assert_eq "prt_render_clean_comment: a live clean verdict carries no superseded state line" \
+  "false" "$(grep -qF "$PRT_MARKER_STATE_SUPERSEDED" <<< "$clean_body" && echo true || echo false)"
+assert_eq "PRT_MARKER_STATE_SUPERSEDED: prt_marker_parse does not read the state line as a thread marker" \
+  "false" "$(prt_marker_parse "$PRT_MARKER_STATE_SUPERSEDED" >/dev/null 2>&1 && echo true || echo false)"
+assert_eq "PRT_MARKER_STATE_SUPERSEDED: does not contain the clean identity marker, so the upsert lookup cannot match on it alone" \
+  "false" "$(grep -qF "$PRT_MARKER_CLEAN" <<< "$PRT_MARKER_STATE_SUPERSEDED" && echo true || echo false)"
+
 # ============================================================ render.sh: prt_render_summary Line column (go-kure/.github#190)
 # The job-summary table is the same content-loss class as the quarantine/
 # overflow/advisory tables, even though it's ephemeral ($GITHUB_STEP_SUMMARY,

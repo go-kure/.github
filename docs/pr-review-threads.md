@@ -134,6 +134,21 @@ overrides the workflow's own default) is one of three values. An unrecognized va
   for a finding the model itself calls a false positive; an empty diff does not shortcut it to one
   push.
 
+  **The clean-verdict comment.** A zero-finding `enforce` run posts one plain issue comment,
+  "Reviewed, no findings", naming the reviewed head SHA, model and chunk count
+  (`prt_render_clean_comment`, `render.sh`). Its last line is the identity marker
+  `<!-- gokure-pr-review:v1-clean -->` (`PRT_MARKER_CLEAN`, `marker.sh`); every later run finds the
+  comment by that marker (a `contains` match on comments authored by the bot login) and edits it in
+  place rather than posting another. When a later run on the same PR finds something, the comment is
+  rewritten, never deleted, to a struck-through "superseded" body
+  (`prt_render_clean_comment_superseded`), because the older SHA really was reviewed clean. A
+  superseded body carries a second line directly before the identity marker:
+  `<!-- gokure-pr-review:state=superseded -->` (`PRT_MARKER_STATE_SUPERSEDED`, go-kure/.github#150).
+  A reader or tool can tell a superseded comment from a live clean verdict by that line alone,
+  without parsing the heading. The identity marker stays the last line, so the lookup is unchanged,
+  and the state line cannot parse as a thread marker (`PRT_MARKER_RE` requires `v1 fp=`). A later
+  zero-finding run rewrites the comment back to a live clean verdict without the state line.
+
 ## The two-PR pin-bump requirement
 
 `.github/workflows/pr-review.yml` pins the composite action by commit SHA

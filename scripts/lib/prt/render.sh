@@ -336,7 +336,9 @@ EOF
 #                                      QUARANTINED_COUNT NONE_ANCHORED_COUNT
 # — rewrites (never deletes) a prior clean-verdict comment once a later run
 # on the same PR finds something. Deleting would destroy the audit trail
-# that SHA really was reviewed clean.
+# that SHA really was reviewed clean. Every branch ends with the
+# PRT_MARKER_STATE_SUPERSEDED line followed by PRT_MARKER_CLEAN as the last
+# line (go-kure/.github#150, marker.sh).
 #
 # "The review threads on this PR carry the current state" is true whenever
 # THREADS_WRITTEN>0 OR NONE_ANCHORED_COUNT>0 — the latter is the steady-state
@@ -383,6 +385,7 @@ suppressed as a false positive. Check the job log for the REVIEW_INCOMPLETE reas
 "create failed" for a single finding, "failed to post overflow comment" for the whole
 advisory batch) and re-run if needed.
 
+${PRT_MARKER_STATE_SUPERSEDED}
 ${PRT_MARKER_CLEAN}
 EOF
   elif [ "$advisory_count" -eq 0 ] && [ "$threads_carry" -gt 0 ]; then
@@ -392,6 +395,7 @@ EOF
 A later review of \`${sha}\` reported **${count} finding(s)**. The review
 threads on this PR carry the current state.
 
+${PRT_MARKER_STATE_SUPERSEDED}
 ${PRT_MARKER_CLEAN}
 EOF
   elif [ "$advisory_count" -gt 0 ]; then
@@ -409,6 +413,7 @@ ${suppressed} suppressed (false positive), ${overflow} beyond the gating cap,
 ${quarantined} withheld (ambiguous fingerprint) — see the advisory comment
 on this PR for the withheld/overflow finding bodies.
 
+${PRT_MARKER_STATE_SUPERSEDED}
 ${PRT_MARKER_CLEAN}
 EOF
   else
@@ -420,6 +425,7 @@ updated no review thread this run: all suppressed as false positives, with
 no durable output surface anywhere on this PR (suppressed findings are
 never rendered, by design).
 
+${PRT_MARKER_STATE_SUPERSEDED}
 ${PRT_MARKER_CLEAN}
 EOF
   fi

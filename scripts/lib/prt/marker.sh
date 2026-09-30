@@ -39,6 +39,14 @@ PRT_MARKER_RE='^<!-- gokure-pr-review:v1 fp=([0-9a-f]{16}(-[0-9]+)?)( collision=
 # kept anyway as the same defensive habit, not because it's load-bearing here.
 # shellcheck disable=SC2034 # read by render.sh/pr-review-threads.sh, not within this file
 PRT_MARKER_CLEAN='<!-- gokure-pr-review:v1-clean -->'
+# State line on a superseded clean-verdict comment (go-kure/.github#150),
+# emitted on the line directly before PRT_MARKER_CLEAN, which stays the last
+# line so the upsert lookup (a `contains` match on PRT_MARKER_CLEAN) finds the
+# comment unchanged. A reader can tell a superseded comment from a live clean
+# verdict by this line instead of parsing the strikethrough heading. It
+# cannot parse as a thread marker: PRT_MARKER_RE requires `v1 fp=`.
+# shellcheck disable=SC2034 # read by render.sh, not within this file
+PRT_MARKER_STATE_SUPERSEDED='<!-- gokure-pr-review:state=superseded -->'
 
 # prt_marker_build FP [COLLISION] [FIRST_ABSENT_SHA] [CONTENT_FP]
 # COLLISION: "true" or "" . Prints the marker line to stdout.
