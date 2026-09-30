@@ -143,27 +143,37 @@ validate_git_state() {
     fi
 }
 
-# A replacement is a local directory when its target, quoted or not, is . or ..
-# or starts with ./, ../ or / (or \ or C: as written on Windows): Go's own
-# rule. Only replace directives use =>, on their own line or inside a
-# replace ( ) block, so every line is checked; a // outside quotes ends it.
+# A replacement is a local directory exactly when no version follows its
+# target: Go requires one after a module path and refuses one after a
+# directory. So the target, quoted (escapes included) or bare, is skipped and
+# the rest of the line checked, which needs no path decoding. Only replace
+# directives use =>, on their own line or inside a replace ( ) block, so every
+# line is checked; a // outside quotes ends it.
 check_local_replaces() {
     [ -f go.mod ] || return 0
     if awk '
         {
-            line = ""; quote = ""
+            line = ""; quoted = 0
             for (i = 1; i <= length($0); i++) {
                 c = substr($0, i, 1)
-                if (quote == "" && substr($0, i, 2) == "//") break
-                if (quote == "" && (c == "\"" || c == "`")) quote = c
-                else if (c == quote) quote = ""
-                else if (quote == "\"" && c == "\\") { line = line c; i++; c = substr($0, i, 1) }
+                if (!quoted && substr($0, i, 2) == "//") break
+                if (c == "\"") quoted = !quoted
+                else if (quoted && c == "\\") { line = line c; i++; c = substr($0, i, 1) }
                 line = line c
             }
             if (!match(line, /=>[ \t]*/)) next
-            target = substr(line, RSTART + RLENGTH)
-            sub(/^["`]/, "", target)
-            if (target ~ /^(\.\.?([\/\\ \t\r"`]|$)|[\/\\]|[A-Za-z]:)/) found = 1
+            rest = substr(line, RSTART + RLENGTH)
+            if (substr(rest, 1, 1) == "\"") {
+                for (i = 2; i <= length(rest); i++) {
+                    c = substr(rest, i, 1)
+                    if (c == "\\") i++
+                    else if (c == "\"") break
+                }
+                rest = substr(rest, i + 1)
+            } else {
+                sub(/^[^ \t\r]*/, "", rest)
+            }
+            if (rest !~ /[^ \t\r]/) found = 1
         }
         END { exit !found }' go.mod; then
         die "go.mod has a local replace directive; remove it before releasing."
