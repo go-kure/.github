@@ -109,6 +109,13 @@ The `settings.yml` workflow runs this automatically in audit mode on push to mai
 4. After merge, trigger `settings.yml` manually via `workflow_dispatch` with `mode: apply`
    (`repo` defaults to `all`)
 
+Exit status: audit mode exits 1 when it finds any drift. `--apply` exits 1 when any write it
+attempted failed — a ruleset create/update, the classic-protection delete, a label
+create/rename/update/delete, or a repository, security or organization settings write — and
+lists each failed write in the summary. The run continues past a failed write, so one refusal
+does not hide the rest. Drift that `--apply` cannot fix (a label `DUPLICATE`, an audit-only
+`BLOCKED` setting) is reported but does not fail an apply run; audit mode is the gate for that.
+
 ### Finding drift from live settings (`--import`)
 
 ```bash

@@ -109,11 +109,11 @@ jobs:
                   if r["rulesets_missing"]: rs += f", **{r['rulesets_missing']} wrong**"
                   print(f"| `{r['repo']}` | {lbl} | {sett} | {rs} | {status} |")
           EOF
-            if grep -qE 'MISSING|WRONG|LEGACY|RENAME|EXTRA|SKIP|CREATING|RENAMING|SETTING|UPDATING|DELETING|UNMANAGED|BLOCKED|DUPLICATE' settings-output.txt 2>/dev/null; then
+            if grep -qE 'MISSING|WRONG|LEGACY|RENAME|EXTRA|SKIP|CREATING|RENAMING|SETTING|UPDATING|DELETING|UNMANAGED|BLOCKED|DUPLICATE|FAILED' settings-output.txt 2>/dev/null; then
               echo ""
               echo "## Changes"
               echo '```'
-              grep -E 'Repository:|Organization:|MISSING|WRONG|LEGACY|RENAME|EXTRA|SKIP|CREATING|RENAMING|SETTING|UPDATING|DELETING|BLOCKED|UNMANAGED|DUPLICATE' settings-output.txt
+              grep -E 'Repository:|Organization:|MISSING|WRONG|LEGACY|RENAME|EXTRA|SKIP|CREATING|RENAMING|SETTING|UPDATING|DELETING|BLOCKED|UNMANAGED|DUPLICATE|FAILED' settings-output.txt
               echo '```'
             fi
             echo ""

@@ -283,6 +283,19 @@ SETTINGS_BLOCKED=0
 RULESET_MISSING=0
 RULESET_OK=0
 
+# Apply-mode writes that failed this run, one human-readable entry each.
+# print_summary lists them and returns 1 when any exist: without this, a
+# failed write printed a FAILED line (or only gh's own stderr) and the run
+# still exited 0, because --all runs each repo under `|| true` and
+# print_summary only failed in audit mode (go-kure/.github#242).
+APPLY_FAILURES=()
+
+# record_apply_failure WHAT — note one failed apply-mode write. WHAT names
+# the repo/org and the object, e.g. "kure: create label area/x".
+record_apply_failure() {
+    APPLY_FAILURES+=("$1")
+}
+
 # JSON results
 json_results="[]"
 json_org_result="null"
@@ -1025,6 +1038,7 @@ apply_ruleset() {
             # Surface the real API error (permissions, 422 validation, etc.) instead
             # of guessing — a swallowed error here once masked a payload bug.
             echo -e "  ${RED}FAILED${NC}: Could not update ruleset: ${api_err}"
+            record_apply_failure "$repo: update ruleset '$ruleset_name'"
         fi
     else
         echo -e "  ${YELLOW}CREATING${NC}: Ruleset '$ruleset_name'"
@@ -1034,6 +1048,7 @@ apply_ruleset() {
             echo -e "  ${GREEN}APPLIED${NC}: Ruleset '$ruleset_name' created"
         else
             echo -e "  ${RED}FAILED${NC}: Could not create ruleset: ${api_err}"
+            record_apply_failure "$repo: create ruleset '$ruleset_name'"
         fi
     fi
 }
@@ -1050,6 +1065,7 @@ remove_classic_branch_protection() {
             echo -e "  ${GREEN}REMOVED${NC}: Classic branch protection deleted"
         else
             echo -e "  ${RED}FAILED${NC}: Could not remove classic branch protection (requires admin access)"
+            record_apply_failure "$repo: remove classic branch protection on main"
         fi
     fi
 }
@@ -1161,11 +1177,14 @@ audit_labels() {
                     echo -e "  ${YELLOW}UPDATING${NC}: $name (color/description drift)"
                     local encoded_name
                     encoded_name=$(url_encode_label "$name")
-                    gh api "repos/$GITHUB_ORG/$repo/labels/$encoded_name" \
+                    if ! gh api "repos/$GITHUB_ORG/$repo/labels/$encoded_name" \
                         --method PATCH \
                         -f color="$color" \
                         -f description="$description" \
-                        --silent
+                        --silent; then
+                        echo -e "  ${RED}FAILED${NC}: Could not update label $name"
+                        record_apply_failure "$repo: update label $name"
+                    fi
                 else
                     echo -e "  ${RED}WRONG${NC}: $name (color=$live_color desc='$live_desc', should be color=$color desc='$description')"
                 fi
@@ -1203,12 +1222,15 @@ audit_labels() {
                     # would (go-kure/.github#125 fix, same defect class).
                     local encoded_old_name
                     encoded_old_name=$(url_encode_label "$old_name")
-                    gh api "repos/$GITHUB_ORG/$repo/labels/$encoded_old_name" \
+                    if ! gh api "repos/$GITHUB_ORG/$repo/labels/$encoded_old_name" \
                         --method PATCH \
                         -f new_name="$name" \
                         -f color="$color" \
                         -f description="$description" \
-                        --silent
+                        --silent; then
+                        echo -e "  ${RED}FAILED${NC}: Could not rename label $old_name -> $name"
+                        record_apply_failure "$repo: rename label $old_name -> $name"
+                    fi
                 else
                     echo -e "  ${YELLOW}RENAME${NC}: $old_name -> $name (use --apply to rename)"
                 fi
@@ -1217,12 +1239,15 @@ audit_labels() {
                 LABELS_MISSING=$((LABELS_MISSING + 1))
                 if [ "$apply" = "true" ]; then
                     echo -e "  ${YELLOW}CREATING${NC}: $name"
-                    gh api "repos/$GITHUB_ORG/$repo/labels" \
+                    if ! gh api "repos/$GITHUB_ORG/$repo/labels" \
                         --method POST \
                         -f name="$name" \
                         -f color="$color" \
                         -f description="$description" \
-                        --silent
+                        --silent; then
+                        echo -e "  ${RED}FAILED${NC}: Could not create label $name"
+                        record_apply_failure "$repo: create label $name"
+                    fi
                 else
                     echo -e "  ${RED}MISSING${NC}: $name"
                 fi
@@ -1262,7 +1287,10 @@ audit_labels() {
                     echo -e "  ${YELLOW}DELETING${NC}: $existing_name"
                     local encoded_name
                     encoded_name=$(url_encode_label "$existing_name")
-                    gh api "repos/$GITHUB_ORG/$repo/labels/$encoded_name" --method DELETE --silent
+                    if ! gh api "repos/$GITHUB_ORG/$repo/labels/$encoded_name" --method DELETE --silent; then
+                        echo -e "  ${RED}FAILED${NC}: Could not delete label $existing_name"
+                        record_apply_failure "$repo: delete label $existing_name"
+                    fi
                 fi
             else
                 echo -e "  ${RED}EXTRA${NC}: $existing_name"
@@ -1307,10 +1335,13 @@ audit_repo_settings() {
 
     # Apply all setting fixes in one PATCH call
     if [ "$apply" = "true" ] && [ "$fixes" != "{}" ]; then
-        gh api "repos/$GITHUB_ORG/$repo" \
+        if ! gh api "repos/$GITHUB_ORG/$repo" \
             --method PATCH \
             --input - <<<"$fixes" \
-            --silent
+            --silent; then
+            echo -e "  ${RED}FAILED${NC}: Could not apply repository settings"
+            record_apply_failure "$repo: apply repository settings ($(jq -r 'keys | join(", ")' <<<"$fixes"))"
+        fi
     fi
 }
 
@@ -1359,10 +1390,13 @@ audit_security_settings() {
     done
 
     if [ "$apply" = "true" ] && [ "$fixes" != "{}" ]; then
-        gh api "repos/$GITHUB_ORG/$repo" \
+        if ! gh api "repos/$GITHUB_ORG/$repo" \
             --method PATCH \
             --input - <<<"$(jq -n --argjson f "$fixes" '{security_and_analysis: $f}')" \
-            --silent
+            --silent; then
+            echo -e "  ${RED}FAILED${NC}: Could not apply security settings"
+            record_apply_failure "$repo: apply security settings ($(jq -r 'keys | join(", ")' <<<"$fixes"))"
+        fi
     fi
 
     local expected_dsu actual_dsu
@@ -1376,10 +1410,13 @@ audit_security_settings() {
             SETTINGS_MISSING=$((SETTINGS_MISSING + 1))
             if [ "$apply" = "true" ]; then
                 echo -e "  ${YELLOW}SETTING${NC}: security.dependabot_security_updates to $expected_dsu (was: $actual_dsu)"
+                local dsu_method=DELETE
                 if [ "$expected_dsu" = "enabled" ]; then
-                    gh api "repos/$GITHUB_ORG/$repo/automated-security-fixes" --method PUT --silent
-                else
-                    gh api "repos/$GITHUB_ORG/$repo/automated-security-fixes" --method DELETE --silent
+                    dsu_method=PUT
+                fi
+                if ! gh api "repos/$GITHUB_ORG/$repo/automated-security-fixes" --method "$dsu_method" --silent; then
+                    echo -e "  ${RED}FAILED${NC}: Could not set security.dependabot_security_updates"
+                    record_apply_failure "$repo: set security.dependabot_security_updates to $expected_dsu"
                 fi
             else
                 echo -e "  ${RED}WRONG${NC}: security.dependabot_security_updates = $actual_dsu (should be $expected_dsu)"
@@ -1446,10 +1483,13 @@ audit_org_settings() {
     done
 
     if [ "$apply" = "true" ] && [ "$fixes" != "{}" ]; then
-        gh api "orgs/$GITHUB_ORG" \
+        if ! gh api "orgs/$GITHUB_ORG" \
             --method PATCH \
             --input - <<<"$fixes" \
-            --silent
+            --silent; then
+            echo -e "  ${RED}FAILED${NC}: Could not apply organization settings"
+            record_apply_failure "org $GITHUB_ORG: apply organization settings ($(jq -r 'keys | join(", ")' <<<"$fixes"))"
+        fi
     fi
 }
 
@@ -1512,7 +1552,10 @@ audit_org_actions() {
         for key in "${ORG_ACTIONS_PERMISSIONS_KEYS[@]}"; do
             body=$(jq --arg k "$key" --argjson v "$(org_policy_json "actions.$key")" '. + {($k): $v}' <<<"$body")
         done
-        gh api "orgs/$GITHUB_ORG/actions/permissions" --method PUT --input - <<<"$body" --silent
+        if ! gh api "orgs/$GITHUB_ORG/actions/permissions" --method PUT --input - <<<"$body" --silent; then
+            echo -e "  ${RED}FAILED${NC}: Could not apply organization Actions permissions"
+            record_apply_failure "org $GITHUB_ORG: apply Actions permissions"
+        fi
     fi
 
     if [ "$apply" = "true" ] && [ "$workflow_drift" = "true" ]; then
@@ -1520,7 +1563,10 @@ audit_org_actions() {
         for key in "${ORG_ACTIONS_WORKFLOW_KEYS[@]}"; do
             body=$(jq --arg k "$key" --argjson v "$(org_policy_json "actions.$key")" '. + {($k): $v}' <<<"$body")
         done
-        gh api "orgs/$GITHUB_ORG/actions/permissions/workflow" --method PUT --input - <<<"$body" --silent
+        if ! gh api "orgs/$GITHUB_ORG/actions/permissions/workflow" --method PUT --input - <<<"$body" --silent; then
+            echo -e "  ${RED}FAILED${NC}: Could not apply organization Actions workflow permissions"
+            record_apply_failure "org $GITHUB_ORG: apply Actions workflow permissions"
+        fi
     fi
 }
 
@@ -2137,6 +2183,19 @@ print_summary() {
     if [ "$total_issues" -gt 0 ] && [ "$apply" != "true" ]; then
         echo ""
         echo "Run with --apply to fix issues"
+        return 1
+    fi
+
+    # Apply mode fails only on a write that did not go through. Drift that
+    # --apply cannot fix (a label DUPLICATE, an audit-only setting) still
+    # exits 0 here — audit mode is the gate for that (go-kure/.github#242).
+    if [ "$apply" = "true" ] && [ "${#APPLY_FAILURES[@]}" -gt 0 ]; then
+        echo ""
+        echo -e "${RED}${#APPLY_FAILURES[@]} apply-mode write(s) failed:${NC}"
+        local failure
+        for failure in "${APPLY_FAILURES[@]}"; do
+            echo -e "  ${RED}FAILED${NC}: $failure"
+        done
         return 1
     fi
 
