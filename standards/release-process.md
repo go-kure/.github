@@ -242,7 +242,7 @@ It prints the evidence it used, a recommended action, and exactly one of:
 | State | Meaning |
 |-------|---------|
 | `published` | the publishing job concluded success in **some** attempt, and the release object exists |
-| `partial` | the release exists and the publishing job **ran**, but never concluded success in any attempt — it failed or was cancelled, so the release may be incomplete |
+| `partial` | the release exists and the publishing job **ran**, but never concluded success in any attempt — it failed or was cancelled, so the run skipped the jobs that follow publication; the recovery is by hand, not a re-run, and leaves the state `partial` (below) |
 | `never-published` | no release object and no successful publishing job |
 | `contradictory` | the run record and the release object disagree, in **either** direction: a release exists that the job never ran to produce, or the job succeeded and the release is gone |
 | `no-run-found` | no workflow run for this tag at all **and no release object** |
@@ -272,10 +272,11 @@ re-publishes a release that may already exist.
 
 **A publish that is still running also yields no state**, and reports `undetermined` for the same
 reason: every state in the table is a statement about a *finished* publish. This one is called out
-separately because it is the case where acting on a wrong answer does the most damage — two of the
-five states recommend a re-run, and the one moment a re-run must not happen is while the job is
-still going. The evidence block names the run and attempt that is in flight, and the advice says to
-wait rather than to re-run.
+separately because it is the case where acting on a wrong answer does the most damage —
+`never-published` recommends a re-run and `partial` recommends running the publication's follow-up
+jobs by hand, and the one moment neither may happen is while the job is still going. The evidence
+block names the run and attempt that is in flight, and the advice says to wait rather than to
+re-run.
 
 This outranks an earlier success, and that is the one place where "a success in some attempt wins"
 does not apply. A success settles what the *past* attempts did; a job running now is about the
@@ -339,9 +340,17 @@ Why the rows split this way:
   publication. The check sees published releases only: GoReleaser keeps a release a draft until its
   uploads finish, so a draft left by a failed upload is not refused, and a re-run creates a new
   release beside it. `release-state.sh` reads the same lookup, so that case reports
-  `never-published`.
+  `never-published`, provided the run record is fully readable and no attempt is still running
+  (otherwise `undetermined`). Once the re-run has published, delete the stale draft by its release
+  id or on the releases page, never by tag: `gh release delete <tag>` can resolve the tag to the
+  published release.
 
-#### Recovery when the release exists
+`release-state.sh` gives the cautious form of this table: its advice for `never-published` is
+always the full re-run, with a warning against `--failed`. On a stable tag it also lists every
+stable release (`gh` lists 30 unless given `--limit`) and says to escalate before re-running when
+a newer one exists ([go-kure/.github#239](https://github.com/go-kure/.github/issues/239)).
+
+#### Recovery when the release exists and publishing succeeded
 
 If `goreleaser` concluded `success` and only a later job failed (docs deploy or proxy refresh),
 **do not publish again**:
@@ -363,11 +372,30 @@ If `goreleaser` concluded `success` and only a later job failed (docs deploy or 
   curl -fsS https://proxy.golang.org/github.com/go-kure/<repo>/@v/<tag>.info
   ```
 
-Any other shape — a release exists while `goreleaser` never concluded `success` (`partial`), or
-`contradictory` — is **an escalation, not a self-service recovery**. Collect the
-`release-state.sh` output and hand it to a maintainer. Do not delete the release object: whether it
-is this run's to remove is exactly what cannot be established from the command line, and a
-release can be replaced by hand once its provenance is settled.
+#### Recovery when the release exists but publishing never succeeded (`partial`)
+
+GoReleaser publishes a release only once its uploads finish, so what failed came after
+publication: the release object is not what is missing, the jobs that need a successful
+publishing job are (the docs deploy and the proxy refresh), because the run skipped them. **Do not
+re-run, in any form**: while the release exists every path into publication refuses. Instead:
+
+1. Check the release's assets against the tag's own `.goreleaser.yml`. If anything is missing (a
+   leftover draft someone published by hand, say), escalate.
+2. Do the follow-up work by hand with the commands above. `release-state.sh` prints them for the
+   tag, except that for a stable tag that is not the newest stable release it says to escalate
+   instead of deploying the docs
+   ([go-kure/.github#239](https://github.com/go-kure/.github/issues/239)).
+
+The state stays `partial` afterwards: it describes the run record, which these steps do not
+change, and they may already have been done. Repeating them is safe: a docs deploy rebuilds the
+same slot from the tag, and the proxy refresh is a read.
+
+#### Anything else
+
+`contradictory` is **an escalation, not a self-service recovery**. Collect the `release-state.sh`
+output and hand it to a maintainer. Do not delete the release object: whether it is this run's to
+remove is exactly what cannot be established from the command line, and a release can be replaced
+by hand once its provenance is settled.
 
 #### Known limits
 
