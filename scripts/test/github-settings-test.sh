@@ -443,6 +443,16 @@ diff_release_on_create=$(ruleset_diff "kure" "release-protection" "$release_live
 assert_contains "checks enforced on branch creation are reported WRONG on release-protection" "$diff_release_on_create" \
     "$(printf 'WRONG\trules.required_status_checks.do_not_enforce_on_create\ttrue\tnull')"
 
+# A policy declaring do_not_enforce_on_create: false (the API default) is clean
+# after an apply, whether the API echoes false or omits the key.
+explicit_false_json=$(jq '.github_defaults.rulesets["release-protection"].rules.required_status_checks.do_not_enforce_on_create = false' <<<"$POLICY_JSON")
+release_live_omitted=$(jq '(.rules[] | select(.type == "required_status_checks") | .parameters) |= del(.do_not_enforce_on_create)' <<<"$release_live_match")
+for live in "$release_live_enforced_on_create" "$release_live_omitted"; do
+    diff_explicit_false=$(POLICY_JSON="$explicit_false_json" ruleset_diff "kure" "release-protection" "$live")
+    assert_eq "explicit do_not_enforce_on_create: false produces zero non-OK records" "" \
+        "$(awk -F'\t' '$1 != "OK"' <<<"$diff_explicit_false")"
+done
+
 # ---- build_ruleset_import_jq: strips API-only pull_request fields, flags
 # an injected unmodeled rule type instead of silently dropping it. ----
 
