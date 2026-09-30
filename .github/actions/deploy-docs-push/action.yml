@@ -1,0 +1,71 @@
+name: Deploy docs and push
+description: >-
+  Write one docs build into a checkout of the pages repository and push it: the
+  version slot always, the site root only if the label is still the highest stable
+  tag when the root is written (tags fetched again, decided by this repository's
+  publish policy at this action's own commit; a policy error fails the step). A push
+  rejected because another slot's deploy landed first is written again on the new
+  tip and retried, a bounded number of times. See scripts/release/deploy-docs-push.sh
+  for the full rule. The caller builds the site and checks out the pages repository
+  with a push-capable token in prior steps; this action does neither itself.
+
+inputs:
+  source-path:
+    description: The caller's checkout. Its origin's tags decide the root; its HEAD names the deploy commit.
+    required: false
+    default: "."
+  target-path:
+    description: The pages repository checkout, on its branch, with credentials that can push.
+    required: true
+  site-subdir:
+    description: The caller's directory in the pages repository, one path segment (e.g. kure).
+    required: true
+  slot:
+    description: The version slot, one path segment (e.g. dev, v0.3); <site-subdir>/<slot>/ is replaced.
+    required: true
+  label:
+    description: The version label; a release tag when set-latest is "true".
+    required: true
+  set-latest:
+    description: '"true" asks for the site root, re-checked at write time; "false" never writes it.'
+    required: true
+  slot-site:
+    description: The built site for the slot. Must not be inside target-path.
+    required: true
+  root-site:
+    description: The built site for the root. Required when set-latest is "true"; must not be inside target-path.
+    required: false
+    default: ""
+  cname:
+    description: The custom domain written to CNAME.
+    required: false
+    default: www.gokure.dev
+
+runs:
+  using: composite
+  steps:
+    - name: Deploy and push
+      shell: bash
+      # The script lives at scripts/release/ of go-kure/.github, three levels up
+      # from this action's directory, and runs the publish policy next to it, so
+      # both come from the commit this action is pinned to. The one run: step
+      # and the one script entry point keep the consumers' pin-impact check able
+      # to follow everything this action executes.
+      #
+      # Inputs are bound to env vars, not interpolated into the run: script, so
+      # a value is passed as data and never parsed as shell syntax.
+      env:
+        DDP_SOURCE: ${{ inputs.source-path }}
+        DDP_TARGET: ${{ inputs.target-path }}
+        DDP_SITE: ${{ inputs.site-subdir }}
+        DDP_SLOT: ${{ inputs.slot }}
+        DDP_LABEL: ${{ inputs.label }}
+        DDP_SET_LATEST: ${{ inputs.set-latest }}
+        DDP_SLOT_SITE: ${{ inputs.slot-site }}
+        DDP_ROOT_SITE: ${{ inputs.root-site }}
+        DDP_CNAME: ${{ inputs.cname }}
+      run: |
+        bash "$GITHUB_ACTION_PATH/../../../scripts/release/deploy-docs-push.sh" \
+          --source "$DDP_SOURCE" --target "$DDP_TARGET" --site-subdir "$DDP_SITE" \
+          --slot "$DDP_SLOT" --label "$DDP_LABEL" --set-latest "$DDP_SET_LATEST" \
+          --slot-site "$DDP_SLOT_SITE" --root-site "$DDP_ROOT_SITE" --cname "$DDP_CNAME"
