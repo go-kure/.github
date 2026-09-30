@@ -680,9 +680,20 @@ non-draft PRs via GraphQL, and fails (posting a table to the step summary) if an
 there is no separate alerting path. It only reads; it never comments, labels, or otherwise touches
 a PR.
 
-Two things it deliberately does not do, both because there is no verified mechanism to key on yet
-rather than because they were judged unimportant:
+It also lists open, non-draft PRs whose head commit has **no checks at all** (a null
+`statusCheckRollup`) as a separate `no_checks` section — in the job log as a `WARNING:` line, in the
+step summary as its own table, and in `pr-ci-health-report.json` next to `failing` and
+`query_errors`. This section never turns the job red: a PR opened seconds ago legitimately has no
+checks yet. It exists because a workflow that never triggered — for example a `pull_request`
+`branches:` filter that skipped a stacked PR (go-kure/.github#175) — otherwise shows no failure
+anywhere. A `PENDING` or `EXPECTED` rollup means something did report, so it is not listed.
 
+Three things it deliberately does not do. The first is a scope choice; the other two are missing
+because there is no verified mechanism to key on yet, not because they were judged unimportant:
+
+- **No drafts.** Drafts are excluded from both the failing and the no-checks lists: a draft is
+  declared work in progress, so red or missing checks there are expected. The cost is that a draft
+  whose workflow never triggered is not reported either.
 - **No "on hold via the Dependency Dashboard" exclusion.** Renovate has no distinct, API-visible
   state for a PR it is deliberately holding back — such a PR simply doesn't exist as an open PR
   yet, so nothing here needs to special-case it. If Renovate-authored PRs turn out to be a real

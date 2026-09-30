@@ -355,6 +355,8 @@ workflows, which are job-level). Consumer repos reference one as a step:
 - **Conventional commits**: `feat:`, `fix:`, `docs:`, `chore:`, `ci:`, `build:`
 - **Linear history** enforced — rebase only, no merge commits
 - **Required CI**: `lint`, `test`, `build`, `rebase-check`
+- **Stacked PRs get CI too**: `ci.yml` runs on every `pull_request` whatever its base branch.
+  Editing a PR's title, body or base does not start a new run; push to re-run.
 - Use `gh pr create` to open pull requests
 
 ## Agent gates (A1–A7)
