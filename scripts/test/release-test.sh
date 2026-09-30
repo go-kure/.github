@@ -483,6 +483,35 @@ run_release atomicbranch main start-next-minor
 assert_eq "release branch refused by the remote: fails" 1 "$RC"
 assert_eq "release branch refused by the remote: main not pushed either" "$before" "$(remote_ref atomicbranch refs/heads/main)"
 
+# fail_git <name> <subcommand>: a git on PATH, for that fixture's runs, that
+# fails <subcommand> and passes everything else to the real git.
+REAL_GIT=$(command -v git)
+fail_git() {
+    mkdir -p "$WORK/$1/failgit"
+    cat > "$WORK/$1/failgit/git" <<EOF
+#!/bin/sh
+if [ "\$1" = "$2" ]; then echo "test git: $2 fails" >&2; exit 1; fi
+exec "$REAL_GIT" "\$@"
+EOF
+    chmod +x "$WORK/$1/failgit/git"
+}
+
+# Building the release branch commit must stop the release on any failed
+# step: a failed update-index once left the branch at the stable tag with
+# VERSION unchanged, and a failed commit-tree turned the push into a delete.
+for step in update-index commit-tree; do
+    new_fixture "fail-$step" v0.2.0-rc.1
+    run_release "fail-$step" main release-as-stable
+    fail_git "fail-$step" "$step"
+    before=$(remote_ref "fail-$step" refs/heads/main)
+    run_release "fail-$step" main start-next-minor PATH="$WORK/fail-$step/failgit:$PATH"
+    assert_eq "release branch commit, $step fails: release fails" 1 "$RC"
+    assert_eq "release branch commit, $step fails: no release branch" "" \
+        "$(remote_ref "fail-$step" refs/heads/release/v0.2)"
+    assert_eq "release branch commit, $step fails: main not pushed" "$before" \
+        "$(remote_ref "fail-$step" refs/heads/main)"
+done
+
 # ── CHANGELOG and release notes on both branches after a backport ─────────
 #
 # The `line` fixture now holds, in time order: v0.2.0 (first feature) on
