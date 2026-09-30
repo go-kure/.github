@@ -307,7 +307,7 @@ assert_contains "a dropped copilot_code_review rule is reported MISSING" "$diff_
 
 main_live_match=$(jq -n '{
     id: 12903081, name: "main-protection", target: "branch", enforcement: "active",
-    conditions: {ref_name: {include: ["refs/heads/main"], exclude: []}},
+    conditions: {ref_name: {include: ["refs/heads/main", "refs/heads/release/*"], exclude: []}},
     bypass_actors: [{actor_id: 2882845, actor_type: "Integration", bypass_mode: "always"}],
     rules: [
         {type: "deletion"}, {type: "non_fast_forward"}, {type: "required_linear_history"},
@@ -337,6 +337,12 @@ assert_eq "clean kure main-protection (with API-only pull_request extras) produc
 main_live_strict_drift=$(jq '(.rules[] | select(.type == "required_status_checks") | .parameters.strict_required_status_checks_policy) = true' <<<"$main_live_match")
 diff_main_strict=$(ruleset_diff "kure" "main-protection" "$main_live_strict_drift")
 assert_contains "a strict=true drift on kure is reported WRONG" "$diff_main_strict" "$(printf 'WRONG\trules.required_status_checks.strict\tfalse\ttrue')"
+
+# The policy protects release/* branches too (go-kure/.github#237); a live
+# ruleset still covering main alone must read as drift, not as clean.
+main_live_main_only=$(jq '.conditions.ref_name.include = ["refs/heads/main"]' <<<"$main_live_match")
+diff_main_only=$(ruleset_diff "kure" "main-protection" "$main_live_main_only")
+assert_contains "a main-protection not covering release/* is reported WRONG" "$diff_main_only" "$(printf 'WRONG\tconditions')"
 
 # ---- build_ruleset_import_jq: strips API-only pull_request fields, flags
 # an injected unmodeled rule type instead of silently dropping it. ----

@@ -589,6 +589,10 @@ grpc bump within hours of each other.
 | `main-protection`                                    | `active`    | .github, kure, launcher |
 | `Code Quality Copilot review for default branch`      | `disabled`  | kure, launcher only |
 
+`main-protection` covers `main` and every `release/*` branch. A release branch gets the same
+required checks as `main` and, on kure and launcher, the same merge queue and release-bot bypass,
+so a backport PR lands the way a PR to `main` does.
+
 ## Organization Settings
 
 Organization-level settings (`orgs/go-kure`) are managed separately from the per-repo settings
