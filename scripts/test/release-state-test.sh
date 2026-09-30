@@ -508,18 +508,29 @@ assert_contains "never-published advice says to delete the stale draft afterward
     "$OUT" "delete the stale draft"
 assert_contains "the draft is deleted by id, not by tag" \
     "$OUT" "gh release delete v1.0.0, which can resolve"
-# A full re-run runs the publish workflow's docs job, which always deploys a
-# stable tag as the latest. Re-run after a newer stable release, that overwrites
-# the docs root (and the slot, under a newer patch), so the advice checks the
-# complete list first and escalates instead (#239); it prints no redeploy.
-assert_contains "never-published advice warns the re-run deploys docs as the newest" \
-    "$OUT" "On a stable tag the re-run also deploys the docs as if the tag were the newest"
-assert_contains "never-published advice lists every stable release, past the default 30" \
-    "$OUT" "gh release list --repo go-kure/kure --exclude-drafts --exclude-pre-releases --limit 1000"
-assert_contains "never-published advice escalates before re-running behind a newer release" \
-    "$OUT" "If a newer stable release than v1.0.0 is listed, escalate before re-running"$'\n'"(#239)"
+# Publish decides the docs slot and set_latest from the repository's tags
+# (publish-policy.sh), so a re-run behind a newer release leaves that release's
+# docs alone. The advice says so and no longer asks for a check or an escalation
+# first (#239); it prints no redeploy of its own.
+assert_contains "never-published advice says Publish decides the docs from the tags" \
+    "$OUT" "deciding from the repository's"$'\n'"tags"
+assert_contains "never-published advice says a newer patch keeps its slot" \
+    "$OUT" "slot only if no newer stable patch of that line exists"
+assert_contains "never-published advice says the root goes to the highest stable tag only" \
+    "$OUT" "the docs root only if v1.0.0 is the highest stable tag"
+assert_not_contains "never-published advice no longer escalates before re-running" \
+    "$OUT" "escalate"
+assert_not_contains "never-published advice no longer asks for a release listing" \
+    "$OUT" "gh release list"
 assert_not_contains "never-published advice prints no docs redeploy of its own" \
     "$OUT" "gh workflow run deploy-docs.yml"
+# A re-run keeps the original push event, so Publish checks version progression
+# again and fails validate once a newer tag of the same line exists; re-runs also
+# expire after 30 days. Both cases need the dispatch, at the tag itself.
+assert_contains "never-published advice names the dispatch for a newer same-line tag" \
+    "$OUT" "If a newer tag of v1.0.0's own line exists, or the run is over 30 days old,"
+assert_contains "never-published advice dispatches Publish at the tag" \
+    "$OUT" "gh workflow run release-publish.yml --repo go-kure/kure --ref v1.0.0"
 
 # --- state: partial, and why its recovery is not a re-run ----------------------
 #
@@ -553,17 +564,54 @@ assert_contains "partial advice keeps the do-not-delete guidance" \
     "$OUT" "Deleting the release object is an escalation"
 assert_contains "partial advice checks the assets against the tag's own config" \
     "$OUT" "against that TAG's own .goreleaser.yml"
-# The publish workflow deploys a stable tag into its slot and, set_latest=true,
-# at the docs root, taking it to be the newest release. After a newer one that
-# regresses newer docs, so the dispatch is printed only under the newest-stable
-# condition, checked against the complete list, and an out-of-order tag is
-# escalated (#239).
-assert_contains "partial advice names the skipped docs deployment, for the newest stable tag only" \
-    "$OUT" "If v1.2.3 is the newest stable release listed:"$'\n'"     gh workflow run deploy-docs.yml --repo go-kure/kure --ref v1.2.3 -f version_slot=v1.2 -f version_label=v1.2.3 -f set_latest=true"
-assert_contains "partial advice lists every stable release, past the default 30" \
-    "$OUT" "gh release list --repo go-kure/kure --exclude-drafts --exclude-pre-releases --limit 1000"
-assert_contains "partial advice escalates an out-of-order tag instead of deploying" \
-    "$OUT" "Stop and escalate (#239)."
+# Publish deploys a stable tag into its slot only when no newer stable patch of
+# that line exists, and at the docs root only when it is the highest stable tag,
+# deciding both with publish-policy.sh from the repository's tags. The advice
+# runs that same script by hand, from this checkout, so an older tag gets its
+# decided deployment instead of an escalation (#239).
+policy_abs="$(cd "$ROOT/scripts/release" && pwd)/publish-policy.sh"
+assert_contains "partial advice decides the slot with Publish's own policy script" \
+    "$OUT" "git fetch --tags (a newer tag missing locally makes both answers wrong):"$'\n'"     bash \"$policy_abs\" docs v1.2.3"
+assert_contains "partial advice deploys nothing when a newer patch owns the slot" \
+    "$OUT" "If it prints false, deploy nothing: a newer stable patch of v1.2 owns"
+assert_contains "partial advice takes set_latest from the policy, never a fixed value" \
+    "$OUT" "If it prints true:"$'\n'"     gh workflow run deploy-docs.yml --repo go-kure/kure --ref v1.2.3 -f version_slot=v1.2 -f version_label=v1.2.3 -f set_latest=\"\$(bash \"$policy_abs\" latest v1.2.3)\""
+if [ -f "$policy_abs" ]; then
+    pass_count=$((pass_count + 1))
+else
+    fail "partial advice names a policy script that exists" "$policy_abs"
+fi
+# The printed commands must run as printed. In a scratch repository tagged like a
+# release history, the docs line decides the slot and the set_latest substitution
+# expands to the root decision.
+docs_cmd=$(printf '%s\n' "$OUT" | sed -n 's/^     \(bash ".*" docs v1\.2\.3\)$/\1/p')
+# The pattern matches the literal "$(" the advice prints.
+# shellcheck disable=SC2016
+latest_cmd=$(printf '%s\n' "$OUT" | sed -n 's/.* -f set_latest="\$(\(.*\))"$/\1/p')
+tagrepo="$WORK/partial-advice-tags"
+# Isolated from the runner's git config: a global tag.gpgSign or init template
+# would turn these lightweight tags or the commit into something else.
+tgit() {
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+        git -C "$tagrepo" -c user.name=t -c user.email=t@example.invalid "$@"
+}
+mkdir -p "$tagrepo"
+tgit init -q
+tgit commit -q --allow-empty -m base
+for t in v1.2.2 v1.2.3 v1.3.0; do tgit tag "$t"; done
+assert_eq "printed docs command: v1.2.3 owns its slot next to v1.3.0" \
+    "true" "$(cd "$tagrepo" && eval "$docs_cmd" 2>&1)"
+assert_eq "printed set_latest command: v1.3.0 keeps the root" \
+    "false" "$(cd "$tagrepo" && eval "$latest_cmd" 2>&1)"
+tgit tag v1.2.4
+assert_eq "printed docs command: v1.2.4 owns the v1.2 slot" \
+    "false" "$(cd "$tagrepo" && eval "$docs_cmd" 2>&1)"
+assert_not_contains "partial advice no longer escalates for an older tag" \
+    "$OUT" "Stop and escalate"
+assert_not_contains "partial advice no longer lists releases" \
+    "$OUT" "releases?per_page"
+assert_not_contains "partial advice does not infer publication order" \
+    "$OUT" "out of order"
 assert_not_contains "partial advice does not claim a newer release already fills the slot" \
     "$OUT" "already carries"
 assert_not_contains "partial advice prints no set_latest placeholder" \
