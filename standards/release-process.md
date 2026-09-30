@@ -116,8 +116,8 @@ the next one.
   stable tag, plus one commit setting `VERSION` to the next patch, and is pushed in the same atomic
   push as `main`'s new `VERSION`: both land, or neither does. A line with no stable tag gets no
   branch (there is nothing to patch), and an existing branch is left as it is.
-- **Protected like `main`.** The same required checks and merge queue apply, and only the release
-  bot pushes to it directly.
+- **Protected.** The branch has `main`'s required checks but no merge queue, so a pull request must
+  be up to date with the branch before it merges. Only the release bot pushes to it directly.
 - **Fixes land on `main` first.** Merge the fix to `main` as usual, then open a pull request against
   `release/vX.Y` that cherry-picks it (`git cherry-pick -x <commit>`), and merge that. There is no
   automatic backporting.
@@ -130,8 +130,8 @@ the next one.
   and moves the docs site's `latest`, only while it is the highest stable tag in the repository.
 - **An older line without a branch** (one left before release branches existed) is set up by
   hand: create `release/vX.Y` from that line's highest stable tag, then open a pull request against
-  it that sets `VERSION` to the next patch. If branch protection refuses the creation, a repository
-  admin can create it.
+  it that sets `VERSION` to the next patch. Creating the branch needs write access only; the required
+  checks apply to pull requests against it.
 
 A worked timeline:
 
