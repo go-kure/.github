@@ -62,7 +62,16 @@ github_defaults:
       enforcement: active
       conditions:
         ref_name:
-          include: ["refs/heads/main"]
+          # release/vX.Y branches get main's protection, so a backport lands the
+          # way a main PR does: the same required checks, and on kure/launcher the
+          # same merge queue and release-bot bypass (the bot pushes the release
+          # commit and the next VERSION to the branch). The Release workflow's
+          # start-next-* actions create these branches (go-kure/.github#237).
+          # .github cuts no release branches, so the pattern matches nothing
+          # there. The ruleset keeps its name: github-settings.sh matches live
+          # rulesets by name, so a rename would create a second ruleset beside
+          # the live one instead of updating it.
+          include: ["refs/heads/main", "refs/heads/release/*"]
       rules:
         deletion: true
         non_fast_forward: true
