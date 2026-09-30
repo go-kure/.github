@@ -278,15 +278,40 @@ jobs:
       - name: Install syft
         uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
 
-      - name: Install git-cliff
-        uses: kenji-miyake/setup-git-cliff@2778609c643a39a2576c4bae2e493b855eb4aee8 # v2
+      # actions/checkout reads an empty `ref` as "the default branch", which would
+      # pair this workflow with whatever installer main holds. Refuse instead.
+      - name: Require this workflow's own commit
+        env:
+          WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          if [ -z "$WORKFLOW_REPOSITORY" ] || [ -z "$WORKFLOW_SHA" ]; then
+            echo "::error::job.workflow_repository or job.workflow_sha is empty, so the git-cliff installer cannot be checked out at this workflow's own commit."
+            exit 1
+          fi
+
+      - name: Check out the git-cliff installer
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          # Pinned, not left at the action's default of latest, so the notes a
-          # release ships are rendered by a known binary. Renovate bumps this pin
-          # together with the other git-cliff pins (customManagers in
-          # renovate.json, one depName).
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .git-cliff-installer
+          sparse-checkout: scripts/release
+          persist-credentials: false
+
+      - name: Install git-cliff
+        run: |
+          # Pinned, not latest, so the notes a release ships are rendered by a
+          # known binary. Renovate bumps this pin together with the other
+          # git-cliff pins (customManagers in renovate.json, one depName).
           # renovate: datasource=github-releases depName=orhun/git-cliff
-          version: "2.14.2"
+          CLIFF_VERSION="2.14.2"
+          # Verifies the upstream signature against the key pinned in the
+          # script before installing (go-kure/.github#227).
+          bash .git-cliff-installer/scripts/release/install-git-cliff.sh "$CLIFF_VERSION"
+          # GoReleaser refuses a dirty tree, and the installer checkout sits
+          # inside the caller's one as an untracked directory.
+          rm -rf .git-cliff-installer
 
       # --use-branch-tags: the notes run from the previous tag on this tag's own
       # branch, so a backport's notes hold only the backport, and a main release

@@ -164,7 +164,7 @@ jobs:
           tar -xJf /tmp/shellcheck.tar.xz -C /tmp
           sudo install -m755 "/tmp/shellcheck-v${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck
       - name: shellcheck
-        run: shellcheck scripts/check-doc-sync.sh scripts/check-doc-gate.sh scripts/check-links.sh scripts/exact-array-member.sh scripts/check-workflow-refs.sh scripts/github-settings.sh scripts/check-settings-doc.sh scripts/check-action-pins.sh scripts/check-label-docs.sh scripts/govulncheck-gate.sh scripts/check-forbidden-terms.sh scripts/test/check-forbidden-terms-test.sh scripts/check-pin-bump.sh scripts/pr-review-threads.sh scripts/lib/prt/state.sh scripts/lib/prt/json.sh scripts/lib/prt/marker.sh scripts/lib/prt/finding.sh scripts/lib/prt/gh.sh scripts/lib/prt/diff.sh scripts/lib/prt/render.sh scripts/lib/prt/model.sh scripts/lib/prt/reconcile.sh scripts/pr-review-fail-closed-digest.sh scripts/lib/api.sh scripts/pr-ci-health.sh scripts/test/pr-ci-health-test.sh scripts/eval/build-gold.sh scripts/eval/check-gold.sh scripts/eval/review-adapter.sh scripts/eval/judge.sh scripts/eval/run.sh scripts/eval/compare.sh scripts/eval/parse-reviews.sh scripts/test/review-adapter-test.sh scripts/test/build-gold-test.sh scripts/test/judge-test.sh scripts/test/compare-test.sh scripts/release-state.sh scripts/test/release-state-test.sh scripts/release/release.sh scripts/release/publish-policy.sh scripts/test/release-test.sh scripts/release/deploy-docs-push.sh scripts/test/deploy-docs-push-test.sh
+        run: shellcheck scripts/check-doc-sync.sh scripts/check-doc-gate.sh scripts/check-links.sh scripts/exact-array-member.sh scripts/check-workflow-refs.sh scripts/github-settings.sh scripts/check-settings-doc.sh scripts/check-action-pins.sh scripts/check-label-docs.sh scripts/govulncheck-gate.sh scripts/check-forbidden-terms.sh scripts/test/check-forbidden-terms-test.sh scripts/check-pin-bump.sh scripts/pr-review-threads.sh scripts/lib/prt/state.sh scripts/lib/prt/json.sh scripts/lib/prt/marker.sh scripts/lib/prt/finding.sh scripts/lib/prt/gh.sh scripts/lib/prt/diff.sh scripts/lib/prt/render.sh scripts/lib/prt/model.sh scripts/lib/prt/reconcile.sh scripts/pr-review-fail-closed-digest.sh scripts/lib/api.sh scripts/pr-ci-health.sh scripts/test/pr-ci-health-test.sh scripts/eval/build-gold.sh scripts/eval/check-gold.sh scripts/eval/review-adapter.sh scripts/eval/judge.sh scripts/eval/run.sh scripts/eval/compare.sh scripts/eval/parse-reviews.sh scripts/test/review-adapter-test.sh scripts/test/build-gold-test.sh scripts/test/judge-test.sh scripts/test/compare-test.sh scripts/release-state.sh scripts/test/release-state-test.sh scripts/release/release.sh scripts/release/publish-policy.sh scripts/release/install-git-cliff.sh scripts/test/release-test.sh scripts/test/install-git-cliff-test.sh scripts/release/deploy-docs-push.sh scripts/test/deploy-docs-push-test.sh
       - name: Read yq version from mise.toml
         id: yq-version
         run: |
@@ -232,9 +232,11 @@ jobs:
           # (customManagers in renovate.json, one depName).
           # renovate: datasource=github-releases depName=orhun/git-cliff
           CLIFF_VERSION="2.14.2"
-          curl -fsSL "https://github.com/orhun/git-cliff/releases/download/v${CLIFF_VERSION}/git-cliff-${CLIFF_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
-            | tar xzf - -C /tmp
-          sudo install -m755 "/tmp/git-cliff-${CLIFF_VERSION}/git-cliff" /usr/local/bin/git-cliff
+          # Verifies the upstream signature against the pinned key before
+          # installing; the same script the release workflows run.
+          bash scripts/release/install-git-cliff.sh "$CLIFF_VERSION"
+      - name: install-git-cliff.sh signature-check test suite
+        run: bash scripts/test/install-git-cliff-test.sh .
       - name: release.sh and publish-policy.sh test suite (real git and git-cliff)
         run: bash scripts/test/release-test.sh .
       - name: deploy-docs-push.sh test suite (real git, local bare remotes)
