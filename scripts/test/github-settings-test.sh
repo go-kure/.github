@@ -243,6 +243,63 @@ else
     failures=$((failures + 1))
 fi
 
+# release-protection covers the release/vX.Y branches that only kure and
+# launcher cut (go-kure/.github#237).
+for scope_repo in kure launcher; do
+    if ruleset_applies "$scope_repo" "release-protection"; then
+        echo "PASS: release-protection applies to $scope_repo"
+        pass_count=$((pass_count + 1))
+    else
+        echo "FAIL: release-protection should apply to $scope_repo"
+        failures=$((failures + 1))
+    fi
+done
+for scope_repo in .github go-kure.github.io; do
+    if ! ruleset_applies "$scope_repo" "release-protection"; then
+        echo "PASS: release-protection does not apply to $scope_repo"
+        pass_count=$((pass_count + 1))
+    else
+        echo "FAIL: release-protection should not apply to $scope_repo"
+        failures=$((failures + 1))
+    fi
+done
+
+# GitHub refuses a ruleset that has a merge queue and a wildcard ref (HTTP
+# 422, "Wildcard ref names are not supported when merge queue is enabled"),
+# and --apply reports that as FAILED yet still exits 0 — so main-protection
+# with release/* added passed CI and never applied on kure/launcher
+# (go-kure/.github#237). Check every ruleset the policy would send.
+queue_wildcards=""
+mapfile -t policy_ruleset_names < <(ruleset_names)
+for scope_repo in .github kure launcher go-kure.github.io; do
+    for scope_name in "${policy_ruleset_names[@]}"; do
+        ruleset_applies "$scope_repo" "$scope_name" || continue
+        hit=$(build_ruleset_payload "$scope_repo" "$scope_name" | jq -r '
+            select(any(.rules[]; .type == "merge_queue"))
+            | .conditions.ref_name.include[]
+            | select(test("[*?\\[]") or . == "~ALL")')
+        if [ -n "$hit" ]; then
+            queue_wildcards+="$scope_repo/$scope_name: $hit"$'\n'
+        fi
+    done
+done
+assert_eq "no ruleset with a merge queue matches a wildcard ref" "" "$queue_wildcards"
+
+for scope_repo in kure launcher; do
+    release_payload=$(build_ruleset_payload "$scope_repo" "release-protection")
+    assert_eq "$scope_repo release-protection payload rule types (no merge_queue)" \
+        "deletion,non_fast_forward,pull_request,required_linear_history,required_status_checks" \
+        "$(jq -r '[.rules[].type] | sort | join(",")' <<<"$release_payload")"
+    assert_eq "$scope_repo release-protection covers release/* only" '["refs/heads/release/*"]' \
+        "$(jq -c '.conditions.ref_name.include' <<<"$release_payload")"
+    assert_eq "$scope_repo release-protection requires up-to-date branches (strict)" "true" \
+        "$(jq -r '.rules[] | select(.type=="required_status_checks") | .parameters.strict_required_status_checks_policy' <<<"$release_payload")"
+    assert_eq "$scope_repo release-protection requires main's checks" '["build","lint","pr-review / AI Code Review","test"]' \
+        "$(jq -c '[.rules[] | select(.type=="required_status_checks") | .parameters.required_status_checks[].context] | sort' <<<"$release_payload")"
+    assert_eq "$scope_repo release-protection lets the release bot push" '[{"actor_id":2882845,"actor_type":"Integration","bypass_mode":"always"}]' \
+        "$(jq -Sc '.bypass_actors' <<<"$release_payload")"
+done
+
 # ---- build_ruleset_payload: the direct regression test for the core bug
 # this unit of work exists to fix — a payload builder that only knew 6
 # hardcoded rule types silently dropped anything else (e.g. copilot_code_review)
@@ -307,7 +364,7 @@ assert_contains "a dropped copilot_code_review rule is reported MISSING" "$diff_
 
 main_live_match=$(jq -n '{
     id: 12903081, name: "main-protection", target: "branch", enforcement: "active",
-    conditions: {ref_name: {include: ["refs/heads/main", "refs/heads/release/*"], exclude: []}},
+    conditions: {ref_name: {include: ["refs/heads/main"], exclude: []}},
     bypass_actors: [{actor_id: 2882845, actor_type: "Integration", bypass_mode: "always"}],
     rules: [
         {type: "deletion"}, {type: "non_fast_forward"}, {type: "required_linear_history"},
@@ -338,11 +395,41 @@ main_live_strict_drift=$(jq '(.rules[] | select(.type == "required_status_checks
 diff_main_strict=$(ruleset_diff "kure" "main-protection" "$main_live_strict_drift")
 assert_contains "a strict=true drift on kure is reported WRONG" "$diff_main_strict" "$(printf 'WRONG\trules.required_status_checks.strict\tfalse\ttrue')"
 
-# The policy protects release/* branches too (go-kure/.github#237); a live
-# ruleset still covering main alone must read as drift, not as clean.
-main_live_main_only=$(jq '.conditions.ref_name.include = ["refs/heads/main"]' <<<"$main_live_match")
-diff_main_only=$(ruleset_diff "kure" "main-protection" "$main_live_main_only")
-assert_contains "a main-protection not covering release/* is reported WRONG" "$diff_main_only" "$(printf 'WRONG\tconditions')"
+# release/* moved to release-protection (go-kure/.github#237); a live
+# main-protection still covering it must read as drift, not as clean.
+main_live_with_release=$(jq '.conditions.ref_name.include += ["refs/heads/release/*"]' <<<"$main_live_match")
+diff_main_with_release=$(ruleset_diff "kure" "main-protection" "$main_live_with_release")
+assert_contains "a main-protection still covering release/* is reported WRONG" "$diff_main_with_release" "$(printf 'WRONG\tconditions')"
+
+release_live_match=$(jq -n '{
+    id: 1, name: "release-protection", target: "branch", enforcement: "active",
+    conditions: {ref_name: {include: ["refs/heads/release/*"], exclude: []}},
+    bypass_actors: [{actor_id: 2882845, actor_type: "Integration", bypass_mode: "always"}],
+    rules: [
+        {type: "deletion"}, {type: "non_fast_forward"}, {type: "required_linear_history"},
+        {type: "pull_request", parameters: {
+            required_approving_review_count: 0, dismiss_stale_reviews_on_push: false,
+            require_code_owner_review: false, require_last_push_approval: false,
+            required_review_thread_resolution: true,
+            dismissal_restriction: {enabled: false}, required_reviewers: []
+        }},
+        {type: "required_status_checks", parameters: {
+            strict_required_status_checks_policy: true,
+            required_status_checks: [{context: "lint"}, {context: "test"}, {context: "build"}, {context: "pr-review / AI Code Review"}],
+            do_not_enforce_on_create: false
+        }}
+    ]
+}')
+
+for release_repo in kure launcher; do
+    diff_release_clean=$(ruleset_diff "$release_repo" "release-protection" "$release_live_match")
+    diff_release_clean_bad=$(awk -F'\t' '$1 != "OK"' <<<"$diff_release_clean")
+    assert_eq "clean $release_repo release-protection produces zero non-OK records" "" "$diff_release_clean_bad"
+done
+
+release_live_with_queue=$(jq '.rules += [$m]' --argjson m "$(jq -c '.rules[] | select(.type == "merge_queue")' <<<"$main_live_match")" <<<"$release_live_match")
+diff_release_queue=$(ruleset_diff "kure" "release-protection" "$release_live_with_queue")
+assert_contains "a merge_queue on release-protection is reported EXTRA" "$diff_release_queue" "$(printf 'EXTRA\trules.merge_queue')"
 
 # ---- build_ruleset_import_jq: strips API-only pull_request fields, flags
 # an injected unmodeled rule type instead of silently dropping it. ----
@@ -491,7 +578,7 @@ assert_eq "with nothing set, the go-kure defaults still apply" \
 
 # A consumer's policy scopes rulesets to ITS repos; validate_policy must judge
 # them against the overridden GITHUB_REPOS_DEFAULT, not the go-kure set.
-consumer_scope_json=$(jq '.github_defaults.rulesets["main-protection"].repos = ["alpha"] | .github_defaults.rulesets[$c].repos = ["alpha"] | .github_repos = {}' --arg c "$COPILOT" <<<"$POLICY_JSON")
+consumer_scope_json=$(jq '.github_defaults.rulesets |= map_values(.repos = ["alpha"]) | .github_repos = {}' <<<"$POLICY_JSON")
 # A consumer brings its own labels file too; its repos: scopes are judged
 # against the same overridden set (check 4b), so go-kure's file (scoped to
 # kure/launcher) would be — correctly — rejected here.
