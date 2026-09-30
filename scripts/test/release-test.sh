@@ -650,6 +650,17 @@ assert_eq "latest: compares numbers, not text" "true" "$OUT"
 policy v0.2.0 -- latest v0.2.0
 assert_eq "latest: the only stable tag is Latest" "true" "$OUT"
 
+policy v0.2.1 v0.2.2 -- docs v0.2.1
+assert_eq "docs: an older patch of its line leaves the slot alone" "false" "$OUT"
+policy v0.2.1 v0.3.0 -- docs v0.2.1
+assert_eq "docs: a backport owns its line's slot next to a newer line" "true" "$OUT"
+policy v0.2.1 v0.2.2-rc.0 -- docs v0.2.1
+assert_eq "docs: a prerelease of the line does not take the slot" "true" "$OUT"
+policy v0.2.9 v0.2.10 -- docs v0.2.9
+assert_eq "docs: compares numbers, not text" "false" "$OUT"
+policy v0.3.0 v0.3.1-rc.0 -- docs v0.3.1-rc.0
+assert_eq "docs: a prerelease never deploys" "false" "$OUT"
+
 policy v0.2.0 -- progression 0.2.0
 assert_eq "policy: a tag outside the release format is a usage error" 2 "$RC"
 

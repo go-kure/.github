@@ -185,14 +185,16 @@ is started meanwhile, GitHub cancels the waiting one.
 
 1. **Test** — the full test suite, with the race detector.
 2. **Validate** — the tag format, a `CHANGELOG.md` section for the tag, whether this is the Latest
-   release, and, on a tag push, that the tag is greater than every other tag of its own line
-   (`vX.Y.*`), so a patch on a release branch passes beside a newer line's prereleases.
+   release and the newest stable tag of its own line, and, on a tag push, that the tag is greater
+   than every other tag of its own line (`vX.Y.*`), so a patch on a release branch passes beside a
+   newer line's prereleases.
 3. **GoReleaser** — refuses if the tag already has a GitHub release, then renders the release
    notes (the commits since the previous tag on the same branch) and creates the release. What it
    attaches is set by this repository's `.goreleaser.yml`; a library may ship none.
 4. **Start the versioned docs deploy** — stable tags only: the `vX.Y` slot of the docs site, and
-   the site's `latest` only when this is the Latest release. Publish does not wait for that run;
-   check it in the Actions tab.
+   the site's `latest` only when this is the Latest release. A tag that has a newer stable tag of
+   its own line (an older patch published again) deploys nothing, so the slot keeps the newer
+   patch's docs. Publish does not wait for that run; check it in the Actions tab.
 5. **Refresh the Go module proxy** — requests the new version from `proxy.golang.org`.
 
 ## When a release fails
@@ -357,7 +359,7 @@ If `goreleaser` concluded `success` and only a later job failed (docs deploy or 
 
 - The later job concluded `failure` and the cause was transient: `gh run rerun --failed <run-id>`.
   This re-runs the failed job only; the release is not touched. If the docs deploy then refuses
-  because validate did not decide the Latest release, continue with the next bullet.
+  because validate did not decide the docs deploy, continue with the next bullet.
 - The later job concluded `cancelled` or `timed_out`, or the shared workflow needs a fix: a full
   re-run would redo publication and is refused. Do the follow-up work directly:
 
@@ -365,6 +367,8 @@ If `goreleaser` concluded `success` and only a later job failed (docs deploy or 
   # Docs deploy. --ref is required: without it the docs of the default branch are deployed into
   # the version slot. set_latest=true only if <tag> is the highest stable tag, which this prints:
   #   git tag --list 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1
+  # Skip the deploy if <tag> is not the highest stable tag of its own line, which this prints:
+  #   git tag --list '<vX.Y>.*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1
   gh workflow run deploy-docs.yml --repo go-kure/<repo> --ref <tag> \
     -f version_slot=<vX.Y> -f version_label=<tag> -f set_latest=<true|false>
 
