@@ -36,7 +36,8 @@
 #                   `origin` it can push to
 #   --site-subdir   the caller's directory in the pages repository (one path
 #                   segment, e.g. `kure`)
-#   --slot          <site-subdir>/<slot>/ is replaced (one path segment)
+#   --slot          <site-subdir>/<slot>/ is replaced (one path segment: `dev`
+#                   or starting with `v`, the names a root write keeps)
 #   --label         the version label; a release tag when the root is requested
 #   --set-latest    `true` asks for the root; `false` never writes it
 #   --slot-site     the build for the slot
@@ -101,6 +102,9 @@ done
 segment_re='^[A-Za-z0-9][A-Za-z0-9._-]*$'
 [[ "$site" =~ $segment_re ]] || die "site subdir '$site' is not a single path segment (letters, digits, '.', '_', '-'; not starting with '.')"
 [[ "$slot" =~ $segment_re ]] || die "slot '$slot' is not a single path segment (letters, digits, '.', '_', '-'; not starting with '.')"
+# A root write replaces everything under <site-subdir>/ except `dev` and `v*`,
+# so any other slot would be deleted by this deploy's root write or the next.
+[[ "$slot" == dev || "$slot" == v* ]] || die "slot '$slot' is neither 'dev' nor a 'v*' version slot; a root write would delete it"
 [[ -n "$label" ]] || die "empty label"
 [[ "$set_latest" == true || "$set_latest" == false ]] || die "set-latest must be true or false, got '$set_latest'"
 [[ -n "$cname" ]] || die "empty cname"

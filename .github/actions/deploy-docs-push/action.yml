@@ -22,7 +22,7 @@ inputs:
     description: The caller's directory in the pages repository, one path segment (e.g. kure).
     required: true
   slot:
-    description: The version slot, one path segment (e.g. dev, v0.3); <site-subdir>/<slot>/ is replaced.
+    description: The version slot, one path segment, either dev or starting with v (e.g. v0.3), the names a root write keeps; <site-subdir>/<slot>/ is replaced.
     required: true
   label:
     description: The version label; a release tag when set-latest is "true".
