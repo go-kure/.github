@@ -593,7 +593,9 @@ grpc bump within hours of each other.
 `release-protection` covers every `release/*` branch with `main`'s rules, required checks and
 release-bot bypass, but without a merge queue: GitHub refuses a wildcard branch pattern in a ruleset
 that has one. The required checks are strict instead, so a backport PR must be up to date with its
-release branch before it merges.
+release branch before it merges. They are not enforced when a branch is created
+(`do_not_enforce_on_create`), so a maintainer can create a release branch by hand from a stable tag,
+whose commit never carries the pull-request checks.
 
 ## Organization Settings
 

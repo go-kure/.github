@@ -89,8 +89,12 @@ github_defaults:
     # checks on kure/launcher, but no merge queue: GitHub refuses a wildcard ref
     # in a ruleset that has one (HTTP 422). strict: true takes the queue's place,
     # so a PR must be up to date with the branch before it merges. The
-    # release-bot bypass (per repo, below) lets the bot push the release commit
-    # and the next VERSION to the branch. .github cuts no release branches.
+    # release-bot bypass (per repo, below) lets the bot create the branch and
+    # push the release commit and the next VERSION to it.
+    # do_not_enforce_on_create lets a maintainer create a branch by hand from
+    # a stable tag, whose commit never carries the pull-request checks (the
+    # release guide's path for a line left before release branches existed).
+    # .github cuts no release branches.
     release-protection:
       repos: [kure, launcher]
       target: branch
@@ -110,6 +114,7 @@ github_defaults:
           required_review_thread_resolution: true
         required_status_checks:
           strict: true
+          do_not_enforce_on_create: true
           contexts:
             - lint
             - test

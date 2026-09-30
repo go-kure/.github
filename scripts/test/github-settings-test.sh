@@ -294,6 +294,8 @@ for scope_repo in kure launcher; do
         "$(jq -c '.conditions.ref_name.include' <<<"$release_payload")"
     assert_eq "$scope_repo release-protection requires up-to-date branches (strict)" "true" \
         "$(jq -r '.rules[] | select(.type=="required_status_checks") | .parameters.strict_required_status_checks_policy' <<<"$release_payload")"
+    assert_eq "$scope_repo release-protection lets a branch be created from a tag" "true" \
+        "$(jq -r '.rules[] | select(.type=="required_status_checks") | .parameters.do_not_enforce_on_create' <<<"$release_payload")"
     assert_eq "$scope_repo release-protection requires main's checks" '["build","lint","pr-review / AI Code Review","test"]' \
         "$(jq -c '[.rules[] | select(.type=="required_status_checks") | .parameters.required_status_checks[].context] | sort' <<<"$release_payload")"
     assert_eq "$scope_repo release-protection lets the release bot push" '[{"actor_id":2882845,"actor_type":"Integration","bypass_mode":"always"}]' \
@@ -330,6 +332,11 @@ assert_eq "kure main-protection payload rule types" \
 # pin-bump procedure" section.
 assert_eq "kure main-protection payload requires pr-review context" "true" \
     "$(jq -r '.rules[] | select(.type=="required_status_checks") | .parameters.required_status_checks | map(.context) | index("pr-review / AI Code Review") != null' <<<"$main_payload")"
+
+# A policy that does not name do_not_enforce_on_create leaves it to the API
+# default: the payload must not send it.
+assert_eq "kure main-protection payload leaves do_not_enforce_on_create unset" "false" \
+    "$(jq -r '.rules[] | select(.type=="required_status_checks") | .parameters | has("do_not_enforce_on_create")' <<<"$main_payload")"
 
 launcher_payload=$(build_ruleset_payload "launcher" "main-protection")
 assert_eq "launcher main-protection payload requires pr-review context" "true" \
@@ -416,7 +423,7 @@ release_live_match=$(jq -n '{
         {type: "required_status_checks", parameters: {
             strict_required_status_checks_policy: true,
             required_status_checks: [{context: "lint"}, {context: "test"}, {context: "build"}, {context: "pr-review / AI Code Review"}],
-            do_not_enforce_on_create: false
+            do_not_enforce_on_create: true
         }}
     ]
 }')
@@ -430,6 +437,11 @@ done
 release_live_with_queue=$(jq '.rules += [$m]' --argjson m "$(jq -c '.rules[] | select(.type == "merge_queue")' <<<"$main_live_match")" <<<"$release_live_match")
 diff_release_queue=$(ruleset_diff "kure" "release-protection" "$release_live_with_queue")
 assert_contains "a merge_queue on release-protection is reported EXTRA" "$diff_release_queue" "$(printf 'EXTRA\trules.merge_queue')"
+
+release_live_enforced_on_create=$(jq '(.rules[] | select(.type == "required_status_checks") | .parameters.do_not_enforce_on_create) = false' <<<"$release_live_match")
+diff_release_on_create=$(ruleset_diff "kure" "release-protection" "$release_live_enforced_on_create")
+assert_contains "checks enforced on branch creation are reported WRONG on release-protection" "$diff_release_on_create" \
+    "$(printf 'WRONG\trules.required_status_checks.do_not_enforce_on_create\ttrue\tnull')"
 
 # ---- build_ruleset_import_jq: strips API-only pull_request fields, flags
 # an injected unmodeled rule type instead of silently dropping it. ----
