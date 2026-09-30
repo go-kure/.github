@@ -226,10 +226,11 @@ declare -A RULE_TO_API_JQ=(
 # through unchanged ("."). pull_request additionally drops dismissal_restriction
 # and required_reviewers: the live API returns them, but they're read-shaped —
 # pasting them back into policy and applying would risk a 422 on write.
-# required_status_checks keeps do_not_enforce_on_create only when true, so a
-# ruleset left at the API default imports without it.
+# required_status_checks always carries do_not_enforce_on_create, false when
+# the API leaves it out (its default), so an imported false can override an
+# inherited true and the audit compares the live value either way.
 declare -A RULE_FROM_API_JQ=(
-    [required_status_checks]='{strict: .strict_required_status_checks_policy, contexts: [.required_status_checks[].context]} + (if .do_not_enforce_on_create == true then {do_not_enforce_on_create: true} else {} end)'
+    [required_status_checks]='{strict: .strict_required_status_checks_policy, contexts: [.required_status_checks[].context], do_not_enforce_on_create: (.do_not_enforce_on_create // false)}'
     [pull_request]='del(.dismissal_restriction, .required_reviewers)'
 )
 
@@ -1573,10 +1574,10 @@ ruleset_diff() {
         exact_array_member "$t" "${actual_types[@]}" || continue
         [ "$(rule_kind "$t")" = "flag" ] && continue
 
-        # An explicit do_not_enforce_on_create: false is the API default, which
-        # RULE_FROM_API_JQ drops from the live side, so it compares as absent.
+        # A policy that leaves do_not_enforce_on_create unset gets the API
+        # default, false, so it is compared as false: a live true is drift.
         local expected_params actual_params
-        expected_params=$(jq -c --arg t "$t" '.[$t] // {} | if .do_not_enforce_on_create == false then del(.do_not_enforce_on_create) else . end' <<<"$rules_json")
+        expected_params=$(jq -c --arg t "$t" '.[$t] // {} | if $t == "required_status_checks" then .do_not_enforce_on_create //= false else . end' <<<"$rules_json")
         actual_params=$(jq -c --arg t "$t" '.rules[] | select(.type == $t) | .parameters' <<<"$full_ruleset" \
             | jq -c "$(rule_from_api_jq "$t")")
 
