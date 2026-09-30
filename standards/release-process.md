@@ -365,7 +365,9 @@ If `goreleaser` concluded `success` and only a later job failed (docs deploy or 
 
   ```bash
   # Docs deploy. --ref is required: without it the docs of the default branch are deployed into
-  # the version slot. set_latest=true only if <tag> is the highest stable tag, which this prints:
+  # the version slot. Both listings below read local tags: run them in a checkout of
+  # go-kure/<repo> right after `git fetch --tags`, or a missing newer tag makes them wrong.
+  # set_latest=true only if <tag> is the highest stable tag, which this prints:
   #   git tag --list 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1
   # Skip the deploy if <tag> is not the highest stable tag of its own line, which this prints:
   #   git tag --list '<vX.Y>.*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1

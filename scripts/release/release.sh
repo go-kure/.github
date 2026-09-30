@@ -161,7 +161,7 @@ check_local_replaces() {
                 else if (quoted && c == "\\") { line = line c; i++; c = substr($0, i, 1) }
                 line = line c
             }
-            if (!match(line, /=>[ \t]*/)) next
+            if (!match(line, /=>[ \t\r]*/)) next
             rest = substr(line, RSTART + RLENGTH)
             if (substr(rest, 1, 1) == "\"") {
                 for (i = 2; i <= length(rest); i++) {
