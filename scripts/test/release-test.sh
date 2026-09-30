@@ -468,7 +468,8 @@ with_go_mod() {
 }
 # Every form of a local replace: one line, inside a replace block (no
 # `replace` keyword on the line), a ./, ../ or absolute target, a bare . or ..,
-# and each of those quoted, including a // or a space inside the quotes.
+# and each of those quoted, including a // or a space inside the quotes; and a
+# carriage return after =>, which Go reads as a blank.
 local_replaces=(
     'replace example.com/a => ../a'
     $'replace (\n\texample.com/a => ../a\n)'
@@ -482,6 +483,7 @@ local_replaces=(
     'replace example.com/a => "//host/a"'
     'replace example.com/a => ".."'
     'replace example.com/a => "../my dir"'
+    $'replace example.com/a =>\r ../a'
 )
 for n in "${!local_replaces[@]}"; do
     with_go_mod "localreplace$n" $'module example.com/m\n\n'"${local_replaces[$n]}"
