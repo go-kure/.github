@@ -66,10 +66,12 @@ FORBIDDEN_TERMS_CHECK="${FORBIDDEN_TERMS_CHECK:-site/scripts/check-forbidden-ter
 log_info() { printf 'INFO: %s\n' "$1"; }
 log_ok()   { printf 'OK: %s\n' "$1"; }
 log_warn() { printf 'WARN: %s\n' "$1"; }
+# Both lines go to stderr: die also runs inside $(...), which would capture a
+# stdout annotation. The runner reads workflow commands from both streams.
 die() {
     printf 'ERROR: %s\n' "$1" >&2
     if [ "${GITHUB_ACTIONS:-}" = true ]; then
-        printf '::error::%s See %s\n' "$1" "$GUIDE"
+        printf '::error::%s See %s\n' "$1" "$GUIDE" >&2
     fi
     exit 1
 }
@@ -141,8 +143,12 @@ validate_git_state() {
     fi
 }
 
+# A replacement is a local directory when it starts with ./, ../ or /. Only
+# replace directives use =>, on their own line or inside a replace ( ) block,
+# so every line is checked after its // comment is dropped.
 check_local_replaces() {
-    if [ -f go.mod ] && grep -q 'replace.*=>.*\.\./' go.mod; then
+    [ -f go.mod ] || return 0
+    if awk '{ sub(/\/\/.*/, "") } /=>[ \t]*(\.\.?)?\// { found = 1 } END { exit !found }' go.mod; then
         die "go.mod has a local replace directive; remove it before releasing."
     fi
 }

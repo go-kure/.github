@@ -458,6 +458,43 @@ run_release dirty main release
 assert_eq "uncommitted changes: refused" 1 "$RC"
 assert_contains "uncommitted changes: says why" "$OUT" "uncommitted changes"
 
+# with_go_mod <name> <go.mod content>: a fixture whose main carries that go.mod.
+with_go_mod() {
+    new_fixture "$1" v0.2.0-alpha.3
+    printf '%s\n' "$2" > "$WORK/$1/work/go.mod"
+    git -C "$WORK/$1/work" add go.mod
+    git -C "$WORK/$1/work" commit --quiet -m "chore: add go.mod"
+    git -C "$WORK/$1/work" push --quiet origin main
+}
+# Every form of a local replace: one line, inside a replace block (no
+# `replace` keyword on the line), and a ./, ../ or absolute target.
+local_replaces=(
+    'replace example.com/a => ../a'
+    $'replace (\n\texample.com/a => ../a\n)'
+    'replace example.com/a v1.0.0 => ./a'
+    'replace example.com/a => /src/a'
+)
+for n in "${!local_replaces[@]}"; do
+    with_go_mod "localreplace$n" $'module example.com/m\n\n'"${local_replaces[$n]}"
+    before=$(git -C "$WORK/localreplace$n/origin.git" for-each-ref)
+    run_release "localreplace$n" main release
+    assert_eq "local replace form $n: refused" 1 "$RC"
+    assert_contains "local replace form $n: says why" "$OUT" "go.mod has a local replace directive"
+    assert_eq "local replace form $n: nothing pushed" "$before" "$(git -C "$WORK/localreplace$n/origin.git" for-each-ref)"
+done
+with_go_mod modulereplace $'module example.com/m\n\nreplace (\n\texample.com/a => example.com/b v1.2.0 // was => ../a\n)'
+run_release modulereplace main release
+assert_eq "module replace, local path only in a comment: released" 0 "$RC"
+
+# die inside $(...) must still raise its annotation: read_version runs in one.
+new_fixture noversion v0.2.0-alpha.3
+git -C "$WORK/noversion/work" rm --quiet VERSION
+git -C "$WORK/noversion/work" commit --quiet -m "chore: drop VERSION"
+git -C "$WORK/noversion/work" push --quiet origin main
+run_release noversion main release DRY_RUN=1 GITHUB_ACTIONS=true
+assert_eq "no VERSION file: refused" 1 "$RC"
+assert_contains "no VERSION file: raises the annotation" "$OUT" "::error::No VERSION file at the repository root"
+
 # The remote refuses one of the two refs: with --atomic the other must not land.
 reject_ref() {  # reject_ref <name> <ref glob>
     cat > "$WORK/$1/origin.git/hooks/update" <<EOF

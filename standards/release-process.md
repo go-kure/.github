@@ -167,7 +167,7 @@ Release: release-as-stable (later)
    other than `release` on a release branch.
 2. **Wait for CI on this commit** — real runs of the `release…` options only. Waits up to 30
    minutes for CI to pass on the commit being released; a failed or unfinished CI run stops the
-   release with nothing tagged.
+   release with nothing tagged, and so does a commit with no CI run at all after two minutes.
 3. **Release** — runs the release script against this repository:
    - refuses if the branch moved on since the run started (start the release again);
    - refuses if the tag, or the `VERSION` that would follow it, already exists as a tag;

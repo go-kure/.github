@@ -93,11 +93,18 @@ jobs:
               --commit "$SHA" \
               --json conclusion,status \
               --limit 1 \
-              --jq '.[0] | if .status == "completed" then .conclusion else "in_progress" end // empty')
+              --jq 'if length == 0 then "none" elif .[0].status == "completed" then .[0].conclusion else "in_progress" end')
 
             if [ "$STATUS" = "success" ]; then
               echo "CI passed on $SHA."
               exit 0
+            elif [ "$STATUS" = "none" ]; then
+              # A run can take a moment to register after a push; after two
+              # minutes, ci.yml is not running on this branch at all.
+              if [ "$i" -ge 12 ]; then
+                echo "::error::No ci.yml run exists for $SHA after 2 minutes; ci.yml must run on pushes to $GITHUB_REF_NAME. Nothing was tagged."
+                exit 1
+              fi
             elif [ -n "$STATUS" ] && [ "$STATUS" != "in_progress" ]; then
               echo "::error::CI did not pass on $SHA (conclusion: $STATUS). Nothing was tagged."
               exit 1
