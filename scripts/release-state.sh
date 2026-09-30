@@ -164,10 +164,12 @@ EOF
             # The docs slot is computed exactly as the shared workflow's
             # deploy-docs job computes it (v0.2.3 -> v0.2), and that job runs
             # only for a tag without a '-', so a prerelease gets no docs step.
-            # That job always passes set_latest=true, taking the tag to be the
-            # newest release; by hand that holds only while it still is, so an
-            # out-of-order tag is escalated (#239).
+            # Publish decides the slot and set_latest from the repository's tags
+            # with publish-policy.sh; the advice runs the same script by hand,
+            # so it needs no escalation for an older tag (#239).
             local minor="${TAG%.*}"
+            local policy
+            policy="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/release/publish-policy.sh"
             cat <<EOF
 The release object exists and the publishing job ran, but it never concluded
 success in any attempt: it failed or was cancelled.
@@ -182,8 +184,8 @@ publishing job are, because the run skipped them.
 This state describes the run record, not that follow-up work: doing the steps
 below by hand changes nothing read here, so the state stays partial afterwards
 and they may already have been done. Repeating them is safe: a docs deployment
-rebuilds the same slot and root from the tag (make step 2's check again), and
-the proxy refresh is a read.
+rebuilds the same slot and root from the tag (decide again with step 2's
+commands), and the proxy refresh is a read.
 
 Do NOT re-run, in any form. It is not a recovery here: while this release
 exists every path into publication refuses, the caller's guard-tag-ref job on a
@@ -207,14 +209,15 @@ EOF
                     ;;
                 *)
                     cat <<EOF
-2. Deploy the versioned docs the run skipped, only if $TAG is the newest
-   stable release by version. List them all (gh stops at 30 by default):
-     gh release list --repo $REPO --exclude-drafts --exclude-pre-releases --limit 1000
-   If $TAG is the newest stable release listed:
-     gh workflow run deploy-docs.yml --repo $REPO --ref $TAG -f version_slot=$minor -f version_label=$TAG -f set_latest=true
-   If a newer stable release is listed, do not deploy the docs by hand: $TAG
-   published out of order, and choosing its slot and root is not something
-   this advice can do safely. Stop and escalate (#239).
+2. Deploy the versioned docs the run skipped, deciding as Publish does, from
+   the repository's tags. Run these in a checkout of $REPO right after
+   git fetch --tags (a newer tag missing locally makes both answers wrong):
+     bash "$policy" docs $TAG
+   If it prints false, deploy nothing: a newer stable patch of $minor owns
+   that slot. If it prints true:
+     gh workflow run deploy-docs.yml --repo $REPO --ref $TAG -f version_slot=$minor -f version_label=$TAG -f set_latest="\$(bash "$policy" latest $TAG)"
+   set_latest comes out true only when $TAG is the highest stable tag, so the
+   docs root never moves back to an older release.
 EOF
                     ;;
             esac
@@ -232,11 +235,16 @@ Do NOT use --failed or a single-job re-run: those pin the reusable workflow to
 the FIRST attempt's commit, so a fix merged to the shared workflow since then
 will not be picked up (FACT 1).
 
-On a stable tag the re-run also deploys the docs as if the tag were the newest
-release: into its vX.Y slot and at the docs root. List every stable release:
-  gh release list --repo $REPO --exclude-drafts --exclude-pre-releases --limit 1000
-If a newer stable release than $TAG is listed, escalate before re-running
-(#239): the re-run would overwrite that release's docs.
+If a newer tag of $TAG's own line exists, or the run is over 30 days old,
+dispatch Publish for the tag instead. Re-runs expire after 30 days, and a
+re-run keeps the original push event, so behind a newer tag of the line it
+checks version progression again and fails validate.
+                           gh workflow run release-publish.yml --repo $REPO --ref $TAG
+
+On a stable tag Publish also deploys the docs, deciding from the repository's
+tags: $TAG's vX.Y slot only if no newer stable patch of that line exists, and
+the docs root only if $TAG is the highest stable tag. So a re-run behind a
+newer release leaves that release's docs alone.
 
 "No release object" means no PUBLISHED one: this lookup cannot see drafts, and
 a failure mid-upload leaves one behind. If the releases page shows a draft for
