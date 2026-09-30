@@ -357,6 +357,11 @@ before=$(pages_tip inputs)
 deploy inputs ../v1.2 v1.2.0 false
 assert_eq "slot with a path: exit 1" 1 "$RC"
 assert_contains "slot with a path: says so" "$OUT" "slot '../v1.2' is not a single path segment"
+deploy inputs next v1.2.0 true
+assert_eq "slot a root write would delete: exit 1" 1 "$RC"
+assert_contains "slot a root write would delete: says so" "$OUT" "slot 'next' is neither 'dev' nor a 'v*' version slot"
+deploy inputs next v1.2.0 false
+assert_eq "slot a root write would delete, set_latest false: exit 1" 1 "$RC"
 deploy inputs v1.2 v1.2.0 true --root-site "$WORK/inputs/no-such-root"
 assert_eq "missing root build with set_latest true: exit 1" 1 "$RC"
 assert_contains "missing root build with set_latest true: says so" "$OUT" "no-such-root' not found"
