@@ -67,9 +67,9 @@ Release                                     [Run workflow ▾]
 - **Dry run** combines with every option. It changes nothing — no commit, no tag, no push — skips
   the CI and Publish waits, and prints the plan in the run's summary. It is allowed from any
   branch, so a preview works on a branch that has no CI run. It still refuses a tag or a next
-  `VERSION` that already exists. The real run checks more (green CI, a clean tree, no local
-  `replace` in `go.mod`, an unmoved branch tip), so a clean preview does not guarantee the real
-  run succeeds.
+  `VERSION` that already exists. A real run checks more: every option needs a clean tree and
+  an unmoved branch tip, and the `release…` options also wait for green CI and refuse a local
+  `replace` in `go.mod`. A clean preview does not guarantee the real run succeeds.
 
 ## Which option when
 
