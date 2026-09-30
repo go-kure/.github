@@ -186,6 +186,29 @@ prt_handle_freshness_rc() {
   esac
 }
 
+# prt_handle_informational_freshness_rc RC CONTEXT — the partial-review
+# comment's variant of prt_handle_freshness_rc above (go-kure/.github#151).
+# That comment is informational: it only mirrors onto the PR page what
+# REVIEW_DEGRADED already records, so a failure around it must never turn
+# an otherwise successful review red. RC 1 routes exactly as above (same
+# "stale head SHA (run superseded)" reason, so a stale run still takes the
+# quiet tail exit). Every other status — 2 (PR read failed / malformed
+# .head.sha), 3 (the write failed after a fresh check) or anything
+# unexpected — skips the write and records a REVIEW_DEGRADED reason instead
+# of REVIEW_INCOMPLETE. None of these reasons contains the stale substring,
+# so prt_all_degraded_are_stale still tells them apart. Use it only for
+# writes whose loss leaves the review result itself intact; every other
+# freshness call site keeps prt_handle_freshness_rc.
+prt_handle_informational_freshness_rc() {
+  local rc="$1" context="$2"
+  case "$rc" in
+    1) prt_handle_freshness_rc 1 "$context" ;;
+    2) prt_mark_degraded "${context}: PR read failed, or returned a missing/malformed .head.sha, informational write skipped" ;;
+    3) prt_mark_degraded "${context}: informational write failed after a fresh head SHA check" ;;
+    *) prt_mark_degraded "${context}: freshness routing returned unexpected status '${rc}', informational write skipped" ;;
+  esac
+}
+
 # prt_all_degraded_are_stale — true if REVIEW_DEGRADED has at least one
 # reason recorded AND every single one of them is a prt_handle_freshness_rc
 # RC-1 staleness reason (go-kure/.github#99). Used by the tail exit gate to

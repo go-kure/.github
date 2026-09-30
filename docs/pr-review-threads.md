@@ -147,7 +147,10 @@ overrides the workflow's own default) is one of three values. An unrecognized va
   A reader or tool can tell a superseded comment from a live clean verdict by that line alone,
   without parsing the heading. The identity marker stays the last line, so the lookup is unchanged,
   and the state line cannot parse as a thread marker (`PRT_MARKER_RE` requires `v1 fp=`). A later
-  zero-finding run rewrites the comment back to a live clean verdict without the state line.
+  zero-finding run rewrites the comment back to a live clean verdict without the state line. A
+  zero-finding run that could not review every chunk (`review-parse-failed`) also supersedes it
+  (`prt_render_clean_comment_superseded_by_partial`), since its partial-review comment (below) makes
+  the old clean verdict stale; a failure there is `REVIEW_DEGRADED`, never `REVIEW_INCOMPLETE`.
 
 ## The two-PR pin-bump requirement
 
@@ -212,6 +215,11 @@ already committed, since the successor's decision table sees the thread already 
 and computes no action at all. Those three sites call `prt_mark_incomplete` directly regardless of
 which rc `prt_freshness_check` returns, so a race there fails the run closed instead of silently
 losing the audit-trail reply while reporting success (go-kure/.github#99 confirm-round finding).
+The partial-review comment's four checks, and the two around superseding a clean verdict on a
+partial review, go the other way: they use
+`prt_handle_informational_freshness_rc` (`state.sh`), which routes `1` the same way but records
+`2`/`3` as `prt_mark_degraded`, because that comment is informational (see the partial-review
+comment paragraph below).
 
 Two independent, additive severities track a run's problems, both file-backed for the same reason
 (a shell variable set inside a `$(...)` subshell never reaches the parent shell, and every write
@@ -418,6 +426,29 @@ failure two paragraphs below) is unrelated to whether the surviving findings are
 stays eligible for the clean comment. What this does not fix: a chunk that fails still
 contributes zero findings, so a real defect confined to that chunk's files goes unreviewed this
 run — the run reports degraded rather than red, it does not recover the review.
+
+Withholding the clean comment alone left the PR page silent about that gap: only the job log and a
+`::warning` named the unreviewed chunk (go-kure/.github#151). A `review-parse-failed` run in
+`enforce` mode now posts one **partial-review comment** (`prt_render_partial_comment`, `render.sh`)
+naming the head SHA and each unreviewed chunk with its failure, whether or not the reviewed chunks
+found anything. Its last line is the identity marker `<!-- gokure-pr-review:v1-partial -->`
+(`PRT_MARKER_PARTIAL`, `marker.sh`), and later runs edit it in place by that marker, the same way as
+the clean-verdict comment. A later run that assesses every chunk (no `review-parse-failed` reason,
+not `REVIEW_INCOMPLETE`) rewrites an existing partial comment to a superseded body, "a later review
+of `<sha>` assessed every chunk", with the same `<!-- gokure-pr-review:state=superseded -->` line
+before the marker; a PR that never had one gets nothing. When the partial run found nothing in the
+chunks it did review, it first rewrites an existing clean-verdict comment to superseded, so the PR
+never shows a live clean verdict next to a live partial review. Neither the exit code nor the `done:` line
+changes: the run stays `REVIEW_DEGRADED` and exits 0. The comment is informational, so no failure
+around it is ever `REVIEW_INCOMPLETE`: a failure to list or post it, or to supersede it, adds a
+`REVIEW_DEGRADED` reason (a listing failure on the supersede path only warns). Its freshness checks
+route through `prt_handle_informational_freshness_rc` (`state.sh`) rather than
+`prt_handle_freshness_rc`: a stale head keeps the superseded routing, so a stale run still takes the
+quiet exit, while a PR read failure (status `2`) skips the write as `REVIEW_DEGRADED`. The extra PR
+read these checks make on every `enforce` run therefore cannot fail an otherwise successful review.
+Failing the run closed instead (the issue's second proposal) is not done: go-kure/.github#107
+deliberately moved this case off the fail-closed path, and the chunk loop already salvages
+(`prt_parse_or_salvage`, `pr-review-threads.sh`) and retries each chunk before it counts as failed.
 
 `advisory` mode's single issue comment (`prt_render_advisory_comment`, `render.sh:227-275`)
 discloses both severities on its own live output surface, not only in `$GITHUB_STEP_SUMMARY`: a

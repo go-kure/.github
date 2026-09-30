@@ -132,7 +132,12 @@ prt_gh_graphql() {
 #       EXPECTED_SHA — go-kure/.github#99 codex round 1 finding). None of
 #       these mean "a newer run will redo this" — no run is guaranteed to be
 #       queued for an unreadable or malformed PR response — so this stays
-#       fatal (prt_mark_incomplete) at every call site.
+#       fatal (prt_mark_incomplete) at every call site guarding this run's
+#       own output. The one exception is the informational partial-review
+#       comment (go-kure/.github#151): its checks route through
+#       prt_handle_informational_freshness_rc (state.sh), which only skips
+#       that write as degraded, because the extra read must not fail an
+#       otherwise successful review.
 prt_freshness_check() {
   local repo="$1" pr_number="$2" expected_sha="$3"
   local body live_sha

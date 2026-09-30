@@ -430,3 +430,81 @@ ${PRT_MARKER_CLEAN}
 EOF
   fi
 }
+
+# prt_render_clean_comment_superseded_by_partial SHA — the prior clean-verdict
+# comment rewritten when a later run found nothing in the chunks it reviewed
+# but could not review them all (review-parse-failed, go-kure/.github#151).
+# Without this, that run left the old "Reviewed, no findings" live next to
+# the new partial-review comment, with no superseded state line to tell a
+# reader or a consumer which one is current. Same two trailing lines as
+# prt_render_clean_comment_superseded.
+prt_render_clean_comment_superseded_by_partial() {
+  local sha="$1"
+  cat <<EOF
+## ~~AI Code Review — Reviewed, no findings~~ (superseded)
+
+A later review of \`${sha}\` could not assess every part of the diff. The
+chunks it did review reported no findings, but that is not a clean verdict:
+see the partial-review comment on this PR for what went unreviewed.
+
+${PRT_MARKER_STATE_SUPERSEDED}
+${PRT_MARKER_CLEAN}
+EOF
+}
+
+# prt_render_partial_comment SHA REASONS — `enforce` mode's notice that part
+# of the diff was not reviewed (go-kure/.github#151). A review-parse-failed
+# degraded run already withholds the clean-verdict comment (a chunk that
+# produced no usable review must not read as "no findings"), but until this
+# comment existed it posted nothing in its place: the PR page looked exactly
+# like a run that never happened, and only the job log or a ::warning said a
+# chunk was skipped. REASONS is prt_degraded_reasons output; only its
+# `review-parse-failed:` lines are listed, with that tag stripped. Each line
+# goes through prt_marker_neutralize, since a reason can quote model output
+# and this comment is posted by the same bot login the marker lookups scan.
+# Upserted by PRT_MARKER_PARTIAL, which stays the last line.
+prt_render_partial_comment() {
+  local sha="$1" reasons="$2" line
+  cat <<EOF
+## AI Code Review — Partial review
+
+The review of \`${sha}\` could not assess every part of the diff. The chunk(s)
+below produced no usable review, so a defect confined to their files went
+unreviewed this run. Findings from the chunks that were reviewed are reported
+as usual.
+
+EOF
+  while IFS= read -r line; do
+    case "$line" in
+      review-parse-failed:*) ;;
+      *) continue ;;
+    esac
+    line="${line#review-parse-failed: }"
+    printf -- '- %s\n' "$(prt_marker_neutralize "$line")"
+  done <<< "$reasons"
+  cat <<EOF
+
+Push again or re-run the job to retry the review.
+
+---
+*This comment is edited in place on every push, never appended.*
+
+${PRT_MARKER_PARTIAL}
+EOF
+}
+
+# prt_render_partial_comment_superseded SHA — rewrites (never deletes) a
+# prior partial-review comment once a later run on the same PR assessed every
+# chunk (go-kure/.github#151). Same superseded state line and last-line
+# identity marker as prt_render_clean_comment_superseded (go-kure/.github#150).
+prt_render_partial_comment_superseded() {
+  local sha="$1"
+  cat <<EOF
+## ~~AI Code Review — Partial review~~ (superseded)
+
+A later review of \`${sha}\` assessed every chunk.
+
+${PRT_MARKER_STATE_SUPERSEDED}
+${PRT_MARKER_PARTIAL}
+EOF
+}
