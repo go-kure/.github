@@ -225,6 +225,7 @@ what the error names and run Release again.
 | Tag … already exists | That version is tagged already. If its Publish failed, recover it as below. Then move `VERSION` past it: `skip-prerelease-number` on `main`, a pull request setting the next patch on a release branch |
 | The tree contains downstream references | Fix the source, or the `cliff.toml` postprocessor that let a name into `CHANGELOG.md` |
 | The push was refused | Nothing was published; read the push error (branch protection, a moved branch) and run Release again |
+| install-git-cliff: refusing to install git-cliff | The downloaded git-cliff release did not verify against the pinned signing key (see "git-cliff binary" under Reference). Do not bypass the check; report it in `go-kure/.github` |
 
 ### The tag is pushed and Publish failed
 
@@ -458,6 +459,16 @@ by hand once its provenance is settled.
   sections are never rewritten. `--use-branch-tags` counts only tags on the current branch, which
   keeps a release branch's patches out of `main`'s changelog. The release notes are the same
   section, rendered by Publish with `git-cliff --latest --use-branch-tags --strip header`.
+- **git-cliff binary.** Release and Publish install git-cliff with
+  [`scripts/release/install-git-cliff.sh`](https://github.com/go-kure/.github/blob/main/scripts/release/install-git-cliff.sh)
+  from `go-kure/.github`. It downloads the release archive and its `.sig` from the upstream
+  `orhun/git-cliff` release, and installs the binary only when the signature is good and its signing
+  key's primary fingerprint equals the one pinned in the script (`1D2D410A…B6619297`, git-cliff's
+  published release key, shipped next to the script as `git-cliff-signing-key.asc`). A failed check
+  fails the job before anything is installed. Renovate bumps only the version; if upstream rotates
+  its signing key, the next bump fails this check until a pull request in `go-kure/.github` replaces
+  both the key file and the pinned fingerprint, after checking the new fingerprint against
+  git-cliff's own installation docs.
 - **Identity.** Release commits and tags are pushed by the `kure-release-bot` GitHub App (secrets
   `KURE_BOT_APP_ID` and `KURE_BOT_APP_PRIVATE_KEY`), the one actor allowed to push past the
   protection of `main` and `release/*`. Automation reuses this identity rather than minting a new

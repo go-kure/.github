@@ -4,7 +4,7 @@
   "customManagers": [
     {
       "customType": "regex",
-      "description": "git-cliff pins: CLIFF_VERSION in the shared release workflow and in ci.yml's release-test step, setup-git-cliff's version input in release-publish. One depName, so a bump moves every site in one PR, and the release tests run on the version the workflows install.",
+      "description": "git-cliff pins: CLIFF_VERSION in the shared release workflows (release, release-publish) and in ci.yml's release-test step, each passed to scripts/release/install-git-cliff.sh, which verifies the release signature against a pinned key. One depName, so a bump moves every site in one PR, and the release tests run on the version the workflows install. The signing-key fingerprint lives in the script, never on a line this manager rewrites.",
       "managerFilePatterns": ["/^\\.github/workflows/(release|release-publish|ci)\\.yml$/"],
       "matchStrings": [
         "#\\s*renovate:\\s*datasource=(?<datasource>\\S+)\\s+depName=(?<depName>\\S+)\\s*\\n\\s*(?:CLIFF_VERSION=|version:\\s*)\"(?<currentValue>[^\"]+)\""

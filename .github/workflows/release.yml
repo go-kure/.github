@@ -166,9 +166,9 @@ jobs:
           # (customManagers in renovate.json, one depName).
           # renovate: datasource=github-releases depName=orhun/git-cliff
           CLIFF_VERSION="2.14.2"
-          curl -sSfL "https://github.com/orhun/git-cliff/releases/download/v${CLIFF_VERSION}/git-cliff-${CLIFF_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
-            | tar xzf - -C /tmp
-          sudo install /tmp/git-cliff-${CLIFF_VERSION}/git-cliff /usr/local/bin/
+          # Verifies the upstream signature against the key pinned in the
+          # script before installing (go-kure/.github#227).
+          bash release-tools/scripts/release/install-git-cliff.sh "$CLIFF_VERSION"
 
       - name: Run the release script
         id: run
