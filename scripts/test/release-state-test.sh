@@ -570,12 +570,21 @@ assert_contains "partial advice checks the assets against the tag's own config" 
 # runs that same script by hand, from this checkout, so an older tag gets its
 # decided deployment instead of an escalation (#239).
 policy_abs="$(cd "$ROOT/scripts/release" && pwd)/publish-policy.sh"
-assert_contains "partial advice decides the slot with Publish's own policy script" \
-    "$OUT" "git fetch --tags (a newer tag missing locally makes both answers wrong):"$'\n'"     bash \"$policy_abs\" docs v1.2.3"
+assert_contains "partial advice decides slot and root with Publish's own policy script" \
+    "$OUT" "git fetch --tags (a newer tag missing locally makes both answers wrong):"$'\n'"     bash \"$policy_abs\" docs v1.2.3"$'\n'"     bash \"$policy_abs\" latest v1.2.3"
 assert_contains "partial advice deploys nothing when a newer patch owns the slot" \
-    "$OUT" "If it prints false, deploy nothing: a newer stable patch of v1.2 owns"
-assert_contains "partial advice takes set_latest from the policy, never a fixed value" \
-    "$OUT" "If it prints true:"$'\n'"     gh workflow run deploy-docs.yml --repo go-kure/kure --ref v1.2.3 -f version_slot=v1.2 -f version_label=v1.2.3 -f set_latest=\"\$(bash \"$policy_abs\" latest v1.2.3)\""
+    "$OUT" "If docs printed false, deploy nothing: a newer stable patch of v1.2 owns"
+# A failed policy run (not in a checkout, a bad tag) prints no decision. The
+# dispatch must not be reachable with an empty set_latest, so the advice prints
+# no command substitution: the operator picks one of two literal lines.
+assert_contains "partial advice stops when the policy gives no decision" \
+    "$OUT" "If either printed anything but true or false, stop"
+assert_contains "partial advice prints the dispatch for latest=true" \
+    "$OUT" "     gh workflow run deploy-docs.yml --repo go-kure/kure --ref v1.2.3 -f version_slot=v1.2 -f version_label=v1.2.3 -f set_latest=true"
+assert_contains "partial advice prints the dispatch for latest=false" \
+    "$OUT" "     gh workflow run deploy-docs.yml --repo go-kure/kure --ref v1.2.3 -f version_slot=v1.2 -f version_label=v1.2.3 -f set_latest=false"
+assert_not_contains "partial advice embeds no command substitution in the dispatch" \
+    "$OUT" "set_latest=\"\$("
 if [ -f "$policy_abs" ]; then
     pass_count=$((pass_count + 1))
 else
@@ -585,9 +594,7 @@ fi
 # release history, the docs line decides the slot and the set_latest substitution
 # expands to the root decision.
 docs_cmd=$(printf '%s\n' "$OUT" | sed -n 's/^     \(bash ".*" docs v1\.2\.3\)$/\1/p')
-# The pattern matches the literal "$(" the advice prints.
-# shellcheck disable=SC2016
-latest_cmd=$(printf '%s\n' "$OUT" | sed -n 's/.* -f set_latest="\$(\(.*\))"$/\1/p')
+latest_cmd=$(printf '%s\n' "$OUT" | sed -n 's/^     \(bash ".*" latest v1\.2\.3\)$/\1/p')
 tagrepo="$WORK/partial-advice-tags"
 # Isolated from the runner's git config: a global tag.gpgSign or init template
 # would turn these lightweight tags or the commit into something else.
@@ -601,7 +608,7 @@ tgit commit -q --allow-empty -m base
 for t in v1.2.2 v1.2.3 v1.3.0; do tgit tag "$t"; done
 assert_eq "printed docs command: v1.2.3 owns its slot next to v1.3.0" \
     "true" "$(cd "$tagrepo" && eval "$docs_cmd" 2>&1)"
-assert_eq "printed set_latest command: v1.3.0 keeps the root" \
+assert_eq "printed latest command: v1.3.0 keeps the root" \
     "false" "$(cd "$tagrepo" && eval "$latest_cmd" 2>&1)"
 tgit tag v1.2.4
 assert_eq "printed docs command: v1.2.4 owns the v1.2 slot" \
