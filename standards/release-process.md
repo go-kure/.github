@@ -136,7 +136,11 @@ well, except on attempt 1 of a tag push, where it warns and proceeds. So a re-ru
 recovery only while no release exists: while one does, every attempt that reaches this check
 is refused, including the full re-run the `partial` advice above names. One limit:
 `--failed` and single-job re-runs resolve the workflow at the first attempt's commit, so they
-carry the check only for a run whose first attempt already used a version with it.
+carry the check only for a run whose first attempt already used a version with it. The check
+sees published releases only, by design: GoReleaser keeps a release a draft until its uploads
+finish, so a draft left by a failure during upload is not refused, and a re-run then creates a
+new release and leaves that draft behind. `release-state.sh` reads the same published-release
+lookup, so such a run reports `never-published`, not `partial`.
 
 ## CI, tags, and identity
 

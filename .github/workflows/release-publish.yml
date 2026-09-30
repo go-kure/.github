@@ -138,6 +138,15 @@ jobs:
       # there it warns and proceeds. A release that does exist is refused on
       # every path, that one included.
       #
+      # Drafts are not seen, and that is accepted: this lookup returns published
+      # releases only and answers 404 for a draft. Per GoReleaser's publish
+      # docs, every GitHub release stays a draft until its uploads finish, so a
+      # run that fails mid-upload leaves a draft that was never public. With the
+      # callers' settings (`draft: false`, neither `use_existing_draft` nor
+      # `replace_existing_draft`) a re-run then creates a new release and leaves
+      # the stale draft behind; it never publishes over a live release.
+      # Refusing on a draft would block exactly that recovery.
+      #
       # The callers' own guard jobs apply the same rule and stay in place for
       # now; on a first publication both see a 404 and proceed.
       - name: Refuse to publish over a tag that already has a release
@@ -178,10 +187,10 @@ jobs:
             echo "::error::$TAG already has a GitHub release, so this" \
                  "${GITHUB_EVENT_NAME} (attempt ${GITHUB_RUN_ATTEMPT}) would publish over a" \
                  "live release object. This does not by itself mean publication succeeded --" \
-                 "a run that died part-way leaves a release object too. Re-running is not a" \
-                 "recovery from here: this check refuses for as long as the release exists." \
-                 "Determine the state with scripts/release-state.sh from go-kure/.github" \
-                 "(documented in its standards/release-process.md) before acting."
+                 "a run that failed after GoReleaser published the release leaves one too." \
+                 "Re-running is not a recovery from here: this check refuses for as long as" \
+                 "the release exists. Determine the state with scripts/release-state.sh from" \
+                 "go-kure/.github (documented in its standards/release-process.md) before acting."
             exit 1
           fi
           case "$err" in

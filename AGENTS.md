@@ -300,9 +300,11 @@ kure/launcher.
   every path that runs `goreleaser`: tag push, dispatch, full re-run, `--failed` and single-job
   re-runs. An existing release refuses everywhere; an undetermined answer (anything other than
   success or a `404`, after three tries) refuses too, except on attempt 1 of a tag push, where it
-  warns and proceeds so an API error cannot block a first publication. `--failed` and single-job
-  re-runs resolve this workflow at the first attempt's commit, so they are covered only for runs
-  whose first attempt already carried the probe.
+  warns and proceeds so an API error cannot block a first publication. Drafts are not seen, by
+  design: GoReleaser keeps a release a draft until its uploads finish, so a failed upload leaves a
+  draft, and a re-run creates a new release beside it rather than publishing over a live one.
+  `--failed` and single-job re-runs resolve this workflow at the first attempt's commit, so they
+  are covered only for runs whose first attempt already carried the probe.
 
 ## Composite Actions
 
