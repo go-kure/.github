@@ -46,6 +46,8 @@
 # Tests: scripts/test/release-test.sh
 
 set -euo pipefail
+# Keep set -e inside $(...) too; bash turns it off there by default.
+shopt -s inherit_errexit
 
 VERSION_FILE=VERSION
 CHANGELOG_FILE=CHANGELOG.md
@@ -265,24 +267,34 @@ commit_version() {
     log_ok "Committed: $2"
 }
 
-# make_branch_commit <tag> <version> <branch>: a commit on top of <tag> whose
-# only change is VERSION, built without touching this checkout's working tree.
+# make_branch_commit <tag> <version> <branch>: sets BRANCH_COMMIT to a commit on
+# top of <tag> whose only change is VERSION, built without touching this
+# checkout's working tree. It is called directly, never inside $(...), so a
+# failed step stops the release here instead of pushing a half-built branch.
 make_branch_commit() {
-    local tag="$1" version="$2" branch="$3" base blob tree index commit
+    local tag="$1" version="$2" branch="$3" base blob tree index
+    BRANCH_COMMIT=""
     git fetch --quiet --no-tags "$REMOTE" "refs/tags/$tag:refs/tags/$tag" \
         || die "Could not fetch tag $tag from $REMOTE."
-    base=$(git rev-parse --verify "refs/tags/$tag^{commit}")
+    base=$(git rev-parse --verify "refs/tags/$tag^{commit}") \
+        || die "Tag $tag does not point at a commit."
     git cat-file -e "$base:$VERSION_FILE" 2>/dev/null \
         || die "Tag $tag has no $VERSION_FILE file, so $branch cannot start from it."
-    blob=$(printf '%s\n' "$version" | git hash-object -w --stdin)
+    blob=$(printf '%s\n' "$version" | git hash-object -w --stdin) \
+        || die "Could not store the $VERSION_FILE of $branch."
     index="$(git rev-parse --absolute-git-dir)/release-branch-index"
     rm -f "$index"
-    GIT_INDEX_FILE="$index" git read-tree "$base"
-    GIT_INDEX_FILE="$index" git update-index --cacheinfo "100644,$blob,$VERSION_FILE"
-    tree=$(GIT_INDEX_FILE="$index" git write-tree)
+    if ! GIT_INDEX_FILE="$index" git read-tree "$base" \
+        || ! GIT_INDEX_FILE="$index" git update-index --cacheinfo "100644,$blob,$VERSION_FILE" \
+        || ! tree=$(GIT_INDEX_FILE="$index" git write-tree); then
+        rm -f "$index"
+        die "Could not build the tree of $branch."
+    fi
     rm -f "$index"
-    commit=$(git commit-tree "$tree" -p "$base" -m "chore: start $branch at $version")
-    printf '%s\n' "$commit"
+    BRANCH_COMMIT=$(git commit-tree "$tree" -p "$base" -m "chore: start $branch at $version") \
+        || die "Could not create the first commit of $branch."
+    git cat-file -e "$BRANCH_COMMIT^{commit}" 2>/dev/null \
+        || die "git commit-tree returned '$BRANCH_COMMIT', not a commit."
 }
 
 # cut_release <tag> <next VERSION> <commit message for the VERSION bump>
@@ -344,9 +356,8 @@ start_next_line() {
 
     commit_version "$next" "chore: start next cycle: $next"
     if [ "$create" = true ]; then
-        local commit
-        commit=$(make_branch_commit "$stable" "$branch_version" "$branch")
-        push "$commit:refs/heads/$branch"
+        make_branch_commit "$stable" "$branch_version" "$branch"
+        push "$BRANCH_COMMIT:refs/heads/$branch"
     else
         push
     fi
