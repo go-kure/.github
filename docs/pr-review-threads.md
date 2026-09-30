@@ -71,6 +71,21 @@ It reaches `pr-review.yml` via `pr-review-caller.yml`'s `secrets: inherit`; any 
 secret isn't set falls back to `github.token`/`github-actions[bot]`, i.e. today's create-but-never-
 resolve behavior — this is a degrade, not a hard failure.
 
+**Changing the bot identity orphans existing threads.** A thread is owned only when its first
+comment carries this action's marker *and* was authored by `bot-login`. Setting or removing
+`KURE_BOT_PAT` flips `bot-login` between `kure-bot` and `github-actions[bot]`, and every thread the
+old identity opened stops being owned: no later run resolves, reopens or caps it, and until
+go-kure/.github#153 nothing said so. The ownership loop now counts threads whose first comment
+parses as a marker but whose author is another login. When that count is above zero the run records
+a `REVIEW_DEGRADED` reason, `foreign-marked-threads: N thread(s) … opened by <logins>, not the
+configured bot login <login>`, which becomes a `::warning` on the check (exit 0). The job log's
+`threads listed: <n>, owned=<n>, foreign_marked=<n>` line carries the count on every `enforce` run.
+This is a detector only: accepting both identities as owners is left to go-kure/.github#153 as a
+separate design decision.
+A low `owned` count on its own is normal: `threads listed` counts every review thread on the PR,
+including those opened by humans and by other review bots, and only this action's own marked
+threads are owned. Only `foreign_marked` above zero points at an identity change.
+
 **Gotcha, if this secret ever needs regenerating:** a fine-grained PAT's "Repository access: All
 repositories" is scoped to repos the token's **resource owner** account owns, not to org repos
 that account merely has collaborator access to. `KURE_BOT_PAT` must be created with the **`go-kure`

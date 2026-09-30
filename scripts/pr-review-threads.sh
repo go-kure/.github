@@ -868,6 +868,19 @@ fi
 # isn't present is a no-op.
 PRT_BOT_LOGIN_GQL="${PRT_BOT_LOGIN%\[bot\]}"
 
+# Threads whose first comment carries this action's marker but was authored
+# by a login other than PRT_BOT_LOGIN_GQL (go-kure/.github#153, interim
+# detector only). The ownership check below skips them, correctly: this run
+# may not be able to edit or resolve another account's comment. But when
+# the bot identity changes (KURE_BOT_PAT set or removed flips bot-login
+# between kure-bot and github-actions[bot]) every existing thread is
+# orphaned that way, silently: never resolved, never reopened, not counted
+# toward the cap. Counted here and reported as REVIEW_DEGRADED below so the
+# orphaning is visible; accepting both identities as owners needs a design
+# decision and is not done here.
+FOREIGN_MARKED_COUNT=0
+FOREIGN_MARKED_LOGINS=""
+
 # Build a lookup: fp -> {thread_id, resolved, resolved_by_bot, first_comment_id, has_human_reply}
 n_threads="$n_threads_pg"
 for ((ti = 0; ti < n_threads; ti++)); do
@@ -888,7 +901,16 @@ for ((ti = 0; ti < n_threads; ti++)); do
     prt_inventory_fail "first-comment body at thread index $ti"
     break
   fi
-  [ "$first_author" = "$PRT_BOT_LOGIN_GQL" ] || continue
+  if [ "$first_author" != "$PRT_BOT_LOGIN_GQL" ]; then
+    if prt_marker_parse "$first_body" >/dev/null; then
+      FOREIGN_MARKED_COUNT=$((FOREIGN_MARKED_COUNT + 1))
+      foreign_login="${first_author:-(unknown author)}"
+      if ! grep -qxF -- "$foreign_login" <<< "$FOREIGN_MARKED_LOGINS"; then
+        FOREIGN_MARKED_LOGINS="${FOREIGN_MARKED_LOGINS}${foreign_login}"$'\n'
+      fi
+    fi
+    continue
+  fi
   parsed="$(prt_marker_parse "$first_body")" || continue
   fp="$(cut -f1 <<< "$parsed")"
   collision="$(cut -f2 <<< "$parsed")"
@@ -957,7 +979,15 @@ if [ "$inventory_failed" = 1 ]; then
   prt_report_degraded_annotations
   exit 1
 fi
-prt_log "threads listed: $n_threads, owned=$owned_count"
+if [ "$FOREIGN_MARKED_COUNT" -gt 0 ]; then
+  foreign_logins_list=""
+  while IFS= read -r foreign_login; do
+    [ -n "$foreign_login" ] || continue
+    foreign_logins_list="${foreign_logins_list:+${foreign_logins_list}, }${foreign_login}"
+  done <<< "$FOREIGN_MARKED_LOGINS"
+  prt_mark_degraded "foreign-marked-threads: ${FOREIGN_MARKED_COUNT} thread(s) carry this action's marker but were opened by ${foreign_logins_list}, not the configured bot login ${PRT_BOT_LOGIN_GQL}; this run does not resolve, reopen or cap them — the bot identity likely changed (go-kure/.github#153)"
+fi
+prt_log "threads listed: $n_threads, owned=$owned_count, foreign_marked=$FOREIGN_MARKED_COUNT"
 fi # PRT_MODE = enforce
 
 # --- PR-wide severity cap: bound the number of gating (currently open, or
