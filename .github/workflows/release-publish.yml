@@ -109,6 +109,101 @@ jobs:
       contents: write
       id-token: write
     steps:
+      # Refuse to publish over a release that already exists on this tag.
+      #
+      # It is a step of the publishing job, not a job of its own, because of how
+      # `gh run rerun --failed` selects jobs: it reschedules the jobs that
+      # concluded `failure` plus the jobs downstream of them. A separate probe
+      # job that succeeded on attempt 1 is carried over without running, and its
+      # carried-over success still satisfies `needs:`. That is exactly how a
+      # caller-side guard job is bypassed when this job failed after creating
+      # the release object. A step here runs on every attempt that runs this
+      # job: tag push, dispatch, full re-run, `--failed` and single-job re-runs.
+      #
+      # It is the first step because it needs only `gh` and the API: a refusal
+      # costs no checkout, toolchain setup or build.
+      #
+      # KNOWN LIMIT: `--failed` and single-job re-runs resolve this reusable
+      # workflow at the FIRST attempt's commit (FACT 1 in
+      # scripts/release-state.sh; standards/release-process.md). They carry this
+      # step only for a run whose first attempt already used a version with it.
+      #
+      # Three outcomes, not two. The probe's shapes, as measured for the
+      # callers' identical guard: release present -> exit 0, no stderr; absent
+      # -> exit 1 with "gh: Not Found (HTTP 404)".
+      # Any other failure is UNDETERMINED and never read as absent, so a change
+      # in that error wording degrades to undetermined, not to "no release".
+      # Undetermined refuses on every path except attempt 1 of a tag push: that
+      # is a first publication, which must not be blocked by an API error, so
+      # there it warns and proceeds. A release that does exist is refused on
+      # every path, that one included.
+      #
+      # The callers' own guard jobs apply the same rule and stay in place for
+      # now; on a first publication both see a 404 and proceed.
+      - name: Refuse to publish over a tag that already has a release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          # A re-run replays the original event context, so event_name stays
+          # `push` on attempt 2+; the attempt has to be tested as well. The same
+          # expression as the callers' guard, kept verbatim (run_attempt is a
+          # string; this is the exact complement of a `> 1` re-publication
+          # test) so the two classify every attempt identically.
+          FIRST_PUBLICATION: ${{ github.event_name == 'push' && !(github.run_attempt > 1) }}
+        run: |
+          # Probe up to 3 times, 5s apart, stopping at the first determinate
+          # answer, so the first-publication waiver below rides on a persistent
+          # outage rather than a single 403/429/network blip.
+          attempt=0
+          while : ; do
+            attempt=$((attempt + 1))
+            set +e
+            err=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" 2>&1 >/dev/null)
+            rc=$?
+            set -e
+            case "${rc}:${err}" in
+              0:*|*"(HTTP 404)"*) break ;;
+            esac
+            if [ "$attempt" -ge 3 ]; then
+              break
+            fi
+            echo "Probe attempt ${attempt} for $TAG was undetermined ($err); retrying in 5s"
+            sleep 5
+          done
+          if [ "$rc" -eq 0 ]; then
+            # States what this step can see -- the release object exists, and
+            # this check keeps refusing while it does -- and nothing about
+            # whether publication succeeded. It runs in the calling repository,
+            # so it names where the state tool lives, not a path relative to it.
+            echo "::error::$TAG already has a GitHub release, so this" \
+                 "${GITHUB_EVENT_NAME} (attempt ${GITHUB_RUN_ATTEMPT}) would publish over a" \
+                 "live release object. This does not by itself mean publication succeeded --" \
+                 "a run that died part-way leaves a release object too. Re-running is not a" \
+                 "recovery from here: this check refuses for as long as the release exists." \
+                 "Determine the state with scripts/release-state.sh from go-kure/.github" \
+                 "(documented in its standards/release-process.md) before acting."
+            exit 1
+          fi
+          case "$err" in
+            *"(HTTP 404)"*)
+              echo "No release exists for $TAG; proceeding with publication"
+              ;;
+            *)
+              if [ "$FIRST_PUBLICATION" = "true" ]; then
+                # Residual hole, accepted: if the release exists AND the API
+                # cannot answer, this proceeds over it. Refusing instead would
+                # block every first publication on an API outage.
+                echo "::warning::could not determine whether $TAG already has a release: $err"
+                echo "Proceeding anyway: attempt 1 of a tag push is a first publication," \
+                     "which must not be blocked by an API error. A release that does exist" \
+                     "is still refused above; only an UNDETERMINED answer is waived here."
+              else
+                echo "::error::could not determine whether $TAG already has a release: $err"
+                exit 1
+              fi
+              ;;
+          esac
+
       - name: Check out code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
