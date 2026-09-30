@@ -477,22 +477,93 @@ assert_not_contains "the evidence does not name the attempt that merely inherite
 
 # --- FACT 1 -------------------------------------------------------------------
 #
-# The recovery advice must name the full re-run and warn off `--failed`, because
-# the two resolve the reusable workflow at different commits. Asserting only the
-# presence of "rerun" would pass on advice that recommended the wrong one.
-d=$(new_case fact1-partial-advice)
-write_release "$d" 0
+# The advice that recommends a re-run must name the full re-run and warn off
+# `--failed`, because the two resolve the reusable workflow at different commits.
+# Asserting only the presence of "rerun" would pass on advice that recommended
+# the wrong one. This was pinned through `partial` until go-kure/.github#234:
+# `partial` no longer recommends any re-run, so `never-published` — the one state
+# whose advice still does — carries the fact now.
+d=$(new_case fact1-never-published-advice)
 write_runs "$d" v1.0.0 5005
 write_run "$d" 5005 1
 write_attempt "$d" 5005 1 "2026-09-01T09:00:00Z"
 write_jobs "$d" 5005 1 "goreleaser=failure=2026-09-01T09:05:00Z"
 run_case "$d" go-kure/kure v1.0.0
-assert_contains "FACT 1: partial advice names the full re-run" \
-    "$OUT" "gh run rerun"
+assert_eq "FACT 1: the fixture reaches the state whose advice re-runs" \
+    "never-published" "$(printf '%s' "$OUT" | sed -n 's/^STATE: //p')"
+assert_contains "FACT 1: never-published advice names the full re-run" \
+    "$OUT" "gh run rerun <run-id>"
 assert_contains "FACT 1: --failed is explicitly warned against" \
     "$OUT" "Do NOT use --failed"
 assert_contains "FACT 1: the reason is stated, not just the prohibition" \
     "$OUT" "pin the reusable workflow to"
+# The lookup sees published releases only, and GoReleaser keeps a release a
+# draft until its uploads finish, so a failure mid-upload reaches THIS state
+# with a draft left behind. The re-run creates a second release beside it; the
+# advice has to say the draft is there and how to remove it without hitting the
+# published one, since `gh release delete <tag>` can resolve to either.
+assert_contains "never-published advice says the lookup cannot see a draft" \
+    "$OUT" "this lookup cannot see drafts"
+assert_contains "never-published advice says to delete the stale draft afterwards" \
+    "$OUT" "delete the stale draft"
+assert_contains "the draft is deleted by id, not by tag" \
+    "$OUT" "gh release delete v1.0.0, which can resolve"
+
+# --- state: partial, and why its recovery is not a re-run ----------------------
+#
+# go-kure/.github#234. Every path into publication refuses while a release
+# exists — the caller's guard-tag-ref on a full re-run, and the first step of the
+# shared publishing job on every path — so the full re-run this advice used to
+# name was refused on the one tag it was printed for. A published release plus a
+# publishing job that never succeeded means the uploads finished (GoReleaser
+# publishes only after them) and what failed came later: the downstream docs and
+# module-proxy jobs are what never ran, and the advice names them by hand.
+#
+# The docs slot is asserted in full (v1.2.3 -> v1.2), on a tag whose minor and
+# patch are non-zero and distinct: with v1.0.0, a wrong slot such as the major
+# plus a literal `.0` would print the same line.
+d=$(new_case partial-advice)
+write_release "$d" 0
+write_runs "$d" v1.2.3 5023
+write_run "$d" 5023 1
+write_attempt "$d" 5023 1 "2026-09-01T09:00:00Z"
+write_jobs "$d" 5023 1 "release / goreleaser=cancelled=2026-09-01T09:05:00Z"
+run_case "$d" go-kure/kure v1.2.3
+assert_eq "a release with a publish that never succeeded is partial" \
+    "partial" "$(printf '%s' "$OUT" | sed -n 's/^STATE: //p')"
+assert_not_contains "partial advice does not recommend a re-run the guards refuse" \
+    "$OUT" "gh run rerun"
+assert_contains "partial advice forbids the re-run outright" \
+    "$OUT" "Do NOT re-run, in any form"
+assert_contains "partial advice says why: the guards refuse while the release exists" \
+    "$OUT" "every path into publication refuses"
+assert_contains "partial advice keeps the do-not-delete guidance" \
+    "$OUT" "Deleting the release object is an escalation"
+assert_contains "partial advice checks the assets against the tag's own config" \
+    "$OUT" "against that TAG's own .goreleaser.yml"
+assert_contains "partial advice names the skipped docs deployment for a stable tag" \
+    "$OUT" "gh workflow run deploy-docs.yml --repo go-kure/kure --ref v1.2.3 -f version_slot=v1.2 -f version_label=v1.2.3 -f set_latest=true"
+assert_contains "partial advice names the skipped module-proxy refresh" \
+    "$OUT" "curl -fsS https://proxy.golang.org/github.com/go-kure/kure/@v/v1.2.3.info"
+
+# The prerelease half of the pair. The shared workflow's deploy-docs job runs
+# only for a tag without a '-', so dispatching it by hand for a prerelease would
+# do something the publish never would. The proxy refresh runs for every tag.
+d=$(new_case partial-advice-prerelease)
+write_release "$d" 0
+write_runs "$d" v1.2.3-rc.1 5024
+write_run "$d" 5024 1
+write_attempt "$d" 5024 1 "2026-09-01T09:00:00Z"
+write_jobs "$d" 5024 1 "release / goreleaser=failure=2026-09-01T09:05:00Z"
+run_case "$d" go-kure/kure v1.2.3-rc.1
+assert_eq "a prerelease reaches partial the same way" \
+    "partial" "$(printf '%s' "$OUT" | sed -n 's/^STATE: //p')"
+assert_not_contains "no docs deployment is prescribed for a prerelease" \
+    "$OUT" "gh workflow run deploy-docs.yml"
+assert_contains "the advice says why there is no docs step" \
+    "$OUT" "v1.2.3-rc.1 is a prerelease"
+assert_contains "the module-proxy refresh is still prescribed for a prerelease" \
+    "$OUT" "proxy.golang.org/github.com/go-kure/kure/@v/v1.2.3-rc.1.info"
 
 # --- state: contradictory -----------------------------------------------------
 #
@@ -556,8 +627,8 @@ assert_eq "an earlier success outranks a later failure" \
     "published" "$(printf '%s' "$OUT" | sed -n 's/^STATE: //p')"
 assert_contains "the published advice tells the operator to do nothing" \
     "$OUT" "Nothing to do."
-assert_not_contains "a shipped release is never reported as possibly incomplete" \
-    "$OUT" "may be incomplete"
+assert_not_contains "a shipped release is never sent to the partial recovery" \
+    "$OUT" "Recover by hand instead"
 
 # Same run record as above plus one difference: the later attempt has not
 # finished. The earlier success is still there, so the release is not missing —
@@ -669,7 +740,8 @@ assert_eq "a completed job with no conclusion is not treated as in-flight" \
 # the run was deleted or aged out — yet each was skipped with `continue` and the
 # script went on to emit a definitive state. Every state reachable without a
 # success rests on NOT having seen one, which is precisely what the missing
-# attempt could have contained, and two of them recommend a re-run.
+# attempt could have contained: `never-published` recommends a re-run, and
+# `partial` declares the publish failed and prescribes manual steps.
 #
 # Attempt 2 is never written, so the stub 404s it. Attempt 1 skips goreleaser,
 # so nothing else supplies a success: without the guard this is `never-published`
