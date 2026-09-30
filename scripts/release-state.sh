@@ -164,9 +164,9 @@ EOF
             # The docs slot is computed exactly as the shared workflow's
             # deploy-docs job computes it (v0.2.3 -> v0.2), and that job runs
             # only for a tag without a '-', so a prerelease gets no docs step.
-            # That job always passes set_latest=true: at publish time the tag
-            # is taken to be the newest release. A recovery can come after a
-            # newer one, so the advice prints the check, not the value.
+            # That job always passes set_latest=true, taking the tag to be the
+            # newest release; by hand that holds only while it still is, so an
+            # out-of-order tag is escalated (#239).
             local minor="${TAG%.*}"
             cat <<EOF
 The release object exists and the publishing job ran, but it never concluded
@@ -182,8 +182,8 @@ publishing job are, because the run skipped them.
 This state describes the run record, not that follow-up work: doing the steps
 below by hand changes nothing read here, so the state stays partial afterwards
 and they may already have been done. Repeating them is safe: a docs deployment
-rebuilds the same slot from the tag (make step 2's check again), and the proxy
-refresh is a read.
+rebuilds the same slot and root from the tag (make step 2's check again), and
+the proxy refresh is a read.
 
 Do NOT re-run, in any form. It is not a recovery here: while this release
 exists every path into publication refuses, the caller's guard-tag-ref job on a
@@ -207,16 +207,14 @@ EOF
                     ;;
                 *)
                     cat <<EOF
-2. Deploy the versioned docs the run skipped, unless a newer release has made
-   that wrong. The publish workflow takes the tag to be the newest release; a
-   recovery can come after a newer one. List the stable releases (the list is
-   in date order; compare versions):
-     gh release list --repo $REPO --exclude-drafts --exclude-pre-releases
-   If a newer $minor.x release is listed, skip this step: the $minor slot
-   already carries it. Otherwise pass set_latest=true only if $TAG is still the
-   newest stable release, and set_latest=false if not (true redeploys the docs
-   root as $TAG):
-     gh workflow run deploy-docs.yml --repo $REPO --ref $TAG -f version_slot=$minor -f version_label=$TAG -f set_latest=<true|false>
+2. Deploy the versioned docs the run skipped, only if $TAG is the newest
+   stable release by version. List them all (gh stops at 30 by default):
+     gh release list --repo $REPO --exclude-drafts --exclude-pre-releases --limit 1000
+   If $TAG is the newest stable release listed:
+     gh workflow run deploy-docs.yml --repo $REPO --ref $TAG -f version_slot=$minor -f version_label=$TAG -f set_latest=true
+   If a newer stable release is listed, do not deploy the docs by hand: $TAG
+   published out of order, and choosing its slot and root is not something
+   this advice can do safely. Stop and escalate (#239).
 EOF
                     ;;
             esac
@@ -235,12 +233,10 @@ the FIRST attempt's commit, so a fix merged to the shared workflow since then
 will not be picked up (FACT 1).
 
 On a stable tag the re-run also deploys the docs as if the tag were the newest
-release: into its vX.Y slot and at the docs root. If a newer stable release has
-shipped since (gh release list --repo $REPO --exclude-drafts --exclude-pre-releases),
-redeploy what that overwrote once the re-run finishes: the newest release of
-the tag's vX.Y line into that slot, and the newest stable release with
-set_latest=true (false for any other):
-  gh workflow run deploy-docs.yml --repo $REPO --ref <tag> -f version_slot=<vX.Y> -f version_label=<tag> -f set_latest=<true|false>
+release: into its vX.Y slot and at the docs root. List every stable release:
+  gh release list --repo $REPO --exclude-drafts --exclude-pre-releases --limit 1000
+If a newer stable release than $TAG is listed, escalate before re-running
+(#239): the re-run would overwrite that release's docs.
 
 "No release object" means no PUBLISHED one: this lookup cannot see drafts, and
 a failure mid-upload leaves one behind. If the releases page shows a draft for
