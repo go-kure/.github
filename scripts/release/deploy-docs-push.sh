@@ -19,8 +19,11 @@
 #   - The push can be rejected because another slot's deploy landed first. Each
 #     attempt therefore starts from the pages branch's current tip, writes this
 #     deploy's content on it (another slot's content stays as that tip has it),
-#     takes the root decision again, and pushes. A rejected push is retried up
-#     to --max-attempts times in all; then the deploy fails.
+#     takes the root decision again, and pushes. A push rejected because the
+#     branch moved (`fetch first`, `non-fast-forward`, or the remote's `failed to
+#     update ref` when its tip is no longer the one this attempt started from)
+#     is retried up to --max-attempts times in all; then the deploy fails. Any
+#     other push failure fails the deploy at once.
 #
 # Usage:
 #   deploy-docs-push.sh --source DIR --target DIR --site-subdir NAME
@@ -191,10 +194,32 @@ for ((attempt = 1; attempt <= max_attempts; attempt++)); do
         msg="deploy: ${label} → /${site}/${slot}/ from ${site}@${source_sha}"
     fi
     git -C "$target" commit --quiet -m "$msg"
-    if git -C "$target" push --quiet origin "HEAD:refs/heads/${branch}"; then
+    push_rc=0
+    push_out="$(git -C "$target" push --porcelain --quiet origin "HEAD:refs/heads/${branch}")" || push_rc=$?
+    if ((push_rc == 0)); then
         echo "Deployed: ${msg}"
         exit 0
     fi
+    # Only a push refused because the pages branch moved is worth writing again;
+    # anything else (a hook or protection rule, credentials, the network) fails
+    # the same way on every attempt.
+    push_status="$(printf '%s\n' "$push_out" | awk -F'\t' -v ref="HEAD:refs/heads/${branch}" '$1 == "!" && $2 == ref { print $3 }')"
+    case "$push_status" in
+        "[rejected] (fetch first)" | "[rejected] (non-fast-forward)")
+            ;;
+        "[remote rejected] (failed to update ref)")
+            # The branch moved after the remote advertised its tip, or the remote
+            # failed to update it for another reason: only a moved tip is a race.
+            remote_tip="$(git -C "$target" ls-remote --exit-code origin "refs/heads/${branch}")" \
+                || die "push to ${branch} failed (${push_status}) and the branch's tip could not be read; not retrying"
+            if [[ "${remote_tip%%[[:space:]]*}" == "$(git -C "$target" rev-parse HEAD~1)" ]]; then
+                die "push to ${branch} failed (${push_status}) although the branch did not move; not retrying"
+            fi
+            ;;
+        *)
+            die "push to ${branch} failed (${push_status:-no push status, git exit ${push_rc}}); not retrying: only a push rejected because the branch moved is retried"
+            ;;
+    esac
     if ((attempt < max_attempts)); then
         echo "::warning::deploy-docs-push: push to ${branch} rejected (attempt ${attempt}/${max_attempts}); writing again on the new tip in ${backoff}s"
         sleep "$backoff"

@@ -8,9 +8,11 @@
 # real publish-policy.sh next to the script; one case replaces it with a stub
 # that prints neither true nor false.
 #
-# A rejected push is a real race, not a mock: a pre-push hook in the deploying
-# clone lets the other slot's deploy land on the pages remote after this push
-# has read the remote's tip, so the remote refuses the update.
+# A rejected push is a real race, not a mock: a hook in the deploying clone lets
+# the other slot's deploy land on the pages remote, either after this push has
+# read the remote's tip (the remote refuses the update) or before it starts (git
+# refuses it). A pre-receive hook on the pages remote stands in for a refusal
+# that no retry can fix.
 #
 # No case covers an unresolvable policy pin: the action runs the policy that sits
 # next to the script at the action's own commit, so there is no pin to resolve.
@@ -129,16 +131,19 @@ push_tag() {
     git -C "$d/srcwork" push --quiet origin "$2"
 }
 
-# racer <name>: a pre-push hook in the deploying clone. On each of the first
-# RACE_LIMIT pushes it lands another slot's deploy (kure/v9.<n>/) on the pages
-# remote, and pushes RACE_TAG to the source remote when set, after the push
-# has read the remote's tip. The count of pushes is kept in <name>/push-count.
+# racer <name> [hook]: a hook in the deploying clone. On each of the first
+# RACE_LIMIT runs it lands another slot's deploy (kure/v9.<n>/) on the pages
+# remote, and pushes RACE_TAG to the source remote when set. The default
+# pre-push hook does this after the push has read the remote's tip, so the
+# remote refuses the update (`failed to update ref`); a post-commit hook does it
+# before the push starts, so git refuses it (`fetch first`). The count of runs
+# is kept in <name>/push-count.
 racer() {
-    local d="$WORK/$1"
-    cat > "$d/target/.git/hooks/pre-push" <<'EOF'
+    local d="$WORK/$1" hook="${2:-pre-push}"
+    cat > "$d/target/.git/hooks/$hook" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-cat >/dev/null
+[ "${0##*/}" != pre-push ] || cat >/dev/null
 unset $(git rev-parse --local-env-vars)
 n=$(( $(cat "$RACE_DIR/push-count" 2>/dev/null || echo 0) + 1 ))
 echo "$n" > "$RACE_DIR/push-count"
@@ -155,7 +160,7 @@ if [ -n "${RACE_TAG:-}" ]; then
     git -C "$RACE_DIR/srcwork" push --quiet origin "$RACE_TAG"
 fi
 EOF
-    chmod +x "$d/target/.git/hooks/pre-push"
+    chmod +x "$d/target/.git/hooks/$hook"
 }
 
 # deploy <name> <slot> <label> <set_latest> [extra args...]: runs the script as
@@ -297,6 +302,51 @@ assert_eq "always rejected: exactly the bounded number of pushes" 3 "$(cat "$WOR
 assert_eq "always rejected: the slot never landed" "" "$(pages_file rejected kure/v1.2/index.html)"
 assert_eq "always rejected: the root is untouched" "root seed" "$(pages_file rejected kure/index.html)"
 assert_eq "always rejected: every other deploy is kept" "other 3" "$(pages_file rejected kure/v9.3/index.html)"
+
+# ── 6b. the branch moved before the push started: git's own refusal ───────
+
+new_case fetchfirst v1.1.0 v1.2.0
+builds fetchfirst v1.2.0
+racer fetchfirst post-commit
+RACE_LIMIT=1 deploy fetchfirst v1.2 v1.2.0 true
+assert_eq "fetch first: exit 0" 0 "$RC"
+assert_contains "fetch first: the rejection is reported" "$OUT" "push to main rejected (attempt 1/3)"
+assert_eq "fetch first: two commits" 2 "$(cat "$WORK/fetchfirst/push-count")"
+assert_eq "fetch first: the other slot's deploy is kept" "other 1" "$(pages_file fetchfirst kure/v9.1/index.html)"
+assert_eq "fetch first: the slot is written" "slot v1.2.0" "$(pages_file fetchfirst kure/v1.2/index.html)"
+
+# ── 6c. refused for a reason other than a moved branch: no retry ──────────
+
+new_case declined v1.1.0 v1.2.0
+builds declined v1.2.0
+before=$(pages_tip declined)
+cat > "$WORK/declined/pages.git/hooks/pre-receive" <<EOF
+#!/usr/bin/env bash
+cat >/dev/null
+n=\$(( \$(cat "$WORK/declined/receive-count" 2>/dev/null || echo 0) + 1 ))
+echo "\$n" > "$WORK/declined/receive-count"
+echo "declined by the test" >&2
+exit 1
+EOF
+chmod +x "$WORK/declined/pages.git/hooks/pre-receive"
+deploy declined v1.2 v1.2.0 true
+assert_eq "hook declines: exit 1" 1 "$RC"
+assert_contains "hook declines: names the refusal" "$OUT" \
+    "push to main failed ([remote rejected] (pre-receive hook declined)); not retrying"
+assert_eq "hook declines: exactly one push" 1 "$(cat "$WORK/declined/receive-count")"
+assert_not_contains "hook declines: no retry is announced" "$OUT" "rejected (attempt"
+assert_eq "hook declines: nothing pushed" "$before" "$(pages_tip declined)"
+
+# A push that reaches no remote reports no status at all.
+new_case nopush v1.2.0
+builds nopush v1.2.0
+before=$(pages_tip nopush)
+git -C "$WORK/nopush/target" config remote.origin.pushurl "$WORK/nopush/no-such.git"
+deploy nopush v1.2 v1.2.0 false
+assert_eq "unreachable push URL: exit 1" 1 "$RC"
+assert_contains "unreachable push URL: names the git exit" "$OUT" "(no push status, git exit 128); not retrying"
+assert_not_contains "unreachable push URL: no retry is announced" "$OUT" "rejected (attempt"
+assert_eq "unreachable push URL: nothing pushed" "$before" "$(pages_tip nopush)"
 
 # ── 7. refused inputs ─────────────────────────────────────────────────────
 
