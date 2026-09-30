@@ -5,7 +5,8 @@ description: >-
   tag when the root is written (tags fetched again, decided by this repository's
   publish policy at this action's own commit; a policy error fails the step). A push
   rejected because another slot's deploy landed first is written again on the new
-  tip and retried, a bounded number of times. See scripts/release/deploy-docs-push.sh
+  tip and retried, a bounded number of times; any other push failure fails the
+  step at once. See scripts/release/deploy-docs-push.sh
   for the full rule. The caller builds the site and checks out the pages repository
   with a push-capable token in prior steps; this action does neither itself.
 
