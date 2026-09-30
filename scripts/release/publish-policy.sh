@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# publish-policy.sh — the two decisions Release / Publish makes about a tag,
+# publish-policy.sh — the decisions Release / Publish makes about a tag,
 # from the repository's tags. Run in a checkout that has every tag fetched.
 #
 #   publish-policy.sh progression <tag>
@@ -15,6 +15,12 @@
 #       Latest release from it, so publishing a backport, or re-publishing an older
 #       stable tag, leaves both pointers on the newest stable release.
 #
+#   publish-policy.sh docs <tag>
+#       Print `true` when <tag> is a stable tag and no higher stable tag of its own
+#       line exists, otherwise `false`. The docs site keeps one slot per line
+#       (vX.Y), so re-publishing an older patch (a dispatch, which skips the
+#       progression check) must not replace the newer patch's docs there.
+#
 # Only tags in the release format count: vX.Y.Z and vX.Y.Z-alpha|beta|rc.N.
 # Exit 2 on a usage error or a <tag> not in that format.
 #
@@ -27,7 +33,7 @@ NUM='(0|[1-9][0-9]*)'
 VERSION_RE="^v${NUM}\.${NUM}\.${NUM}(-(alpha|beta|rc)\.${NUM})?\$"
 
 usage() {
-    echo "Usage: publish-policy.sh progression|latest <tag>" >&2
+    echo "Usage: publish-policy.sh progression|latest|docs <tag>" >&2
     exit 2
 }
 
@@ -83,14 +89,16 @@ case "$cmd" in
         fi
         echo "Tag $tag is greater than every other $line tag."
         ;;
-    latest)
+    latest|docs)
         if ! is_stable "$tag"; then
             echo false
             exit 0
         fi
+        line=$(line_of "$tag")
         while IFS= read -r other; do
             if [ -z "$other" ] || [ "$other" = "$tag" ]; then continue; fi
             is_stable "$other" || continue
+            if [ "$cmd" = docs ] && [ "$(line_of "$other")" != "$line" ]; then continue; fi
             other_key=$(key "$other")
             if [[ "$other_key" > "$tag_key" ]]; then
                 echo false

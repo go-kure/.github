@@ -55,6 +55,9 @@ jobs:
       # `true` only for the highest stable tag; goreleaser's MAKE_LATEST and
       # deploy-docs' set_latest both come from it.
       latest: ${{ steps.latest.outputs.latest }}
+      # `true` only for the highest stable tag of its own line (vX.Y); deploy-docs
+      # writes that line's docs slot only then.
+      docs: ${{ steps.latest.outputs.docs }}
     steps:
       - name: Check out code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -117,12 +120,15 @@ jobs:
         if: ${{ github.event_name != 'workflow_dispatch' }}
         run: bash .release-tools/scripts/release/publish-policy.sh progression "$GITHUB_REF_NAME"
 
-      - name: Decide whether this is the Latest release
+      - name: Decide whether this is the Latest release and owns its docs slot
         id: latest
         run: |
           LATEST=$(bash .release-tools/scripts/release/publish-policy.sh latest "$GITHUB_REF_NAME")
+          DOCS=$(bash .release-tools/scripts/release/publish-policy.sh docs "$GITHUB_REF_NAME")
           echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "docs=$DOCS" >> "$GITHUB_OUTPUT"
           echo "Latest release: $LATEST"
+          echo "Owns its line's docs slot: $DOCS"
 
   goreleaser:
     needs: [test, validate]
@@ -329,16 +335,23 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Only the highest stable tag moves the docs site's `latest`; a
-          # backport or an older tag re-published deploys its own slot only.
+          # backport deploys its own line's slot only.
           SET_LATEST: ${{ needs.validate.outputs.latest }}
+          # The slot vX.Y belongs to the line's highest stable tag: an older
+          # patch re-published (a dispatch) deploys nothing.
+          DOCS_SLOT: ${{ needs.validate.outputs.docs }}
         run: |
-          case "$SET_LATEST" in
-            true|false) ;;
-            *) echo "::error::validate did not decide whether $GITHUB_REF_NAME is the Latest release (got '$SET_LATEST')."; exit 1 ;;
+          case "$SET_LATEST/$DOCS_SLOT" in
+            true/true|false/true|false/false) ;;
+            *) echo "::error::validate did not decide the docs deploy for $GITHUB_REF_NAME (latest='$SET_LATEST', docs='$DOCS_SLOT')."; exit 1 ;;
           esac
           TAG="${GITHUB_REF##*/}"
           # Extract minor version: v0.1.0 → v0.1
           MINOR="${TAG%.*}"
+          if [ "$DOCS_SLOT" = false ]; then
+            echo "::notice::Not deploying docs: a newer stable tag of ${MINOR} exists and owns the ${MINOR} docs slot."
+            exit 0
+          fi
           echo "Triggering docs deployment: tag=${TAG}, slot=${MINOR}"
           gh workflow run deploy-docs.yml \
             --repo "${{ github.repository }}" \
