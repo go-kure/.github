@@ -292,6 +292,17 @@ kure/launcher.
   `validate` and so blocking `goreleaser` in exactly the long-lived recovery case dispatch serves.
   Tag-format and CHANGELOG validation still run on every path; the format check is what rejects a
   branch ref.
+- `release-publish.yml`'s `goreleaser` job **refuses to publish over a tag that already has a
+  release**, as its first step, before checkout. The probe lives in the publishing job rather than
+  a job of its own because `gh run rerun --failed` reschedules the failed `goreleaser` job but
+  carries a separate job that succeeded over without running it — which is how a caller-side guard
+  job is bypassed when `goreleaser` failed after creating the release object. It therefore runs on
+  every path that runs `goreleaser`: tag push, dispatch, full re-run, `--failed` and single-job
+  re-runs. An existing release refuses everywhere; an undetermined answer (anything other than
+  success or a `404`, after three tries) refuses too, except on attempt 1 of a tag push, where it
+  warns and proceeds so an API error cannot block a first publication. `--failed` and single-job
+  re-runs resolve this workflow at the first attempt's commit, so they are covered only for runs
+  whose first attempt already carried the probe.
 
 ## Composite Actions
 

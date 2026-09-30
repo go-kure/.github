@@ -126,6 +126,18 @@ Every one of those behaviours is pinned by a case in `scripts/test/release-state
 which stubs `gh` and needs no token and no network. A new fact about how GitHub reports
 release runs belongs there as a failing test, not as a new paragraph in a runbook.
 
+**The shared publisher refuses to publish over an existing release.** The first step of the
+`goreleaser` job in `release-publish.yml` looks the tag's release up and fails the job when one
+exists, on every path that runs that job — a tag push, a dispatch, a full re-run, and a
+`--failed` or single-job re-run. It is a step of the publishing job, not a job of its own,
+because `--failed` reschedules the failed publishing job but carries a separate guard job that
+succeeded over without running it. An answer that is neither "exists" nor a `404` refuses as
+well, except on attempt 1 of a tag push, where it warns and proceeds. So a re-run is a
+recovery only while no release exists: while one does, every attempt that reaches this check
+is refused, including the full re-run the `partial` advice above names. One limit:
+`--failed` and single-job re-runs resolve the workflow at the first attempt's commit, so they
+carry the check only for a run whose first attempt already used a version with it.
+
 ## CI, tags, and identity
 
 - The release workflow runs tests, validates the tag and changelog, runs GoReleaser, then
