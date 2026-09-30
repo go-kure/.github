@@ -20,9 +20,9 @@
 #     attempt therefore starts from the pages branch's current tip, writes this
 #     deploy's content on it (another slot's content stays as that tip has it),
 #     takes the root decision again, and pushes. A push rejected because the
-#     branch moved (`fetch first`, `non-fast-forward`, or the remote's `failed to
-#     update ref` when its tip is no longer the one this attempt started from)
-#     is retried up to --max-attempts times in all; then the deploy fails. Any
+#     branch moved (`fetch first`, `non-fast-forward`, or a `remote rejected`
+#     when the branch's tip is no longer the one this attempt started from) is
+#     retried up to --max-attempts times in all; then the deploy fails. Any
 #     other push failure fails the deploy at once.
 #
 # Usage:
@@ -207,9 +207,11 @@ for ((attempt = 1; attempt <= max_attempts; attempt++)); do
     case "$push_status" in
         "[rejected] (fetch first)" | "[rejected] (non-fast-forward)")
             ;;
-        "[remote rejected] (failed to update ref)")
+        "[remote rejected] "*)
             # The branch moved after the remote advertised its tip, or the remote
-            # failed to update it for another reason: only a moved tip is a race.
+            # refused for another reason. git words the first differently across
+            # versions (`failed to update ref`, `incorrect old value provided`),
+            # so the tip decides, not the text: only a moved tip is a race.
             remote_tip="$(git -C "$target" ls-remote --exit-code origin "refs/heads/${branch}")" \
                 || die "push to ${branch} failed (${push_status}) and the branch's tip could not be read; not retrying"
             if [[ "${remote_tip%%[[:space:]]*}" == "$(git -C "$target" rev-parse HEAD~1)" ]]; then

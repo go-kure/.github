@@ -135,7 +135,8 @@ push_tag() {
 # RACE_LIMIT runs it lands another slot's deploy (kure/v9.<n>/) on the pages
 # remote, and pushes RACE_TAG to the source remote when set. The default
 # pre-push hook does this after the push has read the remote's tip, so the
-# remote refuses the update (`failed to update ref`); a post-commit hook does it
+# remote refuses the update (`remote rejected`, worded differently across git
+# versions); a post-commit hook does it
 # before the push starts, so git refuses it (`fetch first`). The count of runs
 # is kept in <name>/push-count.
 racer() {
@@ -332,7 +333,7 @@ chmod +x "$WORK/declined/pages.git/hooks/pre-receive"
 deploy declined v1.2 v1.2.0 true
 assert_eq "hook declines: exit 1" 1 "$RC"
 assert_contains "hook declines: names the refusal" "$OUT" \
-    "push to main failed ([remote rejected] (pre-receive hook declined)); not retrying"
+    "push to main failed ([remote rejected] (pre-receive hook declined)) although the branch did not move; not retrying"
 assert_eq "hook declines: exactly one push" 1 "$(cat "$WORK/declined/receive-count")"
 assert_not_contains "hook declines: no retry is announced" "$OUT" "rejected (attempt"
 assert_eq "hook declines: nothing pushed" "$before" "$(pages_tip declined)"
