@@ -1,0 +1,225 @@
+name: Release
+
+# The one manual release workflow. A caller's `release.yml` offers the inputs
+# below on its Run-workflow panel (`action` as a choice list) and passes them
+# through; Release / Publish then runs by itself on the tag this pushes.
+# The script that does the work is scripts/release/release.sh in THIS repository,
+# checked out at this workflow's own commit, so a caller carries no copy of it.
+#
+# Guide: standards/release-process.md
+
+on:
+  workflow_call:
+    inputs:
+      action:
+        description: 'What to do: release | release-as-beta | release-as-rc | release-as-stable | start-next-minor | start-next-major | skip-prerelease-number'
+        required: false
+        type: string
+        default: release
+      dry_run:
+        description: 'Dry run: preview only, change nothing'
+        required: false
+        type: boolean
+        default: false
+
+# One release at a time per repository. The group is the one the retired
+# Bump / Create / Promote workflows used, so none of them runs beside this one.
+concurrency:
+  group: release-create
+  cancel-in-progress: false
+
+jobs:
+  # Refuses a wrong branch or action in about a minute, before the CI wait.
+  guard:
+    name: Check branch and action
+    runs-on: autops-kube-kure
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      # actions/checkout reads an empty `ref` as "the default branch", which would
+      # pair this workflow with whatever script main holds. Refuse instead.
+      - name: Require this workflow's own commit
+        env:
+          WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          if [ -z "$WORKFLOW_REPOSITORY" ] || [ -z "$WORKFLOW_SHA" ]; then
+            echo "::error::job.workflow_repository or job.workflow_sha is empty, so the release script cannot be checked out at this workflow's own commit."
+            exit 1
+          fi
+
+      - name: Check out the release script
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: release-tools
+          sparse-checkout: scripts/release
+          persist-credentials: false
+
+      - name: Check branch and action
+        env:
+          RELEASE_ACTION: ${{ inputs.action }}
+          RELEASE_BRANCH: ${{ github.ref_name }}
+          RELEASE_REF_TYPE: ${{ github.ref_type }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
+        run: bash release-tools/scripts/release/release.sh --guard
+
+  # Only a real run that makes a tag waits for CI. A dry run, and an action that
+  # only moves VERSION, skip it.
+  ci:
+    name: Wait for CI on this commit
+    needs: guard
+    if: ${{ !inputs.dry_run && startsWith(inputs.action, 'release') }}
+    runs-on: autops-kube-kure
+    timeout-minutes: 35
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Wait for ci.yml to pass
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          echo "Waiting for CI to pass on $SHA..."
+
+          for i in $(seq 1 180); do
+            STATUS=$(gh run list \
+              --repo "$GITHUB_REPOSITORY" \
+              --workflow ci.yml \
+              --commit "$SHA" \
+              --json conclusion,status \
+              --limit 1 \
+              --jq '.[0] | if .status == "completed" then .conclusion else "in_progress" end // empty')
+
+            if [ "$STATUS" = "success" ]; then
+              echo "CI passed on $SHA."
+              exit 0
+            elif [ -n "$STATUS" ] && [ "$STATUS" != "in_progress" ]; then
+              echo "::error::CI did not pass on $SHA (conclusion: $STATUS). Nothing was tagged."
+              exit 1
+            fi
+
+            [ $((i % 6)) -eq 0 ] && echo "Still waiting for CI... ${i}0s elapsed (attempt $i/180)"
+            sleep 10
+          done
+
+          echo "::error::CI did not complete within 30 minutes for $SHA. Nothing was tagged."
+          exit 1
+
+  release:
+    name: Release
+    needs: [guard, ci]
+    if: ${{ !cancelled() && needs.guard.result == 'success' && (needs.ci.result == 'success' || needs.ci.result == 'skipped') }}
+    runs-on: autops-kube-kure
+    timeout-minutes: 60
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Require this workflow's own commit
+        env:
+          WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          if [ -z "$WORKFLOW_REPOSITORY" ] || [ -z "$WORKFLOW_SHA" ]; then
+            echo "::error::job.workflow_repository or job.workflow_sha is empty, so the release script cannot be checked out at this workflow's own commit."
+            exit 1
+          fi
+
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          app-id: ${{ secrets.KURE_BOT_APP_ID }}
+          private-key: ${{ secrets.KURE_BOT_APP_PRIVATE_KEY }}
+
+      - name: Check out the repository being released
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          fetch-depth: 0
+          path: repo
+
+      - name: Check out the release script
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: release-tools
+          sparse-checkout: scripts/release
+          persist-credentials: false
+
+      - name: Install git-cliff
+        run: |
+          # Renovate bumps this pin together with the other git-cliff pins
+          # (customManagers in renovate.json, one depName).
+          # renovate: datasource=github-releases depName=orhun/git-cliff
+          CLIFF_VERSION="2.14.2"
+          curl -sSfL "https://github.com/orhun/git-cliff/releases/download/v${CLIFF_VERSION}/git-cliff-${CLIFF_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
+            | tar xzf - -C /tmp
+          sudo install /tmp/git-cliff-${CLIFF_VERSION}/git-cliff /usr/local/bin/
+
+      - name: Run the release script
+        id: run
+        working-directory: repo
+        env:
+          RELEASE_ACTION: ${{ inputs.action }}
+          RELEASE_BRANCH: ${{ github.ref_name }}
+          RELEASE_REF_TYPE: ${{ github.ref_type }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
+          CI: 'true'
+        run: bash "$GITHUB_WORKSPACE/release-tools/scripts/release/release.sh"
+
+      # Runs only when a tag was pushed, so a dry run and a VERSION-only action
+      # finish here.
+      - name: Wait for Release / Publish
+        if: ${{ steps.run.outputs.tag != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.run.outputs.tag }}
+        run: |
+          set -euo pipefail
+          echo "Waiting for Release / Publish of $TAG..."
+
+          RUN_ID=""
+          for i in $(seq 1 24); do
+            RUN_ID=$(gh run list \
+              --repo "$GITHUB_REPOSITORY" \
+              --workflow release-publish.yml \
+              --branch "$TAG" \
+              --json databaseId \
+              --limit 1 \
+              --jq '.[0].databaseId // empty' 2>/dev/null || true)
+            [ -n "$RUN_ID" ] && break
+            echo "Attempt $i/24: not started yet, retrying in 5s..."
+            sleep 5
+          done
+
+          if [ -z "$RUN_ID" ]; then
+            echo "::error::Release / Publish did not start within 2 minutes for $TAG. The tag is pushed; see 'When a release fails' in the release guide."
+            exit 1
+          fi
+
+          echo "Watching run $RUN_ID..."
+          for i in $(seq 1 270); do
+            CONCLUSION=$(gh run view "$RUN_ID" \
+              --repo "$GITHUB_REPOSITORY" \
+              --json status,conclusion \
+              --jq 'if .status == "completed" then .conclusion else "in_progress" end' \
+              2>/dev/null || true)
+            if [ "$CONCLUSION" = "success" ]; then
+              echo "Release / Publish completed for $TAG."
+              exit 0
+            elif [ -n "$CONCLUSION" ] && [ "$CONCLUSION" != "in_progress" ]; then
+              echo "::error::Release / Publish for $TAG concluded $CONCLUSION. The tag is pushed; see 'When a release fails' in the release guide."
+              exit 1
+            fi
+            [ $((i % 6)) -eq 0 ] && echo "Still waiting for Release / Publish... ${i}0s elapsed"
+            sleep 10
+          done
+          echo "::error::Release / Publish did not complete within 45 minutes for $TAG."
+          exit 1

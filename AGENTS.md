@@ -33,7 +33,7 @@ settings audit/apply, ...); `mise run <task>` runs one, `mise run verify` runs e
 ├── standards/
 │   ├── labels.json                      # Standard issue labels
 │   ├── labels.md                        # Label naming conventions
-│   └── release-process.md               # Release process reference
+│   └── release-process.md               # The release guide (vendored into kure/launcher docs)
 ├── scripts/
 │   ├── github-settings.sh               # Settings audit/apply script
 │   ├── check-doc-sync.sh                # Doc-sync Layer 2 (structure) — canonical
@@ -44,6 +44,8 @@ settings audit/apply, ...); `mise run <task>` runs one, `mise run verify` runs e
 │   ├── exact-array-member.sh            # Shared helper (check-doc-sync.sh, github-settings.sh)
 │   ├── pr-review-fail-closed-digest.sh  # Org-wide digest of fail-closed pr-review-threads runs
 │   ├── release-state.sh                 # What a tag's publish run actually did (read-only)
+│   ├── release/release.sh               # The release script release.yml runs in every caller — canonical
+│   ├── release/publish-policy.sh        # Publish's per-line progression and Latest decisions
 │   └── lib/api.sh                       # Shared HTTP API utilities
 ├── .github/
 │   ├── workflows/                       # GitHub Actions — self-CI, org settings, and the
@@ -255,9 +257,10 @@ Reusable workflows have `on: workflow_call` in their trigger. Caller workflows (
 | `auto-rebase.yml` | push to `main` (via `auto-rebase-caller.yml`) | Rebases all open PRs when main is updated | — | `AUTO_REBASE_PAT` |
 | `claude.yml` | issue, comment and review events containing `@claude` (via `claude-caller.yml`); no `pull_request` trigger — a PR event carries no mention, so the job would only start and skip | @claude AI assistant on PRs and issues | — | `CLAUDE_CODE_OAUTH_TOKEN` |
 | `pr-review.yml` | PR open/sync/reopen, drafts included (via `pr-review-caller.yml`; `ready_for_review` dropped once the rollout window closed — see `docs/pr-review-threads.md` § Draft PRs) | 2-pass AI code review via the `pr-review-threads` composite action; one resolvable, merge-gating PR review thread per finding (deduped by fingerprint, auto-resolved when fixed or judged a false positive). `pr-review.yml`'s own default `PR_REVIEW_THREADS_MODE` is now `enforce` (go-kure/.github#108), matching the org variable's live value since 2026-08-18. `pr-review / AI Code Review` is a required status check on kure/launcher only, deliberately excluded from `.github` — see `governance/repository-settings-policy.yaml` and `docs/standards.md` § Same-repo composite actions and the pin-bump procedure | `pr_review_context` (string, optional) | `KURE_BOT_PAT` (optional — falls back to `github.token`, which can create but never resolve its own threads; see "Token and bot identity" in `docs/pr-review-threads.md`) |
-| `release-create.yml` | `workflow_dispatch` | Pre-flight CI gate + git-cliff tag creation | `type` (required), `scope`, `dry_run` | `KURE_BOT_APP_ID`, `KURE_BOT_APP_PRIVATE_KEY` |
-| `release-bump.yml` | `workflow_dispatch` | Bump `versions.env`/changelog without tagging a release | `scope` (required), `dry_run` | `KURE_BOT_APP_ID`, `KURE_BOT_APP_PRIVATE_KEY` |
-| `release-promote.yml` | `workflow_dispatch` | Promote a prerelease (beta → rc → stable) | `to` (required: `beta`\|`rc`\|`stable`), `dry_run` | `KURE_BOT_APP_ID`, `KURE_BOT_APP_PRIVATE_KEY` |
+| `release.yml` | `workflow_dispatch` from `main` or `release/vX.Y` (via the caller's `release.yml`, which offers `action` as a choice list) | The one manual release workflow: branch/action guard → CI wait (real `release*` runs only) → `scripts/release/release.sh` at this workflow's own commit (tag, CHANGELOG section, VERSION bump, and on `start-next-*` the old line's `release/vX.Y` branch, in one atomic push) → wait for Publish. Guide: `standards/release-process.md` | `action` (string, default `release`), `dry_run` | `KURE_BOT_APP_ID`, `KURE_BOT_APP_PRIVATE_KEY` |
+| `release-create.yml` | `workflow_dispatch` | Superseded by `release.yml`; removed once no caller uses it. Pre-flight CI gate + git-cliff tag creation | `type` (required), `scope`, `dry_run` | `KURE_BOT_APP_ID`, `KURE_BOT_APP_PRIVATE_KEY` |
+| `release-bump.yml` | `workflow_dispatch` | Superseded by `release.yml`; removed once no caller uses it. Bump `versions.env`/changelog without tagging a release | `scope` (required), `dry_run` | `KURE_BOT_APP_ID`, `KURE_BOT_APP_PRIVATE_KEY` |
+| `release-promote.yml` | `workflow_dispatch` | Superseded by `release.yml`; removed once no caller uses it. Promote a prerelease (beta → rc → stable) | `to` (required: `beta`\|`rc`\|`stable`), `dry_run` | `KURE_BOT_APP_ID`, `KURE_BOT_APP_PRIVATE_KEY` |
 | `release-publish.yml` | version tags (`v*`), and `workflow_dispatch` against an existing tag to re-publish it, via the `release-publish.yml` caller | GoReleaser (which artifacts, if any, is the consumer's `.goreleaser.yml` — a library repo may produce none), docs deploy, Go proxy refresh | `go_module` (required, e.g. `github.com/go-kure/kure`) | none (uses `secrets.GITHUB_TOKEN`) |
 
 Consumer repos call these as:
@@ -281,17 +284,31 @@ kure/launcher.
 - Changes take effect for **all consumer repos immediately** after merge to `main`
 - Test by triggering the corresponding `-caller.yml` workflow manually before merging (or, for the
   release workflows, by running the workflow itself via `workflow_dispatch` with `dry_run: true`)
-- `release-create.yml`, `release-bump.yml` and `release-promote.yml` all accept `dry_run: true` for
-  a preview run. `release-publish.yml` has no `dry_run` input — it triggers on the version tag
-  itself, so test changes to it via a caller repo's tag on a fork or a scratch tag first.
-- `release-publish.yml`'s `validate` job **skips the version-progression check on
-  `workflow_dispatch`**. Progression is a property of creating a tag, and a dispatch re-publishes a
-  tag that already passed the check when it was created. Without the skip the check's
-  `git tag --sort=-v:refname | sed -n '2p'` — which assumes the tag under release sorts first —
-  compares the dispatched tag against a *newer* one as soon as two or more newer tags exist, failing
-  `validate` and so blocking `goreleaser` in exactly the long-lived recovery case dispatch serves.
-  Tag-format and CHANGELOG validation still run on every path; the format check is what rejects a
-  branch ref.
+- `release.yml` (and the superseded `release-create.yml`, `release-bump.yml` and
+  `release-promote.yml`) accept `dry_run: true` for a preview run; a dry run of `release.yml` is
+  allowed from any branch and changes nothing. `release-publish.yml` has no `dry_run` input — it
+  triggers on the version tag itself, so test changes to it via a caller repo's tag on a fork or a
+  scratch tag first.
+- `release.yml` and `release-publish.yml`'s `validate` job check out `scripts/release/` from
+  `job.workflow_repository` at `job.workflow_sha` — this workflow's own commit, not the caller's and
+  not `main` — so a workflow and the script it runs always change together. A guard step refuses an
+  empty value first, because `actions/checkout` would silently take the default branch.
+  actionlint 1.7.12 does not know these two `job` properties yet; `.github/actionlint.yaml` ignores
+  exactly that message in exactly these two files. `scripts/test/release-test.sh` tests both scripts
+  against real git repositories with the git-cliff version the workflows pin.
+- `release-publish.yml`'s `validate` job checks **version progression within the tag's own line**
+  (`publish-policy.sh progression`): the tag must be greater, in semver order, than every other
+  `vX.Y.*` tag, so a backport `v0.2.1` passes beside `v0.3.0-alpha.4`, and `v0.2.0` passes after
+  `v0.2.0-rc.1` (which `sort -V` orders the other way). The check is **skipped on
+  `workflow_dispatch`**: progression is a property of creating a tag, and a dispatch re-publishes a
+  tag that already passed it. A full re-run of a tag-push run does re-check it, so once a newer tag
+  of the same line exists, re-publish through dispatch instead. Tag-format and CHANGELOG validation
+  still run on every path; the format check is what rejects a branch ref.
+- `validate` also decides **which release is Latest** (`publish-policy.sh latest`): `true` only for
+  the highest stable tag. `goreleaser` passes it as `MAKE_LATEST` (callers' `.goreleaser.yml` set
+  `make_latest: "{{ .Env.MAKE_LATEST }}"`) and `deploy-docs` as `set_latest`, so a backport or an
+  older re-published tag moves neither GitHub's Latest release nor the docs site's `latest`. Both
+  refuse an empty value rather than guess.
 - `release-publish.yml`'s `goreleaser` job **refuses to publish over a tag that already has a
   release**, as its first step, before checkout. The probe lives in the publishing job rather than
   a job of its own because `gh run rerun --failed` reschedules the failed `goreleaser` job but

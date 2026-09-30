@@ -1,55 +1,237 @@
-# Release Process Standard
+# Releasing
 
-Canonical release process for `go-kure/*` repositories (`kure`, `launcher`). This is the
-reference the repo-local `scripts/release.sh` and `scripts/release-trigger.sh` cite.
+How to release this repository: which button to press, which option to pick, and what to do
+when a release fails. The same guide is published for every go-kure repository that releases
+through the shared workflows, so it says "this repository" rather than naming one; its source is
+[`standards/release-process.md`](https://github.com/go-kure/.github/blob/main/standards/release-process.md)
+in `go-kure/.github`.
 
-## Model
+## Overview
 
-Releases are **tag-driven** and changelog-first:
+A release takes two workflows. You run the first; the second runs by itself.
 
-- A single `VERSION` file at the repo root holds the current version (`vX.Y.Z` or a
-  pre-release such as `vX.Y.Z-alpha.N`).
-- [`git-cliff`](https://git-cliff.org/) generates `CHANGELOG.md` from Conventional Commit
-  messages (`feat:`, `fix:`, `chore:`, …), configured by `cliff.toml`.
-- Pushing a `vX.Y.Z` tag triggers the release workflow, which runs
-  [GoReleaser](https://goreleaser.com/) to build binaries and publish a GitHub release.
+| Workflow | Started by | What it does |
+|----------|------------|--------------|
+| **Release** | you, from the Actions tab | Checks the branch, waits for CI, writes the `CHANGELOG.md` section, commits, tags, moves `VERSION` on, and pushes all of it in one atomic push |
+| **Release / Publish** | the tag Release pushes | Tests, validates the tag, creates the GitHub release, deploys the versioned docs, refreshes the Go module proxy |
 
-## Release types
+```text
+you ──▶ Release (main or release/vX.Y)
+          guard ─▶ wait for CI ─▶ commit + tag + VERSION bump ─▶ atomic push
+                                                                   │ tag vX.Y.Z[-stage.N]
+                                                                   ▼
+                                                 Release / Publish (automatic)
+                                                   test + validate ─▶ GitHub release
+                                                                   ├─▶ versioned docs (stable only)
+                                                                   └─▶ Go proxy refresh
+```
 
-| Type | Effect |
-|------|--------|
-| `alpha` / `beta` / `rc` | Cut or advance a pre-release on the current line |
-| `stable` | Promote the current pre-release to a final `vX.Y.Z` |
-| `bump <minor\|major\|prerelease>` | Start a new version line |
+Release waits for Publish and turns red if Publish fails, so one green Release run means the
+version is out.
 
-`auto` (default) infers the next step from the `VERSION` file.
+## Quick start
 
-## Scripts
+To release the version in `VERSION` on `main`:
 
-- **`scripts/release.sh <type>`** — the automation: computes the next version, regenerates
-  the changelog, creates the release commit and tag. `DRY_RUN=1` previews without writing.
-  In CI (`CI` set) it also configures the bot git identity and pushes.
-- **`scripts/release-trigger.sh`** — the human entry point: shows a dry-run preview and, with
-  `--do-it`, triggers the release via CI. `promote` and `bump` subcommands mirror the types
-  above.
-- **`scripts/release-state.sh`** (in `go-kure/.github`, not the release repos) — read-only:
-  reports what a tag's publish run actually did. See the next section.
+1. Actions → **Release** → **Run workflow**, leave "Use workflow from" on `main`, leave the action
+   on `release`, tick **Dry run**, and run it. The run's summary shows the tag it would make and the
+   `VERSION` that would follow.
+2. If that is what you want, run it again with **Dry run** unticked.
+3. Wait for the run to go green: about a minute for the checks, up to 30 minutes for CI on the
+   commit, then the time Release / Publish takes (up to 45 minutes).
 
-The first two are typically invoked through `mise run release …`. `release-state.sh` is not:
-it lives in `go-kure/.github` rather than in the release repos, and is run directly from a
-checkout of that repository.
+That is the whole procedure for an ordinary prerelease. The rest of this guide is for moving
+between stages, patch releases on a release branch, and failures.
 
-## Determining what a release actually did
+## The Run-workflow panel
+
+```text
+Release                                     [Run workflow ▾]
+┌─────────────────────────────────────────────────────────┐
+│ Use workflow from   [ Branch: main ▾ ]                   │  ← main or release/vX.Y; others refused
+│                                                          │
+│ What to do                                               │
+│ [ release ▾ ]                                            │  ← dropdown, exactly one option per run
+│                                                          │
+│ [ ] Dry run: preview only, change nothing                │  ← checkbox
+│                                                          │
+│                                 [ Run workflow ]         │
+└─────────────────────────────────────────────────────────┘
+```
+
+- **Use workflow from** is the branch the release is made from: `main`, or a `release/vX.Y`
+  branch for a patch release. A real run from any other branch, or from a tag, is refused within
+  about a minute, before anything else runs.
+- **What to do** picks one action. Rule of thumb: **an option starting with `release` makes a tag
+  and a GitHub release; every other option only moves `VERSION`.**
+- **Dry run** combines with every option. It changes nothing — no commit, no tag, no push — skips
+  the CI and Publish waits, and prints the plan in the run's summary. It is allowed from any
+  branch, so a preview works on a branch that has no CI run. It still refuses a tag that already
+  exists, so a preview never promises a release the real run cannot make.
+
+## Which option when
+
+| Situation | On | Pick | Example: `VERSION` → tag / `VERSION` after |
+|-----------|----|------|--------------------------------------------|
+| Ship the next prerelease | `main` | `release` | `v0.2.0-beta.14` → `v0.2.0-beta.14` / `v0.2.0-beta.15` |
+| The alphas are feature-complete; start betas | `main` | `release-as-beta` | `v0.2.0-alpha.7` → `v0.2.0-beta.0` / `v0.2.0-beta.1` |
+| The betas have settled; cut a release candidate | `main` | `release-as-rc` | `v0.2.0-beta.14` → `v0.2.0-rc.0` / `v0.2.0-rc.1` |
+| The release candidate is good; ship it | `main` | `release-as-stable` | `v0.2.0-rc.1` → `v0.2.0` / `v0.2.1-alpha.0` |
+| Start work on the next minor version | `main` | `start-next-minor` | `v0.2.1-alpha.0` → no tag / `v0.3.0-alpha.0`, and `release/v0.2` is created |
+| Start work on the next major version | `main` | `start-next-major` | `v0.2.1-alpha.0` → no tag / `v1.0.0-alpha.0`, and `release/v0.2` is created |
+| Ship a fix for a line that has moved on | `release/vX.Y` | `release` | `v0.2.1` → `v0.2.1` / `v0.2.2` |
+| A release refuses because the tag in `VERSION` already exists | `main` | `skip-prerelease-number` | `v0.2.0-beta.15` → no tag / `v0.2.0-beta.16` |
+
+## What each option does
+
+On `main`, `VERSION` is always a prerelease (`vX.Y.Z-alpha.N`, `-beta.N` or `-rc.N`). Starting
+from `VERSION` `v0.2.0-beta.14`:
+
+| What to do | Tag | `VERSION` after | Also |
+|------------|-----|-----------------|------|
+| `release` (default) | `v0.2.0-beta.14` | `v0.2.0-beta.15` | |
+| `release-as-beta` | from alpha: `v0.2.0-beta.0`; already beta: as `release`; from rc: refused | `v0.2.0-beta.1` (from alpha) | |
+| `release-as-rc` | `v0.2.0-rc.0` (already rc: as `release`) | `v0.2.0-rc.1` | |
+| `release-as-stable` | `v0.2.0` | `v0.2.1-alpha.0` | |
+| `start-next-minor` | none | `v0.3.0-alpha.0` | creates `release/v0.2` when `v0.2` has a stable tag and no branch yet |
+| `start-next-major` | none | `v1.0.0-alpha.0` | creates `release/v0.2` on the same condition |
+| `skip-prerelease-number` | none | `v0.2.0-beta.15` | recovery only |
+
+Going back a stage is refused: `release-as-beta` on an rc says so and changes nothing. To restart
+a line at an earlier stage, start the next minor version instead.
+
+On `release/vX.Y`, `VERSION` is always the next stable patch, and **`release` is the only
+option**: it tags `VERSION` as it stands (`v0.2.1`) and moves it to the next patch (`v0.2.2`).
+Every other option is refused on a release branch, dry run included.
+
+## Release branches
+
+A release branch, `release/vX.Y`, carries patch releases for a line after `main` has moved on to
+the next one.
+
+- **Created for you.** `start-next-minor` and `start-next-major` create the branch for the line
+  being left, when that line has a stable tag and no branch yet. It starts at the line's highest
+  stable tag, plus one commit setting `VERSION` to the next patch, and is pushed in the same atomic
+  push as `main`'s new `VERSION`: both land, or neither does. A line with no stable tag gets no
+  branch (there is nothing to patch), and an existing branch is left as it is.
+- **Protected like `main`.** The same required checks and merge queue apply, and only the release
+  bot pushes to it directly.
+- **Fixes land on `main` first.** Merge the fix to `main` as usual, then open a pull request against
+  `release/vX.Y` that cherry-picks it (`git cherry-pick -x <commit>`), and merge that. There is no
+  automatic backporting.
+- **Release from the branch** with **Use workflow from** set to `release/vX.Y` and the action left
+  on `release`.
+- **Each branch keeps its own `CHANGELOG.md`.** A patch's section lists only the commits since the
+  previous tag on that branch. `main`'s `CHANGELOG.md` does not list patch releases made on release
+  branches, and a patch tag never makes `main` list a section twice.
+- **Latest follows the highest stable version.** A patch release becomes GitHub's Latest release,
+  and moves the docs site's `latest`, only while it is the highest stable tag in the repository.
+- **An older line without a branch** (one left before release branches existed) is set up by
+  hand: create `release/vX.Y` from that line's highest stable tag, then open a pull request against
+  it that sets `VERSION` to the next patch. If branch protection refuses the creation, a repository
+  admin can create it.
+
+A worked timeline:
+
+```text
+main                                                release/v0.2
+────                                                ────────────
+VERSION v0.2.0-rc.1
+Release: release-as-stable
+  → tag v0.2.0, VERSION v0.2.1-alpha.0
+(feature work)
+Release: start-next-minor
+  → VERSION v0.3.0-alpha.0 ───────── creates ──────▶ at v0.2.0, VERSION v0.2.1
+Release: release
+  → tag v0.3.0-alpha.0, VERSION v0.3.0-alpha.1
+fix merged (PR to main) ─────────── cherry-pick PR ─▶ fix merged
+                                                    Release (from release/v0.2): release
+                                                      → tag v0.2.1, VERSION v0.2.2
+                                                      Publish: v0.2.1 is Latest (highest stable),
+                                                      docs slot v0.2 and docs latest
+Release: release-as-stable (later)
+  → tag v0.3.0: now the Latest release
+                                                    Release: release
+                                                      → tag v0.2.2: published, docs slot v0.2,
+                                                        NOT Latest (v0.3.0 is higher)
+```
+
+## What happens after you click
+
+**Release** (`release.yml`):
+
+1. **Check branch and action** — about a minute. Refuses an unknown action, a tag instead of a
+   branch, a branch other than `main` or `release/vX.Y` (unless it is a dry run), and any action
+   other than `release` on a release branch.
+2. **Wait for CI on this commit** — real runs of the `release…` options only. Waits up to 30
+   minutes for CI to pass on the commit being released; a failed or unfinished CI run stops the
+   release with nothing tagged.
+3. **Release** — runs the release script against this repository:
+   - refuses if the branch moved on since the run started (start the release again);
+   - refuses if the tag, or the `VERSION` that would follow it, already exists as a tag;
+   - renders the new `CHANGELOG.md` section with git-cliff and commits `release: <tag>`;
+   - creates the annotated tag, then commits the next `VERSION`;
+   - checks the tree for downstream references, then pushes the branch and the tag (or `main` and
+     the new release branch) in one atomic push.
+4. **Wait for Release / Publish** — only when a tag was pushed. Up to 2 minutes for Publish to
+   start and 45 minutes for it to finish; Release fails if Publish does.
+
+Only one Release run per repository runs at a time. A second run waits for the first; if a third
+is started meanwhile, GitHub cancels the waiting one.
+
+**Release / Publish** (`release-publish.yml`, on the tag):
+
+1. **Test** — the full test suite, with the race detector.
+2. **Validate** — the tag format, a `CHANGELOG.md` section for the tag, whether this is the Latest
+   release, and, on a tag push, that the tag is greater than every other tag of its own line
+   (`vX.Y.*`), so a patch on a release branch passes beside a newer line's prereleases.
+3. **GoReleaser** — refuses if the tag already has a GitHub release, then renders the release
+   notes (the commits since the previous tag on the same branch) and creates the release. What it
+   attaches is set by this repository's `.goreleaser.yml`; a library may ship none.
+4. **Deploy versioned docs** — stable tags only: the `vX.Y` slot of the docs site, and the site's
+   `latest` only when this is the Latest release.
+5. **Refresh the Go module proxy** — requests the new version from `proxy.golang.org`.
+
+## When a release fails
+
+**Never move or delete a tag, and never delete a GitHub release.** The Go module proxy records the
+commit a tag points at the first time anyone fetches it and never lets it change, and a deleted
+release cannot be told apart from one that never existed. Every recovery below works with the tag
+where it is.
+
+### Release failed before pushing
+
+If Release failed in the checks, the CI wait, or the release job before its push, **nothing was
+published**: the push is atomic, so no tag, no commit and no branch reached the repository. Fix
+what the error names and run Release again.
+
+| The error says | Do this |
+|----------------|---------|
+| A release runs only from main or a release/vX.Y branch | Pick `main` or the release branch in "Use workflow from", or tick Dry run to preview |
+| CI did not pass on the commit | Fix CI on the branch, then run Release again |
+| The branch moved after this run started | Run Release again; it releases the new tip |
+| Tag … already exists | That version is tagged already. If its Publish failed, recover it as below. Then move `VERSION` past it: `skip-prerelease-number` on `main`, a pull request setting the next patch on a release branch |
+| The tree contains downstream references | Fix the source, or the `cliff.toml` postprocessor that let a name into `CHANGELOG.md` |
+| The push was refused | Nothing was published; read the push error (branch protection, a moved branch) and run Release again |
+
+### The tag is pushed and Publish failed
+
+Release then turns red at "Wait for Release / Publish". First establish what Publish actually did,
+then pick the recovery.
+
+#### Determining what a release actually did
 
 When a tag's publish run goes wrong, the first question is always the same: did it publish,
 partly publish, or never publish — and what is the safe recovery? Answering that by reading
 the run page is unreliable, because six separate facts have to be held at once and each one
-is a route to a confidently wrong conclusion. **`scripts/release-state.sh` answers it
-instead**, and lives in `go-kure/.github` alongside the shared publish workflow:
+is a route to a confidently wrong conclusion.
+**[`scripts/release-state.sh`](https://github.com/go-kure/.github/blob/main/scripts/release-state.sh)
+answers it instead**. It lives in `go-kure/.github` alongside the shared publish workflow, and is
+run from a checkout of that repository:
 
 ```bash
-scripts/release-state.sh go-kure/kure v0.2.0-beta.11
-scripts/release-state.sh --state-only go-kure/launcher v0.1.0-alpha.21
+scripts/release-state.sh go-kure/<repo> v0.2.0-beta.11
+scripts/release-state.sh --state-only go-kure/<repo> v0.1.0-alpha.21
 ```
 
 It prints the evidence it used, a recommended action, and exactly one of:
@@ -57,7 +239,7 @@ It prints the evidence it used, a recommended action, and exactly one of:
 | State | Meaning |
 |-------|---------|
 | `published` | the publishing job concluded success in **some** attempt, and the release object exists |
-| `partial` | the release exists and the publishing job **ran**, but never concluded success in any attempt — it failed or was cancelled, so the run skipped the jobs that follow publication; the recovery is by hand, not a re-run, and leaves the state `partial` (below) |
+| `partial` | the release exists and the publishing job **ran**, but never concluded success in any attempt — it failed or was cancelled, so the release may be incomplete |
 | `never-published` | no release object and no successful publishing job |
 | `contradictory` | the run record and the release object disagree, in **either** direction: a release exists that the job never ran to produce, or the job succeeded and the release is gone |
 | `no-run-found` | no workflow run for this tag at all **and no release object** |
@@ -87,11 +269,10 @@ re-publishes a release that may already exist.
 
 **A publish that is still running also yields no state**, and reports `undetermined` for the same
 reason: every state in the table is a statement about a *finished* publish. This one is called out
-separately because it is the case where acting on a wrong answer does the most damage —
-`never-published` recommends a re-run and `partial` recommends running the publication's follow-up
-jobs by hand, and the one moment neither may happen is while the job is still going. The evidence
-block names the run and attempt that is in flight, and the advice says to wait rather than to
-re-run.
+separately because it is the case where acting on a wrong answer does the most damage — two of the
+five states recommend a re-run, and the one moment a re-run must not happen is while the job is
+still going. The evidence block names the run and attempt that is in flight, and the advice says to
+wait rather than to re-run.
 
 This outranks an earlier success, and that is the one place where "a success in some attempt wins"
 does not apply. A success settles what the *past* attempts did; a job running now is about the
@@ -119,69 +300,118 @@ Three things the script does that reading the run page by hand does not:
   non-rerun jobs forward unchanged, so an attempt's job list mixes attempts, and the
   conclusions are identical either way — only the timestamps separate them.
 
-The advice that recommends a re-run, `never-published`'s, names the **full** `gh run rerun <id>`
-and warns against `--failed` or single-job re-runs, which pin the reusable workflow to the first
-attempt's commit and so silently skip any fix merged to it since. It also warns that on a stable tag
-the re-run deploys the docs as the newest release, into the tag's `vX.Y` slot and at the docs root,
-so when the complete stable release list shows a newer release the advice is to escalate before
-re-running (#239).
-
-**`partial` is recovered by hand, not by a re-run.** While the release exists every path into
-publication refuses (the shared publisher's check, below, and each caller's own guard), and the
-release object is not what is missing: the lookup sees published releases only, and GoReleaser
-publishes a release only once its uploads finish, so what failed came after publication. What the
-run skipped are the caller's jobs that need a successful publishing job — the versioned docs
-deployment (stable tags only) and the module-proxy refresh. The advice prints the command for each
-one that applies to the tag, after a check of the assets against that tag's `.goreleaser.yml`.
-Missing assets (a leftover draft someone published by hand, say) are an escalation, and so is
-deleting the release.
-
-The publish workflow deploys the docs into the tag's slot and, with `set_latest=true`, at the docs
-root, taking the tag to be the newest release. A recovery can come after a newer one, so the advice
-prints that deployment only for a tag the complete stable release list (`--limit`; `gh release list`
-stops at 30 by default) shows is the newest. Otherwise the tag published out of order, choosing its
-slot and root is not something the advice can do safely, and it says to escalate (#239).
-
-`partial` describes the run record, not the follow-up work: doing the steps by hand changes nothing
-the script reads, so the state stays `partial` afterwards, and the steps may already have been done.
-Repeating them is safe: a docs deployment rebuilds the same slot and root from the tag (the check
-above made again), and the proxy refresh is a read.
-
-Every one of those behaviours is pinned by a case in `scripts/test/release-state-test.sh`,
+Every one of those behaviours is pinned by a case in
+[`scripts/test/release-state-test.sh`](https://github.com/go-kure/.github/blob/main/scripts/test/release-state-test.sh),
 which stubs `gh` and needs no token and no network. A new fact about how GitHub reports
-release runs belongs there as a failing test, not as a new paragraph in a runbook.
+release runs belongs there as a failing test, not as a new paragraph in this guide.
 
-**The shared publisher refuses to publish over an existing release.** The first step of the
-`goreleaser` job in `release-publish.yml` looks the tag's release up and fails the job when one
-exists, on every path that runs that job — a tag push, a dispatch, a full re-run, and a
-`--failed` or single-job re-run. It is a step of the publishing job, not a job of its own,
-because `--failed` reschedules the failed publishing job but carries a separate guard job that
-succeeded over without running it. An answer that is neither "exists" nor a `404` refuses as
-well, except on attempt 1 of a tag push, where it warns and proceeds. So a re-run is a
-recovery only while no release exists: while one does, every attempt that reaches this check
-is refused, which is why the `partial` advice above recommends no re-run at all. One limit:
-`--failed` and single-job re-runs resolve the workflow at the first attempt's commit, so they
-carry the check only for a run whose first attempt already used a version with it. The check
-sees published releases only, by design: GoReleaser keeps a release a draft until its uploads
-finish, so a draft left by a failure during upload is not refused, and a re-run then creates a
-new release and leaves that draft behind. `release-state.sh` reads the same published-release
-lookup, so such a run reports `never-published`, not `partial` — provided its run record is fully
-readable and no attempt is still running; otherwise it reports `undetermined` (a failed lookup, a
-publish still in flight, or a hole in the run record). The `never-published` advice says to delete
-the stale draft once the re-run has published, by its release id or on the releases page, never by
-tag.
+#### Recovery when no release exists (`never-published`)
 
-## CI, tags, and identity
+| Situation | Recovery |
+|-----------|----------|
+| A job concluded `failure` (`test`, `validate` or `goreleaser`), the cause was transient, and the shared workflow needs no change | `gh run rerun --failed <run-id> --repo go-kure/<repo>` |
+| A job concluded `cancelled` or `timed_out` | `gh run rerun <run-id> --repo go-kure/<repo>` — a **full** re-run |
+| The shared workflow needed a fix | `gh run rerun <run-id> --repo go-kure/<repo>` — a **full** re-run, not `--failed` |
+| The run is over 30 days old, or a newer tag of the same line exists | `gh workflow run release-publish.yml --repo go-kure/<repo> --ref <tag>` |
 
-- The release workflow runs tests, validates the tag and changelog, runs GoReleaser, then
-  performs post-release steps (e.g. module-proxy refresh).
-- Version tags are `vX.Y.Z`. Pre-releases use `-alpha.N` / `-beta.N` / `-rc.N` suffixes.
-- Release commits are pushed by the **`kure-release-bot`** GitHub App, which is the authorized
-  branch-protection bypass actor for release commits. Repo automation must reuse this identity
-  rather than minting a new one (a new actor needs governance + app authorization).
+Why the rows split this way:
 
-## Divergence from the workspace default
+- **`--failed` selects only jobs that concluded `failure`.** A job that was `cancelled` or
+  `timed_out` is not selected, and neither is anything waiting on it, so `--failed` reports
+  success having re-run nothing while the release stays absent.
+- **Only a full re-run picks up a fix to the shared workflow.** Re-running all jobs resolves the
+  called workflow from its reference (`@main`); re-running failed jobs or a single job uses the
+  called workflow at the first attempt's commit.
+- **Re-runs are available for 30 days** after the run started. After that, dispatch.
+- **A `--failed` re-run can lose `validate`'s Latest decision.** If `goreleaser` then refuses with
+  "validate did not decide whether … is the Latest release", use a full re-run.
+- **A re-run of a tag-push run checks version progression again**, because it keeps the original
+  `push` event; a dispatch skips that check, since the tag passed it when it was created. Once a
+  newer tag of the same line exists, a full re-run fails `validate`, so dispatch instead. The
+  dispatch `--ref` must be the tag itself.
+- **The publisher refuses to publish over an existing release**, on every path — tag push,
+  dispatch, full re-run, and `--failed` or single-job re-run — so a re-run is a recovery only while
+  no release exists. An answer that is neither "exists" nor "not found" refuses as well, except on
+  the first attempt of a tag push, where it warns and proceeds so an API error cannot block a first
+  publication. The check sees published releases only: GoReleaser keeps a release a draft until its
+  uploads finish, so a draft left by a failed upload is not refused, and a re-run creates a new
+  release beside it. `release-state.sh` reads the same lookup, so that case reports
+  `never-published`.
 
-GitLab workspace repos drive releases through shared CI templates; go-kure repos are released
-independently on GitHub with the scripts above. See [`docs/standards.md`](../docs/standards.md)
-§ Release Process for the per-repo matrix.
+#### Recovery when the release exists
+
+If `goreleaser` concluded `success` and only a later job failed (docs deploy or proxy refresh),
+**do not publish again**:
+
+- The later job concluded `failure` and the cause was transient: `gh run rerun --failed <run-id>`.
+  This re-runs the failed job only; the release is not touched. If the docs deploy then refuses
+  because validate did not decide the Latest release, continue with the next bullet.
+- The later job concluded `cancelled` or `timed_out`, or the shared workflow needs a fix: a full
+  re-run would redo publication and is refused. Do the follow-up work directly:
+
+  ```bash
+  # Docs deploy. --ref is required: without it the docs of the default branch are deployed into
+  # the version slot. set_latest=true only if <tag> is the highest stable tag, which this prints:
+  #   git tag --list 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1
+  gh workflow run deploy-docs.yml --repo go-kure/<repo> --ref <tag> \
+    -f version_slot=<vX.Y> -f version_label=<tag> -f set_latest=<true|false>
+
+  # Go proxy refresh: request the version so the proxy fetches it.
+  curl -fsS https://proxy.golang.org/github.com/go-kure/<repo>/@v/<tag>.info
+  ```
+
+Any other shape — a release exists while `goreleaser` never concluded `success` (`partial`), or
+`contradictory` — is **an escalation, not a self-service recovery**. Collect the
+`release-state.sh` output and hand it to a maintainer. Do not delete the release object: whether it
+is this run's to remove is exactly what cannot be established from the command line, and a
+release can be replaced by hand once its provenance is settled.
+
+#### Known limits
+
+- **A broken docs deploy at the tag cannot be recovered by re-running it.** `--ref` selects both
+  the workflow version and the content, so `--ref <tag>` re-runs a faulty `deploy-docs.yml` from
+  the tag, and omitting `--ref` deploys the default branch's content into the version slot. The
+  dispatch above covers transient failures only.
+- **A Publish wrapper that is broken at the tag cannot be recovered by either path.** A dispatch
+  takes the wrapper from the tag, and a full re-run re-resolves only the called shared workflow.
+  Escalate.
+- **If a `latest` pointer ends up on the wrong release anyway**, point both back at the highest
+  stable tag. Wait for any docs deploy still running first: deploys of different slots do not wait
+  for each other, and the one that pushes second can fail.
+
+  ```bash
+  gh workflow run deploy-docs.yml --repo go-kure/<repo> --ref <highest-stable-tag> \
+    -f version_slot=<vX.Y> -f version_label=<highest-stable-tag> -f set_latest=true
+  gh release edit <highest-stable-tag> --repo go-kure/<repo> --latest
+  gh release view --repo go-kure/<repo> --json tagName --jq .tagName   # shows the Latest release
+  ```
+
+## Reference
+
+- **`VERSION`** holds the next version to be released from that branch. On `main` it is always a
+  prerelease; on `release/vX.Y` it is always the next stable patch. Release moves it on.
+- **Versions** are `vX.Y.Z` (stable) and `vX.Y.Z-alpha.N`, `-beta.N`, `-rc.N` (prereleases), in
+  the order alpha < beta < rc < stable. A line is the `vX.Y` part.
+- **`CHANGELOG.md`** is written by git-cliff from Conventional Commit messages, configured by this
+  repository's `cliff.toml`. A release renders only its own section and inserts it below the header
+  (`git-cliff --unreleased --use-branch-tags --tag <tag> --prepend CHANGELOG.md`), so published
+  sections are never rewritten. `--use-branch-tags` counts only tags on the current branch, which
+  keeps a release branch's patches out of `main`'s changelog. The release notes are the same
+  section, rendered by Publish with `git-cliff --latest --use-branch-tags --strip header`.
+- **Identity.** Release commits and tags are pushed by the `kure-release-bot` GitHub App (secrets
+  `KURE_BOT_APP_ID` and `KURE_BOT_APP_PRIVATE_KEY`), the one actor allowed to push past the
+  protection of `main` and `release/*`. Automation reuses this identity rather than minting a new
+  one.
+- **Concurrency.** One Release run per repository at a time; a second waits, and a third started
+  meanwhile replaces the waiting one. Publish runs one at a time per tag.
+- **Scripts.** Release runs
+  [`scripts/release/release.sh`](https://github.com/go-kure/.github/blob/main/scripts/release/release.sh)
+  from `go-kure/.github`, at the commit of the shared workflow that runs it, so this repository
+  carries no copy. Publish's progression and Latest decisions are
+  [`scripts/release/publish-policy.sh`](https://github.com/go-kure/.github/blob/main/scripts/release/publish-policy.sh).
+  Both are tested against real git repositories by
+  [`scripts/test/release-test.sh`](https://github.com/go-kure/.github/blob/main/scripts/test/release-test.sh).
+- **Workflows.** The shared
+  [`release.yml`](https://github.com/go-kure/.github/blob/main/.github/workflows/release.yml) and
+  [`release-publish.yml`](https://github.com/go-kure/.github/blob/main/.github/workflows/release-publish.yml)
+  in `go-kure/.github`, called by this repository's own `release.yml` and `release-publish.yml`.

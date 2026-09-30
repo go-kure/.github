@@ -256,12 +256,14 @@ repo left in the org on Dependabot, for its single `github-actions` ecosystem.
 
 `.github`'s own `renovate.json` adds one `customManagers` regex entry, for the
 git-cliff version the shared release workflows install (`CLIFF_VERSION` in
-`release-create.yml` and `release-promote.yml`, the `setup-git-cliff`
-`version:` input in `release-publish.yml`). Each site carries a
+`release.yml`, `release-create.yml` and `release-promote.yml`, the
+`setup-git-cliff` `version:` input in `release-publish.yml`) and the one
+`ci.yml` installs for `scripts/test/release-test.sh`. Each site carries a
 `# renovate: datasource=github-releases depName=orhun/git-cliff` line, and one
-depName means a bump moves all three in the same PR. A consumer's `mise.toml`
-git-cliff pin is tracked separately by that consumer's Renovate, so the release
-binary and a local preview can still differ for the time between the two bumps.
+depName means a bump moves every site in the same PR, so the release tests run
+on the binary the releases use. A consumer's `mise.toml` git-cliff pin is
+tracked separately by that consumer's Renovate, so the release binary and a
+local preview can still differ for the time between the two bumps.
 
 ### GitHub Actions pinning
 
@@ -697,9 +699,15 @@ rather than because they were judged unimportant:
 | Tool         | GoReleaser + git-cliff  | GoReleaser + git-cliff  | N/A     |
 | Changelog    | `CHANGELOG.md` + cliff  | `CHANGELOG.md` + cliff  | N/A     |
 | Version tags | `vX.Y.Z`                | `vX.Y.Z`                | N/A     |
+| Branches     | `main` + `release/vX.Y` | `main` + `release/vX.Y` | N/A     |
 
-See [`standards/release-process.md`](../standards/release-process.md) for the canonical
-tag-driven release procedure that the repo-local `scripts/release.sh` cite.
+Both repos release through one manual workflow, **Release** (the shared
+`release.yml`, running the canonical `scripts/release/release.sh` of this
+repository); **Release / Publish** then runs by itself on the tag it pushes.
+[`standards/release-process.md`](../standards/release-process.md) is the release
+guide: which option to pick, release branches, and what to do when a release
+fails. It is written for both repos at once and vendored unchanged into each
+one's docs site.
 
 ## What Stays the Same
 
