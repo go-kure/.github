@@ -213,11 +213,14 @@ EOF
    the repository's tags. Run these in a checkout of $REPO right after
    git fetch --tags (a newer tag missing locally makes both answers wrong):
      bash "$policy" docs $TAG
-   If it prints false, deploy nothing: a newer stable patch of $minor owns
-   that slot. If it prints true:
-     gh workflow run deploy-docs.yml --repo $REPO --ref $TAG -f version_slot=$minor -f version_label=$TAG -f set_latest="\$(bash "$policy" latest $TAG)"
-   set_latest comes out true only when $TAG is the highest stable tag, so the
-   docs root never moves back to an older release.
+     bash "$policy" latest $TAG
+   If docs printed false, deploy nothing: a newer stable patch of $minor owns
+   that slot. If either printed anything but true or false, stop: there is no
+   decision to deploy with. Otherwise run the one line matching latest:
+     gh workflow run deploy-docs.yml --repo $REPO --ref $TAG -f version_slot=$minor -f version_label=$TAG -f set_latest=true
+     gh workflow run deploy-docs.yml --repo $REPO --ref $TAG -f version_slot=$minor -f version_label=$TAG -f set_latest=false
+   latest is true only when $TAG is the highest stable tag, so only then does
+   the deployment replace the docs root.
 EOF
                     ;;
             esac
