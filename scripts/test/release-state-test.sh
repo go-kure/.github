@@ -510,12 +510,16 @@ assert_contains "the draft is deleted by id, not by tag" \
     "$OUT" "gh release delete v1.0.0, which can resolve"
 # A full re-run runs the publish workflow's docs job, which always deploys a
 # stable tag as the latest. Re-run after a newer stable release, that overwrites
-# the docs root (and the slot, under a newer patch), so the advice has to say so
-# and how to put them back.
+# the docs root (and the slot, under a newer patch), so the advice checks the
+# complete list first and escalates instead (#239); it prints no redeploy.
 assert_contains "never-published advice warns the re-run deploys docs as the newest" \
     "$OUT" "On a stable tag the re-run also deploys the docs as if the tag were the newest"
-assert_contains "never-published advice names the redeploy with the set_latest choice" \
-    "$OUT" "-f version_label=<tag> -f set_latest=<true|false>"
+assert_contains "never-published advice lists every stable release, past the default 30" \
+    "$OUT" "gh release list --repo go-kure/kure --exclude-drafts --exclude-pre-releases --limit 1000"
+assert_contains "never-published advice escalates before re-running behind a newer release" \
+    "$OUT" "If a newer stable release than v1.0.0 is listed, escalate before re-running"$'\n'"(#239)"
+assert_not_contains "never-published advice prints no docs redeploy of its own" \
+    "$OUT" "gh workflow run deploy-docs.yml"
 
 # --- state: partial, and why its recovery is not a re-run ----------------------
 #
@@ -549,24 +553,23 @@ assert_contains "partial advice keeps the do-not-delete guidance" \
     "$OUT" "Deleting the release object is an escalation"
 assert_contains "partial advice checks the assets against the tag's own config" \
     "$OUT" "against that TAG's own .goreleaser.yml"
-assert_contains "partial advice names the skipped docs deployment for a stable tag" \
-    "$OUT" "gh workflow run deploy-docs.yml --repo go-kure/kure --ref v1.2.3 -f version_slot=v1.2 -f version_label=v1.2.3 -f set_latest=<true|false>"
+# The publish workflow deploys a stable tag into its slot and, set_latest=true,
+# at the docs root, taking it to be the newest release. After a newer one that
+# regresses newer docs, so the dispatch is printed only under the newest-stable
+# condition, checked against the complete list, and an out-of-order tag is
+# escalated (#239).
+assert_contains "partial advice names the skipped docs deployment, for the newest stable tag only" \
+    "$OUT" "If v1.2.3 is the newest stable release listed:"$'\n'"     gh workflow run deploy-docs.yml --repo go-kure/kure --ref v1.2.3 -f version_slot=v1.2 -f version_label=v1.2.3 -f set_latest=true"
+assert_contains "partial advice lists every stable release, past the default 30" \
+    "$OUT" "gh release list --repo go-kure/kure --exclude-drafts --exclude-pre-releases --limit 1000"
+assert_contains "partial advice escalates an out-of-order tag instead of deploying" \
+    "$OUT" "Stop and escalate (#239)."
+assert_not_contains "partial advice does not claim a newer release already fills the slot" \
+    "$OUT" "already carries"
+assert_not_contains "partial advice prints no set_latest placeholder" \
+    "$OUT" "<true|false>"
 assert_contains "partial advice names the skipped module-proxy refresh" \
     "$OUT" "curl -fsS https://proxy.golang.org/github.com/go-kure/kure/@v/v1.2.3.info"
-# The publish workflow passes set_latest=true because it takes the tag to be
-# the newest release. A recovery can come after a newer one, and set_latest
-# means "also deploy to the docs root as the latest stable", so printing the
-# publish-time value would redeploy the root as an older version. For the same
-# reason the slot holds the newest patch of its line, so a newer one there
-# means no docs step at all.
-assert_not_contains "partial advice never prints set_latest=true unconditionally" \
-    "$OUT" "-f set_latest=true"
-assert_contains "partial advice states the newest-stable condition for set_latest" \
-    "$OUT" "set_latest=true only if v1.2.3 is still the"
-assert_contains "partial advice says how to find the newest stable release" \
-    "$OUT" "gh release list --repo go-kure/kure --exclude-drafts --exclude-pre-releases"
-assert_contains "partial advice skips the docs step when a newer patch holds the slot" \
-    "$OUT" "If a newer v1.2.x release is listed, skip this step"
 # The state reads the run record only, so running the steps by hand leaves it
 # `partial`; the advice must not read as proof they are still undone.
 assert_contains "partial advice says manual recovery leaves the state partial" \

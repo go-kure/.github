@@ -122,8 +122,9 @@ Three things the script does that reading the run page by hand does not:
 The advice that recommends a re-run, `never-published`'s, names the **full** `gh run rerun <id>`
 and warns against `--failed` or single-job re-runs, which pin the reusable workflow to the first
 attempt's commit and so silently skip any fix merged to it since. It also warns that on a stable tag
-the re-run deploys the docs as the newest release, into the tag's `vX.Y` slot and at the docs root:
-if a newer stable release has shipped since, its docs need redeploying afterwards.
+the re-run deploys the docs as the newest release, into the tag's `vX.Y` slot and at the docs root,
+so when the complete stable release list shows a newer release the advice is to escalate before
+re-running (#239).
 
 **`partial` is recovered by hand, not by a re-run.** While the release exists every path into
 publication refuses (the shared publisher's check, below, and each caller's own guard), and the
@@ -135,17 +136,16 @@ one that applies to the tag, after a check of the assets against that tag's `.go
 Missing assets (a leftover draft someone published by hand, say) are an escalation, and so is
 deleting the release.
 
-The docs command is not the publish workflow's own. That workflow always passes `set_latest=true`,
-which also deploys the tag to the docs root as the latest stable, because at publish time it takes
-the tag to be the newest release. A recovery can come after a newer one, so the advice has the
-operator list the stable releases first: a newer release in the same `vX.Y` line means no docs step
-(the slot already carries it), and otherwise `set_latest=true` only if the tag is still the newest
-stable release, `false` if not.
+The publish workflow deploys the docs into the tag's slot and, with `set_latest=true`, at the docs
+root, taking the tag to be the newest release. A recovery can come after a newer one, so the advice
+prints that deployment only for a tag the complete stable release list (`--limit`; `gh release list`
+stops at 30 by default) shows is the newest. Otherwise the tag published out of order, choosing its
+slot and root is not something the advice can do safely, and it says to escalate (#239).
 
 `partial` describes the run record, not the follow-up work: doing the steps by hand changes nothing
 the script reads, so the state stays `partial` afterwards, and the steps may already have been done.
-Repeating them is safe: a docs deployment rebuilds the same slot from the tag (the check above made
-again), and the proxy refresh is a read.
+Repeating them is safe: a docs deployment rebuilds the same slot and root from the tag (the check
+above made again), and the proxy refresh is a read.
 
 Every one of those behaviours is pinned by a case in `scripts/test/release-state-test.sh`,
 which stubs `gh` and needs no token and no network. A new fact about how GitHub reports
