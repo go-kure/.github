@@ -47,6 +47,14 @@ PRT_MARKER_CLEAN='<!-- gokure-pr-review:v1-clean -->'
 # cannot parse as a thread marker: PRT_MARKER_RE requires `v1 fp=`.
 # shellcheck disable=SC2034 # read by render.sh, not within this file
 PRT_MARKER_STATE_SUPERSEDED='<!-- gokure-pr-review:state=superseded -->'
+# The enforce-mode partial-review comment's identity marker
+# (go-kure/.github#151): posted when a chunk produced no usable review
+# (a review-parse-failed degraded reason), edited in place on later runs,
+# rewritten to superseded once a later run assesses every chunk. Same
+# `v1-<kind>` shape as PRT_MARKER_CLEAN, so neither is a substring of the
+# other and PRT_MARKER_RE cannot match it.
+# shellcheck disable=SC2034 # read by render.sh/pr-review-threads.sh, not within this file
+PRT_MARKER_PARTIAL='<!-- gokure-pr-review:v1-partial -->'
 
 # prt_marker_build FP [COLLISION] [FIRST_ABSENT_SHA] [CONTENT_FP]
 # COLLISION: "true" or "" . Prints the marker line to stdout.

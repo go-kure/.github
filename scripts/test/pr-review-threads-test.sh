@@ -1217,6 +1217,30 @@ assert_eq "PRT_MARKER_STATE_SUPERSEDED: prt_marker_parse does not read the state
 assert_eq "PRT_MARKER_STATE_SUPERSEDED: does not contain the clean identity marker, so the upsert lookup cannot match on it alone" \
   "false" "$(grep -qF "$PRT_MARKER_CLEAN" <<< "$PRT_MARKER_STATE_SUPERSEDED" && echo true || echo false)"
 
+# ============================================================ render.sh: partial-review comment (go-kure/.github#151)
+partial_reasons=$'review-parse-failed: chunk 0: review response was not valid JSON after retry=true (<!-- gokure-pr-review:v1-clean -->)\nchunk 1: partial-drop — one or more malformed finding row(s) dropped\nreview-parse-failed: chunk 2: review call failed (transport/proxy error, exit 7) [timeout]'
+partial_body="$(prt_render_partial_comment 'abc1234567890abc1234567890abc1234567890' "$partial_reasons")"
+assert_eq "prt_render_partial_comment: names the head SHA" \
+  "true" "$(grep -qF 'abc1234567890abc1234567890abc1234567890' <<< "$partial_body" && echo true || echo false)"
+assert_eq "prt_render_partial_comment: lists every review-parse-failed chunk, tag stripped" \
+  "true true" "$(grep -qF -- '- chunk 0: review response was not valid JSON' <<< "$partial_body" && echo true || echo false) $(grep -qF -- '- chunk 2: review call failed' <<< "$partial_body" && echo true || echo false)"
+assert_eq "prt_render_partial_comment: omits degraded reasons that are not parse failures" \
+  "false" "$(grep -qF 'partial-drop' <<< "$partial_body" && echo true || echo false)"
+assert_eq "prt_render_partial_comment: neutralizes a marker quoted inside a reason" \
+  "1" "$(grep -cF '<!-- gokure-pr-review' <<< "$partial_body")"
+assert_eq "prt_render_partial_comment: ends with the partial-review marker" \
+  "$PRT_MARKER_PARTIAL" "$(tail -1 <<< "$partial_body")"
+assert_eq "prt_render_partial_comment: carries no clean-verdict marker, so the clean lookup never finds it" \
+  "false" "$(grep -qF "$PRT_MARKER_CLEAN" <<< "$partial_body" && echo true || echo false)"
+partial_superseded_body="$(prt_render_partial_comment_superseded 'def4567890def4567890def4567890def4567890')"
+# shellcheck disable=SC2016 # the backticks are literal markdown, not an expansion
+assert_eq "prt_render_partial_comment_superseded: says the later SHA assessed every chunk" \
+  "true" "$(grep -qF 'A later review of `def4567890def4567890def4567890def4567890` assessed every chunk.' <<< "$partial_superseded_body" && echo true || echo false)"
+assert_eq "prt_render_partial_comment_superseded: state line directly before the marker, marker last" \
+  "$PRT_MARKER_STATE_SUPERSEDED"$'\n'"$PRT_MARKER_PARTIAL" "$(tail -2 <<< "$partial_superseded_body")"
+assert_eq "PRT_MARKER_PARTIAL: prt_marker_parse does not read it as a thread marker" \
+  "false" "$(prt_marker_parse "$PRT_MARKER_PARTIAL" >/dev/null 2>&1 && echo true || echo false)"
+
 # ============================================================ render.sh: prt_render_summary Line column (go-kure/.github#190)
 # The job-summary table is the same content-loss class as the quarantine/
 # overflow/advisory tables, even though it's ephemeral ($GITHUB_STEP_SUMMARY,
@@ -1576,6 +1600,29 @@ assert_eq "prt_all_degraded_are_stale: false on a MIX of staleness and other deg
 rm -rf "$hfr_dir"
 unset PRT_INCOMPLETE_FILE PRT_DEGRADED_FILE
 
+# ============================================================ state.sh: prt_handle_informational_freshness_rc (go-kure/.github#151)
+# The partial-review comment's handler: rc 1 keeps the stale routing, every
+# other status is degraded, never incomplete. rc 3 is not reachable from the
+# orchestrator (prt_freshness_check returns only 0/1/2), so it is pinned here.
+for ifr_rc in 2 3 99; do
+  ifr_dir="$(mktemp -d)"
+  prt_state_init "$ifr_dir"
+  prt_handle_informational_freshness_rc "$ifr_rc" "partial-review comment" 2>/dev/null
+  assert_eq "prt_handle_informational_freshness_rc($ifr_rc): routes to degraded, not incomplete" \
+    "true false" "$(prt_is_degraded && echo true || echo false) $(prt_is_incomplete && echo true || echo false)"
+  assert_eq "prt_handle_informational_freshness_rc($ifr_rc): reason is not a staleness reason, so no quiet stale exit" \
+    "false" "$(prt_all_degraded_are_stale && echo true || echo false)"
+  rm -rf "$ifr_dir"
+  unset PRT_INCOMPLETE_FILE PRT_DEGRADED_FILE
+done
+ifr_dir="$(mktemp -d)"
+prt_state_init "$ifr_dir"
+prt_handle_informational_freshness_rc 1 "partial-review comment" 2>/dev/null
+assert_eq "prt_handle_informational_freshness_rc(1): stale head stays degraded with the stale marker" \
+  "true false true" "$(prt_is_degraded && echo true || echo false) $(prt_is_incomplete && echo true || echo false) $(prt_all_degraded_are_stale && echo true || echo false)"
+rm -rf "$ifr_dir"
+unset PRT_INCOMPLETE_FILE PRT_DEGRADED_FILE ifr_dir ifr_rc
+
 # ============================================================ state.sh: prt_resolve_review_parse_failures (go-kure/.github#107)
 rpf_dir="$(mktemp -d)"
 prt_state_init "$rpf_dir"
@@ -1827,6 +1874,57 @@ fake_curl_orchestrator() {
         url="${args[$i]}" ;;
     esac
   done
+
+  # Opt-in issue-comment log (go-kure/.github#151): only when a caller sets
+  # PRT_TEST_ISSUE_COMMENT_LOG, so every other fixture keeps its existing
+  # behavior. The listing GET serves PRT_TEST_ISSUE_COMMENTS_LIST (default
+  # []); a PATCH to issues/comments/<id> and a POST to issues/<n>/comments
+  # each append "METHOD <path after /issues/>" plus the body, indented, to
+  # the log. The POST then falls through to the normal arm below, so the
+  # issue-comment count and body-file capture still work.
+  # PRT_TEST_PARTIAL_WRITE_FAIL=1 answers HTTP 500 to any write whose body
+  # carries the partial-review marker (logged as "FAILED METHOD <path>"),
+  # leaving the clean-verdict comment's writes untouched.
+  # PRT_TEST_WRITE_FAIL_BODY_MATCH=<text> does the same for any write whose
+  # body contains <text>.
+  if [ -n "${PRT_TEST_ISSUE_COMMENT_LOG:-}" ]; then
+    if [ "$method" != GET ] && { { [ -n "${PRT_TEST_PARTIAL_WRITE_FAIL:-}" ] \
+      && grep -qF 'gokure-pr-review:v1-partial' <<< "$data"; } \
+      || { [ -n "${PRT_TEST_WRITE_FAIL_BODY_MATCH:-}" ] \
+      && grep -qF -- "$PRT_TEST_WRITE_FAIL_BODY_MATCH" <<< "$data"; }; }; then
+      printf 'FAILED %s %s\n' "$method" "${url##*/issues/}" >> "$PRT_TEST_ISSUE_COMMENT_LOG"
+      : > "$out"; echo 500; return 0
+    fi
+    case "$method:$url" in
+      GET:*/issues/*/comments[?]*)
+        # PRT_TEST_ISSUE_LIST_COUNTFILE counts listing calls; with
+        # PRT_TEST_ISSUE_LIST_FAIL_AFTER=N (0 included; empty is off), every
+        # listing after the Nth answers HTTP 500.
+        if [ -n "${PRT_TEST_ISSUE_LIST_COUNTFILE:-}" ]; then
+          local list_n
+          list_n=$(( $(cat "$PRT_TEST_ISSUE_LIST_COUNTFILE" 2>/dev/null || echo 0) + 1 ))
+          echo "$list_n" > "$PRT_TEST_ISSUE_LIST_COUNTFILE"
+          if [ -n "${PRT_TEST_ISSUE_LIST_FAIL_AFTER:-}" ] && [ "$list_n" -gt "$PRT_TEST_ISSUE_LIST_FAIL_AFTER" ]; then
+            : > "$out"; echo 500; return 0
+          fi
+        fi
+        printf '%s' "${PRT_TEST_ISSUE_COMMENTS_LIST:-[]}" > "$out"
+        echo 200
+        return 0
+        ;;
+      PATCH:*/issues/comments/*)
+        printf 'PATCH %s\n' "${url##*/issues/}" >> "$PRT_TEST_ISSUE_COMMENT_LOG"
+        jq -r '.body' <<< "$data" | sed 's/^/  | /' >> "$PRT_TEST_ISSUE_COMMENT_LOG"
+        printf '%s' '{"id":1}' > "$out"
+        echo 200
+        return 0
+        ;;
+      POST:*/issues/*/comments)
+        printf 'POST %s\n' "${url##*/issues/}" >> "$PRT_TEST_ISSUE_COMMENT_LOG"
+        jq -r '.body' <<< "$data" | sed 's/^/  | /' >> "$PRT_TEST_ISSUE_COMMENT_LOG"
+        ;;
+    esac
+  fi
 
   case "$url" in
     */chat/completions)
@@ -2251,6 +2349,12 @@ fake_curl_orchestrator() {
           if [ "$c" -le "${PRT_TEST_META_FAIL_TIMES:-0}" ]; then
             : > "$out"; echo 502; return 0
           fi
+          # go-kure/.github#151: every GET pulls/<N> after call
+          # PRT_TEST_PR_READ_FAIL_AFTER_CALL fails, so a chosen freshness
+          # re-check returns 2 (PR read failed) rather than 1 (stale).
+          if [ "${PRT_TEST_PR_READ_FAIL_AFTER_CALL:-0}" != 0 ] && [ "$c" -gt "${PRT_TEST_PR_READ_FAIL_AFTER_CALL}" ]; then
+            : > "$out"; echo 502; return 0
+          fi
           # go-kure/.github#99: call #1 is always the real meta fetch (must
           # report the real head SHA so the run's own context is sane); every
           # freshness re-check after PRT_TEST_STALE_AFTER_CALL reports a
@@ -2337,7 +2441,14 @@ run_orchestrator() {
     PRT_TEST_ASSESS_ALWAYS_FAIL="${PRT_TEST_ASSESS_ALWAYS_FAIL:-0}" \
     PRT_TEST_INVENTORY_MODE="${PRT_TEST_INVENTORY_MODE:-single}" \
     PRT_TEST_STALE_AFTER_CALL="${PRT_TEST_STALE_AFTER_CALL:-0}" \
+    PRT_TEST_PR_READ_FAIL_AFTER_CALL="${PRT_TEST_PR_READ_FAIL_AFTER_CALL:-0}" \
     PRT_TEST_TWO_FILE_DIFF="${PRT_TEST_TWO_FILE_DIFF:-0}" \
+    PRT_TEST_ISSUE_COMMENT_LOG="${PRT_TEST_ISSUE_COMMENT_LOG:-}" \
+    PRT_TEST_ISSUE_COMMENTS_LIST="${PRT_TEST_ISSUE_COMMENTS_LIST:-}" \
+    PRT_TEST_PARTIAL_WRITE_FAIL="${PRT_TEST_PARTIAL_WRITE_FAIL:-}" \
+    PRT_TEST_WRITE_FAIL_BODY_MATCH="${PRT_TEST_WRITE_FAIL_BODY_MATCH:-}" \
+    PRT_TEST_ISSUE_LIST_COUNTFILE="${PRT_TEST_ISSUE_LIST_COUNTFILE:-}" \
+    PRT_TEST_ISSUE_LIST_FAIL_AFTER="${PRT_TEST_ISSUE_LIST_FAIL_AFTER:-}" \
     PRT_MAX_DIFF_CHARS="$max_diff_chars" \
     PRT_GH_TOKEN=x PRT_REPO=owner/repo PRT_PR_NUMBER=1 \
     PRT_HEAD_SHA=1111111111111111111111111111111111111111 \
@@ -2771,6 +2882,231 @@ PRT_TEST_TWO_FILE_DIFF=0
 PRT_TEST_MODEL_RESPONSE_MODE=clean
 rm -f "$PRT_TEST_ISSUE_COMMENT_BODY_FILE"
 unset PRT_TEST_ISSUE_COMMENT_BODY_FILE
+
+# Case xv-b (go-kure/.github#151): withholding the clean verdict alone left
+# the PR page silent about the unreviewed chunk. The same degraded fixture
+# must now POST one partial-review comment naming the head SHA and chunk 0;
+# a second degraded run that finds that comment must PATCH it rather than
+# post another; and a later run that assesses every chunk must rewrite it to
+# superseded. The exit code and the done: line stay what #107 made them.
+PRT_TEST_ISSUE_COMMENT_LOG="$(mktemp)"
+PRT_TEST_MODEL_RESPONSE_MODE=two_chunk_first_all_malformed_second_empty
+PRT_TEST_TWO_FILE_DIFF=1
+rc="$(run_orchestrator enforce 0 0 0 150)"
+assert_eq "orchestrator: partial-review comment -> degraded run still exits 0" "0" "$rc"
+assert_eq "orchestrator: partial-review comment -> POSTed exactly once, nothing PATCHed" \
+  "1 0" "$(grep -c '^POST ' "$PRT_TEST_ISSUE_COMMENT_LOG") $(grep -c '^PATCH ' "$PRT_TEST_ISSUE_COMMENT_LOG")"
+assert_eq "orchestrator: partial-review comment -> ends with the partial-review marker" \
+  "true" "$(grep -qxF "  | $PRT_MARKER_PARTIAL" "$PRT_TEST_ISSUE_COMMENT_LOG" && echo true || echo false)"
+assert_eq "orchestrator: partial-review comment -> names the head SHA" \
+  "true" "$(grep -qF '1111111111111111111111111111111111111111' "$PRT_TEST_ISSUE_COMMENT_LOG" && echo true || echo false)"
+assert_eq "orchestrator: partial-review comment -> names chunk 0 and its failure, without the internal tag" \
+  "true false" "$(grep -qF '  | - chunk 0: .findings missing/null/non-array' "$PRT_TEST_ISSUE_COMMENT_LOG" && echo true || echo false) $(grep -qF 'review-parse-failed' "$PRT_TEST_ISSUE_COMMENT_LOG" && echo true || echo false)"
+assert_eq "orchestrator: partial-review comment -> still no clean-verdict comment" \
+  "false" "$(grep -qF 'Reviewed, no findings' "$PRT_TEST_ISSUE_COMMENT_LOG" && echo true || echo false)"
+assert_eq "orchestrator: partial-review comment -> done: line unchanged (one degraded reason, the parse failure itself)" \
+  "true" "$(grep -qE '^prt: done: .* incomplete=0 degraded=1$' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+
+: > "$PRT_TEST_ISSUE_COMMENT_LOG"
+PRT_TEST_ISSUE_COMMENTS_LIST='[{"id":77,"user":{"login":"test-bot[bot]"},"body":"earlier partial review\n<!-- gokure-pr-review:v1-partial -->"}]'
+rc="$(run_orchestrator enforce 0 0 0 150)"
+assert_eq "orchestrator: second degraded run -> exits 0" "0" "$rc"
+assert_eq "orchestrator: second degraded run -> PATCHes the existing partial-review comment, posts nothing new" \
+  "0 1" "$(grep -c '^POST ' "$PRT_TEST_ISSUE_COMMENT_LOG") $(grep -c '^PATCH comments/77$' "$PRT_TEST_ISSUE_COMMENT_LOG")"
+assert_eq "orchestrator: second degraded run -> the edited body is a live partial review, not superseded" \
+  "true false" "$(grep -qF 'chunk 0:' "$PRT_TEST_ISSUE_COMMENT_LOG" && echo true || echo false) $(grep -qF "$PRT_MARKER_STATE_SUPERSEDED" "$PRT_TEST_ISSUE_COMMENT_LOG" && echo true || echo false)"
+assert_eq "orchestrator: second degraded run with no prior clean comment -> PATCHes nothing but the partial comment" \
+  "1" "$(grep -c '^PATCH ' "$PRT_TEST_ISSUE_COMMENT_LOG")"
+
+# Case xv-b2 (go-kure/.github#151 review): a zero-findings degraded run on a
+# PR that already carries a clean verdict from an earlier SHA. Neither the
+# clean-verdict upsert nor the findings>0 supersede runs, so without its own
+# branch the old "Reviewed, no findings" stayed live, with no superseded state
+# line, next to the new partial-review comment. It must be rewritten in place
+# to superseded, and the partial comment must still be written.
+: > "$PRT_TEST_ISSUE_COMMENT_LOG"
+PRT_TEST_ISSUE_COMMENTS_LIST='[{"id":88,"user":{"login":"test-bot[bot]"},"body":"old clean\n<!-- gokure-pr-review:v1-clean -->"}]'
+rc="$(run_orchestrator enforce 0 0 0 150)"
+assert_eq "orchestrator: degraded run over a prior clean verdict -> exits 0" "0" "$rc"
+assert_eq "orchestrator: degraded run over a prior clean verdict -> PATCHes the clean comment once and POSTs the partial comment once" \
+  "1 1" "$(grep -c '^PATCH comments/88$' "$PRT_TEST_ISSUE_COMMENT_LOG") $(grep -c '^POST ' "$PRT_TEST_ISSUE_COMMENT_LOG")"
+assert_eq "orchestrator: degraded run over a prior clean verdict -> the rewrite carries the superseded state line and says why" \
+  "true true" "$(grep -qxF "  | $PRT_MARKER_STATE_SUPERSEDED" "$PRT_TEST_ISSUE_COMMENT_LOG" && echo true || echo false) $(grep -qF 'that is not a clean verdict' "$PRT_TEST_ISSUE_COMMENT_LOG" && echo true || echo false)"
+assert_eq "orchestrator: degraded run over a prior clean verdict -> the rewritten comment keeps the clean marker" \
+  "true" "$(grep -qxF "  | $PRT_MARKER_CLEAN" "$PRT_TEST_ISSUE_COMMENT_LOG" && echo true || echo false)"
+assert_eq "orchestrator: degraded run over a prior clean verdict -> no new degraded reason" \
+  "true" "$(grep -qE '^prt: done: .* incomplete=0 degraded=1$' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+
+# Its write failing is a degraded reason, never REVIEW_INCOMPLETE.
+: > "$PRT_TEST_ISSUE_COMMENT_LOG"
+PRT_TEST_WRITE_FAIL_BODY_MATCH='that is not a clean verdict'
+rc="$(run_orchestrator enforce 0 0 0 150)"
+PRT_TEST_WRITE_FAIL_BODY_MATCH=''
+assert_eq "orchestrator: clean supersede (partial review) write fails -> exits 0" "0" "$rc"
+assert_eq "orchestrator: clean supersede (partial review) write fails -> that PATCH failed, the partial comment is still POSTed" \
+  "1 1" "$(grep -c '^FAILED PATCH comments/88$' "$PRT_TEST_ISSUE_COMMENT_LOG") $(grep -c '^POST ' "$PRT_TEST_ISSUE_COMMENT_LOG")"
+assert_eq "orchestrator: clean supersede (partial review) write fails -> REVIEW_DEGRADED names it, no REVIEW_INCOMPLETE" \
+  "true false" "$(grep -qF 'failed to supersede the clean-verdict comment for a partial review' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(grep -qF 'REVIEW_INCOMPLETE' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_ISSUE_COMMENTS_LIST='[{"id":77,"user":{"login":"test-bot[bot]"},"body":"earlier partial review\n<!-- gokure-pr-review:v1-partial -->"}]'
+
+: > "$PRT_TEST_ISSUE_COMMENT_LOG"
+PRT_TEST_TWO_FILE_DIFF=0
+PRT_TEST_MODEL_RESPONSE_MODE=clean
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator: later clean run -> exits 0" "0" "$rc"
+assert_eq "orchestrator: later clean run -> rewrites the partial-review comment in place" \
+  "1" "$(grep -c '^PATCH comments/77$' "$PRT_TEST_ISSUE_COMMENT_LOG")"
+assert_eq "orchestrator: later clean run -> the rewrite says every chunk was assessed and carries the superseded state line" \
+  "true true" "$(grep -qF 'assessed every chunk' "$PRT_TEST_ISSUE_COMMENT_LOG" && echo true || echo false) $(grep -qxF "  | $PRT_MARKER_STATE_SUPERSEDED" "$PRT_TEST_ISSUE_COMMENT_LOG" && echo true || echo false)"
+assert_eq "orchestrator: later clean run -> the superseded partial comment keeps its marker as the last line" \
+  "  | $PRT_MARKER_PARTIAL" "$(tail -1 "$PRT_TEST_ISSUE_COMMENT_LOG")"
+
+# A run that never had a partial comment must not get one on a clean run.
+: > "$PRT_TEST_ISSUE_COMMENT_LOG"
+PRT_TEST_ISSUE_COMMENTS_LIST=''
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator: clean run with no prior partial comment -> no partial-review write" \
+  "false" "$(grep -qF "$PRT_MARKER_PARTIAL" "$PRT_TEST_ISSUE_COMMENT_LOG" && echo true || echo false)"
+
+# Case xv-c (go-kure/.github#151 review): the partial-review comment is
+# informational, so a PR read failure in either of its freshness checks must
+# skip the write as REVIEW_DEGRADED, never REVIEW_INCOMPLETE — the extra GET
+# must not fail an otherwise successful review. Each baseline run counts the
+# GET pulls/<N> reads; the partial-review block makes the last two (outer
+# check, then the re-check before the write), so failing every read after
+# call T-2 or T-1 lands a status-2 freshness failure on exactly one of them.
+# The asserted reason text names which check failed, so a failure landing
+# anywhere else cannot pass these assertions.
+PRT_TEST_MODEL_RESPONSE_MODE=two_chunk_first_all_malformed_second_empty
+PRT_TEST_TWO_FILE_DIFF=1
+: > "$PRT_TEST_ISSUE_COMMENT_LOG"
+rc="$(run_orchestrator enforce 0 0 0 150)"
+pf_reads="$(cat "$PRT_TEST_META_COUNTFILE")"
+assert_eq "orchestrator: partial-review freshness baseline -> exits 0 and POSTs the partial comment" \
+  "0 1" "$rc $(grep -c '^POST ' "$PRT_TEST_ISSUE_COMMENT_LOG")"
+for pf_case in "1:partial-review comment upsert" "2:partial-review comment"; do
+  : > "$PRT_TEST_ISSUE_COMMENT_LOG"
+  PRT_TEST_PR_READ_FAIL_AFTER_CALL=$((pf_reads - ${pf_case%%:*}))
+  rc="$(run_orchestrator enforce 0 0 0 150)"
+  assert_eq "orchestrator: '${pf_case#*:}' freshness read fails (status 2) -> exits 0 (degraded, not fatal)" "0" "$rc"
+  assert_eq "orchestrator: '${pf_case#*:}' freshness read fails -> REVIEW_DEGRADED names the skipped write" \
+    "true" "$(grep -qF "REVIEW_DEGRADED: ${pf_case#*:}: PR read failed" "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+  assert_eq "orchestrator: '${pf_case#*:}' freshness read fails -> does NOT mark REVIEW_INCOMPLETE" \
+    "false" "$(grep -qF 'REVIEW_INCOMPLETE' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+  assert_eq "orchestrator: '${pf_case#*:}' freshness read fails -> no partial-review comment written" \
+    "0" "$(grep -c '^POST \|^PATCH ' "$PRT_TEST_ISSUE_COMMENT_LOG")"
+done
+PRT_TEST_PR_READ_FAIL_AFTER_CALL=0
+
+# The supersede branch (every chunk assessed, an existing partial comment).
+PRT_TEST_TWO_FILE_DIFF=0
+PRT_TEST_MODEL_RESPONSE_MODE=clean
+PRT_TEST_ISSUE_COMMENTS_LIST='[{"id":77,"user":{"login":"test-bot[bot]"},"body":"earlier partial review\n<!-- gokure-pr-review:v1-partial -->"}]'
+: > "$PRT_TEST_ISSUE_COMMENT_LOG"
+rc="$(run_orchestrator enforce 0 0 0)"
+pf_reads="$(cat "$PRT_TEST_META_COUNTFILE")"
+assert_eq "orchestrator: partial-review supersede baseline -> exits 0 and PATCHes comment 77" \
+  "0 1" "$rc $(grep -c '^PATCH comments/77$' "$PRT_TEST_ISSUE_COMMENT_LOG")"
+for pf_case in "1:partial-review supersede upsert" "2:partial-review supersede check"; do
+  : > "$PRT_TEST_ISSUE_COMMENT_LOG"
+  PRT_TEST_PR_READ_FAIL_AFTER_CALL=$((pf_reads - ${pf_case%%:*}))
+  rc="$(run_orchestrator enforce 0 0 0)"
+  assert_eq "orchestrator: '${pf_case#*:}' freshness read fails (status 2) -> exits 0 (degraded, not fatal)" "0" "$rc"
+  assert_eq "orchestrator: '${pf_case#*:}' freshness read fails -> REVIEW_DEGRADED names the skipped write" \
+    "true" "$(grep -qF "REVIEW_DEGRADED: ${pf_case#*:}: PR read failed" "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+  assert_eq "orchestrator: '${pf_case#*:}' freshness read fails -> does NOT mark REVIEW_INCOMPLETE" \
+    "false" "$(grep -qF 'REVIEW_INCOMPLETE' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+  assert_eq "orchestrator: '${pf_case#*:}' freshness read fails -> comment 77 left as it stands" \
+    "0" "$(grep -c '^PATCH comments/77$' "$PRT_TEST_ISSUE_COMMENT_LOG")"
+done
+PRT_TEST_PR_READ_FAIL_AFTER_CALL=0
+# A stale head at the same re-check keeps the superseded routing: the only
+# degraded reason is the staleness one, so the run takes the quiet exit.
+: > "$PRT_TEST_ISSUE_COMMENT_LOG"
+PRT_TEST_STALE_AFTER_CALL=$((pf_reads - 1))
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator: head moves before the partial-review supersede write -> exits 0, stale reason, quiet 'Stale run' line" \
+  "0 true true" "$rc $(grep -qF 'REVIEW_DEGRADED: partial-review supersede upsert: stale head SHA (run superseded)' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(grep -qF 'Stale run: head moved; a newer run is already queued' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_STALE_AFTER_CALL=0
+
+# The write itself failing (HTTP 500) is informational too: each of the three
+# partial-comment writes (first POST, PATCH of an existing one, supersede
+# PATCH) degrades the run with a reason naming the write, never marks it
+# REVIEW_INCOMPLETE, and the run still exits 0.
+PRT_TEST_PARTIAL_WRITE_FAIL=1
+PRT_TEST_MODEL_RESPONSE_MODE=two_chunk_first_all_malformed_second_empty
+PRT_TEST_TWO_FILE_DIFF=1
+for pw_case in "POST:[]:failed to post the partial-review comment (HTTP 500)" \
+  "PATCH:77:failed to post the partial-review comment (HTTP 500)" \
+  "PATCH-supersede:77:failed to supersede the partial-review comment (HTTP 500)"; do
+  pw_label="${pw_case%%:*}"
+  pw_rest="${pw_case#*:}"
+  pw_reason="${pw_rest#*:}"
+  if [ "${pw_rest%%:*}" = 77 ]; then
+    PRT_TEST_ISSUE_COMMENTS_LIST='[{"id":77,"user":{"login":"test-bot[bot]"},"body":"earlier partial review\n<!-- gokure-pr-review:v1-partial -->"}]'
+  else
+    PRT_TEST_ISSUE_COMMENTS_LIST='[]'
+  fi
+  if [ "$pw_label" = PATCH-supersede ]; then
+    PRT_TEST_MODEL_RESPONSE_MODE=clean
+    PRT_TEST_TWO_FILE_DIFF=0
+  fi
+  : > "$PRT_TEST_ISSUE_COMMENT_LOG"
+  rc="$(run_orchestrator enforce 0 0 0 150)"
+  assert_eq "orchestrator: partial-review $pw_label write fails (HTTP 500) -> exits 0 (degraded, not fatal)" "0" "$rc"
+  assert_eq "orchestrator: partial-review $pw_label write fails -> the write was attempted and refused" \
+    "1" "$(grep -c "^FAILED ${pw_label%%-*} " "$PRT_TEST_ISSUE_COMMENT_LOG")"
+  assert_eq "orchestrator: partial-review $pw_label write fails -> REVIEW_DEGRADED names the failed write" \
+    "true" "$(grep -qF "REVIEW_DEGRADED: $pw_reason" "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+  assert_eq "orchestrator: partial-review $pw_label write fails -> does NOT mark REVIEW_INCOMPLETE" \
+    "false" "$(grep -qF 'REVIEW_INCOMPLETE' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+done
+unset PRT_TEST_PARTIAL_WRITE_FAIL pw_case pw_label pw_rest pw_reason
+
+# The comment listing failing (HTTP 500) is informational as well. The
+# partial-review lookup is always the run's last listing call, so a baseline
+# run counts the listings and the failing run fails only that last one. On
+# the degraded path the run degrades with a reason naming the listing; on the
+# supersede path it only warns. Neither writes a comment, marks
+# REVIEW_INCOMPLETE or exits non-zero.
+PRT_TEST_ISSUE_LIST_COUNTFILE="$(mktemp)"
+PRT_TEST_ISSUE_COMMENTS_LIST='[{"id":77,"user":{"login":"test-bot[bot]"},"body":"earlier partial review\n<!-- gokure-pr-review:v1-partial -->"}]'
+for pl_case in degraded supersede; do
+  if [ "$pl_case" = degraded ]; then
+    PRT_TEST_MODEL_RESPONSE_MODE=two_chunk_first_all_malformed_second_empty
+    PRT_TEST_TWO_FILE_DIFF=1
+  else
+    PRT_TEST_MODEL_RESPONSE_MODE=clean
+    PRT_TEST_TWO_FILE_DIFF=0
+  fi
+  : > "$PRT_TEST_ISSUE_LIST_COUNTFILE"
+  rc="$(run_orchestrator enforce 0 0 0 150)"
+  pl_lists="$(cat "$PRT_TEST_ISSUE_LIST_COUNTFILE")"
+  : > "$PRT_TEST_ISSUE_LIST_COUNTFILE"
+  : > "$PRT_TEST_ISSUE_COMMENT_LOG"
+  PRT_TEST_ISSUE_LIST_FAIL_AFTER=$((pl_lists - 1))
+  rc="$(run_orchestrator enforce 0 0 0 150)"
+  PRT_TEST_ISSUE_LIST_FAIL_AFTER=''
+  assert_eq "orchestrator: partial-review listing fails on the $pl_case path (HTTP 500) -> exits 0" "0" "$rc"
+  assert_eq "orchestrator: partial-review listing fails on the $pl_case path -> partial comment 77 not written" \
+    "0" "$(grep -c '^PATCH comments/77$' "$PRT_TEST_ISSUE_COMMENT_LOG")"
+  assert_eq "orchestrator: partial-review listing fails on the $pl_case path -> does NOT mark REVIEW_INCOMPLETE" \
+    "false" "$(grep -qF 'REVIEW_INCOMPLETE' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+  if [ "$pl_case" = degraded ]; then
+    assert_eq "orchestrator: partial-review listing fails on the degraded path -> REVIEW_DEGRADED names the listing, no partial comment posted" \
+      "true 0" "$(grep -qF 'REVIEW_DEGRADED: failed to list issue comments while looking for a prior partial-review comment' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(grep -c '^POST ' "$PRT_TEST_ISSUE_COMMENT_LOG")"
+  else
+    assert_eq "orchestrator: partial-review listing fails on the supersede path -> warns that the prior comment is left as it stands" \
+      "true" "$(grep -qF 'WARNING: could not list issue comments — any prior partial-review comment is left as it stands.' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+  fi
+done
+rm -f "$PRT_TEST_ISSUE_LIST_COUNTFILE"
+unset PRT_TEST_ISSUE_LIST_COUNTFILE PRT_TEST_ISSUE_LIST_FAIL_AFTER pl_case pl_lists
+PRT_TEST_MODEL_RESPONSE_MODE=clean
+PRT_TEST_TWO_FILE_DIFF=0
+unset pf_reads pf_case
+rm -f "$PRT_TEST_ISSUE_COMMENT_LOG"
+unset PRT_TEST_ISSUE_COMMENT_LOG PRT_TEST_ISSUE_COMMENTS_LIST
 
 # ---- Cases xvi-xviii (go-kure/.github#176): the positive coverage marker
 # ---- three polarities named in the issue's own acceptance criteria.

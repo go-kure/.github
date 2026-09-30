@@ -1652,6 +1652,88 @@ if [ "$PRT_MODE" = enforce ]; then
     else
       prt_handle_freshness_rc "$?" "clean-verdict supersede check"
     fi
+  elif "$review_parse_failed_this_run"; then
+    # Zero findings, but a chunk went unreviewed: neither branch above runs,
+    # yet the partial-review comment below makes a prior clean verdict stale.
+    # Supersede it here, so the PR never shows a live clean verdict next to a
+    # live partial review. Same best-effort handling as the partial comment
+    # itself: this run is already degraded, and tidying a past run's comment
+    # must not turn it red.
+    if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
+      if clean_id="$(prt_find_marked_comment "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_MARKER_CLEAN" "$PRT_BOT_LOGIN")"; then
+        if [ -n "$clean_id" ]; then
+          if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
+            prt_upsert_issue_comment "$PRT_REPO" "$PRT_PR_NUMBER" "$(prt_render_clean_comment_superseded_by_partial "$PRT_HEAD_SHA")" "$clean_id" || \
+              prt_mark_degraded "failed to supersede the clean-verdict comment for a partial review (HTTP ${PRT_LAST_HTTP_STATUS:-unknown}); the prior comment may still read as a clean verdict for an older SHA"
+          else
+            prt_handle_informational_freshness_rc "$?" "clean-verdict supersede (partial review) upsert"
+          fi
+        fi
+      else
+        echo "WARNING: could not list issue comments — any prior clean-verdict comment is left as it stands." >&2
+      fi
+    else
+      prt_handle_informational_freshness_rc "$?" "clean-verdict supersede (partial review) check"
+    fi
+  fi
+
+  # --- Partial-review comment (go-kure/.github#151) ---
+  #
+  # The clean-verdict gate above withholds "Reviewed, no findings" on a
+  # review-parse-failed run, but withholding alone left the PR page silent:
+  # only the job log and a ::warning said a chunk was never reviewed. This
+  # posts (or edits in place) one comment naming the head SHA and each
+  # unreviewed chunk, whether or not the reviewed chunks found anything —
+  # the unreviewed chunk is a gap either way. A later run with no parse
+  # failure rewrites it to superseded, never deletes it. Failures here are
+  # prt_mark_degraded, not prt_mark_incomplete: this run is already
+  # degraded by the parse failure itself, and the notice must not turn a
+  # degraded run red (the exit code for review-parse-failed stays 0,
+  # go-kure/.github#107). Freshness failures route through
+  # prt_handle_informational_freshness_rc (state.sh), not
+  # prt_handle_freshness_rc: a stale head stays the quiet superseded case,
+  # but a PR read failure only skips this write as degraded — the extra
+  # freshness GET must not fail an otherwise successful review.
+  if "$review_parse_failed_this_run"; then
+    if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
+      if partial_id="$(prt_find_marked_comment "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_MARKER_PARTIAL" "$PRT_BOT_LOGIN")"; then
+        # Re-check immediately before the write — same rationale as the
+        # clean-verdict upsert above.
+        if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
+          partial_body="$(prt_render_partial_comment "$PRT_HEAD_SHA" "$(prt_degraded_reasons)")"
+          prt_upsert_issue_comment "$PRT_REPO" "$PRT_PR_NUMBER" "$partial_body" "$partial_id" || \
+            prt_mark_degraded "failed to post the partial-review comment (HTTP ${PRT_LAST_HTTP_STATUS:-unknown}); the unreviewed chunk(s) are listed in this run's review-parse-failed reason(s)"
+        else
+          prt_handle_informational_freshness_rc "$?" "partial-review comment upsert"
+        fi
+      else
+        prt_mark_degraded "failed to list issue comments while looking for a prior partial-review comment; no partial-review comment posted, the unreviewed chunk(s) are listed in this run's review-parse-failed reason(s)"
+      fi
+    else
+      prt_handle_informational_freshness_rc "$?" "partial-review comment"
+    fi
+  elif ! prt_is_incomplete; then
+    # Every chunk was assessed. Only rewrites an EXISTING partial comment
+    # (a PR that never had one gets no "superseded" noise), and like the
+    # clean-verdict supersede above it is best-effort tidy-up of a PAST
+    # run's comment: a listing failure only warns. Skipped on an incomplete
+    # run, which cannot vouch for every chunk.
+    if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
+      if partial_id="$(prt_find_marked_comment "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_MARKER_PARTIAL" "$PRT_BOT_LOGIN")"; then
+        if [ -n "$partial_id" ]; then
+          if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
+            prt_upsert_issue_comment "$PRT_REPO" "$PRT_PR_NUMBER" "$(prt_render_partial_comment_superseded "$PRT_HEAD_SHA")" "$partial_id" || \
+              prt_mark_degraded "failed to supersede the partial-review comment (HTTP ${PRT_LAST_HTTP_STATUS:-unknown}); this run assessed every chunk, but the prior comment may still read as a partial review"
+          else
+            prt_handle_informational_freshness_rc "$?" "partial-review supersede upsert"
+          fi
+        fi
+      else
+        echo "WARNING: could not list issue comments — any prior partial-review comment is left as it stands." >&2
+      fi
+    else
+      prt_handle_informational_freshness_rc "$?" "partial-review supersede check"
+    fi
   fi
 fi
 
