@@ -62,16 +62,10 @@ github_defaults:
       enforcement: active
       conditions:
         ref_name:
-          # release/vX.Y branches get main's protection, so a backport lands the
-          # way a main PR does: the same required checks, and on kure/launcher the
-          # same merge queue and release-bot bypass (the bot pushes the release
-          # commit and the next VERSION to the branch). The Release workflow's
-          # start-next-* actions create these branches (go-kure/.github#237).
-          # .github cuts no release branches, so the pattern matches nothing
-          # there. The ruleset keeps its name: github-settings.sh matches live
-          # rulesets by name, so a rename would create a second ruleset beside
-          # the live one instead of updating it.
-          include: ["refs/heads/main", "refs/heads/release/*"]
+          # main only. GitHub refuses a wildcard ref in a ruleset that has a
+          # merge queue (HTTP 422), and kure/launcher add one below, so
+          # release/* branches get their own ruleset, release-protection.
+          include: ["refs/heads/main"]
       rules:
         deletion: true
         non_fast_forward: true
@@ -90,6 +84,37 @@ github_defaults:
             - build
             - rebase-check
       # Default: no bypass actors
+    # release/vX.Y branches, which the Release workflow's start-next-* actions
+    # create (go-kure/.github#237). A backport PR gets main's rules and required
+    # checks on kure/launcher, but no merge queue: GitHub refuses a wildcard ref
+    # in a ruleset that has one (HTTP 422). strict: true takes the queue's place,
+    # so a PR must be up to date with the branch before it merges. The
+    # release-bot bypass (per repo, below) lets the bot push the release commit
+    # and the next VERSION to the branch. .github cuts no release branches.
+    release-protection:
+      repos: [kure, launcher]
+      target: branch
+      enforcement: active
+      conditions:
+        ref_name:
+          include: ["refs/heads/release/*"]
+      rules:
+        deletion: true
+        non_fast_forward: true
+        required_linear_history: true
+        pull_request:
+          required_approving_review_count: 0
+          dismiss_stale_reviews_on_push: false
+          require_code_owner_review: false
+          require_last_push_approval: false
+          required_review_thread_resolution: true
+        required_status_checks:
+          strict: true
+          contexts:
+            - lint
+            - test
+            - build
+            - pr-review / AI Code Review
     # GitHub Copilot's automated code review, exposed as a ruleset rule type.
     # enforcement: disabled records live reality (created via the UI, never
     # turned on) rather than changing behavior — flip to "active" to actually
@@ -133,7 +158,7 @@ github_repos:
       dependabot_security_updates: disabled
     rulesets:
       main-protection: &queue_protection
-        bypass_actors:
+        bypass_actors: &release_bot_bypass
           # kure-release-bot GitHub App (app_id: 2882845)
           - actor_id: 2882845
             actor_type: Integration
@@ -175,12 +200,16 @@ github_repos:
             max_entries_to_build: 1              # tune up after observing runner load
             min_entries_to_merge_wait_minutes: 0
             check_response_timeout_minutes: 60
+      release-protection:
+        bypass_actors: *release_bot_bypass
   launcher:
     # Same rationale as kure above — extends the shared preset.
     security:
       dependabot_security_updates: disabled
     rulesets:
       main-protection: *queue_protection
+      release-protection:
+        bypass_actors: *release_bot_bypass
   ".github":
     # Extends its own copy of the shared preset it hosts — same rationale.
     # No other override needed: this repo's rulesets/ruleset behavior is

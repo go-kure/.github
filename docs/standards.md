@@ -587,11 +587,13 @@ grpc bump within hours of each other.
 | Ruleset                                            | Enforcement | Scope             |
 |-----------------------------------------------------|-------------|-------------------|
 | `main-protection`                                    | `active`    | .github, kure, launcher |
+| `release-protection`                                 | `active`    | kure, launcher only |
 | `Code Quality Copilot review for default branch`      | `disabled`  | kure, launcher only |
 
-`main-protection` covers `main` and every `release/*` branch. A release branch gets the same
-required checks as `main` and, on kure and launcher, the same merge queue and release-bot bypass,
-so a backport PR lands the way a PR to `main` does.
+`release-protection` covers every `release/*` branch with `main`'s rules, required checks and
+release-bot bypass, but without a merge queue: GitHub refuses a wildcard branch pattern in a ruleset
+that has one. The required checks are strict instead, so a backport PR must be up to date with its
+release branch before it merges.
 
 ## Organization Settings
 
