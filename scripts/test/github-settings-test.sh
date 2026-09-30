@@ -266,9 +266,11 @@ done
 
 # GitHub refuses a ruleset that has a merge queue and a wildcard ref (HTTP
 # 422, "Wildcard ref names are not supported when merge queue is enabled"),
-# and --apply reports that as FAILED yet still exits 0 — so main-protection
-# with release/* added passed CI and never applied on kure/launcher
-# (go-kure/.github#237). Check every ruleset the policy would send.
+# and --apply used to report that as FAILED yet still exit 0 — so
+# main-protection with release/* added passed CI and never applied on
+# kure/launcher (go-kure/.github#237). --apply now exits 1 on it
+# (go-kure/.github#242), but only at apply time, after merge; this check
+# catches it in CI instead. Check every ruleset the policy would send.
 queue_wildcards=""
 mapfile -t policy_ruleset_names < <(ruleset_names)
 for scope_repo in .github kure launcher go-kure.github.io; do
@@ -1007,6 +1009,152 @@ EOF
 result="$(run_audit_labels_extra_fixture $'-n\x1faabbcc\x1fexpected desc' "$OPTION_NAME_FILE")"
 assert_eq "a live label named -n is not EXTRA" "0" "${result%%$'\t'*}"
 assert_contains "and audits as OK against its declaration, not MISSING" "${result#*$'\t'}" "OK: -n"
+
+# ---------------------------------------------------------------------------
+# Apply-mode write failures (go-kure/.github#242). Every write used to swallow
+# its error: the ruleset and classic-protection paths printed FAILED and moved
+# on, the label and settings writes were bare `gh api` calls that --all runs
+# under `|| true`, and print_summary returned 0 in apply mode regardless. A
+# `gh` function stub (later-definition-wins, same lever as get_github_labels
+# above) answers every GET and fails every --method write; each write site
+# must then record the failure, and print_summary true must return 1 and name
+# it. Each scenario runs in a subshell so APPLY_FAILURES and the stubs cannot
+# leak into the next one; the subshell prints the recorded failures.
+# ---------------------------------------------------------------------------
+
+# fail_writes_gh — the stub. GETs: the rulesets list returns $STUB_RULESETS,
+# classic protection exists, the issue-count query returns 0, and every other
+# read returns {}. Anything carrying --method (all writes here) fails.
+fail_writes_gh() {
+    # shellcheck disable=SC2317,SC2329 # invoked indirectly by the functions under test
+    gh() {
+        case " $* " in
+            *" --method "*) echo "HTTP 422: stub write refused" >&2; return 1 ;;
+            *"issue list"*) echo 0 ;;
+            *"/rulesets?includes_parents=false"*) printf '%s\n' "${STUB_RULESETS:-[]}" ;;
+            *"/branches/main/protection"*) return 0 ;;
+            *) echo '{}' ;;
+        esac
+    }
+}
+
+apply_failures_of() {
+    printf '%s\n' "${APPLY_FAILURES[@]}"
+}
+
+ruleset_create_out="$( (fail_writes_gh; STUB_RULESETS='[]'; APPLY_FAILURES=(); apply_ruleset kure main-protection >/dev/null 2>&1; apply_failures_of) )"
+assert_eq "a failed ruleset POST is recorded" "kure: create ruleset 'main-protection'" "$ruleset_create_out"
+
+ruleset_update_out="$( (fail_writes_gh; STUB_RULESETS='[{"name":"main-protection","id":7}]'; APPLY_FAILURES=(); apply_ruleset kure main-protection >/dev/null 2>&1; apply_failures_of) )"
+assert_eq "a failed ruleset PUT is recorded" "kure: update ruleset 'main-protection'" "$ruleset_update_out"
+
+classic_out="$( (fail_writes_gh; APPLY_FAILURES=(); remove_classic_branch_protection kure >/dev/null 2>&1; apply_failures_of) )"
+assert_eq "a failed classic-protection DELETE is recorded" "kure: remove classic branch protection on main" "$classic_out"
+
+# One labels file drives all four label writes: test/foo drifts (PATCH),
+# type/bug is renamed from a live `bug` (PATCH new_name), test/new is missing
+# (POST), and the live `junk` label is extra and unused (DELETE).
+APPLY_LABELS_FILE="$drift_fixture_dir/labels-apply.json"
+cat >"$APPLY_LABELS_FILE" <<'EOF'
+{"labels": [{"name": "test/foo", "color": "#AABBCC", "description": "expected desc"}, {"name": "type/bug", "color": "#D73A4A", "description": "Something is broken"}, {"name": "test/new", "color": "#000000", "description": "new"}]}
+EOF
+labels_out="$(
+    (
+        fail_writes_gh
+        # shellcheck disable=SC2317,SC2329 # invoked indirectly via audit_labels
+        get_github_labels() { printf '%s\n' $'test/foo\x1f112233\x1fstale desc' $'bug\x1fd73a4a\x1fdefault' $'junk\x1f000000\x1fx'; }
+        # shellcheck disable=SC2034 # read by audit_labels() via global scope
+        LABELS_FILE="$APPLY_LABELS_FILE"
+        APPLY_FAILURES=()
+        audit_labels label-repo true >/dev/null 2>&1
+        apply_failures_of
+    )
+)"
+assert_contains "a failed label metadata PATCH is recorded" "$labels_out" "label-repo: update label test/foo"
+assert_contains "a failed label rename is recorded" "$labels_out" "label-repo: rename label bug -> type/bug"
+assert_contains "a failed label create is recorded" "$labels_out" "label-repo: create label test/new"
+assert_contains "a failed label delete is recorded" "$labels_out" "label-repo: delete label junk"
+assert_eq "exactly the four failed label writes are recorded" "4" "$(grep -c . <<<"$labels_out")"
+
+# The settings writes: every read returns {}, so each governed key differs
+# from policy and apply mode attempts (and fails) the write. go-kure.github.io
+# keeps github_defaults' dependabot_security_updates: enabled, which a {}
+# read reports as disabled, so its automated-security-fixes PUT is attempted
+# too (kure overrides it to disabled, which {} already matches).
+settings_out="$( (fail_writes_gh; APPLY_FAILURES=(); audit_repo_settings go-kure.github.io true >/dev/null 2>&1; audit_security_settings go-kure.github.io true >/dev/null 2>&1; apply_failures_of) )"
+assert_contains "a failed repository settings PATCH is recorded" "$settings_out" "go-kure.github.io: apply repository settings ("
+assert_contains "a failed security settings PATCH is recorded" "$settings_out" "go-kure.github.io: apply security settings ("
+assert_contains "a failed automated-security-fixes write is recorded" "$settings_out" "go-kure.github.io: set security.dependabot_security_updates to enabled"
+
+# The automated-security-fixes method follows policy: enabling is a PUT,
+# disabling a DELETE. This stub accepts every write, prints the method of the
+# automated-security-fixes call, and answers every read with $STUB_REPO_JSON.
+# go-kure.github.io wants enabled and reads disabled; kure wants disabled and
+# reads enabled.
+dsu_method_of() {
+    (
+        # shellcheck disable=SC2317,SC2329 # invoked indirectly by audit_security_settings
+        gh() {
+            case " $* " in
+                *"/automated-security-fixes "*"--method "*)
+                    local prev=""
+                    for a in "$@"; do
+                        [ "$prev" = --method ] && echo "DSU $a"
+                        prev="$a"
+                    done
+                    ;;
+                *" --method "*) return 0 ;;
+                *) printf '%s\n' "$STUB_REPO_JSON" ;;
+            esac
+        }
+        APPLY_FAILURES=()
+        audit_security_settings "$1" true 2>/dev/null | grep '^DSU '
+    )
+}
+assert_eq "enabling dependabot security updates is a PUT" "DSU PUT" \
+    "$(STUB_REPO_JSON='{}' dsu_method_of go-kure.github.io)"
+assert_eq "disabling dependabot security updates is a DELETE" "DSU DELETE" \
+    "$(STUB_REPO_JSON='{"security_and_analysis":{"dependabot_security_updates":{"status":"enabled"}}}' dsu_method_of kure)"
+
+org_out="$( (fail_writes_gh; APPLY_FAILURES=(); audit_org_settings true >/dev/null 2>&1; audit_org_actions true >/dev/null 2>&1; apply_failures_of) )"
+assert_contains "a failed organization settings PATCH is recorded" "$org_out" "org go-kure: apply organization settings ("
+assert_contains "a failed Actions permissions PUT is recorded" "$org_out" "org go-kure: apply Actions permissions"
+assert_contains "a failed Actions workflow permissions PUT is recorded" "$org_out" "org go-kure: apply Actions workflow permissions"
+
+# print_summary: apply mode returns 1 and lists each failure; with none it
+# still returns 0, and audit mode's own rule is unchanged.
+apply_fail_rc=$( (APPLY_FAILURES=("kure: create label test/new" "kure: update ruleset 'main-protection'"); JSON_OUTPUT=false print_summary true) >/dev/null 2>&1; echo $?)
+assert_eq "print_summary (--apply) returns 1 when a write failed" "1" "$apply_fail_rc"
+apply_fail_out=$( (APPLY_FAILURES=("kure: create label test/new" "kure: update ruleset 'main-protection'"); JSON_OUTPUT=false print_summary true) 2>&1)
+assert_contains "print_summary (--apply) counts the failed writes" "$apply_fail_out" "2 apply-mode write(s) failed"
+assert_contains "print_summary (--apply) names the failed label write" "$apply_fail_out" "FAILED: kure: create label test/new"
+assert_contains "print_summary (--apply) names the failed ruleset write" "$apply_fail_out" "FAILED: kure: update ruleset 'main-protection'"
+apply_ok_rc=$( (APPLY_FAILURES=(); LABELS_MISSING=3 JSON_OUTPUT=false print_summary true) >/dev/null 2>&1; echo $?)
+assert_eq "print_summary (--apply) returns 0 when every write went through" "0" "$apply_ok_rc"
+audit_fail_ignored_rc=$( (APPLY_FAILURES=("kure: create label x"); JSON_OUTPUT=false print_summary false) >/dev/null 2>&1; echo $?)
+assert_eq "print_summary (audit) ignores APPLY_FAILURES (audit mode never writes)" "0" "$audit_fail_ignored_rc"
+
+# The CLI itself: `--all --apply` keeps going past a repo whose write failed
+# (audit_repo runs under `|| true` there) and still exits 1 at the end. The
+# audit is stubbed; the flag parsing, the loop and the print_summary call are
+# the real main().
+main_log="$(mktemp)"
+main_rc=$( (
+    setup_colors() { :; }
+    check_requirements() { :; }
+    audit_repo() {
+        echo "audited $1" >> "$main_log"
+        [ "$1" = first ] || return 0
+        record_apply_failure "first: create label test/new"
+        return 1
+    }
+    APPLY_FAILURES=()
+    GITHUB_REPOS="first second" JSON_OUTPUT=false main --all --apply
+) >/dev/null 2>&1; echo $?)
+assert_eq "--all --apply exits 1 when a write failed" "1" "$main_rc"
+assert_eq "--all --apply audits every repo after a failed write" "audited first
+audited second" "$(cat "$main_log")"
+rm -f "$main_log"
 
 rm -rf "$drift_fixture_dir"
 trap - EXIT
