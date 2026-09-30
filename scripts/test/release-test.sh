@@ -468,7 +468,7 @@ with_go_mod() {
 }
 # Every form of a local replace: one line, inside a replace block (no
 # `replace` keyword on the line), a ./, ../ or absolute target, a bare . or ..,
-# and each of those quoted, including a // inside the quotes.
+# and each of those quoted, including a // or a space inside the quotes.
 local_replaces=(
     'replace example.com/a => ../a'
     $'replace (\n\texample.com/a => ../a\n)'
@@ -481,7 +481,7 @@ local_replaces=(
     'replace example.com/a => "/src/a"'
     'replace example.com/a => "//host/a"'
     'replace example.com/a => ".."'
-    "replace example.com/a => \`../a\`"
+    'replace example.com/a => "../my dir"'
 )
 for n in "${!local_replaces[@]}"; do
     with_go_mod "localreplace$n" $'module example.com/m\n\n'"${local_replaces[$n]}"
@@ -494,9 +494,9 @@ done
 with_go_mod modulereplace $'module example.com/m\n\nreplace (\n\texample.com/a => example.com/b v1.2.0 // was => ../a\n)'
 run_release modulereplace main release
 assert_eq "module replace, local path only in a comment: released" 0 "$RC"
-with_go_mod quotedmodule $'module example.com/m\n\nreplace example.com/a => "example.com/b" v1.2.0\n\nretract v0.1.0 // moved => ../b'
+with_go_mod quotedmodule $'module example.com/m\n\nreplace example.com/a => "example.com/b" v1.2.0\n\nreplace example.com/c => "\\u0065xample.com/d" v1.2.0\n\nretract v0.1.0 // moved => ../b'
 run_release quotedmodule main release
-assert_eq "quoted module replace, => ../ only in a retract comment: released" 0 "$RC"
+assert_eq "quoted module replaces (one escaped), => ../ only in a retract comment: released" 0 "$RC"
 
 # die inside $(...) must still raise its annotation: read_version runs in one.
 new_fixture noversion v0.2.0-alpha.3
