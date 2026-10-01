@@ -191,11 +191,11 @@
           "properties": {
             "merge_method": { "type": "string", "enum": ["MERGE", "SQUASH", "REBASE"] },
             "grouping_strategy": { "type": "string", "enum": ["ALLGREEN", "HEADGREEN"] },
-            "min_entries_to_merge": { "type": "integer", "minimum": 0 },
-            "max_entries_to_merge": { "type": "integer", "minimum": 0 },
-            "max_entries_to_build": { "type": "integer", "minimum": 0 },
-            "min_entries_to_merge_wait_minutes": { "type": "integer", "minimum": 0 },
-            "check_response_timeout_minutes": { "type": "integer", "minimum": 1 }
+            "min_entries_to_merge": { "type": "integer", "minimum": 0, "maximum": 100 },
+            "max_entries_to_merge": { "type": "integer", "minimum": 0, "maximum": 100 },
+            "max_entries_to_build": { "type": "integer", "minimum": 0, "maximum": 100 },
+            "min_entries_to_merge_wait_minutes": { "type": "integer", "minimum": 0, "maximum": 360 },
+            "check_response_timeout_minutes": { "type": "integer", "minimum": 1, "maximum": 360 }
           }
         },
         "copilot_code_review": {
