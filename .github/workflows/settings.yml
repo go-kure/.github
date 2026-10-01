@@ -93,7 +93,7 @@ jobs:
         run: |
           [ -f github-settings-report.json ] || exit 0
           case "$EVENT" in
-            push) POLICY=" (report only: preview of what an apply would change)" ;;
+            push) POLICY=" (report only: drift is listed, not failed on)" ;;
             schedule) POLICY=" (label metadata drift warns only)" ;;
             *) POLICY="" ;;
           esac

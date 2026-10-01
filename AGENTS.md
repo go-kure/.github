@@ -102,7 +102,7 @@ The `settings.yml` workflow runs this automatically in audit mode on push to mai
 `governance/` or `standards/` files change) and daily at 06:00 UTC. The two triggers fail on
 different things:
 
-- **Push** runs `--report-only`: a preview of what an apply would change, with a warning, and
+- **Push** runs `--report-only`: a preview that lists the drift, with a warning, and
   exit 0. The pushed policy change is exactly what nothing has applied yet, so failing on it
   would make every policy merge red.
 - **Schedule** runs `--warn-label-drift`: it fails on any drift except label colour/description
