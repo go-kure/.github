@@ -32,7 +32,10 @@ This is the design/operations reference the code cites but didn't yet have:
   pass that handles auto-resolve when an issue is fixed). When the diff splits into more than
   one chunk, both prompts of each chunk carry a scope block (`prt_chunk_scope`): the chunk's
   number, the files of the whole diff and of the chunk, and the rule that a claim depending on
-  code outside the chunk is omitted; posted findings carry `chunk i/N` (go-kure/.github#173).
+  code outside the chunk is omitted. The first comment of each thread a run opens names its
+  chunk in the footer ("from chunk i/N of the diff"); the overflow, advisory and quarantine
+  tables do not
+  (go-kure/.github#173).
   The whole-diff list stops at a tenth of `PRT_MAX_DIFF_CHARS` and counts the files past that,
   so the block does not grow with the PR.
 - `scripts/lib/prt/*.sh` — the modules it sources: `state.sh` (REVIEW_INCOMPLETE tracking),
