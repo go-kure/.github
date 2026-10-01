@@ -1054,6 +1054,10 @@ ALL_FINDINGS="$capped_findings"
 OVERFLOW='[]'
 QUARANTINED='[]'
 SUPPRESSED_COUNT=0
+# SUPPRESSED: the findings behind SUPPRESSED_COUNT, for the step summary's
+# suppressed list (go-kure/.github#183) — row 2 creates no thread, so it is
+# their only surface.
+SUPPRESSED='[]'
 MATCHED_FPS='[]'
 # THREADS_WRITTEN: a thread this run actually created or updated (CREATE,
 # REPLY_RESOLVE, REPLY_UNRESOLVE, each counted only on success). Distinct
@@ -1359,7 +1363,10 @@ else
         QUARANTINED="$(jq -c --argjson f "$f" --argjson g "$gating_flag" --argjson p "$persisted_only_flag" --arg r "$quarantine_reason" \
           '. + [$f + {gating: $g, persisted_only: $p, quarantine_reason: $r}]' <<< "$QUARANTINED")"
         ;;
-      SUPPRESS) SUPPRESSED_COUNT=$((SUPPRESSED_COUNT + 1)) ;;
+      SUPPRESS)
+        SUPPRESSED_COUNT=$((SUPPRESSED_COUNT + 1))
+        SUPPRESSED="$(jq -c --argjson f "$f" '. + [$f]' <<< "$SUPPRESSED")"
+        ;;
       OVERFLOW) OVERFLOW="$(jq -c --argjson f "$f" '. + [$f]' <<< "$OVERFLOW")" ;;
       REPLY_RESOLVE)
         prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA" || { prt_handle_freshness_rc "$?" "fp=$fp: reply+resolve"; continue; }
@@ -1937,7 +1944,7 @@ if [ "$PRT_MODE" = enforce ]; then
 fi
 
 {
-  prt_render_summary "$PRT_MODE" "$PRT_HEAD_SHA" "$chunk_idx" "$ALL_FINDINGS" "$SUPPRESSED_COUNT" "$(prt_incomplete_reasons)" "$(prt_degraded_reasons)"
+  prt_render_summary "$PRT_MODE" "$PRT_HEAD_SHA" "$chunk_idx" "$ALL_FINDINGS" "$SUPPRESSED_COUNT" "$(prt_incomplete_reasons)" "$(prt_degraded_reasons)" "$SUPPRESSED"
 } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
 
 incomplete_count=0

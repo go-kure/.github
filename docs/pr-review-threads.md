@@ -128,6 +128,9 @@ overrides the workflow's own default) is one of three values. An unrecognized va
   never reopened. A PR-wide cap
   (`PRT_MAX_FINDINGS_TOTAL`, default 5) bounds how many *new* threads can start gating per run;
   findings beyond what's left of the cap go into one overflow comment instead of a thread.
+  A false positive with no thread is never posted (`SUPPRESS`); the job summary lists each one
+  with its line and the first line of its issue and of the assessor's reasoning, so the call can
+  be checked (go-kure/.github#183).
   Threads whose decision outcome remains gating — or, for a thread absent from this run's
   findings, that simply stays open — reserve first (regardless of severity rank) before new
   findings compete for what remains; an open thread newly assessed `FALSE_POSITIVE` frees its slot
