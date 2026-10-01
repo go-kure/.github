@@ -335,13 +335,17 @@ declare -A CHUNK_REVIEW_FAILED=()
 # chunk_ok_count, letting the terminal coverage line claim "M/M" even
 # though a row was silently dropped from this chunk.
 declare -A CHUNK_PARTIAL_DROP=()
+# go-kure/.github#173: every prompt of a chunked review names its chunk and
+# the files of the whole diff (prt_chunk_scope; empty for a single chunk).
+ALL_DIFF_FILES="$(prt_diff_files "$DIFF_FILE")"
 for chunk_file in "$CHUNK_DIR"/chunk-*.diff; do
   [ -f "$chunk_file" ] || continue
   chunk_diff="$(cat "$chunk_file")"
+  chunk_scope="$(prt_chunk_scope "$chunk_idx" "$chunk_count" "$ALL_DIFF_FILES" "$(prt_diff_files "$chunk_file")")"
 
   review_rc=0
   raw="$(prt_model_review "$PRT_PROXY_URL" "$PRT_MODEL" "$PRT_MAX_TOKENS" "$chunk_diff" \
-    "$PR_TITLE" "$PR_DESC" "$PRT_PROJECT_CONTEXT" "$PROJECT_AGENTS" "$PROJECT_CLAUDE_MD" "$PROJECT_STANDARDS")" || review_rc=$?
+    "$PR_TITLE" "$PR_DESC" "$PRT_PROJECT_CONTEXT" "$PROJECT_AGENTS" "$PROJECT_CLAUDE_MD" "$PROJECT_STANDARDS" "$chunk_scope")" || review_rc=$?
   # The call above ran in a command-substitution subshell, so model.sh's own
   # PRT_LAST_MODEL_FAILURE assignment never reached this shell — re-read the
   # file-backed copy PRT_LAST_MODEL_FAILURE_FILE points at instead (set once,
@@ -403,7 +407,7 @@ for chunk_file in "$CHUNK_DIR"/chunk-*.diff; do
     retried=true
     review_rc=0
     raw="$(prt_model_review "$PRT_PROXY_URL" "$PRT_MODEL" "$PRT_MAX_TOKENS" "$chunk_diff" \
-      "$PR_TITLE" "$PR_DESC" "$PRT_PROJECT_CONTEXT" "$PROJECT_AGENTS" "$PROJECT_CLAUDE_MD" "$PROJECT_STANDARDS")" || review_rc=$?
+      "$PR_TITLE" "$PR_DESC" "$PRT_PROJECT_CONTEXT" "$PROJECT_AGENTS" "$PROJECT_CLAUDE_MD" "$PROJECT_STANDARDS" "$chunk_scope")" || review_rc=$?
     # Same subshell-scoping reason as the original attempt's re-read above.
     PRT_LAST_MODEL_FAILURE="$(cat "$PRT_LAST_MODEL_FAILURE_FILE" 2>/dev/null || true)"
     if [ "$review_rc" -ne 0 ]; then
@@ -552,10 +556,11 @@ for ((i = 0; i < chunk_idx; i++)); do
     continue
   fi
   chunk_diff="$(cat "$chunk_file")"
+  chunk_scope="$(prt_chunk_scope "$i" "$chunk_count" "$ALL_DIFF_FILES" "$(prt_diff_files "$chunk_file")")"
 
   assess_rc=0
   assess_raw="$(prt_model_assess "$PRT_PROXY_URL" "$PRT_ASSESS_MODEL" "$PRT_ASSESS_MAX_TOKENS" \
-    "$chunk_diff" "$chunk_findings" "$PR_TITLE" "$PRT_PROJECT_CONTEXT" "$PROJECT_AGENTS" "$PROJECT_CLAUDE_MD" "$PROJECT_STANDARDS")" || assess_rc=$?
+    "$chunk_diff" "$chunk_findings" "$PR_TITLE" "$PRT_PROJECT_CONTEXT" "$PROJECT_AGENTS" "$PROJECT_CLAUDE_MD" "$PROJECT_STANDARDS" "$chunk_scope")" || assess_rc=$?
   # Command substitution above runs in a subshell; re-read the file-backed
   # PRT_LAST_MODEL_FAILURE (see the review call's identical comment above).
   PRT_LAST_MODEL_FAILURE="$(cat "$PRT_LAST_MODEL_FAILURE_FILE" 2>/dev/null || true)"
@@ -594,7 +599,7 @@ for ((i = 0; i < chunk_idx; i++)); do
     assess_retried=true
     assess_rc=0
     assess_raw="$(prt_model_assess "$PRT_PROXY_URL" "$PRT_ASSESS_MODEL" "$PRT_ASSESS_MAX_TOKENS" \
-      "$chunk_diff" "$chunk_findings" "$PR_TITLE" "$PRT_PROJECT_CONTEXT" "$PROJECT_AGENTS" "$PROJECT_CLAUDE_MD" "$PROJECT_STANDARDS")" || assess_rc=$?
+      "$chunk_diff" "$chunk_findings" "$PR_TITLE" "$PRT_PROJECT_CONTEXT" "$PROJECT_AGENTS" "$PROJECT_CLAUDE_MD" "$PROJECT_STANDARDS" "$chunk_scope")" || assess_rc=$?
     # Same subshell-scoping reason as the original attempt's re-read above.
     PRT_LAST_MODEL_FAILURE="$(cat "$PRT_LAST_MODEL_FAILURE_FILE" 2>/dev/null || true)"
     if [ "$assess_rc" -ne 0 ]; then
@@ -1015,7 +1020,10 @@ if [ "$FOREIGN_MARKED_COUNT" -gt 0 ]; then
   done <<< "$FOREIGN_MARKED_LOGINS"
   prt_mark_degraded "foreign-marked-threads: ${FOREIGN_MARKED_COUNT} thread(s) carry this action's marker but were opened by ${foreign_logins_list}, not the configured bot login ${PRT_BOT_LOGIN_GQL}; this run does not resolve, reopen or cap them — the bot identity likely changed (go-kure/.github#153)"
 fi
-prt_log "threads listed: $n_threads, owned=$owned_count, foreign_marked=$FOREIGN_MARKED_COUNT"
+# "(pre-existing)": the count before this run writes anything, so a first
+# review reads "threads listed (pre-existing): 0" next to its CREATE lines
+# (go-kure/.github#173).
+prt_log "threads listed (pre-existing): $n_threads, owned=$owned_count, foreign_marked=$FOREIGN_MARKED_COUNT"
 fi # PRT_MODE = enforce
 
 # --- PR-wide severity cap: bound the number of gating (currently open, or
@@ -1499,7 +1507,7 @@ else
         # brand-new thread — the only site that computes a NEW content_fp
         # rather than carrying an existing one forward unchanged.
         marker="$(prt_marker_build "$fp" "$collision" "" "$content_fp")"
-        body="$(prt_render_finding_body "$f" "$marker")"
+        body="$(prt_render_finding_body "$f" "$marker" "$(prt_chunk_label "$f" "$chunk_count")")"
         file="$(jq -r '.file' <<< "$f")"
         line="$(jq -r '.line' <<< "$f")"
         anchored=false
