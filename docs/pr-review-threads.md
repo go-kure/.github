@@ -45,7 +45,8 @@ This is the design/operations reference the code cites but didn't yet have:
 - `scripts/test/pr-review-threads-test.sh` — the unit suite. Every pure module function is
   covered directly; the orchestrator script itself is covered by a handful of subprocess-level
   exit-code tests (mocked `curl`), not by exercising the full reconciliation flow end to end —
-  that only happens against a real PR.
+  that only happens against a real PR. CI runs it in its own `pr-review-threads-test` job, with
+  its own timeout, rather than inside `scripts-smoke-test`.
 
 ## Token and bot identity
 

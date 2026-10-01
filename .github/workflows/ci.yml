@@ -198,8 +198,6 @@ jobs:
         run: bash scripts/check-action-pins.sh .
       - name: check-forbidden-terms.sh test suite
         run: bash scripts/test/check-forbidden-terms-test.sh .
-      - name: pr-review-threads.sh unit test suite
-        run: bash scripts/test/pr-review-threads-test.sh .
       - name: pr-review-fail-closed-digest.sh unit test suite
         run: bash scripts/test/pr-review-fail-closed-digest-test.sh .
       - name: eval review-adapter.sh end-to-end test suite
@@ -269,17 +267,31 @@ jobs:
           printf '<html><body>hello</body></html>' > /tmp/link-fixture/about.html
           bash scripts/check-links.sh /tmp/link-fixture
 
+  # The pr-review-threads.sh suite is most of the script test time and grows
+  # with every prt fix (86-109s on the runner, 2026-10-01), so it runs here
+  # under its own timeout: the rest of scripts-smoke-test keeps its margin,
+  # and a slow run fails under this job's name (go-kure/.github#267).
+  pr-review-threads-test:
+    name: pr-review-threads-test
+    runs-on: autops-kube-kure
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: pr-review-threads.sh unit test suite
+        run: bash scripts/test/pr-review-threads-test.sh .
+
   build:
     name: build
     runs-on: autops-kube-kure
     timeout-minutes: 1
-    needs: [lint, test, link-check, forbidden-terms, scripts-smoke-test]
+    needs: [lint, test, link-check, forbidden-terms, scripts-smoke-test, pr-review-threads-test]
     if: always()
     steps:
       - name: Check results
         run: |
-          if [ "${{ needs.lint.result }}" != "success" ] || [ "${{ needs.test.result }}" != "success" ] || [ "${{ needs.link-check.result }}" != "success" ] || [ "${{ needs.forbidden-terms.result }}" != "success" ] || [ "${{ needs.scripts-smoke-test.result }}" != "success" ]; then
-            echo "::error::lint, test, link-check, forbidden-terms, or scripts-smoke-test failed"
+          if [ "${{ needs.lint.result }}" != "success" ] || [ "${{ needs.test.result }}" != "success" ] || [ "${{ needs.link-check.result }}" != "success" ] || [ "${{ needs.forbidden-terms.result }}" != "success" ] || [ "${{ needs.scripts-smoke-test.result }}" != "success" ] || [ "${{ needs.pr-review-threads-test.result }}" != "success" ]; then
+            echo "::error::lint, test, link-check, forbidden-terms, scripts-smoke-test, or pr-review-threads-test failed"
             exit 1
           fi
           echo "All checks passed."
