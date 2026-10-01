@@ -1036,6 +1036,14 @@ start. Re-reserving capacity mid-run for a canceled resolve was judged out of sc
 building one is a larger change than the defect (a bounded, self-correcting overage whose every
 affected thread has an actively engaged human) justifies on its own.
 
+**The absence loop's row-10 `REPLY_RESOLVE` had the same window** (go-kure/.github#201). Loop 2
+read `has_human_reply` from the same inventory snapshot, so a reply posted during the run did not
+stop the second-absence auto-close. It now calls `prt_thread_has_human_reply` immediately before the
+resolve mutation, with the same outcomes: a fresh reply makes it row 13 (`NONE`), a failed re-read
+skips the resolve as `REVIEW_INCOMPLETE`, and a second `prt_freshness_check` follows the re-read.
+Unlike row 3, a downgrade here cannot overrun the cap: `prt_reserved_count` already counts every
+open absent thread as gating.
+
 This fix does **not** close the separate, broader gap it surfaced during investigation: `prt`
 treats a syntactically-valid-but-empty model response (`{"findings":[]}`) as a clean run by design
 (`finding.sh`, citing go-kure/.github#98 round 1 P1), the same shape as the structural defect

@@ -1621,6 +1621,26 @@ if [ "$PRT_MODE" = enforce ]; then
           prt_mark_incomplete "fp=$fp: viewerCanResolve=false, skipping absence auto-close"
           continue
         fi
+        # go-kure/.github#201: same stale snapshot as loop 1's REPLY_RESOLVE
+        # (go-kure/.github#193). Row 10 exists only because has_human_reply
+        # was false when the inventory was built, before the whole review and
+        # assessment ran, and a human reply never moves PRT_HEAD_SHA. Re-read
+        # it immediately before mutating. A fresh reply makes this row 13
+        # (NONE); an unreadable thread skips the resolve as incomplete. Unlike
+        # loop 1, a downgrade here needs no cap allowance: prt_reserved_count
+        # already reserves every open absent thread as gating.
+        if ! fresh_hhr="$(prt_thread_has_human_reply "$thread_id")"; then
+          prt_mark_incomplete "fp=$fp: could not re-check thread for a new human reply before the absence auto-close; skipping resolve rather than risk overriding one unseen"
+          continue
+        fi
+        if [ "$fresh_hhr" = true ]; then
+          prt_log "fp=$fp: absence REPLY_RESOLVE downgraded to NONE — a human reply landed on this thread after the inventory snapshot"
+          continue
+        fi
+        # The re-read above can take several GraphQL round trips, so the
+        # freshness check at the top of this arm no longer sits immediately
+        # before the write.
+        prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA" || { prt_handle_freshness_rc "$?" "fp=$fp: absence auto-close (post-recheck)"; continue; }
         # Mutate first, reply only on success — same reasoning as loop 1's
         # REPLY_RESOLVE (dot-github#50 gmr finding R2): a resolve failure
         # must not leave an "resolving automatically" reply glued to a
