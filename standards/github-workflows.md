@@ -1,9 +1,9 @@
 # Shared Workflows
 
 How the parts of this repository's GitHub automation that come from `go-kure/.github` behave:
-the AI pull-request review, the `@claude` assistant, the merge queue, the shared CI checks and
-the docs deploy step. The same page is published for every go-kure repository that uses them, so
-it says "the calling repository" rather than naming one; its source is
+the AI pull-request review, the `@claude` assistant, the merge queue, auto-rebase, the shared CI
+checks and the docs deploy step. The same page is published for every go-kure repository that
+uses them, so it says "the calling repository" rather than naming one; its source is
 [`standards/github-workflows.md`](https://github.com/go-kure/.github/blob/main/standards/github-workflows.md)
 in `go-kure/.github`. What the calling repository's own CI and Deploy Docs workflows run, job by
 job, is on its GitHub Workflows page.
@@ -14,7 +14,7 @@ job, is on its GitHub Workflows page.
 
 | Kind | Referenced as | When a change reaches the calling repository |
 |------|---------------|----------------------------------------------|
-| Reusable workflow (`pr-review.yml`, `claude.yml`, `release.yml`, `release-publish.yml`) | `go-kure/.github/.github/workflows/<name>@main` | On the next run, as soon as the change merges in `go-kure/.github` |
+| Reusable workflow (`pr-review.yml`, `claude.yml`, `release.yml`, `release-publish.yml`, `auto-rebase.yml`) | `go-kure/.github/.github/workflows/<name>@main` | On the next run, as soon as the change merges in `go-kure/.github` |
 | Composite action (the CI checks and `deploy-docs-push`) | `go-kure/.github/.github/actions/<name>@<commit SHA>` | Only when the calling repository bumps the pinned SHA |
 
 The calling repository's CI and Deploy Docs workflows are its own files, not calls to a reusable
@@ -91,7 +91,7 @@ any other value means editing `pr-review.yml` in `go-kure/.github`.
 |---------|---------|-------|
 | `PR_REVIEW_THREADS_MODE` | `enforce` | Overridable through the `PR_REVIEW_THREADS_MODE` variable |
 | `PR_REVIEW_MAX_FINDINGS_TOTAL` | `5` | Cap on new threads, after open and reopened ones are counted |
-| `PR_REVIEW_MAX_DIFF_CHARS` | `50000` | Size of one diff chunk |
+| `PR_REVIEW_MAX_DIFF_CHARS` | `50000` | Soft size of one diff chunk: a hunk is never split, so a chunk can exceed it; a single hunk over 4 times this value is truncated and the review marked incomplete |
 | `PR_REVIEW_MAX_TOKENS` | `1500` | Review pass |
 | `PR_REVIEW_ASSESS_MAX_TOKENS` | `4096` | Assessment pass |
 | `PR_REVIEW_AGENTS_FILE` | `AGENTS.md` | Read from the calling repository |
@@ -181,6 +181,17 @@ one on a wildcard branch rule. They require the same four checks with up-to-date
 so a backport pull request must be rebased onto the branch before it merges. A maintainer can
 still create such a branch by hand from a stable tag.
 
+## Auto-Rebase
+
+[`auto-rebase.yml`](https://github.com/go-kure/.github/blob/main/.github/workflows/auto-rebase.yml)
+is opt-in: it runs only in a repository whose own workflow calls it on `push` to `main`, with
+`secrets: inherit`. Each run rebases the open pull requests that target `main` onto it, drafts
+included, and pushes with the `AUTO_REBASE_PAT` secret. It skips pull requests labelled
+`dependencies`, those targeting any other branch (release or stacked branches), and those from a
+fork that does not allow maintainer edits. A newer run cancels
+one still in progress. The merge queue does not need it; it keeps open pull requests current for
+review.
+
 ## Draft PRs
 
 Open a pull request as a draft while it is still changing. CI and PR Review both run on drafts,
@@ -193,11 +204,11 @@ script of the same name from `go-kure/.github` at the pinned commit.
 
 | Action | What it checks |
 |--------|----------------|
-| `check-action-pins` | Every third-party action reference is a full 40-character commit SHA (local `./` and `docker://` references are exempt) |
+| `check-action-pins` | Every action reference, `go-kure` composite actions included, is a full 40-character commit SHA. Exempt: local `./` and `docker://` references, and job-level calls to `go-kure` reusable workflows, which stay on `@main` |
 | `check-forbidden-terms` | No tracked file in scope references the downstream platform (the No Downstream References standard); always scans the whole tree, on every event |
 | `govulncheck-gate` | A govulncheck JSON report has no reachable advisory outside the allowlist |
 | `check-doc-sync` | `docs-map.yaml` matches the tree: every public package mapped, every mapped path present, mount targets unique, generated tables current |
-| `check-doc-gate` | When a mapped package's own non-test `.go` files change, other than changes marked trivial, its mapped docs change in the same pull request |
+| `check-doc-gate` | When a mapped package's own non-test `.go` files change, other than changes marked trivial, its mapped docs change in the same pull request. Separately, when a changed file matches a `review_mappings` entry's `change` glob, at least one of that entry's `docs` changes too; this covers non-Go files such as workflows and configuration |
 | `check-links` | Every internal link in the built site points at an existing page (external links and `#fragment` anchors are not checked) |
 
 ### govulncheck gate
@@ -273,10 +284,20 @@ between them. Any other push failure fails the step at once.
 Deploys to the same slot are serialized, not re-checked, so an older patch release deployed after
 a newer one still replaces that slot's content.
 
+### Removing a slot
+
+With `remove: "true"` the action deletes one slot instead of deploying (the calling repository's
+Manage Docs workflow, where it has one). It takes only `target-path`, `site-subdir` and `slot`,
+and the caller runs it in that slot's deploy group (`deploy-docs-<slot>`), so it never overlaps a
+deploy of the same slot. Each attempt starts from the pages branch's current tip and
+removes the slot there; a push rejected because another slot's deploy landed first is retried the
+same way as a deploy. A slot that does not exist on the pages branch fails the step. A removal
+writes no build, root or `CNAME`.
+
 ### Files at the pages root
 
-Every attempt writes `CNAME` (the custom domain, default `www.gokure.dev`) and `.nojekyll` at the
-root of the pages repository.
+Every deploy attempt writes `CNAME` (the custom domain, default `www.gokure.dev`) and
+`.nojekyll` at the root of the pages repository.
 
 ### Older tags
 
