@@ -175,7 +175,7 @@ A lookup that cannot read a page or record a row fails as a whole, like a failed
 no id, and each caller handles it as it handles a listing failure (the clean-verdict lookup on a
 zero-finding run marks `REVIEW_INCOMPLETE`; the supersede and partial-review lookups warn or
 degrade). The count is then a lower bound: the log line reads `<n> or more (a listing failed)`
-and the run records the `REVIEW_DEGRADED` reason `foreign-marked-comments-unread`, so a missed
+(also when counting the listed comments fails) and the run records the `REVIEW_DEGRADED` reason `foreign-marked-comments-unread`, so a missed
 foreign comment is never reported as none.
 
 **Gotcha, if this secret ever needs regenerating:** a fine-grained PAT's "Repository access: All

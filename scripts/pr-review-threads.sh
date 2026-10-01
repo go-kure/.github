@@ -960,10 +960,13 @@ for ((ti = 0; ti < n_threads; ti++)); do
       # comment), so a resolved foreign thread never suppresses a finding.
       # The marker's collision flag is not carried either: a foreign marker
       # is untrusted, and a collision flag could only ever withhold a
-      # finding. No ids a write would need.
-      if ! foreign_row="$(jq -ce --arg fp "$(cut -f1 <<< "$foreign_parsed")" \
+      # finding. No ids a write would need. Each field read is checked: an
+      # empty content_fp would make the thread match a different finding.
+      if ! foreign_fp="$(cut -f1 <<< "$foreign_parsed")" \
+        || ! foreign_cfp="$(cut -f4 <<< "$foreign_parsed")" \
+        || ! foreign_row="$(jq -ce --arg fp "$foreign_fp" \
         --arg author "$foreign_login" \
-        --arg cfp "$(cut -f4 <<< "$foreign_parsed")" '
+        --arg cfp "$foreign_cfp" '
           {fp:$fp, foreign:true, author:$author, resolved:(.isResolved == true),
            content_fp:$cfp}
         ' <<< "$th" 2>/dev/null)"; then
@@ -2106,11 +2109,15 @@ if [ "$PRT_MODE" = enforce ]; then
 
   # Two lookups can list the same comment; count each id once. Degraded, not
   # incomplete: this run's own comment was written (or posted new) either
-  # way, and only another login can edit the stale one.
-  foreign_comment_count="$(cut -f1 "$FOREIGN_COMMENTS_FILE" | sort -u | grep -c . || true)"
+  # way, and only another login can edit the stale one. One awk, so a failed
+  # read is its exit status and never a count of 0.
+  if ! foreign_comment_count="$(awk -F'\t' '$1 != "" && !seen[$1]++ { n++ } END { print n + 0 }' "$FOREIGN_COMMENTS_FILE")"; then
+    FOREIGN_COMMENTS_UNREAD=true
+    foreign_comment_count=0
+  fi
   if [ "$FOREIGN_COMMENTS_UNREAD" = true ]; then
     prt_log "marked comments by another login (live): ${foreign_comment_count:-0} or more (a listing failed)"
-    prt_mark_degraded "foreign-marked-comments-unread: a listing of this PR's comments failed, so a live clean-verdict or partial-review comment posted by another login may be missing from this run's count and go unreported (go-kure/.github#153)"
+    prt_mark_degraded "foreign-marked-comments-unread: a listing of this PR's comments, or counting them, failed, so a live clean-verdict or partial-review comment posted by another login may be missing from this run's count and go unreported (go-kure/.github#153)"
   else
     prt_log "marked comments by another login (live): ${foreign_comment_count:-0}"
   fi
