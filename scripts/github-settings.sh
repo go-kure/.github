@@ -847,9 +847,12 @@ ruleset_applies() {
 
 # The repo's live default branch, empty when it cannot be read. Its own
 # function so the test suite can stub it the way it stubs get_github_labels.
+# On an HTTP error gh prints the error body to stdout without applying --jq,
+# so the output is kept only when gh succeeds.
 repo_default_branch() {
-    local repo="$1"
-    gh api "repos/$GITHUB_ORG/$repo" --jq '.default_branch // empty' 2>/dev/null || true
+    local repo="$1" out
+    out=$(gh api "repos/$GITHUB_ORG/$repo" --jq '.default_branch // empty' 2>/dev/null) || return 0
+    printf '%s' "$out"
 }
 
 # True when the one ruleset described on stdin protects BRANCH. Input is the
