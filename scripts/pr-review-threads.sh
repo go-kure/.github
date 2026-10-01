@@ -1075,24 +1075,25 @@ prt_persist_owned_collision() {
   new_marker="$(prt_marker_build "$fp" "$marker_flag" "" "$cfp")"
   new_body="$(prt_marker_replace "$cur_body" "$new_marker")"
   # A lift must never land on a resolved thread (prt_effective_collision),
-  # and the row's resolved state is the inventory snapshot. Re-read it as
-  # the last step before the write. Resolved now: no lift, nothing failed.
-  # Unreadable: no lift, recorded like the human-reply re-read.
-  if [ "$flag" = false ]; then
-    local live_resolved
-    if ! live_resolved="$(prt_thread_is_resolved "$(jq -r '.thread_id' <<< "$row")")"; then
-      prt_mark_incomplete "${context}: could not re-read the thread's resolved state before the lift, skipped"
-      return 1
-    fi
-    if [ "$live_resolved" != false ]; then
-      prt_log "${context}: thread was resolved after the inventory snapshot, not lifted"
-      return 1
-    fi
-  fi
-  prt_retry 3 prt_gh_rest_fresh PATCH "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA" \
+  # and the row's resolved state is the inventory snapshot. Every PATCH
+  # attempt of a lift re-reads it first (prt_gh_rest_fresh_open), so a
+  # human resolving the thread during a retry backoff stops the lift too
+  # (go-kure/.github#256). Resolved: no lift, nothing failed. Unreadable on
+  # the last attempt: no lift, recorded like the human-reply re-read.
+  local -a write=(prt_gh_rest_fresh)
+  [ "$flag" = false ] && write=(prt_gh_rest_fresh_open "$(jq -r '.thread_id' <<< "$row")")
+  prt_retry 3 "${write[@]}" PATCH "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA" \
     "/repos/${PRT_REPO}/pulls/comments/${db_id}" \
     "$(jq -n --arg b "$new_body" '{body:$b}')" >/dev/null
   rc=$?
+  if [ "$rc" -eq 4 ]; then
+    prt_log "${context}: thread was resolved after the inventory snapshot, not lifted"
+    return 1
+  fi
+  if [ "$rc" -eq 5 ]; then
+    prt_mark_incomplete "${context}: could not re-read the thread's resolved state before the lift, skipped"
+    return 1
+  fi
   if [ "$rc" -ne 0 ]; then
     prt_handle_freshness_rc "$rc" "${context} (after up to 3 retries)"
     return 1
