@@ -132,25 +132,23 @@ the cap walk:
   1. **Any open one:** the existing thread for the finding. No new thread and no overflow copy;
      the log reads `fp=<fp> -> FOREIGN (thread opened by <login>, read-only)`. The finding still
      counts toward the run's total, so the run posts no clean verdict.
-  2. **Else any resolved by someone other than the login that opened it:** a human resolution,
-     honoured as on an own thread (row 6). Nothing happens and no thread is created; the log reads
-     `…; resolved, not reopened`.
-  3. **Else (every match resolved by its own opener, the counterpart of an own thread resolved by
-     the bot):** what an own bot-resolved thread would get. Where it would be **reopened** (row 7:
-     the finding recurs, not a false positive), the finding gets a **new own thread** instead,
-     on the normal CREATE path with this login's marker and competing for a cap slot like any new
-     finding, or an overflow row beyond the cap. The log reads `…; resolved by its author and the
-     finding recurs: new own thread instead of a reopen`. A `FALSE_POSITIVE` leaves it alone.
+  2. **Else (every match resolved, by its opener or anyone else):** what an own thread resolved by
+     the bot would get. Where it would be **reopened** (row 7: the finding recurs, not a false
+     positive), the finding gets a **new own thread** instead, on the normal CREATE path with this
+     login's marker and competing for a cap slot like any new finding, or an overflow row beyond
+     the cap. The log reads `…; resolved and the finding recurs: new own thread instead of a
+     reopen`. A `FALSE_POSITIVE` (this run's own verdict) leaves it alone: `…; resolved, not
+     reopened`.
 
-  In cases 2 and 3 a collision among this run's own findings quarantines the finding (row 1), as on
-  an own resolved thread. `prt_cap_foreign_rows` runs the same decision for the cap walk and keeps
-  every finding that takes the no-thread path among the CREATE candidates.
-- This closes the planted-marker route: a participant who opens a thread carrying this action's
-  marker (with any collision flag or content fingerprint) and resolves it under the same login can
-  no longer keep a recurring finding from gating. That resolution counts as the bot's own
-  auto-resolve, which a recurring finding undoes. A resolution by a *different* login is honoured,
-  as a human resolving an own thread is: that is the same power anyone with resolve rights already
-  has over the bot's own threads.
+  In case 2 a collision among this run's own findings quarantines the finding (row 1), as on an
+  own resolved thread. `prt_cap_foreign_rows` runs the same decision for the cap walk and keeps
+  every finding that takes the no-thread path among the CREATE candidates; a failed read there
+  aborts the run as `REVIEW_INCOMPLETE` before any write.
+- **A foreign resolution is not trusted.** The marker is editable by the comment's author, so a
+  participant can add a finding's fingerprint (and drop the content fingerprint) on an old
+  comment of theirs that anyone resolved long ago. A resolved foreign thread therefore never
+  suppresses a finding, whoever resolved it: a recurring finding gets a new own thread, and a
+  human resolves that one (row 6 then holds, as for any own thread).
 
 When the count is above zero the run records a `REVIEW_DEGRADED` reason,
 `foreign-marked-threads: N thread(s) … opened by <logins>, not the configured bot login <login>;

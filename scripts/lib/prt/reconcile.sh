@@ -178,30 +178,32 @@ prt_effective_collision() {
 # - the marker's content_fp is read only to say "this thread is not this
 #   finding": a row whose content_fp is present and differs from the
 #   finding's is not a match, so the finding takes the no-thread path;
+# - a resolved foreign row never suppresses a finding, whoever resolved it.
+#   Its author can edit the marker onto any old resolved comment of theirs
+#   (adding a target fp, dropping content_fp), so a foreign resolution is
+#   not trusted the way a human resolution of an own thread is (row 6);
 # - among the rows that do match, precedence is fixed:
 #   1. any OPEN row: the existing thread, read-only and gating     EXISTING
-#   2. else any row resolved by someone other than the login that
-#      opened it: a human resolution, honoured as for an own thread
-#      (prt_decide_finding row 6, or row 1 on a this-run collision) NONE |
-#                                                                  QUARANTINE
-#   3. else (every match resolved by its own author, the foreign
-#      identity's auto-resolve, the counterpart of resolved_by_bot):
-#      what an own bot-resolved thread would get. Row 7's reopen
-#      becomes a new own thread instead                             NEW |
+#   2. else (every match resolved, by its opener or anyone else): what an
+#      own bot-resolved thread would get. Row 7's reopen becomes a new
+#      own thread instead                                           NEW |
 #      (row 1 on a this-run collision, the resolved FALSE_POSITIVE  QUARANTINE |
-#      branch otherwise)                                            NONE
+#      branch otherwise: this run's own verdict, not the marker)    NONE
 #   No matching row at all                                         NOMATCH
 # NEW and NOMATCH mean the finding takes the normal no-thread path
 # (CREATE within the cap, OVERFLOW beyond it). AUTHOR is the login of the
 # row that decided (for NOMATCH, of a content-mismatched row with the same
-# fp, or empty when no foreign row has the fp at all).
+# fp, or empty when no foreign row has the fp at all). Returns 1 when any
+# read fails, never a guessed action.
 prt_foreign_action() {
-  local foreign="$1" finding="$2" fp verdict collision this_cfp sel cls author action
+  local foreign="$1" finding="$2" fp has verdict collision this_cfp sel cls author action
   fp="$(jq -r '.fp' <<< "$finding" 2>/dev/null)" || return 1
-  if [ "$(jq --arg fp "$fp" 'any(.[]; .fp == $fp)' <<< "$foreign" 2>/dev/null)" != true ]; then
-    printf 'NOMATCH\t\n'
-    return 0
-  fi
+  has="$(jq --arg fp "$fp" 'any(.[]; .fp == $fp)' <<< "$foreign" 2>/dev/null)" || return 1
+  case "$has" in
+    true) ;;
+    false) printf 'NOMATCH\t\n'; return 0 ;;
+    *) return 1 ;;
+  esac
   verdict="$(jq -r '.verdict // "NONE"' <<< "$finding" 2>/dev/null)" || return 1
   collision="$(jq -r '.collision // false' <<< "$finding" 2>/dev/null)" || return 1
   this_cfp="$(prt_content_fp "$(jq -r '.issue' <<< "$finding")" "$(jq -r '.fix' <<< "$finding")")"
@@ -211,17 +213,15 @@ prt_foreign_action() {
     | if ($m | length) == 0 then "nomatch\t\($all[0].author)"
       elif any($m[]; .resolved != true) then
         "open\t\([$m[] | select(.resolved != true)][0].author)"
-      elif any($m[]; .resolved_by_author != true) then
-        "honour\t\([$m[] | select(.resolved_by_author != true)][0].author)"
-      else "author\t\($m[0].author)" end
+      else "resolved\t\($m[0].author)" end
   ' <<< "$foreign" 2>/dev/null)" || return 1
   cls="${sel%%$'\t'*}"
   author="${sel#*$'\t'}"
   case "$cls" in
     nomatch) action=NOMATCH ;;
     open) action=EXISTING ;;
-    honour) action="$(prt_decide_finding "$collision" "$verdict" true true false false false)" ;;
-    author)      action="$(prt_decide_finding "$collision" "$verdict" true true true false false)"
+    resolved)
+      action="$(prt_decide_finding "$collision" "$verdict" true true true false false)"
       [ "$action" = REPLY_UNRESOLVE ] && action=NEW
       ;;
     *) return 1 ;;
@@ -232,13 +232,16 @@ prt_foreign_action() {
 # prt_cap_foreign_rows FOREIGN_JSON FINDINGS_JSON -> JSON array
 # The foreign rows the cap walk sees: all of them, so every open one still
 # reserves its slot in prt_reserved_count (it blocks merge, matched or not).
-# For each finding whose prt_foreign_action is NEW or NOMATCH, the rows
-# carrying its fp are tagged excludes:false, so prt_gating_eligible keeps
-# that finding as a CREATE candidate competing for a rank slot, exactly as
-# loop 1 will treat it. Rows for EXISTING, NONE and QUARANTINE findings keep
-# excluding their finding (no thread is created for it).
+# For each finding whose prt_foreign_action is NEW or NOMATCH (a resolved
+# match included, whoever resolved it), the rows carrying its fp are tagged
+# excludes:false, so prt_gating_eligible keeps that finding as a CREATE
+# candidate competing for a rank slot, exactly as loop 1 will treat it. Rows
+# for EXISTING, NONE and QUARANTINE findings keep excluding their finding
+# (no thread is created for it). Returns 1 when any read fails: a skipped
+# finding would stay excluded, and loop 1 could then send it to a
+# non-gating OVERFLOW with slots free.
 prt_cap_foreign_rows() {
-  local foreign="$1" findings="$2" release='[]' f fp action rows
+  local foreign="$1" findings="$2" release='[]' f fp has action rows
   if [ "$(jq 'length' <<< "$foreign" 2>/dev/null)" = 0 ]; then
     echo "$foreign"
     return 0
@@ -247,7 +250,12 @@ prt_cap_foreign_rows() {
   while IFS= read -r f; do
     [ -z "$f" ] && continue
     fp="$(jq -r '.fp' <<< "$f" 2>/dev/null)" || return 1
-    [ "$(jq --arg fp "$fp" 'any(.[]; .fp == $fp)' <<< "$foreign" 2>/dev/null)" = true ] || continue
+    has="$(jq --arg fp "$fp" 'any(.[]; .fp == $fp)' <<< "$foreign" 2>/dev/null)" || return 1
+    case "$has" in
+      true) ;;
+      false) continue ;;
+      *) return 1 ;;
+    esac
     action="$(prt_foreign_action "$foreign" "$f")" || return 1
     case "${action%%$'\t'*}" in
       NEW|NOMATCH) release="$(jq -c --arg fp "$fp" '. + [$fp]' <<< "$release" 2>/dev/null)" || return 1 ;;
