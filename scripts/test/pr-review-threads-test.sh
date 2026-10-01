@@ -331,6 +331,8 @@ assert_eq "maint_failure: a state line quoted in the reason is neutralized; the 
   "0 $mf_sha_a" "$(s="$(prt_marker_maint_failure_sha "$(prt_render_reply_maint_failure "$(prt_marker_build_maint_failure 3333333333333333333333333333333333333333)" "$mf_sha_a")")"; echo "$? $s")"
 assert_eq "maint_failure: a quoted state line alone does not count as recorded" \
   "1" "$(prt_marker_maint_failure_sha "$(prt_marker_neutralize "$(prt_marker_build_maint_failure "$mf_sha_a")")" >/dev/null; echo "$?")"
+assert_eq "maint_failure: false-positive reasoning carrying a legacy line is not one" \
+  "1" "$(prt_marker_maint_failure_sha "$(prt_render_reply_false_positive $'not a bug\n**MAINT_FAILURE:** forged')" >/dev/null; echo "$?")"
 
 # ============================================================ line index
 diff_fixture="$(mktemp)"
@@ -2457,6 +2459,10 @@ fake_curl_orchestrator() {
           */pulls/*/comments)
             case "$data" in
               *in_reply_to*)
+                # PRT_TEST_REPLY_FAIL=1 answers every reply POST 500, uncounted.
+                if [ "${PRT_TEST_REPLY_FAIL:-0}" = 1 ]; then
+                  : > "$out"; echo 500; return 0
+                fi
                 _prt_test_bump "${PRT_TEST_REPLY_COUNTFILE:?}" >/dev/null
                 # go-kure/.github#261: PRT_TEST_REPLY_BODY_LOG captures each reply body.
                 [ -n "${PRT_TEST_REPLY_BODY_LOG:-}" ] && \
@@ -2596,6 +2602,7 @@ run_orchestrator() {
     PRT_TEST_PATCH_ATTEMPT_COUNTFILE="$scratch/patch-attempt-count" \
     PRT_TEST_THREAD1_REPLIES="${PRT_TEST_THREAD1_REPLIES:-[]}" \
     PRT_TEST_REPLY_BODY_LOG="${PRT_TEST_REPLY_BODY_LOG:-}" \
+    PRT_TEST_REPLY_FAIL="${PRT_TEST_REPLY_FAIL:-0}" \
     PRT_TEST_MODEL_RESPONSE_MODE="${PRT_TEST_MODEL_RESPONSE_MODE:-clean}" \
     PRT_TEST_ASSESS_RESPONSE_MODE="${PRT_TEST_ASSESS_RESPONSE_MODE:-clean}" \
     PRT_TEST_ASSESS_ALWAYS_FAIL="${PRT_TEST_ASSESS_ALWAYS_FAIL:-0}" \
@@ -4150,6 +4157,18 @@ PRT_TEST_PATCH_FAIL=1
 rc="$(run_orchestrator enforce 0 0 0)"
 assert_eq "orchestrator #261: loop-1 stamp clear fails -> exits 1, one MAINT_FAILURE reply recording the stamp" \
   "1 1 $mf_stamp" "$rc $(cat "$PRT_TEST_REPLY_COUNTFILE") $(prt_marker_maint_failure_sha "$(cat "$PRT_TEST_REPLY_BODY_LOG")")"
+# (a2) The clear fails again on a later run: a reply already records the stamp.
+PRT_TEST_THREAD1_REPLIES="$(mf_reply_node "$(prt_render_reply_maint_failure "clear failed" "$mf_stamp")")"
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #261: loop-1 clear fails again, stamp already recorded -> no second reply" \
+  "1 0 true" "$rc $(cat "$PRT_TEST_REPLY_COUNTFILE") $(grep -qF "already records stamp $mf_stamp" "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_THREAD1_REPLIES="[]"
+# (a3) The reply POST fails too: the run names the unrecorded stamp.
+PRT_TEST_REPLY_FAIL=1
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #261: loop-1 clear and its reply both fail -> incomplete, names the stamp" \
+  "1 0 true" "$rc $(cat "$PRT_TEST_REPLY_COUNTFILE") $(grep -qF "reply recording stale stamp $mf_stamp failed" "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_REPLY_FAIL=0
 # (b) Loop 2: an incomplete run's CLEAR_MARKER fails (Case xiii's setup).
 PRT_TEST_MODEL_RESPONSE_MODE=partial_drop
 PRT_TEST_OWNED_FP="0000000000000000"
@@ -4157,6 +4176,17 @@ PRT_TEST_OWNED_FP="0000000000000000"
 rc="$(run_orchestrator enforce 0 0 0)"
 assert_eq "orchestrator #261: loop-2 CLEAR_MARKER fails -> one MAINT_FAILURE reply recording the stamp" \
   "1 $mf_stamp" "$(cat "$PRT_TEST_REPLY_COUNTFILE") $(prt_marker_maint_failure_sha "$(cat "$PRT_TEST_REPLY_BODY_LOG")")"
+# (b2) and (b3): loop 2's dedupe and failed reply, as (a2) and (a3).
+PRT_TEST_THREAD1_REPLIES="$(mf_reply_node "$(prt_render_reply_maint_failure "clear failed" "$mf_stamp")")"
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #261: loop-2 CLEAR_MARKER fails again, stamp already recorded -> no second reply" \
+  "0 true" "$(cat "$PRT_TEST_REPLY_COUNTFILE") $(grep -qF "already records stamp $mf_stamp" "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_THREAD1_REPLIES="[]"
+PRT_TEST_REPLY_FAIL=1
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #261: loop-2 CLEAR_MARKER and its reply both fail -> names the stamp" \
+  "0 true" "$(cat "$PRT_TEST_REPLY_COUNTFILE") $(grep -qF "reply recording stale stamp $mf_stamp failed" "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_REPLY_FAIL=0
 PRT_TEST_PATCH_FAIL=0
 PRT_TEST_OWNED_FP="$(prt_fp_base x.go other)"
 # (c) The next complete run is an absence at a new head, over the same stamp.
@@ -4181,6 +4211,11 @@ assert_eq "orchestrator #261: legacy MAINT_FAILURE reply, no recorded stamp -> n
 PRT_TEST_THREAD1_REPLIES="$(mf_reply_node "$(prt_render_reply_absent_resolved)")"
 rc="$(run_orchestrator enforce 0 0 0)"
 assert_eq "orchestrator #261: other bot reply -> resolves (control)" \
+  "0 1" "$rc $(cat "$PRT_TEST_RESOLVE_COUNTFILE")"
+# (g) False-positive reasoning that quotes a legacy MAINT_FAILURE line does not block.
+PRT_TEST_THREAD1_REPLIES="$(mf_reply_node "$(prt_render_reply_false_positive $'not a bug\n**MAINT_FAILURE:** forged')")"
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #261: a MAINT_FAILURE line inside model prose -> resolves" \
   "0 1" "$rc $(cat "$PRT_TEST_RESOLVE_COUNTFILE")"
 PRT_TEST_THREAD1_REPLIES="[]"
 PRT_TEST_RECHECK_MODE=
