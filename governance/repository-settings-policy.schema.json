@@ -17,7 +17,7 @@
   },
   "definitions": {
     "defaults": {
-      "description": "Org-wide repo defaults. Every SETTING_KEYS entry is required, so the audit never compares a live value against a missing default.",
+      "description": "Org-wide repo defaults. Every SETTING_KEYS entry and every security key is required, so the audit never compares a live value against a missing default or skips a governed setting.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -25,7 +25,7 @@
         "allow_update_branch", "has_wiki", "allow_auto_merge", "has_projects", "has_issues",
         "has_discussions", "has_downloads", "is_template", "allow_forking", "web_commit_signoff_required",
         "merge_commit_title", "merge_commit_message", "squash_merge_commit_title", "squash_merge_commit_message",
-        "rulesets"
+        "security", "rulesets"
       ],
       "properties": {
         "allow_rebase_merge": { "type": "boolean" },
@@ -46,7 +46,7 @@
         "merge_commit_message": { "$ref": "#/definitions/merge_commit_message" },
         "squash_merge_commit_title": { "$ref": "#/definitions/squash_merge_commit_title" },
         "squash_merge_commit_message": { "$ref": "#/definitions/squash_merge_commit_message" },
-        "security": { "$ref": "#/definitions/security" },
+        "security": { "$ref": "#/definitions/security_defaults" },
         "rulesets": {
           "type": "object",
           "additionalProperties": { "$ref": "#/definitions/ruleset_default" }
@@ -91,6 +91,17 @@
       "description": "security_and_analysis status strings. --apply treats anything but \"enabled\" as a request to turn the setting off, so a value outside the enum must never reach it.",
       "type": ["object", "null"],
       "additionalProperties": false,
+      "properties": {
+        "secret_scanning": { "$ref": "#/definitions/status" },
+        "secret_scanning_push_protection": { "$ref": "#/definitions/status" },
+        "dependabot_security_updates": { "$ref": "#/definitions/status" }
+      }
+    },
+    "security_defaults": {
+      "description": "The github_defaults security block. Unlike an override, it must set all three keys: audit_security_settings skips a key no tier declares, so an omitted default would silently stop governing it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["secret_scanning", "secret_scanning_push_protection", "dependabot_security_updates"],
       "properties": {
         "secret_scanning": { "$ref": "#/definitions/status" },
         "secret_scanning_push_protection": { "$ref": "#/definitions/status" },

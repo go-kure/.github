@@ -540,7 +540,9 @@ override, `github_org`, each ruleset with its conditions and bypass actors, and 
 parameters. An exact lookup would miss a misspelled key and apply the default, or an incomplete
 rule, in its place. Values are typed, and enums hold wherever `--apply` would act on a typo:
 `security:` values must be `enabled` or `disabled`, because the audit applies any other value
-as `disabled`, which for `dependabot_security_updates` is a live DELETE. The labels file must
+as `disabled`, which for `dependabot_security_updates` is a live DELETE. `github_defaults` must
+declare every repo setting and all three `security:` keys, because the audit skips a security key
+no tier declares; a `github_repos` override may set any subset. The labels file must
 hold a non-empty `labels` list whose entries carry a name, a description and a `#RRGGBB`
 colour. What a schema cannot express is checked alongside: `github_repos` keys and every
 `repos:` scope name governed repos, label names are unique, every governed repo keeps at

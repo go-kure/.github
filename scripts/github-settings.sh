@@ -488,7 +488,11 @@ validate_policy() {
     rc=0
     out=$(json_schema_violations "$LABELS_SCHEMA_FILE" <"$LABELS_FILE") || rc=$?
     if [ "$rc" -ne 0 ]; then
-        echo -e "${RED}ERROR: $LABELS_FILE is malformed (standards/labels.schema.json):${NC}"
+        if [ "$rc" -eq 1 ]; then
+            echo -e "${RED}ERROR: $LABELS_FILE is malformed (standards/labels.schema.json):${NC}"
+        else
+            echo -e "${RED}ERROR: could not check $LABELS_FILE against standards/labels.schema.json:${NC}"
+        fi
         while IFS= read -r line; do echo "    $line"; done <<<"$out"
         errors=$((errors + 1))
         labels_shape_ok=0

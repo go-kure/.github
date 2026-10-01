@@ -211,14 +211,16 @@ policy_schema_json=$(cat "$POLICY_SCHEMA_FILE")
 setting_keys_json=$(bash_array_to_json "${SETTING_KEYS[@]}" | jq -c 'sort')
 assert_eq "schema: github_defaults declares exactly SETTING_KEYS plus security and rulesets" "$setting_keys_json" \
     "$(jq -c '.definitions.defaults.properties | keys - ["security", "rulesets"] | sort' <<<"$policy_schema_json")"
-assert_eq "schema: github_defaults requires exactly SETTING_KEYS plus rulesets" "$setting_keys_json" \
-    "$(jq -c '.definitions.defaults.required - ["rulesets"] | sort' <<<"$policy_schema_json")"
+assert_eq "schema: github_defaults requires exactly SETTING_KEYS plus security and rulesets" "$setting_keys_json" \
+    "$(jq -c '.definitions.defaults.required - ["security", "rulesets"] | sort' <<<"$policy_schema_json")"
+assert_eq "schema: github_defaults requires security and rulesets" "true" \
+    "$(jq -c '.definitions.defaults.required | index("security") != null and index("rulesets") != null' <<<"$policy_schema_json")"
 assert_eq "schema: a repo override declares exactly SETTING_KEYS plus security and rulesets" "$setting_keys_json" \
     "$(jq -c '.definitions.repo_override.properties | keys - ["security", "rulesets"] | sort' <<<"$policy_schema_json")"
 assert_eq "schema: a repo override requires nothing" "null" \
     "$(jq -c '.definitions.repo_override.required' <<<"$policy_schema_json")"
 assert_eq "schema: defaults and overrides type each setting the same way" "true" \
-    "$(jq -c '.definitions | (.defaults.properties | del(.rulesets)) == (.repo_override.properties | del(.rulesets))' <<<"$policy_schema_json")"
+    "$(jq -c '.definitions | (.defaults.properties | del(.rulesets, .security)) == (.repo_override.properties | del(.rulesets, .security))' <<<"$policy_schema_json")"
 
 org_keys_json=$(bash_array_to_json "${ORG_SETTING_KEYS[@]}" "${ORG_READONLY_KEYS[@]}" | jq -c 'sort')
 assert_eq "schema: github_org declares exactly ORG_SETTING_KEYS + ORG_READONLY_KEYS plus actions" "$org_keys_json" \
@@ -250,6 +252,9 @@ assert_eq "schema: a flag rule is a boolean and every other rule a parameters ob
 assert_eq "schema: security declares exactly the three keys audit_security_settings reads" \
     '["dependabot_security_updates","secret_scanning","secret_scanning_push_protection"]' \
     "$(jq -c '.definitions.security.properties | keys | sort' <<<"$policy_schema_json")"
+assert_eq "schema: the defaults security block types the same three keys and requires them all" "true" \
+    "$(jq -c '.definitions | .security_defaults.properties == .security.properties
+        and (.security_defaults.required | sort) == (.security.properties | keys | sort)' <<<"$policy_schema_json")"
 
 # Every level the piecemeal checks never reached (the issue's list): each
 # misspelled or mistyped entry is refused, and the error names its path.
@@ -318,6 +323,14 @@ schema_reject "a github_org.actions key left out (would be PUT as null)" 'del(.g
     "github_org.actions: missing required key \"sha_pinning_required\""
 schema_reject "a misspelled security key under .github" '.github_repos[".github"].security.secret_scaning = "enabled"' \
     'github_repos[".github"].security.secret_scaning: unknown key'
+# The defaults must declare every security key: the audit skips one no tier
+# declares, so an omission would stop governing it without a word.
+schema_reject "github_defaults without a security block" 'del(.github_defaults.security)' \
+    'github_defaults: missing required key "security"'
+schema_reject "a null github_defaults security block" '.github_defaults.security = null' \
+    "github_defaults.security: expected object, got null"
+schema_reject "github_defaults security without dependabot_security_updates" 'del(.github_defaults.security.dependabot_security_updates)' \
+    'github_defaults.security: missing required key "dependabot_security_updates"'
 
 # Every actor type the rulesets API accepts passes, User included, and the
 # payload carries it unchanged.
@@ -355,6 +368,17 @@ rm -f "$bad_schema_fixture"
 assert_eq "validate_policy fails when the policy schema uses an unsupported keyword" "1" "$([ "$bad_schema_rc" -ne 0 ] && echo 1 || echo 0)"
 assert_contains "and says the check could not run" "$bad_schema_out" "could not check"
 assert_contains "naming the keyword" "$bad_schema_out" "unsupported keyword(s) patternProperties"
+
+# The same for the labels schema: a check that could not run is not reported
+# as a malformed labels file.
+bad_labels_schema_fixture="$(mktemp)"
+printf '%s\n' '{"type": "object", "patternProperties": {"^x": true}}' >"$bad_labels_schema_fixture"
+bad_labels_schema_out=$( (LABELS_SCHEMA_FILE="$bad_labels_schema_fixture" validate_policy) 2>&1 )
+bad_labels_schema_rc=$?
+rm -f "$bad_labels_schema_fixture"
+assert_eq "validate_policy fails when the labels schema uses an unsupported keyword" "1" "$([ "$bad_labels_schema_rc" -ne 0 ] && echo 1 || echo 0)"
+assert_contains "and says the labels check could not run" "$bad_labels_schema_out" "could not check $LABELS_FILE"
+assert_eq "and does not call the labels file malformed" "0" "$(grep -cF -- "is malformed" <<<"$bad_labels_schema_out")"
 
 # ---- ruleset_applies scoping ----
 
