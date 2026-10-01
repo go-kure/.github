@@ -5236,6 +5236,23 @@ rc="$(
 assert_eq "orchestrator #153 (R4-P2): counting the foreign comments fails -> exits 0, count reported as incomplete with the degraded reason, not as zero" \
   "0 true true false" "$rc $(grep -qF 'marked comments by another login (live): 0 or more (a listing failed)' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(grep -qF 'REVIEW_DEGRADED: foreign-marked-comments-unread:' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(grep -qxF 'prt: marked comments by another login (live): 0' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 
+# R6-P2: the head moves before the clean-verdict lookup, so no lookup runs
+# and nothing is listed. A live foreign comment exists; the log must not
+# report an exact zero.
+: > "$PRT_TEST_ISSUE_COMMENT_LOG"
+PRT_TEST_ISSUE_COMMENTS_LIST='[{"id":99,"user":{"login":"github-actions[bot]"},"body":"old clean\n<!-- gokure-pr-review:v1-clean -->"}]'
+run_orchestrator enforce 0 0 0 > /dev/null
+t153_reads="$(cat "$PRT_TEST_META_COUNTFILE")"
+: > "$PRT_TEST_ISSUE_COMMENT_LOG"
+# The last three PR reads are the clean lookup's freshness check, its
+# pre-write re-check and the partial-review supersede check.
+PRT_TEST_STALE_AFTER_CALL=$((t153_reads - 3))
+rc="$(run_orchestrator enforce 0 0 0)"
+PRT_TEST_STALE_AFTER_CALL=0
+assert_eq "orchestrator #153 (R6-P2): head moves before any comment lookup -> exits 0, no write, count reported as not counted, never as zero" \
+  "0 0 true false" "$rc $(grep -c '^\(POST\|PATCH\) ' "$PRT_TEST_ISSUE_COMMENT_LOG") $(grep -qF 'marked comments by another login (live): not counted (no comment lookup ran this run)' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(grep -qxF 'prt: marked comments by another login (live): 0' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+unset t153_reads
+
 # A foreign comment already superseded reads as stale by its own text: not
 # counted, no reason.
 : > "$PRT_TEST_ISSUE_COMMENT_LOG"
