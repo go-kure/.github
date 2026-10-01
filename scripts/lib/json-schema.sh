@@ -42,7 +42,7 @@
 # anywhere else (outside a character class, unescaped) is a schema error.
 # So is any construct jq would read differently from ECMA-262: letter and
 # digit escapes such as \d (Unicode digits in jq), ".", "(?" groups other
-# than "(?:", "{,", possessive quantifiers, an empty class, and "[" or "&"
+# than "(?:", "{,", a quantifier on a quantifier (a**, a*+), an empty class, and "[" or "&"
 # inside a class.
 #
 # Input is JSON only: NaN, Infinity and numbers too large for a double, which
@@ -97,29 +97,33 @@ def _anchors:
 # The first construct of a pattern whose meaning in jq (Oniguruma) is not its
 # ECMA-262 meaning, or null: "\d", "\w", "\s", "\b" and every other letter
 # or digit escape (Oniguruma \d matches any Unicode digit), ".", "(?" other
-# than "(?:", "{,", a possessive "+", and, inside a class, "[" (nested sets,
+# than "(?:", "{,", a quantifier on a quantifier, and, inside a class, "[" (nested sets,
 # "[:alpha:]"), "&" ("&&" intersection) and an empty "[]".
 def _pattern_unsupported:
   (explode | map([.] | implode)) as $cs
-  # q: the previous token was a quantifier ("*", "+", "?" or a closing "}").
-  | reduce range(0; $cs | length) as $i ({esc: false, cls: false, cstart: -1, q: false, bad: null};
+  # q: 0 after an atom, 1 after a quantifier ("*", "+", "?" or a closing "}"),
+  # 2 after a lazy quantifier ("*?"). Only a lazy "?" may follow a quantifier:
+  # ECMA-262 refuses a**, a+?+ and a*{2}, where Oniguruma reads possessive or
+  # stacked repetition.
+  | reduce range(0; $cs | length) as $i ({esc: false, cls: false, cstart: -1, q: 0, bad: null};
       $cs[$i] as $c
       | if .bad != null then .
-        elif .esc then (if ($c | test("^[A-Za-z0-9]$")) then .bad = "\\" + $c else . end) | .esc = false | .q = false
+        elif .esc then (if ($c | test("^[A-Za-z0-9]$")) then .bad = "\\" + $c else . end) | .esc = false | .q = 0
         elif $c == "\\" then .esc = true
         elif .cls then
           if $c == "]" then (if $i == .cstart then .bad = "[]" else .cls = false end)
           elif $c == "^" and $i == .cstart then .cstart = $i + 1
           elif $c == "[" or $c == "&" then .bad = $c + " in a character class"
           else . end
-        elif $c == "+" and .q then .bad = "a possessive quantifier"
-        elif $c == "*" or $c == "+" or $c == "}" then .q = true
-        elif $c == "?" then .q = (.q | not)
-        elif $c == "[" then .cls = true | .cstart = $i + 1 | .q = false
+        elif ($c == "*" or $c == "+" or $c == "{") and .q != 0 then .bad = "a quantifier on a quantifier"
+        elif $c == "?" and .q == 2 then .bad = "a quantifier on a quantifier"
+        elif $c == "?" then .q += 1
+        elif $c == "*" or $c == "+" or $c == "}" then .q = 1
+        elif $c == "[" then .cls = true | .cstart = $i + 1 | .q = 0
         elif $c == "." then .bad = "."
         elif $c == "(" and ($cs[$i + 1] // "") == "?" and ($cs[$i + 2] // "") != ":" then .bad = "(?"
         elif $c == "{" and ($cs[$i + 1] // "") == "," then .bad = "{,"
-        else .q = false end)
+        else .q = 0 end)
   | .bad;
 
 def _anchors_ok: _anchors as $a
