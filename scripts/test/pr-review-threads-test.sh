@@ -3384,11 +3384,36 @@ PRT_TEST_STALE_AFTER_CALL=0
 # enforce + empty diff + owned open thread + first_absent_sha on a
 # different commit than this run's head -> the second absence -> resolve.
 PRT_TEST_EMPTY_DIFF=1
+PRT_TEST_RECHECK_MODE=false  # go-kure/.github#201: the pre-resolve reply re-read finds none
 PRT_TEST_FIRST_ABSENT_SHA="2222222222222222222222222222222222222222"
 rc="$(run_orchestrator enforce 0 0 0)"
 assert_eq "orchestrator: enforce + empty diff + second absence on a new SHA -> exits 0" "0" "$rc"
 assert_eq "orchestrator: enforce + empty diff + second absence on a new SHA -> resolve count >= 1" \
   "true" "$([ "$(cat "$PRT_TEST_RESOLVE_COUNTFILE")" -ge 1 ] && echo true || echo false)"
+
+# ---- go-kure/.github#201: the absence auto-close re-reads replies first ----
+# Same second-absence setup; only the live re-read differs. The inventory
+# snapshot (no reply) is what made this row 10.
+# (a) A reply landed after the snapshot -> NONE: no resolve, clean exit.
+PRT_TEST_RECHECK_MODE=true
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #201: fresh reply before the absence auto-close -> exits 0, no resolve, downgrade logged" \
+  "0 0 true" "$rc $(cat "$PRT_TEST_RESOLVE_COUNTFILE") $(grep -qF 'absence REPLY_RESOLVE downgraded to NONE' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+# (b) The thread cannot be re-read (node:null) -> no resolve, REVIEW_INCOMPLETE.
+PRT_TEST_RECHECK_MODE=
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #201: reply re-read fails before the absence auto-close -> exits 1, no resolve, reason named" \
+  "1 0 true" "$rc $(cat "$PRT_TEST_RESOLVE_COUNTFILE") $(grep -qF 'could not re-check thread for a new human reply before the absence auto-close' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+# (c) No reply, but the head moves during the re-read: the freshness check
+# after it catches the move before the mutation (call #1 is the arm-entry
+# check, call #2 the post-recheck one). Nothing written, so stale-safe.
+PRT_TEST_RECHECK_MODE=false
+PRT_TEST_STALE_AFTER_CALL=1
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #201: head moves during the reply re-read -> exits 0, no resolve, post-recheck staleness named" \
+  "0 0 true" "$rc $(cat "$PRT_TEST_RESOLVE_COUNTFILE") $(grep -qF 'absence auto-close (post-recheck): stale head SHA' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_STALE_AFTER_CALL=0
+PRT_TEST_RECHECK_MODE=
 PRT_TEST_EMPTY_DIFF=0
 PRT_TEST_FIRST_ABSENT_SHA=""
 
@@ -3580,11 +3605,13 @@ PRT_TEST_STALE_AFTER_CALL=0
 # staleness-only SET_FIRST_ABSENT block above was corrected to match
 # (round-5 kure-bot finding) — its own call #1 is likewise its loop's
 # pre-mutate check, not a meta fetch, for this identical EMPTY_DIFF reason.
-#   call #1 = the pre-mutate freshness check (line ~1234) -> stays fresh
-#   call #2 = the post-mutate freshness check (line ~1249) -> goes stale
+#   call #1 = the pre-mutate freshness check at the arm's entry -> stays fresh
+#   call #2 = the check after the reply re-read (go-kure/.github#201) -> stays fresh
+#   call #3 = the post-mutate freshness check -> goes stale
 PRT_TEST_EMPTY_DIFF=1
 PRT_TEST_FIRST_ABSENT_SHA="2222222222222222222222222222222222222222"
-PRT_TEST_STALE_AFTER_CALL=1
+PRT_TEST_STALE_AFTER_CALL=2
+PRT_TEST_RECHECK_MODE=false
 rc="$(run_orchestrator enforce 0 0 0)"
 assert_eq "orchestrator: head moves between absence-resolve mutation and reply freshness re-check -> exits 1 (stays fatal, NOT superseded-safe)" \
   "1" "$rc"
@@ -3599,6 +3626,7 @@ assert_eq "orchestrator: head moves after absence-resolve mutation -> does NOT l
 PRT_TEST_EMPTY_DIFF=0
 PRT_TEST_FIRST_ABSENT_SHA=""
 PRT_TEST_STALE_AFTER_CALL=0
+PRT_TEST_RECHECK_MODE=
 
 # ---- go-kure/.github#155: a fingerprint-collided run end to end ----
 # Three findings, same file+category (dup.go/other) -> all collide on
@@ -3986,9 +4014,11 @@ stamp_marker="$(prt_marker_parse "$(cat "$PRT_TEST_PATCH_BODY_LOG")")"
 assert_eq "orchestrator #252: absence after the clear -> stamps this head, no resolve" \
   "0 1 0 1111111111111111111111111111111111111111" "$rc $(cat "$PRT_TEST_PATCH_COUNTFILE") $(cat "$PRT_TEST_RESOLVE_COUNTFILE") $(cut -f3 <<< "$stamp_marker")"
 PRT_TEST_FIRST_ABSENT_SHA="2222222222222222222222222222222222222222"
+PRT_TEST_RECHECK_MODE=false
 rc="$(run_orchestrator enforce 0 0 0)"
 assert_eq "orchestrator #252: absence over an uncleared stale stamp (control) -> resolves" \
   "0 1" "$rc $(cat "$PRT_TEST_RESOLVE_COUNTFILE")"
+PRT_TEST_RECHECK_MODE=
 PRT_TEST_FIRST_ABSENT_SHA=""
 
 PRT_TEST_OWNED_COLLISION=""
