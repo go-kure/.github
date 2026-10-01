@@ -300,6 +300,18 @@ assert_eq "HEAD not the tag, set_latest false: exit 0" 0 "$RC"
 assert_eq "HEAD not the tag, set_latest false: the slot is written" "slot v1.2.0" "$(pages_file offtag kure/v1.2/index.html)"
 assert_eq "HEAD not the tag, set_latest false: the root is untouched" "root seed" "$(pages_file offtag kure/index.html)"
 
+# A tag deleted on origin after the checkout: the checkout still has it, the
+# pruning fetch drops it, and the root is refused as for a label that is no tag.
+new_case deleted v1.1.0 v1.2.0
+git -C "$WORK/deleted/srcwork" push --quiet origin :refs/tags/v1.2.0
+builds deleted v1.2.0
+before=$(pages_tip deleted)
+assert_eq "tag deleted on origin: the checkout still has it (control)" "v1.2.0" "$(git -C "$WORK/deleted/source" tag --list v1.2.0)"
+deploy deleted v1.2 v1.2.0 true
+assert_eq "tag deleted on origin: exit 1" 1 "$RC"
+assert_contains "tag deleted on origin: names the failure" "$OUT" "label 'v1.2.0' is not a tag in $WORK/deleted/source; not writing the /kure/ root"
+assert_eq "tag deleted on origin: nothing pushed" "$before" "$(pages_tip deleted)"
+
 # An annotated tag at HEAD peels to its commit: the root is written.
 new_case annotated v1.1.0
 git -C "$WORK/annotated/srcwork" tag -a v1.2.0 -m "release v1.2.0"

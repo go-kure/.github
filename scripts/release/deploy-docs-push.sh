@@ -12,7 +12,8 @@
 #     when it ran. By the time this deploy writes, a newer stable tag may exist,
 #     and an older release's deploy landing last would put its docs back at the
 #     root. So when the root was requested, the decision is taken again right
-#     before the root is written, from freshly fetched tags, with the rule
+#     before the root is written, from freshly fetched tags (pruned, so a tag
+#     deleted on origin no longer counts), with the rule
 #     Publish uses: publish-policy.sh `latest <label>`, the copy next to this
 #     script. The re-check only narrows: a deploy that did not ask for the root
 #     never writes it. A policy error fails the deploy, and so does a `true`
@@ -164,7 +165,9 @@ for ((attempt = 1; attempt <= max_attempts; attempt++)); do
     if [[ "$set_latest" == true ]]; then
         # Decide again from the tags as they are now: Publish's decision may be
         # stale, and a retry must not reuse the previous attempt's answer.
-        git -C "$src" fetch --quiet --force origin '+refs/tags/*:refs/tags/*' \
+        # --prune drops a local tag that origin no longer has: a tag deleted
+        # after the checkout must neither rank nor pass the tag check below.
+        git -C "$src" fetch --quiet --force --prune origin '+refs/tags/*:refs/tags/*' \
             || die "could not fetch tags into $src; not deciding the /${site}/ root from stale tags"
         # The policy reads the tags of its working directory.
         cd "$src"
