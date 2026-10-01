@@ -109,17 +109,28 @@ prt_decide_finding() {
 }
 
 # prt_effective_collision OWNED_COLLISION THIS_RUN_COLLISION OWNED_CFP THIS_CFP
+#                         OWNED_RESOLVED EVIDENCE_COMPLETE
 # For a finding matched to an OWNED thread, prints which collision source
 # applies, first match wins:
 #   this_run         — this run's own multiplicity (finding.sh group length>1)
 #   content_mismatch — the thread's stored content_fp differs from this
 #                      finding's (go-kure/.github#196)
-#   lift             — the thread carries a persisted collision flag, and this
-#                      run's single finding has exactly the text the thread
-#                      was created for (go-kure/.github#148)
-#   persisted        — the thread carries a persisted collision flag that
-#                      cannot be verified: it has no stored content_fp
+#   lift             — the thread carries a persisted collision flag, is
+#                      open, this run's evidence is complete, and this run's
+#                      single finding has exactly the text the thread was
+#                      created for (go-kure/.github#148)
+#   persisted        — the thread carries a persisted collision flag that is
+#                      not lifted: no stored content_fp, a resolved thread,
+#                      or incomplete evidence
 #   none             — no collision
+# Only open threads lift: the lift exists so loop 2 can auto-resolve the
+# thread, which a resolved thread does not need, and two findings with
+# identical text at different lines share fp_base and content_fp — lifting
+# a human-resolved thread would hand the survivor to row 6, which shows it
+# nowhere, where quarantine keeps it as a visible withheld row.
+# EVIDENCE_COMPLETE is false on a run with a dropped row or an unparsed
+# chunk, which can hide the other colliding finding (PRT_LIFT_EVIDENCE_COMPLETE
+# in pr-review-threads.sh).
 # this_run, content_mismatch and persisted mean prt_decide_finding gets
 # collision=true; lift and none mean false. Only "true" counts as set for
 # either collision flag. An empty OWNED_CFP (a thread that predates
@@ -137,13 +148,16 @@ prt_decide_finding() {
 # (prt_reserved_count below), so the cap walk predicts the outcome loop 1
 # reaches instead of re-deriving it.
 prt_effective_collision() {
-  local owned_collision="$1" this_run_collision="$2" owned_cfp="$3" this_cfp="$4"
+  local owned_collision="$1" this_run_collision="$2" owned_cfp="$3" this_cfp="$4" \
+        owned_resolved="$5" evidence_complete="$6"
   [ "$this_run_collision" = true ] && { echo this_run; return 0; }
   if [ -n "$owned_cfp" ] && [ "$owned_cfp" != "$this_cfp" ]; then
     echo content_mismatch; return 0
   fi
   if [ "$owned_collision" = true ]; then
-    [ -n "$owned_cfp" ] && { echo lift; return 0; }
+    if [ -n "$owned_cfp" ] && [ "$owned_resolved" != true ] && [ "$evidence_complete" = true ]; then
+      echo lift; return 0
+    fi
     echo persisted; return 0
   fi
   echo none
@@ -352,7 +366,9 @@ prt_reserved_count() {
         match_fix="$(jq -r '.fix' <<< "$match" 2>/dev/null)" || return 1
         match_content_fp="$(prt_content_fp "$match_issue" "$match_fix")"
       fi
-      source="$(prt_effective_collision "$o_collision" "$f_collision" "$owned_content_fp" "$match_content_fp")"
+      local o_resolved
+      o_resolved="$(jq -r '.resolved' <<< "$row" 2>/dev/null)" || return 1
+      source="$(prt_effective_collision "$o_collision" "$f_collision" "$owned_content_fp" "$match_content_fp" "$o_resolved" "${PRT_LIFT_EVIDENCE_COMPLETE:-false}")"
       case "$source" in
         lift|none) eff_collision=false ;;
         *) eff_collision=true ;;

@@ -997,6 +997,16 @@ fi # PRT_MODE = enforce
 # now lives in scripts/lib/prt/reconcile.sh above prt_thread_stays_gating —
 # it is the specification for the functions this line calls; not duplicated
 # here.
+#
+# go-kure/.github#148: a collision lift trusts that this run's findings are
+# the whole set for an fp_base. A dropped malformed row or an unparsed chunk
+# can hide the other colliding finding and fake a singleton, so no lift is
+# allowed on such a run — the same incomplete evidence loop 2 refuses to act
+# on. Decided once, before the cap walk, so the walk and loop 1 agree.
+PRT_LIFT_EVIDENCE_COMPLETE=true
+prt_is_incomplete && PRT_LIFT_EVIDENCE_COMPLETE=false
+prt_degraded_reasons | grep -q 'partial-drop' && PRT_LIFT_EVIDENCE_COMPLETE=false
+prt_degraded_reasons | grep -q 'review-parse-failed' && PRT_LIFT_EVIDENCE_COMPLETE=false
 if ! capped_findings="$(prt_apply_cap "$PRT_MAX_FINDINGS_TOTAL" "$OWNED" "$ALL_FINDINGS" 2>/dev/null)"; then
   echo "ERROR: review inventory cap evaluation failed; aborting before any write." >&2
   prt_mark_incomplete "review inventory cap evaluation failed"
@@ -1172,7 +1182,7 @@ else
       owned_collision_eff="$(jq -r '.collision' <<< "$owned_match")"
       owned_content_fp="$(jq -r '.content_fp' <<< "$owned_match")"
       [ "$owned_content_fp" = null ] && owned_content_fp=""
-      collision_source="$(prt_effective_collision "$owned_collision_eff" "$collision" "$owned_content_fp" "$content_fp")"
+      collision_source="$(prt_effective_collision "$owned_collision_eff" "$collision" "$owned_content_fp" "$content_fp" "$thread_resolved" "$PRT_LIFT_EVIDENCE_COMPLETE")"
       if [ "$collision_source" = lift ]; then
         if prt_persist_owned_collision "$owned_match" "$fp" false "fp=$fp: lifting the persisted collision flag (content match)"; then
           prt_log "fp=$fp collision lifted (content match)"
