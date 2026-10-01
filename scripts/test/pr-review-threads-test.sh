@@ -2368,16 +2368,21 @@ fake_curl_orchestrator() {
               # comment's author. Default "test-bot" matches the harness's
               # PRT_BOT_LOGIN; anything else makes the marked thread foreign.
               # PRT_TEST_THREAD1_REPLIES (go-kure/.github#261): a JSON array of
-              # reply comment nodes appended after C1.
+              # reply comment nodes appended after C1. C1 was created on
+              # 2026-01-01; PRT_TEST_THREAD1_LAST_EDITED sets its lastEditedAt
+              # (default: never edited).
               resp="$(jq -n --arg body "$(_prt_test_owned_thread_body)" --arg author "${PRT_TEST_OWNED_AUTHOR:-test-bot}" \
-                --argjson replies "${PRT_TEST_THREAD1_REPLIES:-[]}" '
+                --argjson replies "${PRT_TEST_THREAD1_REPLIES:-[]}" \
+                --arg edited "${PRT_TEST_THREAD1_LAST_EDITED:-}" '
                 {data:{repository:{pullRequest:{reviewThreads:{
                   pageInfo:{hasNextPage:false,endCursor:null},
                   nodes:[{
                     id:"THREAD1", isResolved:false, isOutdated:false,
                     resolvedBy:null, viewerCanResolve:true, viewerCanUnresolve:true,
                     comments:{pageInfo:{hasNextPage:false,endCursor:null},
-                      nodes:([{id:"C1", databaseId:1, body:$body, author:{login:$author}}] + $replies)}
+                      nodes:([{id:"C1", databaseId:1, body:$body, author:{login:$author},
+                        createdAt:"2026-01-01T00:00:00Z",
+                        lastEditedAt:(if $edited == "" then null else $edited end)}] + $replies)}
                   }]
                 }}}}}')"
             fi
@@ -2618,6 +2623,7 @@ run_orchestrator() {
     PRT_TEST_LIVE_RESOLVED_COUNTFILE="$scratch/live-resolved-count" \
     PRT_TEST_PATCH_ATTEMPT_COUNTFILE="$scratch/patch-attempt-count" \
     PRT_TEST_THREAD1_REPLIES="${PRT_TEST_THREAD1_REPLIES:-[]}" \
+    PRT_TEST_THREAD1_LAST_EDITED="${PRT_TEST_THREAD1_LAST_EDITED:-}" \
     PRT_TEST_REPLY_BODY_LOG="${PRT_TEST_REPLY_BODY_LOG:-}" \
     PRT_TEST_REPLY_FAIL="${PRT_TEST_REPLY_FAIL:-0}" \
     PRT_TEST_MODEL_RESPONSE_MODE="${PRT_TEST_MODEL_RESPONSE_MODE:-clean}" \
@@ -4177,8 +4183,8 @@ PRT_TEST_FIRST_ABSENT_SHA=""
 # MAINT_FAILURE reply recording the stamp they left. Row 11 then holds back an
 # absence auto-resolve while the thread still carries that stamp.
 mf_stamp="2222222222222222222222222222222222222222"
-mf_reply_node() { # BODY [AUTHOR] -> a one-element JSON array of reply nodes
-  jq -nc --arg b "$1" --arg a "${2:-test-bot}" '[{id:"C2", databaseId:2, body:$b, author:{login:$a}}]'
+mf_reply_node() { # BODY [AUTHOR] -> a one-element JSON array of reply nodes, posted 2026-01-02
+  jq -nc --arg b "$1" --arg a "${2:-test-bot}" '[{id:"C2", databaseId:2, body:$b, author:{login:$a}, createdAt:"2026-01-02T00:00:00Z"}]'
 }
 PRT_TEST_REPLY_BODY_LOG="$(mktemp)"
 # (a) Loop 1: the finding is present, the stamp clear PATCH fails.
@@ -4236,13 +4242,15 @@ assert_eq "orchestrator #261: loop-1 stamp clear skipped on a failed GET -> exit
 PRT_TEST_COMMENT_GET_EMPTY=0
 # (b5) A clear skipped on a stale head (its own freshness check) also records
 # the stamp. The read count before that check differs per path, so each case
-# walks every offset and takes the one whose degraded reason names it.
+# walks the offsets down from the last read and takes the first whose degraded
+# reason names that check: the clear runs late in the run, so this stops after
+# a few runs, and a lower offset would trip an earlier check first.
 mf_stale_case() { # MODE OWNED_FP REASON_TEXT -> "<replies> <recorded stamp>" at that offset, or "none"
   local k total
   PRT_TEST_MODEL_RESPONSE_MODE="$1"; PRT_TEST_OWNED_FP="$2"
   rc="$(run_orchestrator enforce 0 0 0)"
   total="$(cat "$PRT_TEST_META_COUNTFILE")"
-  for ((k = 1; k < total; k++)); do
+  for ((k = total - 1; k >= 1; k--)); do
     : > "$PRT_TEST_REPLY_BODY_LOG"
     PRT_TEST_STALE_AFTER_CALL=$k
     rc="$(run_orchestrator enforce 0 0 0)"
@@ -4266,6 +4274,25 @@ PRT_TEST_THREAD1_REPLIES="$(mf_reply_node "$(prt_render_reply_maint_failure "cle
 rc="$(run_orchestrator enforce 0 0 0)"
 assert_eq "orchestrator #261: absence over the stamp a MAINT_FAILURE reply recorded -> exits 0, no resolve, re-stamped" \
   "0 0 1 true" "$rc $(cat "$PRT_TEST_RESOLVE_COUNTFILE") $(cat "$PRT_TEST_PATCH_COUNTFILE") $(grep -qE 'absent -> SET_FIRST_ABSENT' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+# (c2) The first comment was edited after the reply (a later clear or
+# re-stamp landed), so the reply is retired even though the stamp still
+# names the same SHA: the absence resolves.
+PRT_TEST_THREAD1_LAST_EDITED="2026-01-03T00:00:00Z"
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #261: reply older than the first comment's last edit -> retired, resolves" \
+  "0 1" "$rc $(cat "$PRT_TEST_RESOLVE_COUNTFILE")"
+# (c3) Edited before the reply was posted: the reply is still current (control).
+PRT_TEST_THREAD1_LAST_EDITED="2026-01-01T12:00:00Z"
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #261: reply newer than the first comment's last edit -> still re-stamps (control)" \
+  "0 0 1" "$rc $(cat "$PRT_TEST_RESOLVE_COUNTFILE") $(cat "$PRT_TEST_PATCH_COUNTFILE")"
+# (c4) An edit in the same second as the reply cannot be ordered: keep the
+# reply (an extra re-stamp, never an early resolve).
+PRT_TEST_THREAD1_LAST_EDITED="2026-01-02T00:00:00Z"
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #261: reply in the same second as the last edit -> kept, re-stamps" \
+  "0 0 1" "$rc $(cat "$PRT_TEST_RESOLVE_COUNTFILE") $(cat "$PRT_TEST_PATCH_COUNTFILE")"
+PRT_TEST_THREAD1_LAST_EDITED=""
 # (d) A later run cleared that stamp and a later absence stamped another head:
 # the reply recorded a different stamp, so it no longer blocks.
 PRT_TEST_THREAD1_REPLIES="$(mf_reply_node "$(prt_render_reply_maint_failure "clear failed" 3333333333333333333333333333333333333333)")"

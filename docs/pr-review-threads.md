@@ -160,8 +160,10 @@ overrides the workflow's own default) is one of three values. An unrecognized va
   marker, records the stamp it left; a clear that fails again on a later run posts no second
   reply for the same stamp. While the thread still carries that stamp, row 11 does not read it as
   the first of two absences: an absence at a new head re-stamps the thread at that head instead,
-  and the next absence on another head resolves it. A reply posted before the state line existed
-  records no stamp and is not counted. A human reply, as on any thread, stops every absence
+  and the next absence on another head resolves it. A reply counts only while it is newer than
+  the thread's first comment was last edited: a later rewrite of the marker (a clear or re-stamp
+  that did land) retires it, even if a future stamp names the same SHA. A reply posted before the
+  state line existed records no stamp and is not counted. A human reply, as on any thread, stops every absence
   action. If the reply itself also fails, nothing durable records the stale stamp: the run is `REVIEW_INCOMPLETE` naming it, and
   the next absence at a new head can resolve the thread on one absence (go-kure/.github#261).
 

@@ -701,7 +701,7 @@ query($owner:String!, $repo:String!, $pr:Int!, $cursor:String) {
           viewerCanUnresolve
           comments(first:50) {
             pageInfo { hasNextPage endCursor }
-            nodes { id databaseId body author { login } }
+            nodes { id databaseId body author { login } createdAt lastEditedAt }
           }
         }
       }
@@ -715,7 +715,7 @@ query($id:ID!, $cursor:String) {
     ... on PullRequestReviewThread {
       comments(first:50, after:$cursor) {
         pageInfo { hasNextPage endCursor }
-        nodes { id databaseId body author { login } }
+        nodes { id databaseId body author { login } createdAt lastEditedAt }
       }
     }
   }
@@ -923,11 +923,21 @@ for ((ti = 0; ti < n_threads; ti++)); do
 
   has_human_reply=false
   # go-kure/.github#261: the stamps recorded by this thread's MAINT_FAILURE
-  # replies. Loop 2's row 11 reads it; any human reply already protects the
-  # thread via row 13.
+  # replies that are still current. Loop 2's row 11 reads it; any human reply
+  # already protects the thread via row 13. A reply is current only while the
+  # first comment has not been edited since it was posted: every successful
+  # marker rewrite (a clear, a re-stamp, a collision write) edits that
+  # comment, so the stamp it carries afterwards is no longer the stale one,
+  # even when it names the same SHA. A missing timestamp, or one equal to the
+  # edit's (second resolution), keeps the reply current, which only re-stamps
+  # (never resolves) one extra time.
   maint_failure_shas='[]'
   if ! n_comments="$(jq -r '.comments.nodes | length' <<< "$th" 2>/dev/null)"; then
     prt_inventory_fail "comment count at thread index $ti"
+    break
+  fi
+  if ! first_edited_at="$(jq -r '.comments.nodes[0] | (.lastEditedAt // .createdAt // "")' <<< "$th" 2>/dev/null)"; then
+    prt_inventory_fail "first comment edit time at thread index $ti"
     break
   fi
   for ((ci = 1; ci < n_comments; ci++)); do
@@ -938,6 +948,11 @@ for ((ti = 0; ti < n_threads; ti++)); do
     if ! prt_marker_has_note "$cbody"; then
       has_human_reply=true
     elif mf_sha="$(prt_marker_maint_failure_sha "$cbody")"; then
+      if ! ccreated="$(jq -r --argjson i "$ci" '.comments.nodes[$i].createdAt // ""' <<< "$th" 2>/dev/null)"; then
+        prt_inventory_fail "comment time at thread index $ti comment index $ci"
+        break
+      fi
+      [ -n "$ccreated" ] && [ -n "$first_edited_at" ] && [[ "$ccreated" < "$first_edited_at" ]] && continue
       if ! maint_failure_shas="$(jq -c --arg s "$mf_sha" '. + [$s]' <<< "$maint_failure_shas" 2>/dev/null)"; then
         prt_inventory_fail "MAINT_FAILURE stamp at thread index $ti comment index $ci"
         break
