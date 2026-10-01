@@ -3,8 +3,9 @@
 # Settings" section and governance/repository-settings-policy.yaml drifting
 # apart.
 #
-# scripts/github-settings.sh's validate_policy() already asserts SETTING_KEYS
-# agrees with github_defaults' scalar keys; this script closes the remaining
+# scripts/github-settings.sh's validate_policy() already holds github_defaults'
+# scalar keys to SETTING_KEYS (through the policy schema, which the test suite
+# pins to SETTING_KEYS); this script closes the remaining
 # side of the triangle (script <-> policy <-> docs) by checking the docs
 # table against policy directly, in both directions:
 #   - a key/ruleset in policy but not documented (silently ungoverned-looking)

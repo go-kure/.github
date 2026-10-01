@@ -1,0 +1,32 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/go-kure/.github/blob/main/standards/labels.schema.json",
+  "title": "Issue labels",
+  "description": "The closed shape of standards/labels.json (or a consumer's LABELS_FILE), checked by scripts/github-settings.sh before any audit or --apply and by scripts/check-label-docs.sh. An empty list is refused: the audit would read every live label as extra and --apply would delete them. Only the draft-07 subset scripts/lib/json-schema.sh implements may be used here.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["labels"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "description": { "type": "string" },
+    "labels": { "type": "array", "minItems": 1, "items": { "$ref": "#/definitions/label" } }
+  },
+  "definitions": {
+    "label": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "color", "description"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 50 },
+        "color": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$" },
+        "description": { "type": "string", "maxLength": 100 },
+        "repos": {
+          "description": "Repos the label applies to; absent means every governed repo. The names are checked against the governed repo set by github-settings.sh, not here.",
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}

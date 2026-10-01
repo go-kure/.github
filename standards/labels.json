@@ -1,5 +1,5 @@
 {
-  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$schema": "./labels.schema.json",
   "description": "Standard issue labels for go-kure repos. See labels.md for naming conventions.",
   "labels": [
     {

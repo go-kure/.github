@@ -35,9 +35,11 @@ on a line of its own. Other test runners, such as the renovate lane's node scrip
 ```
 .github/
 ├── governance/
-│   └── repository-settings-policy.yaml  # Machine-readable settings policy
+│   ├── repository-settings-policy.yaml  # Machine-readable settings policy
+│   └── repository-settings-policy.schema.json  # Its closed schema (checked before any audit/apply)
 ├── standards/
 │   ├── labels.json                      # Standard issue labels
+│   ├── labels.schema.json               # Its closed schema (github-settings.sh, check-label-docs.sh)
 │   ├── labels.md                        # Label naming conventions
 │   └── release-process.md               # The release guide (vendored into kure/launcher docs)
 ├── scripts/
@@ -54,6 +56,7 @@ on a line of its own. Other test runners, such as the renovate lane's node scrip
 │   ├── release/release.sh               # The release script release.yml runs in every caller — canonical
 │   ├── release/publish-policy.sh        # Publish's per-line progression and Latest decisions
 │   ├── release/deploy-docs-push.sh      # The docs deploy's write and push (deploy-docs-push action)
+│   ├── lib/json-schema.sh               # Draft-07 subset validator in jq (both schemas above)
 │   └── lib/api.sh                       # Shared HTTP API utilities
 ├── .github/
 │   ├── workflows/                       # GitHub Actions — self-CI, org settings, and the
@@ -118,7 +121,10 @@ different things:
 
 ### Applying settings changes
 
-1. Edit `governance/repository-settings-policy.yaml`
+1. Edit `governance/repository-settings-policy.yaml`. A key the script does not model is
+   refused by its schema, `governance/repository-settings-policy.schema.json`: a new setting,
+   rule type or rule parameter goes into the schema (and the script's registry) in the same
+   change.
 2. Run `./scripts/github-settings.sh --all` locally to preview changes (or `mise run settings -- --all`)
 3. Commit and open a PR
 4. After merge, trigger `settings.yml` manually via `workflow_dispatch` with `mode: apply`

@@ -37,6 +37,12 @@ ROOT="${1:-.}"
 ROOT="$(cd "$ROOT" && pwd)"
 LABELS_FILE="$ROOT/standards/labels.json"
 DOC_FILE="$ROOT/standards/labels.md"
+# The schema comes from this script's own checkout, not from ROOT: it states
+# what the tooling reads, whichever labels file is being checked.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LABELS_SCHEMA_FILE="$SCRIPT_DIR/../standards/labels.schema.json"
+# shellcheck source=scripts/lib/json-schema.sh
+source "$SCRIPT_DIR/lib/json-schema.sh"
 
 command -v jq &>/dev/null || {
   echo "check-label-docs: jq is required but not installed" >&2
@@ -46,18 +52,16 @@ command -v jq &>/dev/null || {
 [[ -f "$DOC_FILE" ]] || { echo "check-label-docs: doc file not found: $DOC_FILE" >&2; exit 1; }
 
 # Shape preflight — fatal, not a FAIL: line, because nothing below can trust
-# .labels to even be an array once this fails.
-jq -e '
-  (.labels | type == "array") and (.labels | length > 0) and
-  ([.labels[] |
-      (.name | type == "string") and (.name | length > 0) and
-      (.description | type == "string") and
-      (.color | test("^#[0-9A-Fa-f]{6}$"))
-   ] | all)
-' "$LABELS_FILE" >/dev/null 2>&1 || {
-  echo "check-label-docs: standards/labels.json is malformed, empty, or has a label missing name/description or with a malformed color" >&2
+# .labels to even be an array once this fails. standards/labels.schema.json
+# is the closed schema github-settings.sh's validate_policy applies to every
+# labels file, a consumer's included (go-kure/.github#161): a non-empty list
+# of labels, each with a name, a #RRGGBB color, a description and optionally
+# a repos list, and no key the tooling would not read.
+if ! shape_out="$(json_schema_violations "$LABELS_SCHEMA_FILE" <"$LABELS_FILE")"; then
+  echo "check-label-docs: standards/labels.json is malformed (standards/labels.schema.json):" >&2
+  while IFS= read -r line; do echo "  $line" >&2; done <<<"$shape_out"
   exit 1
-}
+fi
 
 # Duplicate-name preflight — fatal. A duplicate .name survives the shape
 # check above and the later `sort -u` on values silently hides it, so
