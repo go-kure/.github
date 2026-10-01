@@ -797,6 +797,32 @@ with a human reply present resolves via `QUARANTINE`, never reaching row 3's
 `NONE` — and `QUARANTINE` strictly dominates `NONE` there (identical non-mutation of the thread,
 plus the finding is surfaced instead of discarded), so the row-precedence is not a regression.
 
+### How long a withheld finding stays withheld (go-kure/.github#148)
+
+Three behaviours decide how long a finding stays off the thread surface. All three are deliberate,
+and none of them loses a finding: each one either keeps an open thread gating merge or lists the
+finding in the withheld table.
+
+**A persisted collision lasts for the life of the PR.** Once a run sees two findings on one
+`fp_base`, it writes `collision=true` onto the matching thread's marker (C5, above). From then on,
+loop 1 quarantines every finding that matches that thread (B3), even when only one finding is
+left. Loop 2 never acts on the thread's absence either (`prt_decide_absent` row 1): no
+`first_absent_sha` stamp, no auto-resolve. Nothing clears the flag, so the thread stays open until
+a human resolves it. While it is open it gates merge, and each run lists the matching finding in
+the withheld table as "persisted (earlier run)".
+
+**A reworded finding reads as a different one.** `content_fp` hashes the exact `issue`+`fix` text
+(above), and the model rewrites that text on most runs. A recurring defect therefore often shows
+as "content changed (recurring defect)" in the withheld table rather than riding its existing
+thread. The thread itself is untouched and still gates merge while open.
+
+**A thread a human resolved is never reopened.** `prt_decide_finding` row 6 returns `NONE` for a
+thread resolved by anyone but the bot, whether or not the finding recurs. A defect that comes back
+after a human resolved its thread therefore produces no thread, no reopen and no withheld row when
+its text is unchanged. It is counted as anchored to the resolved thread. Only a reworded
+recurrence surfaces, through the content mismatch above. This is the trade for never overriding a
+human's decision: whoever resolves a thread owns re-checking that defect on later pushes.
+
 All unbounded reconciliation collections obey one additional invariant: thread pages, paginated
 comment nodes, the combined `THREADS` and `OWNED` inventories, and the findings/ownership inputs to
 cap eligibility reach `jq` through stdin, never through `--argjson` on external-process argv.
