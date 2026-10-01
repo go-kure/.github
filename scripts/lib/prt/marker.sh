@@ -55,6 +55,13 @@ PRT_MARKER_STATE_SUPERSEDED='<!-- gokure-pr-review:state=superseded -->'
 # other and PRT_MARKER_RE cannot match it.
 # shellcheck disable=SC2034 # read by render.sh/pr-review-threads.sh, not within this file
 PRT_MARKER_PARTIAL='<!-- gokure-pr-review:v1-partial -->'
+# State line on a MAINT_FAILURE reply (go-kure/.github#261), next to
+# PRT_MARKER_NOTE: records the absence stamp the failed clear left behind.
+# Loop 2's row 11 holds back an absence auto-resolve while the thread still
+# carries that same stamp, so a later run that does clear it (and a later
+# absence that stamps a new head) is not blocked forever. Same `v1-<kind>`
+# shape as the markers above, so PRT_MARKER_RE cannot match it.
+PRT_MARKER_MAINT_FAILURE_RE='^<!-- gokure-pr-review:v1-maint-failure( first_absent_sha=([0-9a-f]{40}))? -->$'
 
 # prt_marker_build FP [COLLISION] [FIRST_ABSENT_SHA] [CONTENT_FP]
 # COLLISION: "true" or "" . Prints the marker line to stdout.
@@ -95,6 +102,31 @@ prt_marker_parse() {
 prt_marker_has_note() {
   local body="$1"
   grep -qxF "$PRT_MARKER_NOTE" <<< "$body"
+}
+
+# prt_marker_build_maint_failure [FIRST_ABSENT_SHA] — prints the MAINT_FAILURE
+# state line, recording the stamp when one is given.
+prt_marker_build_maint_failure() {
+  local sha="${1:-}" line="<!-- gokure-pr-review:v1-maint-failure"
+  [ -n "$sha" ] && line="${line} first_absent_sha=${sha}"
+  printf '%s -->' "$line"
+}
+
+# prt_marker_maint_failure_sha BODY — for a bot reply (the caller has already
+# checked prt_marker_has_note): if BODY is a MAINT_FAILURE reply, prints the
+# stamp it recorded and returns 0. A reply posted before the state line
+# existed carries only the `**MAINT_FAILURE:**` line and prints "" (the stamp
+# is unknown). Returns 1 for any other reply.
+prt_marker_maint_failure_sha() {
+  local body="$1" line legacy=1
+  while IFS= read -r line; do
+    if [[ "$line" =~ $PRT_MARKER_MAINT_FAILURE_RE ]]; then
+      printf '%s' "${BASH_REMATCH[2]:-}"
+      return 0
+    fi
+    [[ "$line" == '**MAINT_FAILURE:** '* ]] && legacy=0
+  done <<< "$body"
+  return "$legacy"
 }
 
 # prt_marker_replace BODY NEW_MARKER_LINE — re-finds the OLD marker's exact

@@ -317,6 +317,21 @@ assert_true "marker has_note: matches the reply-note marker" \
 assert_eq "marker has_note: a plain human reply does not match" \
   "false" "$(prt_marker_has_note "just a human reply, no marker" && echo true || echo false)"
 
+# ============================================================ marker: MAINT_FAILURE (go-kure/.github#261)
+mf_sha_a="2222222222222222222222222222222222222222"
+assert_eq "maint_failure: a rendered reply round-trips its stamp" \
+  "0 $mf_sha_a" "$(s="$(prt_marker_maint_failure_sha "$(prt_render_reply_maint_failure "x" "$mf_sha_a")")"; echo "$? $s")"
+assert_eq "maint_failure: a reply rendered with no stamp records none" \
+  "0 " "$(s="$(prt_marker_maint_failure_sha "$(prt_render_reply_maint_failure "x")")"; echo "$? $s")"
+assert_eq "maint_failure: a legacy reply (no state line) is one, stamp unknown" \
+  "0 " "$(s="$(prt_marker_maint_failure_sha "$PRT_MARKER_NOTE"$'\n**MAINT_FAILURE:** x')"; echo "$? $s")"
+assert_eq "maint_failure: another bot reply is not one" \
+  "1" "$(prt_marker_maint_failure_sha "$(prt_render_reply_absent_resolved)" >/dev/null; echo "$?")"
+assert_eq "maint_failure: a state line quoted in the reason is neutralized; the real stamp wins" \
+  "0 $mf_sha_a" "$(s="$(prt_marker_maint_failure_sha "$(prt_render_reply_maint_failure "$(prt_marker_build_maint_failure 3333333333333333333333333333333333333333)" "$mf_sha_a")")"; echo "$? $s")"
+assert_eq "maint_failure: a quoted state line alone does not count as recorded" \
+  "1" "$(prt_marker_maint_failure_sha "$(prt_marker_neutralize "$(prt_marker_build_maint_failure "$mf_sha_a")")" >/dev/null; echo "$?")"
+
 # ============================================================ line index
 diff_fixture="$(mktemp)"
 cat > "$diff_fixture" <<'EOF'
@@ -2310,14 +2325,17 @@ fake_curl_orchestrator() {
               # PRT_TEST_OWNED_AUTHOR (go-kure/.github#153): the first
               # comment's author. Default "test-bot" matches the harness's
               # PRT_BOT_LOGIN; anything else makes the marked thread foreign.
-              resp="$(jq -n --arg body "$(_prt_test_owned_thread_body)" --arg author "${PRT_TEST_OWNED_AUTHOR:-test-bot}" '
+              # PRT_TEST_THREAD1_REPLIES (go-kure/.github#261): a JSON array of
+              # reply comment nodes appended after C1.
+              resp="$(jq -n --arg body "$(_prt_test_owned_thread_body)" --arg author "${PRT_TEST_OWNED_AUTHOR:-test-bot}" \
+                --argjson replies "${PRT_TEST_THREAD1_REPLIES:-[]}" '
                 {data:{repository:{pullRequest:{reviewThreads:{
                   pageInfo:{hasNextPage:false,endCursor:null},
                   nodes:[{
                     id:"THREAD1", isResolved:false, isOutdated:false,
                     resolvedBy:null, viewerCanResolve:true, viewerCanUnresolve:true,
                     comments:{pageInfo:{hasNextPage:false,endCursor:null},
-                      nodes:[{id:"C1", databaseId:1, body:$body, author:{login:$author}}]}
+                      nodes:([{id:"C1", databaseId:1, body:$body, author:{login:$author}}] + $replies)}
                   }]
                 }}}}}')"
             fi
@@ -2415,7 +2433,12 @@ fake_curl_orchestrator() {
         case "$url" in
           */pulls/*/comments)
             case "$data" in
-              *in_reply_to*) _prt_test_bump "${PRT_TEST_REPLY_COUNTFILE:?}" >/dev/null ;;
+              *in_reply_to*)
+                _prt_test_bump "${PRT_TEST_REPLY_COUNTFILE:?}" >/dev/null
+                # go-kure/.github#261: PRT_TEST_REPLY_BODY_LOG captures each reply body.
+                [ -n "${PRT_TEST_REPLY_BODY_LOG:-}" ] && \
+                  jq -r '.body' <<< "$data" >> "$PRT_TEST_REPLY_BODY_LOG"
+                ;;
               *commit_id*) _prt_test_bump "${PRT_TEST_CREATE_COUNTFILE:?}" >/dev/null ;;
             esac
             ;;
@@ -2548,6 +2571,8 @@ run_orchestrator() {
     PRT_TEST_LIVE_RESOLVED="${PRT_TEST_LIVE_RESOLVED:-false}" \
     PRT_TEST_LIVE_RESOLVED_COUNTFILE="$scratch/live-resolved-count" \
     PRT_TEST_PATCH_ATTEMPT_COUNTFILE="$scratch/patch-attempt-count" \
+    PRT_TEST_THREAD1_REPLIES="${PRT_TEST_THREAD1_REPLIES:-[]}" \
+    PRT_TEST_REPLY_BODY_LOG="${PRT_TEST_REPLY_BODY_LOG:-}" \
     PRT_TEST_MODEL_RESPONSE_MODE="${PRT_TEST_MODEL_RESPONSE_MODE:-clean}" \
     PRT_TEST_ASSESS_RESPONSE_MODE="${PRT_TEST_ASSESS_RESPONSE_MODE:-clean}" \
     PRT_TEST_ASSESS_ALWAYS_FAIL="${PRT_TEST_ASSESS_ALWAYS_FAIL:-0}" \
@@ -4058,6 +4083,61 @@ assert_eq "orchestrator #252: absence over an uncleared stale stamp (control) ->
   "0 1" "$rc $(cat "$PRT_TEST_RESOLVE_COUNTFILE")"
 PRT_TEST_RECHECK_MODE=
 PRT_TEST_FIRST_ABSENT_SHA=""
+
+# ---- go-kure/.github#261: a failed marker clear holds back the next absence ----
+# Both clears that can fail (loop 1's stamp clear, loop 2's CLEAR_MARKER) post a
+# MAINT_FAILURE reply recording the stamp they left. Row 11 then holds back an
+# absence auto-resolve while the thread still carries that stamp.
+mf_stamp="2222222222222222222222222222222222222222"
+mf_reply_node() { # BODY [AUTHOR] -> a one-element JSON array of reply nodes
+  jq -nc --arg b "$1" --arg a "${2:-test-bot}" '[{id:"C2", databaseId:2, body:$b, author:{login:$a}}]'
+}
+PRT_TEST_REPLY_BODY_LOG="$(mktemp)"
+# (a) Loop 1: the finding is present, the stamp clear PATCH fails.
+PRT_TEST_MODEL_RESPONSE_MODE=clean_with_finding
+PRT_TEST_FIRST_ABSENT_SHA="$mf_stamp"
+PRT_TEST_PATCH_FAIL=1
+: > "$PRT_TEST_REPLY_BODY_LOG"
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #261: loop-1 stamp clear fails -> exits 1, one MAINT_FAILURE reply recording the stamp" \
+  "1 1 $mf_stamp" "$rc $(cat "$PRT_TEST_REPLY_COUNTFILE") $(prt_marker_maint_failure_sha "$(cat "$PRT_TEST_REPLY_BODY_LOG")")"
+# (b) Loop 2: an incomplete run's CLEAR_MARKER fails (Case xiii's setup).
+PRT_TEST_MODEL_RESPONSE_MODE=partial_drop
+PRT_TEST_OWNED_FP="0000000000000000"
+: > "$PRT_TEST_REPLY_BODY_LOG"
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #261: loop-2 CLEAR_MARKER fails -> one MAINT_FAILURE reply recording the stamp" \
+  "1 $mf_stamp" "$(cat "$PRT_TEST_REPLY_COUNTFILE") $(prt_marker_maint_failure_sha "$(cat "$PRT_TEST_REPLY_BODY_LOG")")"
+PRT_TEST_PATCH_FAIL=0
+PRT_TEST_OWNED_FP="$(prt_fp_base x.go other)"
+# (c) The next complete run is an absence at a new head, over the same stamp.
+PRT_TEST_MODEL_RESPONSE_MODE=clean
+PRT_TEST_RECHECK_MODE=false
+PRT_TEST_THREAD1_REPLIES="$(mf_reply_node "$(prt_render_reply_maint_failure "clear failed" "$mf_stamp")")"
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #261: absence over the stamp a MAINT_FAILURE reply recorded -> exits 0, no resolve, NONE" \
+  "0 0 true" "$rc $(cat "$PRT_TEST_RESOLVE_COUNTFILE") $(grep -qE 'absent -> NONE' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+# (d) A later run cleared that stamp and a later absence stamped another head:
+# the reply recorded a different stamp, so it no longer blocks.
+PRT_TEST_THREAD1_REPLIES="$(mf_reply_node "$(prt_render_reply_maint_failure "clear failed" 3333333333333333333333333333333333333333)")"
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #261: the reply recorded an older stamp -> resolves" \
+  "0 1" "$rc $(cat "$PRT_TEST_RESOLVE_COUNTFILE")"
+# (e) A reply from before the state line has no recorded stamp: it blocks.
+PRT_TEST_THREAD1_REPLIES="$(mf_reply_node "$(printf '%s\n**MAINT_FAILURE:** clear failed\n' "$PRT_MARKER_NOTE")")"
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #261: legacy MAINT_FAILURE reply, no recorded stamp -> no resolve" \
+  "0 0" "$rc $(cat "$PRT_TEST_RESOLVE_COUNTFILE")"
+# (f) A bot reply that is not a MAINT_FAILURE does not block (control).
+PRT_TEST_THREAD1_REPLIES="$(mf_reply_node "$(prt_render_reply_absent_resolved)")"
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #261: other bot reply -> resolves (control)" \
+  "0 1" "$rc $(cat "$PRT_TEST_RESOLVE_COUNTFILE")"
+PRT_TEST_THREAD1_REPLIES="[]"
+PRT_TEST_RECHECK_MODE=
+PRT_TEST_FIRST_ABSENT_SHA=""
+rm -f "$PRT_TEST_REPLY_BODY_LOG"
+unset PRT_TEST_REPLY_BODY_LOG
 
 PRT_TEST_OWNED_COLLISION=""
 PRT_TEST_OWNED_CONTENT_FP=""

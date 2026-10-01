@@ -64,19 +64,23 @@ runs on different commits. Resolving this thread automatically.
 EOF
 }
 
-# prt_render_reply_maint_failure REASON — posted when a marker write (e.g.
-# clearing first_absent_sha) failed after retries; structurally independent
-# of the marker itself, so the audit trail survives even when the edit did
-# not.
+# prt_render_reply_maint_failure REASON [FIRST_ABSENT_SHA] — posted when a
+# marker write that should clear first_absent_sha failed after retries;
+# structurally independent of the marker itself, so the audit trail survives
+# even when the edit did not. FIRST_ABSENT_SHA is the stamp left behind; the
+# state line records it so loop 2's row 11 can hold back an absence
+# auto-resolve while the thread still carries it (go-kure/.github#261).
 prt_render_reply_maint_failure() {
   local reason
   reason="$(prt_marker_neutralize "$1")"
   cat <<EOF
 ${PRT_MARKER_NOTE}
+$(prt_marker_build_maint_failure "${2:-}")
 **MAINT_FAILURE:** ${reason}
 
-This thread is excluded from further automated resolve/reopen until a
-maintainer replies here.
+This thread will not be resolved automatically for absence until a later
+run clears its stale absence marker. A maintainer reply here hands the
+thread to humans, as any reply does.
 EOF
 }
 

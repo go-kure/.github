@@ -922,6 +922,10 @@ for ((ti = 0; ti < n_threads; ti++)); do
   content_fp="$(cut -f4 <<< "$parsed")"
 
   has_human_reply=false
+  # go-kure/.github#261: the stamps recorded by this thread's MAINT_FAILURE
+  # replies ("" for a reply that predates the state line). Loop 2's row 11
+  # reads it; any human reply already protects the thread via row 13.
+  maint_failure_shas='[]'
   if ! n_comments="$(jq -r '.comments.nodes | length' <<< "$th" 2>/dev/null)"; then
     prt_inventory_fail "comment count at thread index $ti"
     break
@@ -931,7 +935,14 @@ for ((ti = 0; ti < n_threads; ti++)); do
       prt_inventory_fail "comment body at thread index $ti comment index $ci"
       break
     fi
-    if ! prt_marker_has_note "$cbody"; then has_human_reply=true; fi
+    if ! prt_marker_has_note "$cbody"; then
+      has_human_reply=true
+    elif mf_sha="$(prt_marker_maint_failure_sha "$cbody")"; then
+      if ! maint_failure_shas="$(jq -c --arg s "$mf_sha" '. + [$s]' <<< "$maint_failure_shas" 2>/dev/null)"; then
+        prt_inventory_fail "MAINT_FAILURE stamp at thread index $ti comment index $ci"
+        break
+      fi
+    fi
   done
   [ "$inventory_failed" = 1 ] && break
 
@@ -941,7 +952,8 @@ for ((ti = 0; ti < n_threads; ti++)); do
   # reopen, never a wrong one.
   if ! ownership_row="$(jq -ce --arg fp "$fp" --arg collision "$collision" \
     --arg fas "$first_absent_sha" --arg bot "$PRT_BOT_LOGIN_GQL" \
-    --arg cfp "$content_fp" --argjson hhr "$has_human_reply" '
+    --arg cfp "$content_fp" --argjson hhr "$has_human_reply" \
+    --argjson mfs "$maint_failure_shas" '
       {
         fp:$fp,
         collision:($collision == "true"),
@@ -950,6 +962,7 @@ for ((ti = 0; ti < n_threads; ti++)); do
         resolved:.isResolved,
         resolved_by_bot:(.isResolved and ((.resolvedBy.login // "") == $bot)),
         has_human_reply:$hhr,
+        maint_failure_shas:$mfs,
         thread_id:.id,
         first_comment_id:.comments.nodes[0].id,
         first_comment_db_id:.comments.nodes[0].databaseId,
@@ -1049,7 +1062,8 @@ NONE_ANCHORED_COUNT=0
 # auto-resolve on one absence, not two. Returns 0 only when the PATCH
 # succeeded. Returns 1 otherwise: every failure has already been recorded
 # (prt_handle_freshness_rc / prt_mark_incomplete), and a lift refused because
-# the thread is now resolved is logged, not a failure.
+# the thread is now resolved is logged, not a failure. A failed PATCH on a
+# stamped thread also posts the MAINT_FAILURE reply (go-kure/.github#261).
 prt_persist_owned_collision() {
   local row="$1" fp="$2" flag="$3" context="$4"
   local db_id cur_resp cur_body cfp marker_flag="" new_marker new_body rc
@@ -1096,6 +1110,18 @@ prt_persist_owned_collision() {
   fi
   if [ "$rc" -ne 0 ]; then
     prt_handle_freshness_rc "$rc" "${context} (after up to 3 retries)"
+    # go-kure/.github#261: every rewrite here also clears the absence stamp,
+    # so a failed one leaves it stale. Record that the same way loop 2's
+    # CLEAR_MARKER does, so the next absence at a new head is held back by
+    # row 11 instead of resolving on one absence.
+    local stale_fas
+    stale_fas="$(jq -r '.first_absent_sha // empty' <<< "$row")"
+    if [ -n "$stale_fas" ]; then
+      local reply
+      reply="$(prt_render_reply_maint_failure "clearing the absence marker failed after 3 retries (or went stale mid-retry)" "$stale_fas")"
+      prt_gh_rest POST "/repos/${PRT_REPO}/pulls/${PRT_PR_NUMBER}/comments" \
+        "$(jq -n --arg b "$reply" --argjson r "$db_id" '{body:$b, in_reply_to:$r}')" >/dev/null || true
+    fi
     return 1
   fi
   return 0
@@ -1544,19 +1570,16 @@ if [ "$PRT_MODE" = enforce ]; then
     content_fp="$(jq -r '.content_fp' <<< "$th")"
     [ "$content_fp" = null ] && content_fp=""
 
-    # Simplified from the design's full "unanswered MAINT_FAILURE reply"
-    # detection (ordering-sensitive scan of every reply): a thread that
-    # already carries a human reply is excluded above via has_human_reply,
-    # which also covers the MAINT_FAILURE case in practice (a MAINT_FAILURE
-    # reply itself is bot-authored with the -note marker, so it does not
-    # set has_human_reply; a thread stuck on an unreplied MAINT_FAILURE with
-    # no human reply since falls through to row 10's REPLY_RESOLVE, which
-    # is the intended conservative behavior only if the maintenance failure
-    # was transient — a real gap, tracked below as unanswered_maint_failure
-    # always false, disclosed as a known residual gap in the PR's own review
-    # ledger and iteration comments (dot-github#50 gmr finding R6), not in a
-    # standalone doc this PR doesn't create.
-    unanswered_maint_failure=false
+    # Row 11 (go-kure/.github#261): a failed marker clear left a stale
+    # stamp, and a MAINT_FAILURE reply recorded it. While the thread still
+    # carries that stamp, the next absence at a new head must not read it as
+    # the first of two. Any human reply already stops every absence action
+    # (row 13), so "unanswered" needs no ordering scan here. A reply with no
+    # recorded stamp predates the state line and blocks on any stamp. An
+    # unreadable value holds the resolve back rather than allowing it.
+    unanswered_maint_failure="$(jq -r --arg fas "$first_absent_sha" \
+      '($fas != "") and ((.maint_failure_shas // []) | any(. == $fas or . == ""))' <<< "$th" 2>/dev/null)"
+    [ "$unanswered_maint_failure" = false ] || unanswered_maint_failure=true
 
     action="$(prt_decide_absent "$collision" "$has_human_reply" "$thread_resolved" \
       "$first_absent_sha" "$PRT_HEAD_SHA" "$incomplete_now" "$unanswered_maint_failure")"
@@ -1611,7 +1634,7 @@ if [ "$PRT_MODE" = enforce ]; then
           # that already happened and is structurally independent of the
           # marker (render.sh's prt_render_reply_maint_failure docstring) —
           # deliberately allowed to post even if the head moved meanwhile.
-          reply="$(prt_render_reply_maint_failure "clearing the absence marker failed after 3 retries (or went stale mid-retry)")"
+          reply="$(prt_render_reply_maint_failure "clearing the absence marker failed after 3 retries (or went stale mid-retry)" "$first_absent_sha")"
           prt_gh_rest POST "/repos/${PRT_REPO}/pulls/${PRT_PR_NUMBER}/comments" \
             "$(jq -n --arg b "$reply" --argjson r "$first_comment_db_id" '{body:$b, in_reply_to:$r}')" >/dev/null || true
         fi
