@@ -5150,6 +5150,19 @@ assert_eq "orchestrator #153 (R3-P1): the injected failure was the cap walk's on
   "1" "$(cat "$t153_jq_issue_countfile")"
 rm -f "$t153_jq_issue_countfile"
 unset t153_jq_issue_countfile
+# R4-P1: reading the foreign marker's content_fp fails while the inventory is
+# built. An empty content_fp would let the thread match a finding it was not
+# opened for; the inventory must fail instead, before any write.
+: > "$PRT_TEST_ISSUE_COMMENT_LOG"
+rc="$(
+  # Invoked indirectly by the orchestrator.
+  # shellcheck disable=SC2329
+  cut() { [ "$*" = "-f4" ] && return 5; command cut "$@"; }
+  export -f cut
+  PRT_MAX_FINDINGS_TOTAL=2 run_orchestrator enforce 0 0 0
+)"
+assert_eq "orchestrator #153 (R4-P1): foreign content_fp read fails -> exits 1, inventory fails at the foreign row, no write" \
+  "1 true 0 0 0 0 0 0" "$rc $(grep -qF 'review thread inventory failed at foreign-row construction' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(prt_foreign_writes) $(grep -c '^POST ' "$PRT_TEST_ISSUE_COMMENT_LOG")"
 PRT_TEST_OWNED_CONTENT_FP=""
 PRT_TEST_MODEL_RESPONSE_MODE=clean_with_finding
 
@@ -5209,6 +5222,19 @@ assert_eq "orchestrator #153 (R3-P2): foreign comment enumeration fails -> exits
   "1 true 0 0" "$rc $(grep -qF 'REVIEW_INCOMPLETE: failed to list issue comments while looking for a prior clean-verdict comment' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(grep -c '^PATCH ' "$PRT_TEST_ISSUE_COMMENT_LOG") $(grep -c '^POST ' "$PRT_TEST_ISSUE_COMMENT_LOG")"
 assert_eq "orchestrator #153 (R3-P2): the foreign count is reported as incomplete, not as zero" \
   "true true false" "$(grep -qF 'marked comments by another login (live): 0 or more (a listing failed)' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(grep -qF 'REVIEW_DEGRADED: foreign-marked-comments-unread:' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(grep -qxF 'prt: marked comments by another login (live): 0' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+
+# R4-P2: every listing succeeds, but counting the foreign comments fails. The
+# count must be reported as incomplete, never as zero.
+: > "$PRT_TEST_ISSUE_COMMENT_LOG"
+rc="$(
+  # Invoked indirectly by the orchestrator.
+  # shellcheck disable=SC2329
+  awk() { case "$*" in *'seen[$1]++'*) return 5 ;; esac; command awk "$@"; }
+  export -f awk
+  run_orchestrator enforce 0 0 0
+)"
+assert_eq "orchestrator #153 (R4-P2): counting the foreign comments fails -> exits 0, count reported as incomplete with the degraded reason, not as zero" \
+  "0 true true false" "$rc $(grep -qF 'marked comments by another login (live): 0 or more (a listing failed)' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(grep -qF 'REVIEW_DEGRADED: foreign-marked-comments-unread:' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(grep -qxF 'prt: marked comments by another login (live): 0' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 
 # A foreign comment already superseded reads as stale by its own text: not
 # counted, no reason.
