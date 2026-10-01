@@ -55,12 +55,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           TAG: ${{ inputs.tag }}
+          # The partial state's advice prints a publish-policy.sh command. The
+          # script's own path is on this runner, so print one that fetches the
+          # policy script at this workflow's own commit instead.
+          RELEASE_STATE_POLICY_CMD: bash <(curl -fsSL https://raw.githubusercontent.com/${{ job.workflow_repository }}/${{ job.workflow_sha }}/scripts/release/publish-policy.sh)
         run: |
           set -uo pipefail
-          # The same tag shape release-publish.yml accepts. Checked here so a
-          # typo fails with its own message rather than as an empty run record.
-          if ! printf '%s\n' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-alpha\.[0-9]+|-beta\.[0-9]+|-rc\.[0-9]+)?$'; then
-            echo "::error::'$TAG' is not a release tag (vX.Y.Z, optionally -alpha.N, -beta.N or -rc.N)"
+          # The same tag shape release-publish.yml accepts, matched against the
+          # whole input: grep would match one line of a multi-line value. The
+          # value is not echoed back, since it would land in a workflow command.
+          tag_re='^v[0-9]+\.[0-9]+\.[0-9]+(-alpha\.[0-9]+|-beta\.[0-9]+|-rc\.[0-9]+)?$'
+          if ! [[ "$TAG" =~ $tag_re ]]; then
+            echo "::error::The tag input is not a release tag (vX.Y.Z, optionally -alpha.N, -beta.N or -rc.N)."
             exit 2
           fi
           out="$(mktemp)"
@@ -68,7 +74,12 @@ jobs:
           # here, so the summary is written for an undetermined state too.
           rc=0
           bash .release-tools/scripts/release-state.sh "$REPO" "$TAG" >"$out" 2>&1 || rc=$?
+          # The output quotes names from the repository (workflow and job
+          # names), so no line of it may be read as a workflow command.
+          stop_token="release-state-$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+          echo "::stop-commands::$stop_token"
           cat "$out"
+          echo "::$stop_token::"
           {
             echo "## Release state: \`$REPO\` \`$TAG\`"
             echo
@@ -76,9 +87,9 @@ jobs:
               echo "**No state was determined (exit $rc).** Do not branch on this run; read the output below, fix the cause and dispatch again."
               echo
             fi
-            echo '```'
-            cat "$out"
-            echo '```'
+            # An indented code block, not a fence: no line of the output can
+            # end it, whatever backticks the quoted names carry.
+            sed 's/^/    /' "$out"
             echo
             echo "What each state means and its recovery: https://github.com/go-kure/.github/blob/main/standards/release-process.md#determining-what-a-release-actually-did"
           } >>"$GITHUB_STEP_SUMMARY"

@@ -167,9 +167,14 @@ EOF
             # Publish decides the slot and set_latest from the repository's tags
             # with publish-policy.sh; the advice runs the same script by hand,
             # so it needs no escalation for an older tag (#239).
+            # RELEASE_STATE_POLICY_CMD replaces the printed command when this
+            # script's own path is no use to the reader: the Release / State
+            # workflow runs it from a checkout on the runner (#209).
             local minor="${TAG%.*}"
-            local policy
-            policy="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/release/publish-policy.sh"
+            local policy="${RELEASE_STATE_POLICY_CMD:-}"
+            if [ -z "$policy" ]; then
+                policy="bash \"$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/release/publish-policy.sh\""
+            fi
             cat <<EOF
 The release object exists and the publishing job ran, but it never concluded
 success in any attempt: it failed or was cancelled.
@@ -212,8 +217,8 @@ EOF
 2. Deploy the versioned docs the run skipped, deciding as Publish does, from
    the repository's tags. Run these in a checkout of $REPO right after
    git fetch --tags (a newer tag missing locally makes both answers wrong):
-     bash "$policy" docs $TAG
-     bash "$policy" latest $TAG
+     $policy docs $TAG
+     $policy latest $TAG
    If docs printed false, deploy nothing: a newer stable patch of $minor owns
    that slot. If either printed anything but true or false, stop: there is no
    decision to deploy with. Otherwise run the one line matching latest:

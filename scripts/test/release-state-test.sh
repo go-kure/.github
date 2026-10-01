@@ -613,6 +613,23 @@ assert_eq "printed latest command: v1.3.0 keeps the root" \
 tgit tag v1.2.4
 assert_eq "printed docs command: v1.2.4 owns the v1.2 slot" \
     "false" "$(cd "$tagrepo" && eval "$docs_cmd" 2>&1)"
+# The Release / State workflow runs this script from a checkout on the runner,
+# whose path is no use to the reader, and sets RELEASE_STATE_POLICY_CMD to a
+# command that fetches the policy script at the workflow's own commit (#209).
+# The override replaces the printed command verbatim and still runs as printed;
+# here it reads the local script through the same process-substitution form.
+policy_cmd="bash <(cat \"$policy_abs\")"
+OUT_DEFAULT="$OUT"
+OUT=$(RELEASE_STATE_POLICY_CMD="$policy_cmd" MOCK_DIR="$d" MOCK_LOG="$d/requests.log" \
+    PATH="$BIN:$PATH" bash "$SCRIPT" go-kure/kure v1.2.3 2>&1)
+assert_contains "partial advice prints the RELEASE_STATE_POLICY_CMD override" \
+    "$OUT" "     $policy_cmd docs v1.2.3"$'\n'"     $policy_cmd latest v1.2.3"
+assert_not_contains "partial advice with the override does not name this checkout's path" \
+    "$OUT" "bash \"$policy_abs\" docs"
+override_docs_cmd=$(printf '%s\n' "$OUT" | sed -n 's/^     \(bash <(.*) docs v1\.2\.3\)$/\1/p')
+assert_eq "printed override docs command runs as printed: v1.2.4 owns the v1.2 slot" \
+    "false" "$(cd "$tagrepo" && eval "$override_docs_cmd" 2>&1)"
+OUT="$OUT_DEFAULT"
 assert_not_contains "partial advice no longer escalates for an older tag" \
     "$OUT" "Stop and escalate"
 assert_not_contains "partial advice no longer lists releases" \
