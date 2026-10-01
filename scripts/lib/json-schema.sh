@@ -21,7 +21,10 @@
 # from appearing to check something it does not). Annotations: $schema, $id,
 # $comment, title, description, definitions. Boolean schemas (true/false) are
 # accepted. Each keyword's value is checked for its draft-07 shape (a numeric
-# bound is a number, enum a non-empty list, and so on).
+# bound is a number, enum a non-empty list of distinct values, and so on). A
+# length or item-count bound must be written as plain digits: jq reads
+# 1e-1000 as 0, so 1.0, 1e2 and the like are refused rather than judged by
+# their parsed value.
 #
 # Not supported, by design: allOf/anyOf/oneOf/not, patternProperties,
 # propertyNames, if/then/else, dependencies, format, items as a list, and a
@@ -118,14 +121,17 @@ def _sc($root; $s; $p):
            _err("unknown type(s) \($ts - _types | join(", "))")
          else empty end
      else empty end),
-    (if ($s | has("enum")) and ((($s.enum | type) != "array") or ($s.enum | length) == 0) then
-       _err("enum must be a non-empty array") else empty end),
+    (if ($s | has("enum"))
+        and ((($s.enum | type) != "array") or ($s.enum | length) == 0
+             or ($s.enum | unique | length) != ($s.enum | length)) then
+       _err("enum must be a non-empty array of distinct values") else empty end),
     (if ($s | has("required"))
         and ((($s.required | type) != "array") or any($s.required[]; type != "string")
              or ($s.required | unique | length) != ($s.required | length)) then
        _err("required must be an array of distinct strings") else empty end),
+    # Judged as written, plain digits only: ". == floor" passes 1e-1000 (see the header).
     (["minItems", "minLength", "maxLength"][] as $k
-     | select(($s | has($k)) and ($s[$k] | (type == "number" and . == floor and . >= 0) | not))
+     | select(($s | has($k)) and ($s[$k] | (type == "number" and (tojson | test("^[0-9]+$"))) | not))
      | _err("\($k) must be a non-negative integer")),
     (["minimum", "maximum"][] as $k
      | select(($s | has($k)) and (($s[$k] | type) != "number"))
