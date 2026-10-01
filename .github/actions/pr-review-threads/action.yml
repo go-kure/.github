@@ -71,11 +71,21 @@ inputs:
     default: "AGENTS.md"
   standards-file:
     description: >-
-      Path to the org standards doc, relative to THIS action's own checkout
-      (go-kure/.github at the pinned ref) — not the caller's, unlike
-      agents-file above. Set to empty string to disable.
+      Path to the standards doc injected as PROJECT STANDARDS. Resolved where
+      standards-source says: by default against THIS action's own checkout
+      (go-kure/.github at the pinned ref), not the caller's. Set to empty
+      string to disable, whatever standards-source says.
     required: false
     default: "docs/standards.md"
+  standards-source:
+    description: >-
+      Which checkout standards-file is read from. "action" (default) is this
+      action's own checkout, i.e. go-kure/.github's docs/standards.md. "caller"
+      is the caller's checkout (the working directory), the same place
+      agents-file is read from, for a caller with its own standards document.
+      Any other value fails the run.
+    required: false
+    default: "action"
 
 runs:
   using: composite
@@ -105,5 +115,6 @@ runs:
         PRT_PROJECT_CONTEXT: ${{ inputs.project-context }}
         PRT_AGENTS_FILE: ${{ inputs.agents-file }}
         PRT_STANDARDS_FILE: ${{ inputs.standards-file }}
+        PRT_STANDARDS_SOURCE: ${{ inputs.standards-source }}
       run: |
         bash "$GITHUB_ACTION_PATH/../../../scripts/pr-review-threads.sh"

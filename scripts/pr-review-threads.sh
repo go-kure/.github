@@ -29,10 +29,17 @@
 #   PRT_PROJECT_CONTEXT           default: ""
 #   PRT_AGENTS_FILE               default: AGENTS.md
 #   PRT_STANDARDS_FILE             org standards doc injected as PROJECT
-#                                   STANDARDS, resolved against THIS repo's own
-#                                   checkout (the pinned action's, not the
-#                                   caller's — see the PRT_SCRIPT_DIR note
-#                                   below), default: docs/standards.md
+#                                   STANDARDS, default: docs/standards.md;
+#                                   empty disables it. Where it is read from
+#                                   is PRT_STANDARDS_SOURCE's choice.
+#   PRT_STANDARDS_SOURCE           action|caller, default: action. action
+#                                   resolves PRT_STANDARDS_FILE against THIS
+#                                   repo's own checkout (the pinned action's —
+#                                   see the PRT_SCRIPT_DIR note below); caller
+#                                   resolves it against the working directory,
+#                                   the caller's checkout, like PRT_AGENTS_FILE
+#                                   (go-kure/.github#156). Any other value
+#                                   fails the run before any network call.
 #   PRT_MODEL_BUDGET_SECONDS       seconds reserved for review+assess model
 #                                   calls out of the job's timeout-minutes: 20,
 #                                   default: 1020 (17m) — see the
@@ -56,9 +63,11 @@ set -uo pipefail  # not -e: every stage must run to completion and report,
 # checkout at the pinned action SHA (GitHub Actions checks out the `uses:`
 # repo itself to resolve action.yml/this script, separate from and alongside
 # the caller's checkout, which is what `pwd`/PRT_AGENTS_FILE below resolve
-# against). PROJECT STANDARDS below reads docs/standards.md from THIS
-# location deliberately — that doc lives in go-kure/.github, not in the
-# calling repo (kure/launcher), so a caller-relative read would always miss.
+# against). With PRT_STANDARDS_SOURCE=action (the default), PROJECT STANDARDS
+# below reads docs/standards.md from THIS location deliberately — that doc
+# lives in go-kure/.github, not in the calling repo (kure/launcher), so a
+# caller-relative read would always miss. PRT_STANDARDS_SOURCE=caller is for a
+# caller that brings its own standards document instead (go-kure/.github#156).
 PRT_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PRT_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/lib/prt" && pwd)"
 # shellcheck source=scripts/lib/prt/state.sh
@@ -96,6 +105,9 @@ source "$PRT_LIB_DIR/reconcile.sh"
 if [ -z "${PRT_STANDARDS_FILE+set}" ]; then
   PRT_STANDARDS_FILE="docs/standards.md"
 fi
+# `:=` here, unlike the standards file itself: an empty source has no
+# "disabled" meaning to preserve, so it takes the default like the rest.
+: "${PRT_STANDARDS_SOURCE:=action}"
 
 # PRT_MODEL_DEADLINE_EPOCH bounds every review/assess model call
 # (model.sh:_prt_call_proxy) to a reserved slice of this job's own
@@ -182,6 +194,16 @@ if [ "$PRT_MODE" = off ]; then
   exit 0
 fi
 
+# go-kure/.github#156: a misspelt source must not quietly read the standards
+# from the other checkout (or from nowhere) and review against the wrong
+# rules — a configuration error that fails the run before any network call,
+# not degraded like an unknown PRT_MODE. Checked after the off short-circuit
+# above, so the incident escape hatch keeps working whatever this says.
+case "$PRT_STANDARDS_SOURCE" in
+  action|caller) : ;;
+  *) echo "ERROR: PRT_STANDARDS_SOURCE must be 'action' or 'caller', got '$PRT_STANDARDS_SOURCE'" >&2; exit 1 ;;
+esac
+
 # --- Fetch PR diff + metadata ---
 DIFF_FILE="$WORKDIR/full.diff"
 # Wrapped in prt_retry (gh.sh:208-235): a transient 5xx/timeout here used to
@@ -251,13 +273,25 @@ PROJECT_AGENTS=""
 [ -n "$PRT_AGENTS_FILE" ] && [ -f "$PRT_AGENTS_FILE" ] && PROJECT_AGENTS="$(cat "$PRT_AGENTS_FILE")"
 PROJECT_CLAUDE_MD=""
 [ -f ".claude/CLAUDE.md" ] && PROJECT_CLAUDE_MD="$(cat ".claude/CLAUDE.md")"
-# Deliberately PRT_SCRIPT_DIR-relative, not cwd-relative like the two reads
-# above — docs/standards.md lives in go-kure/.github's own tree, not the
+# action (default): PRT_SCRIPT_DIR-relative, not cwd-relative like the two
+# reads above — docs/standards.md lives in go-kure/.github's own tree, not the
 # calling repo's checkout that PROJECT_AGENTS/PROJECT_CLAUDE_MD read from.
+# caller (go-kure/.github#156): cwd-relative, exactly like PRT_AGENTS_FILE
+# above, and like it with no path checks (no absolute-path or `..` refusal):
+# the caller names a file in its own checkout. A missing file reads as no
+# standards in both modes, as a missing agents file does, but is logged.
 PROJECT_STANDARDS=""
 if [ -n "$PRT_STANDARDS_FILE" ]; then
-  _prt_standards_path="$PRT_SCRIPT_DIR/../$PRT_STANDARDS_FILE"
-  [ -f "$_prt_standards_path" ] && PROJECT_STANDARDS="$(cat "$_prt_standards_path")"
+  if [ "$PRT_STANDARDS_SOURCE" = caller ]; then
+    _prt_standards_path="$PRT_STANDARDS_FILE"
+  else
+    _prt_standards_path="$PRT_SCRIPT_DIR/../$PRT_STANDARDS_FILE"
+  fi
+  if [ -f "$_prt_standards_path" ]; then
+    PROJECT_STANDARDS="$(cat "$_prt_standards_path")"
+  else
+    prt_log "standards file '$PRT_STANDARDS_FILE' not found in the $PRT_STANDARDS_SOURCE checkout; reviewing without PROJECT STANDARDS"
+  fi
   unset _prt_standards_path
 fi
 
