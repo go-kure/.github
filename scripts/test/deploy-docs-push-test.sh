@@ -446,6 +446,93 @@ deploy inputs v1.2 v1.2.0 false --max-attempts 0
 assert_eq "zero attempts: exit 1" 1 "$RC"
 assert_eq "refused inputs: nothing pushed" "$before" "$(pages_tip inputs)"
 
+# ── 8. --remove: the slot goes, a raced push is retried ───────────────────
+# go-kure/.github#259. remove <name> <slot> [extra args...]: runs the removal as
+# the action does; sets OUT and RC.
+remove() {
+    local d="$WORK/$1" slot="$2"
+    shift 2
+    OUT=$(RACE_DIR="$d" RACE_LIMIT="${RACE_LIMIT:-0}" RACE_FETCH="${RACE_FETCH:-}" \
+        bash "${SCRIPT_UNDER_TEST:-$SCRIPT}" --remove --target "$d/target" \
+        --site-subdir kure --slot "$slot" --max-attempts 3 --backoff 0 "$@" 2>&1)
+    RC=$?
+}
+
+new_case rm v1.2.0
+remove rm v1.1
+assert_eq "remove: exit 0" 0 "$RC"
+assert_eq "remove: the slot is gone" "" "$(pages_file rm kure/v1.1/index.html)"
+assert_eq "remove: the root is kept" "root seed" "$(pages_file rm kure/index.html)"
+assert_eq "remove: another site is kept" "launcher seed" "$(pages_file rm launcher/index.html)"
+assert_eq "remove: no CNAME is written" "" "$(pages_file rm CNAME)"
+assert_eq "remove: the commit names the slot" "docs: remove /kure/v1.1/ version" "$(pages_subject rm)"
+assert_contains "remove: says so" "$OUT" "Removed: docs: remove /kure/v1.1/ version"
+
+# Another slot's deploy lands between this removal's fetch and its push: the
+# remote refuses the update, and the retry removes the slot on the new tip.
+new_case rmrace v1.2.0
+racer rmrace
+RACE_LIMIT=1 remove rmrace v1.1
+assert_eq "remove, raced: exit 0" 0 "$RC"
+assert_contains "remove, raced: the rejection is reported" "$OUT" "push to main rejected (attempt 1/3)"
+assert_eq "remove, raced: two pushes" 2 "$(cat "$WORK/rmrace/push-count")"
+assert_eq "remove, raced: the slot is gone" "" "$(pages_file rmrace kure/v1.1/index.html)"
+assert_eq "remove, raced: the other slot's deploy is kept" "other 1" "$(pages_file rmrace kure/v9.1/index.html)"
+assert_eq "remove, raced: the other slot's commit is the parent" "deploy: other slot 1" \
+    "$(git -C "$WORK/rmrace/pages.git" log -1 --format=%s main~1)"
+
+# The same race, refused by git before the push starts (fetch first).
+new_case rmfetch v1.2.0
+racer rmfetch post-commit
+RACE_LIMIT=1 remove rmfetch v1.1
+assert_eq "remove, fetch first: exit 0" 0 "$RC"
+assert_eq "remove, fetch first: the slot is gone" "" "$(pages_file rmfetch kure/v1.1/index.html)"
+assert_eq "remove, fetch first: the other slot's deploy is kept" "other 1" "$(pages_file rmfetch kure/v9.1/index.html)"
+
+# Always raced: fails after the bounded number of attempts, slot kept.
+new_case rmrejected v1.2.0
+racer rmrejected
+RACE_LIMIT=99 remove rmrejected v1.1
+assert_eq "remove, always rejected: exit 1" 1 "$RC"
+assert_contains "remove, always rejected: says so" "$OUT" "push to main still rejected after 3 attempts"
+assert_eq "remove, always rejected: three pushes" 3 "$(cat "$WORK/rmrejected/push-count")"
+assert_eq "remove, always rejected: the slot is kept" "v1.1 seed" "$(pages_file rmrejected kure/v1.1/index.html)"
+
+# A slot that does not exist fails, and nothing is pushed.
+new_case rmmissing v1.2.0
+before=$(pages_tip rmmissing)
+remove rmmissing v7.7
+assert_eq "remove, no such slot: exit 1" 1 "$RC"
+assert_contains "remove, no such slot: says so" "$OUT" "/kure/v7.7/ does not exist on main; nothing to remove"
+assert_eq "remove, no such slot: nothing pushed" "$before" "$(pages_tip rmmissing)"
+
+# A refusal that no retry can fix is not retried.
+new_case rmdeclined v1.2.0
+before=$(pages_tip rmdeclined)
+printf '#!/usr/bin/env bash\ncat >/dev/null\necho "declined by the test" >&2\nexit 1\n' > "$WORK/rmdeclined/pages.git/hooks/pre-receive"
+chmod +x "$WORK/rmdeclined/pages.git/hooks/pre-receive"
+remove rmdeclined v1.1
+assert_eq "remove, hook declines: exit 1" 1 "$RC"
+assert_contains "remove, hook declines: names the refusal" "$OUT" "although the branch did not move; not retrying"
+assert_eq "remove, hook declines: nothing pushed" "$before" "$(pages_tip rmdeclined)"
+
+# Refused inputs: the same slot rules as a deploy, and no deploy-only option.
+new_case rminputs v1.2.0
+before=$(pages_tip rminputs)
+remove rminputs ../v1.1
+assert_eq "remove, slot with a path: exit 1" 1 "$RC"
+assert_contains "remove, slot with a path: says so" "$OUT" "slot '../v1.1' is not a single path segment"
+remove rminputs launcher
+assert_eq "remove, slot a root write would delete: exit 1" 1 "$RC"
+assert_contains "remove, slot a root write would delete: says so" "$OUT" "slot 'launcher' is neither 'dev' nor a 'v*' version slot"
+remove rminputs v1.1 --label v1.1.0
+assert_eq "remove with a deploy option: exit 1" 1 "$RC"
+assert_contains "remove with a deploy option: names it" "$OUT" "--remove takes no --label"
+remove rminputs v1.1 --cname example.invalid --slot-site "$WORK/rminputs/build/slot"
+assert_contains "remove with two deploy options: names both" "$OUT" "--remove takes no --cname --slot-site"
+assert_eq "remove, refused inputs: nothing pushed" "$before" "$(pages_tip rminputs)"
+assert_eq "remove, refused inputs: the slot is kept" "v1.1 seed" "$(pages_file rminputs kure/v1.1/index.html)"
+
 # ── Result ────────────────────────────────────────────────────────────────
 
 if [ "$failures" -gt 0 ]; then
