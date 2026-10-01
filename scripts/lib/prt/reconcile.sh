@@ -196,7 +196,7 @@ prt_effective_collision() {
 # fp, or empty when no foreign row has the fp at all). Returns 1 when any
 # read fails, never a guessed action.
 prt_foreign_action() {
-  local foreign="$1" finding="$2" fp has verdict collision this_cfp sel cls author action
+  local foreign="$1" finding="$2" fp has verdict collision issue fix this_cfp sel cls author action
   fp="$(jq -r '.fp' <<< "$finding" 2>/dev/null)" || return 1
   has="$(jq --arg fp "$fp" 'any(.[]; .fp == $fp)' <<< "$foreign" 2>/dev/null)" || return 1
   case "$has" in
@@ -206,7 +206,12 @@ prt_foreign_action() {
   esac
   verdict="$(jq -r '.verdict // "NONE"' <<< "$finding" 2>/dev/null)" || return 1
   collision="$(jq -r '.collision // false' <<< "$finding" 2>/dev/null)" || return 1
-  this_cfp="$(prt_content_fp "$(jq -r '.issue' <<< "$finding")" "$(jq -r '.fix' <<< "$finding")")"
+  # A failed read here would hash the wrong text: the content_fp check below
+  # would then call a matching row "not this finding" and release it.
+  issue="$(jq -r '.issue' <<< "$finding" 2>/dev/null)" || return 1
+  fix="$(jq -r '.fix' <<< "$finding" 2>/dev/null)" || return 1
+  this_cfp="$(prt_content_fp "$issue" "$fix")" || return 1
+  [[ "$this_cfp" =~ ^[0-9a-f]{16}$ ]] || return 1
   sel="$(jq -r --arg fp "$fp" --arg cfp "$this_cfp" '
     [.[] | select(.fp == $fp)] as $all
     | [$all[] | select((.content_fp // "") == "" or .content_fp == $cfp)] as $m
