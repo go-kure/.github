@@ -239,8 +239,19 @@ partly publish, or never publish — and what is the safe recovery? Answering th
 the run page is unreliable, because six separate facts have to be held at once and each one
 is a route to a confidently wrong conclusion.
 **[`scripts/release-state.sh`](https://github.com/go-kure/.github/blob/main/scripts/release-state.sh)
-answers it instead**. It lives in `go-kure/.github` alongside the shared publish workflow, and is
-run from a checkout of that repository:
+answers it instead**. Run it from the release repository's own **Release / State** workflow: no
+checkout and no token of your own, because it runs under that repository's token.
+
+```bash
+gh workflow run release-state.yml --repo go-kure/<repo> -f tag=v0.2.0-beta.11
+gh run watch --repo go-kure/<repo> \
+  "$(gh run list --repo go-kure/<repo> --workflow release-state.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
+```
+
+Or, in the repository, open Actions, then **Release / State**, then **Run workflow** with the tag. The
+verdict is in the run's job summary. A red run means no state was determined (below): do not
+branch on it. From a checkout of `go-kure/.github`, with a token that can read the repository's
+runs and releases, the script runs directly as well:
 
 ```bash
 scripts/release-state.sh go-kure/<repo> v0.2.0-beta.11
