@@ -532,7 +532,9 @@ against closed schemas: `governance/repository-settings-policy.schema.json` and
 `standards/labels.schema.json`. They are standard draft-07 JSON Schema, checked by
 `scripts/lib/json-schema.sh` (jq, so no further tool is needed). It checks the whole schema
 before any data, so a keyword outside its subset or a malformed keyword value fails the run
-even in a branch no data reaches, and it refuses NaN or Infinity in either file. Every object
+even in a branch no data reaches, and it refuses NaN or Infinity in either file. A `pattern`
+construct that jq would read differently from ECMA-262 (`\d`, `.`, inline flags and the like)
+and a nested `$id` are schema errors too, and an integer value must be written as plain digits. Every object
 refuses a key the script does not read, at every tier: the top level, `github_defaults`, each `github_repos`
 override, `github_org`, each ruleset with its conditions and bypass actors, and each rule's
 parameters. An exact lookup would miss a misspelled key and apply the default, or an incomplete

@@ -18,13 +18,15 @@
 # minItems, uniqueItems, minLength, maxLength, pattern, minimum, maximum, and
 # $ref to "#/definitions/<name>" with no sibling keyword other than an
 # annotation (draft-07 ignores $ref's siblings; refusing them keeps a schema
-# from appearing to check something it does not). Annotations: $schema, $id,
+# from appearing to check something it does not). Annotations: $schema, $id
+# (on the root only: a nested $id would scope the $refs under it),
 # $comment, title, description, definitions. Boolean schemas (true/false) are
 # accepted. Each keyword's value is checked for its draft-07 shape (a numeric
 # bound is a number, enum a non-empty list of distinct values, and so on). A
 # length or item-count bound must be written as plain digits: jq reads
 # 1e-1000 as 0, so 1.0, 1e2 and the like are refused rather than judged by
-# their parsed value.
+# their parsed value. For the same reason a data value of type "integer" must
+# be written as plain digits.
 #
 # Not supported, by design: allOf/anyOf/oneOf/not, patternProperties,
 # propertyNames, if/then/else, dependencies, format, items as a list, and a
@@ -38,6 +40,10 @@
 # its very end. jq's "$" also matches before a final newline, so a leading "^"
 # and a trailing "$" are rewritten to \A and \z before matching, and "^" or "$"
 # anywhere else (outside a character class, unescaped) is a schema error.
+# So is any construct jq would read differently from ECMA-262: letter and
+# digit escapes such as \d (Unicode digits in jq), ".", "(?" groups other
+# than "(?:", "{,", possessive quantifiers, an empty class, and "[" or "&"
+# inside a class.
 #
 # Input is JSON only: NaN, Infinity and numbers too large for a double, which
 # jq would otherwise read, make the check fail in schema and data alike.
@@ -59,9 +65,13 @@ def _fmt:
          else "[\($k | tojson)]" end))
   end;
 
-def _jtype: if type == "number" and . == floor then "integer" else type end;
+# An integer is judged as written, plain digits only, like the schema bounds:
+# ". == floor" passes 1e-1000, which jq keeps as written in its output.
+def _int: type == "number" and (tojson | test("^-?[0-9]+$"));
 
-def _type_ok($t): if $t == "integer" then (type == "number" and . == floor) else type == $t end;
+def _jtype: if _int then "integer" else type end;
+
+def _type_ok($t): if $t == "integer" then _int else type == $t end;
 
 def _types: ["object", "array", "string", "integer", "number", "boolean", "null"];
 
@@ -84,6 +94,34 @@ def _anchors:
         else . end)
   | {len: ($cs | length), at};
 
+# The first construct of a pattern whose meaning in jq (Oniguruma) is not its
+# ECMA-262 meaning, or null: "\d", "\w", "\s", "\b" and every other letter
+# or digit escape (Oniguruma \d matches any Unicode digit), ".", "(?" other
+# than "(?:", "{,", a possessive "+", and, inside a class, "[" (nested sets,
+# "[:alpha:]"), "&" ("&&" intersection) and an empty "[]".
+def _pattern_unsupported:
+  (explode | map([.] | implode)) as $cs
+  # q: the previous token was a quantifier ("*", "+", "?" or a closing "}").
+  | reduce range(0; $cs | length) as $i ({esc: false, cls: false, cstart: -1, q: false, bad: null};
+      $cs[$i] as $c
+      | if .bad != null then .
+        elif .esc then (if ($c | test("^[A-Za-z0-9]$")) then .bad = "\\" + $c else . end) | .esc = false | .q = false
+        elif $c == "\\" then .esc = true
+        elif .cls then
+          if $c == "]" then (if $i == .cstart then .bad = "[]" else .cls = false end)
+          elif $c == "^" and $i == .cstart then .cstart = $i + 1
+          elif $c == "[" or $c == "&" then .bad = $c + " in a character class"
+          else . end
+        elif $c == "+" and .q then .bad = "a possessive quantifier"
+        elif $c == "*" or $c == "+" or $c == "}" then .q = true
+        elif $c == "?" then .q = (.q | not)
+        elif $c == "[" then .cls = true | .cstart = $i + 1 | .q = false
+        elif $c == "." then .bad = "."
+        elif $c == "(" and ($cs[$i + 1] // "") == "?" and ($cs[$i + 2] // "") != ":" then .bad = "(?"
+        elif $c == "{" and ($cs[$i + 1] // "") == "," then .bad = "{,"
+        else .q = false end)
+  | .bad;
+
 def _anchors_ok: _anchors as $a
   | all($a.at[]; (.i == 0 and .c == "^") or (.i == $a.len - 1 and .c == "$"));
 
@@ -102,6 +140,10 @@ def _sc($root; $s; $p):
     (["$schema", "$id", "$comment", "title", "description"][] as $k
      | select(($s | has($k)) and (($s[$k] | type) != "string"))
      | _err("\($k) must be a string")),
+    # A nested $id would open its own scope for the $refs under it, which this
+    # validator does not track: every $ref resolves against the root.
+    (if ($s | has("$id")) and ($p | length) > 0 then
+       _err("$id is supported only on the root schema") else empty end),
     (if ($s | has("$ref")) then
        $s["$ref"] as $ref
        | if ($s | keys - ["$ref", "$schema", "$id", "$comment", "title", "description", "definitions"] | length) > 0 then
@@ -143,6 +185,8 @@ def _sc($root; $s; $p):
        | if ($pat | type) != "string" then _err("pattern must be a string")
          elif ($pat | _anchors_ok | not) then
            _err("pattern \($pat | tojson): \"^\" or \"$\" anywhere but its very start or end is not supported")
+         elif ($pat | _pattern_unsupported) != null then
+           _err("pattern \($pat | tojson): \($pat | _pattern_unsupported) is not supported (jq does not give it its ECMA-262 meaning)")
          elif (try ("" | test($pat | _ecma) | false) catch true) then
            _err("pattern \($pat | tojson) does not compile")
          else empty end

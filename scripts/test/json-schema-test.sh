@@ -169,6 +169,31 @@ assert_eq "pattern: ^ and \$ inside a class are literals" "0|" "$(check '{"patte
 assert_eq "pattern: ^ in the middle is a schema error" '2|schema error: at (root): pattern "a^b": "^" or "$" anywhere but its very start or end is not supported' "$(check '{"pattern": "a^b"}' '"x"')"
 assert_eq "pattern: \$ in the middle is a schema error" "2" "$(check '{"pattern": "a$|b"}' '"x"' | cut -d'|' -f1)"
 
+# A construct jq reads differently from ECMA-262 is a schema error, never
+# matched with jq's meaning: jq's \d accepts the Arabic-Indic digit ١.
+assert_eq "pattern: \\d is a schema error" \
+  '2|schema error: at (root): pattern "^\\d+$": \d is not supported (jq does not give it its ECMA-262 meaning)' \
+  "$(check '{"pattern": "^\\d+$"}' '"١"')"
+for p in '\\w' '\\s' '\\b' '\\1' 'a.b' '(?i)a' '(?<n>a)' 'a{,3}' 'a++' 'a*+' '[a]++' '[[:alpha:]]' '[a&&b]' '[]a]' '[^]a]'; do
+  assert_eq "pattern: $p is a schema error" "2" "$(check "{\"pattern\": \"$p\"}" '"a"' | cut -d'|' -f1)"
+done
+assert_eq "pattern: an escaped . is a literal" "0|" "$(check '{"pattern": "^a\\.b$"}' '"a.b"')"
+assert_eq "pattern: a lazy quantifier is accepted" "0|" "$(check '{"pattern": "^a+?$"}' '"aa"')"
+assert_eq "pattern: a (?: group is accepted" "0|" "$(check '{"pattern": "^(?:ab)+$"}' '"abab"')"
+assert_eq "pattern: an escaped + after a quantifier is a literal" "0|" "$(check '{"pattern": "^a*\\+$"}' '"aa+"')"
+
+# An integer is judged as written: jq reads 1e-1000 as 0 but writes it back
+# unchanged, so it must not pass as the integer 0.
+assert_eq "integer: 1e-1000 is not an integer" "1|(root): expected integer, got number" "$(check '{"type": "integer"}' '1e-1000')"
+assert_eq "integer: 1.0 is refused, as written" "1|(root): expected integer, got number" "$(check '{"type": "integer"}' '1.0')"
+assert_eq "integer: a negative integer passes" "0|" "$(check '{"type": "integer"}' '-3')"
+
+# $id is an annotation on the root only: a nested one would scope the $refs
+# under it, and every $ref here resolves against the root.
+assert_eq "\$id: a nested \$id is a schema error" \
+  '2|schema error: at properties.c: $id is supported only on the root schema' \
+  "$(check '{"properties": {"c": {"$id": "x", "type": "string"}}}' '{}')"
+
 assert_eq "data that is not JSON cannot be checked" "2" "$(check '{}' '{not json' | cut -d'|' -f1)"
 assert_eq "empty data cannot be checked" "2" "$(check '{}' '' | cut -d'|' -f1)"
 assert_eq "two JSON documents cannot be checked" "2" "$(check '{}' '{} {}' | cut -d'|' -f1)"
