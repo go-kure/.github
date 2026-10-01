@@ -174,7 +174,7 @@ assert_eq "pattern: \$ in the middle is a schema error" "2" "$(check '{"pattern"
 assert_eq "pattern: \\d is a schema error" \
   '2|schema error: at (root): pattern "^\\d+$": \d is not supported (jq does not give it its ECMA-262 meaning)' \
   "$(check '{"pattern": "^\\d+$"}' '"١"')"
-for p in '\\w' '\\s' '\\b' '\\1' 'a.b' '(?i)a' '(?<n>a)' 'a{,3}' 'a++' 'a*+' '[a]++' 'a**' 'a+?+' 'a*?*' 'a??*' 'a*{2}' 'a{2}{3}' 'a{2}+' '[[:alpha:]]' '[a&&b]' '[]a]' '[^]a]'; do
+for p in '\\w' '\\s' '\\b' '\\1' 'a.b' '(?i)a' '(?<n>a)' 'a++' 'a*+' '[a]++' 'a**' 'a+?+' 'a*?*' 'a??*' 'a*{2}' 'a{2}{3}' 'a{2}+' '[[:alpha:]]' '[a&&b]' '[]a]' '[^]a]'; do
   assert_eq "pattern: $p is a schema error" "2" "$(check "{\"pattern\": \"$p\"}" '"a"' | cut -d'|' -f1)"
 done
 assert_eq "pattern: an escaped . is a literal" "0|" "$(check '{"pattern": "^a\\.b$"}' '"a.b"')"
@@ -182,6 +182,13 @@ assert_eq "pattern: a lazy quantifier is accepted" "0|" "$(check '{"pattern": "^
 assert_eq "pattern: a lazy ? and a lazy {n} are accepted" "0|" "$(check '{"pattern": "^a??b{2}?$"}' '"bb"')"
 assert_eq "pattern: a (?: group is accepted" "0|" "$(check '{"pattern": "^(?:ab)+$"}' '"abab"')"
 assert_eq "pattern: an escaped + after a quantifier is a literal" "0|" "$(check '{"pattern": "^a*\\+$"}' '"aa+"')"
+# A brace that does not open {n}, {n,} or {n,m} is a literal in both.
+assert_eq "pattern: a {name} brace is a literal" "0|" "$(check '{"pattern": "^[a-z]+{name}$"}' '"abc{name}"')"
+assert_eq "pattern: a lone } takes a quantifier" "0|" "$(check '{"pattern": "^a}*$"}' '"a}}"')"
+assert_eq "pattern: {,3} is a literal" "0|" "$(check '{"pattern": "^a{,3}$"}' '"a{,3}"')"
+assert_eq "pattern: {,3} does not repeat" "1" "$(check '{"pattern": "^a{,3}$"}' '"aa"' | cut -d'|' -f1)"
+assert_eq "pattern: {n,} and {n,m} repeat" "0|" "$(check '{"pattern": "^a{2,}b{1,2}$"}' '"aaabb"')"
+assert_eq "pattern: a literal brace may follow a quantifier" "0|" "$(check '{"pattern": "^a*{x}$"}' '"aa{x}"')"
 
 # An integer is judged as written: jq reads 1e-1000 as 0 but writes it back
 # unchanged, so it must not pass as the integer 0.
