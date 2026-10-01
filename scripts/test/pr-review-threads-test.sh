@@ -5006,6 +5006,38 @@ assert_eq "orchestrator #153 (R1-P2b): open foreign thread with an equal content
   "0 0 0 0 0 0 true" "$rc $(prt_foreign_writes) $(grep -qF -- "-> FOREIGN (thread opened by github-actions, read-only)" "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 PRT_TEST_OWNED_CONTENT_FP=""
 
+# R2-P3: prt_foreign_action fails in loop 1 after the cap walk ran it on the
+# same input (open foreign thread, so the cap walk decided EXISTING and left
+# the finding out of the CREATE candidates). The NOMATCH fallback alone would
+# route the finding to a non-gating OVERFLOW and exit 0; the run must be
+# REVIEW_INCOMPLETE instead. Seam: an exported jq shim, inherited by the
+# orchestrator subprocess, fails the row-selection filter only prt_foreign_action
+# uses, from its second call on (call 1 is the cap walk, call 2 loop 1), so
+# the cap walk succeeds and only loop 1's decision fails.
+: > "$PRT_TEST_ISSUE_COMMENT_LOG"
+t153_jq_sel_countfile="$(mktemp)"
+echo 0 > "$t153_jq_sel_countfile"
+rc="$(
+  # Invoked indirectly by the orchestrator; the $cfp is the literal jq filter text.
+  # shellcheck disable=SC2329,SC2016
+  jq() {
+    case "$*" in
+      *'.content_fp == $cfp'*)
+        [ "$(_prt_test_bump "$PRT_TEST_JQ_SEL_COUNTFILE")" -ge 2 ] && return 5 ;;
+    esac
+    command jq "$@"
+  }
+  export -f jq
+  export PRT_TEST_JQ_SEL_COUNTFILE="$t153_jq_sel_countfile"
+  run_orchestrator enforce 0 0 0
+)"
+assert_eq "orchestrator #153 (R2-P3): foreign-thread decision fails in loop 1 only -> exits 1, REVIEW_INCOMPLETE names the fp" \
+  "1 true" "$rc $(grep -qF "REVIEW_INCOMPLETE: foreign-thread decision failed for fp=$(prt_fp_base x.go other)" "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator #153 (R2-P3): the cap walk's call succeeded (no cap abort) and loop 1's was the failing one" \
+  "false 2" "$(grep -qF 'review inventory cap evaluation failed' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(cat "$t153_jq_sel_countfile")"
+rm -f "$t153_jq_sel_countfile"
+unset t153_jq_sel_countfile
+
 # The finding is gone and the foreign thread carries an absence stamp from an
 # earlier head: an owned thread would be resolved here (second absence). A
 # foreign one gets no resolve, no reply and no marker rewrite.

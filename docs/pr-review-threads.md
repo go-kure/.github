@@ -143,7 +143,9 @@ the cap walk:
   In case 2 a collision among this run's own findings quarantines the finding (row 1), as on an
   own resolved thread. `prt_cap_foreign_rows` runs the same decision for the cap walk and keeps
   every finding that takes the no-thread path among the CREATE candidates; a failed read there
-  aborts the run as `REVIEW_INCOMPLETE` before any write.
+  aborts the run as `REVIEW_INCOMPLETE` before any write. A failed decision in loop 1 also marks
+  the run `REVIEW_INCOMPLETE` (`foreign-thread decision failed for fp=<fp>`), and the finding takes
+  the no-thread path.
 - **A foreign resolution is not trusted.** The marker is editable by the comment's author, so a
   participant can add a finding's fingerprint (and drop the content fingerprint) on an old
   comment of theirs that anyone resolved long ago. A resolved foreign thread therefore never
