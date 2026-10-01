@@ -131,5 +131,25 @@ rc=$?
 assert_eq "flag lies about uneven exclusions: exit 2, not a passed verdict" "2" "$rc"
 assert_match "flag lies about uneven exclusions: names the reason" "denominator_stable is not true" "$out"
 
+# --- score_quarantined differs: refused (go-kure/.github#182) ---
+write_result "$WORK/baseline.json" chat 0.50 0.02 '.score_quarantined = false'
+write_result "$WORK/candidate.json" service 0.60 0.02 '.score_quarantined = true'
+out="$(bash "$COMPARE" "$WORK/baseline.json" "$WORK/candidate.json" 2>&1)"
+rc=$?
+assert_eq "score_quarantined mismatch: exit 2" "2" "$rc"
+assert_match "score_quarantined mismatch: names the field" "score_quarantined=false vs true" "$out"
+
+# --- score_quarantined absent reads as false: an older baseline (which always dropped
+# quarantined findings) compares against a new default run, and not against a scored one ---
+write_result "$WORK/baseline.json" chat 0.50 0.02
+write_result "$WORK/candidate.json" service 0.60 0.02 '.score_quarantined = false'
+out="$(bash "$COMPARE" "$WORK/baseline.json" "$WORK/candidate.json" 2>&1)"
+rc=$?
+assert_eq "absent score_quarantined vs false: comparable, exit 0" "0" "$rc"
+write_result "$WORK/candidate.json" service 0.60 0.02 '.score_quarantined = true'
+out="$(bash "$COMPARE" "$WORK/baseline.json" "$WORK/candidate.json" 2>&1)"
+rc=$?
+assert_eq "absent score_quarantined vs true: exit 2" "2" "$rc"
+
 echo "passed: $pass_count, failed: $failures"
 [ "$failures" -eq 0 ]

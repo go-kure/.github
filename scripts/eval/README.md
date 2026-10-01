@@ -337,14 +337,21 @@ the harness applies both before judging:
   measuring the review call in isolation; the result records `assess: false` and `compare.sh`
   refuses to compare it against an assessed one.
 - **`collision`** — `prt_assign_ordinals` sets this on *every* member of a group sharing a file
-  and a category, and the decide table's first row returns `NONE` for each. Nothing publishes
-  them.
+  and a category, and the decide table's first row quarantines each one: no review thread. By
+  default the harness drops these too.
 
-Filtering one and not the other measures neither the engine nor the product. The consequence is
-worth stating plainly: an engine emitting several findings per file and category scores lower
-here. That is a real property of the delivered system — those findings are withheld today — not
-a scoring artefact. An engine meant to be judged *before* the thread lifecycle needs a flag and a
-paragraph here, not a silent removal of the filter.
+**The `collision` drop no longer matches the product, and `--score-quarantined` turns it off.**
+Since go-kure/.github#180, a quarantined finding's body is published in the "Withheld AI Review
+Findings" table of the PR's advisory comment and counted in `quarantined=N`. It is kept out of the
+thread lifecycle, not hidden from the reader. So by default an engine that emits several findings
+per file and category scores lower here than the delivered system warrants.
+
+The drop stays the default only because every recorded baseline was measured with it. A result
+records `score_quarantined`, and `compare.sh` refuses to compare a result scored one way against
+one scored the other. A result without the field predates the flag and reads as `false`: every
+result `compare.sh` accepts was written after the collision drop was added. To make
+`--score-quarantined` the default, re-measure the baselines with it first, then flip it in the
+same change (go-kure/.github#182).
 
 Such a document is **excluded from both sides of the fraction**, never scored as a miss.
 Counting its gold rows against the reviewer would repeat the error the adapter refuses to make

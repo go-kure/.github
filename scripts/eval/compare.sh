@@ -93,6 +93,17 @@ if [ "$b_assess" != "$c_assess" ]; then
 fi
 [ "$b_assess" != "unknown" ] || die "assess is missing from at least one result; re-measure with a run.sh that records it"
 
+# Whether collision-quarantined findings were judged (run.sh --score-quarantined). Unlike the
+# fields above, an absent value has a known meaning for every result that gets this far. The
+# collision drop (9111a9e) predates both context_sha (bd23c46) and assess (9dc3357), which the
+# gates above require. So any result they accept was written by a run.sh that dropped quarantined
+# findings unconditionally: score_quarantined=false. Older results never reach this line.
+b_sq=$(jq -r 'if has("score_quarantined") then (.score_quarantined | tostring) else "false" end' "$baseline")
+c_sq=$(jq -r 'if has("score_quarantined") then (.score_quarantined | tostring) else "false" end' "$candidate")
+if [ "$b_sq" != "$c_sq" ]; then
+    die "one result scored quarantined findings and the other did not (score_quarantined=$b_sq vs $c_sq); these results are not comparable"
+fi
+
 # Identical inputs are still not enough: the two results must also have SCORED the same rows.
 # Recall is matched/denom, and run.sh builds denom from the documents that survived
 # (`run.sh:757`) -- an excluded document leaves both sides of the fraction. So a candidate that
