@@ -730,7 +730,10 @@ assert_eq "gating_eligible #153: a finding matching a foreign row is not a CREAT
     '[{"fp":"r1","foreign":true,"author":"kure-bot","resolved":true}]' '{"critical":0,"high":1,"medium":2}')"
 # go-kure/.github#153: prt_foreign_action, the one per-finding decision for
 # foreign rows, shared by loop 1 and the cap walk. A foreign marker is
-# untrusted: what is read from it may only make the run gate more.
+# untrusted: what is read from it may only make the run gate more. The
+# helper still sets resolved_by_author for author/human rows (the
+# orchestrator no longer carries it), so the cases below prove who resolved a
+# row makes no difference.
 prt_t153_row() { # STATE(open|author|human) CONTENT_FP [AUTHOR] [MARKER_COLLISION]
   jq -nc --arg s "$1" --arg cfp "$2" --arg a "${3:-kure-bot}" --argjson c "${4:-false}" \
     '{fp:"r1",foreign:true,author:$a,resolved:($s != "open"),resolved_by_author:($s == "author"),collision:$c,content_fp:$cfp}'
@@ -745,10 +748,30 @@ assert_eq "foreign_action #153: resolved by its author, VALID recurs -> NEW (row
   "NEW" "$(prt_t153_act "[$(prt_t153_row author "")]" "$(prt_t153_finding VALID false)")"
 assert_eq "foreign_action #153: resolved by its author, PARTIALLY_VALID recurs, equal content_fp -> NEW" \
   "NEW" "$(prt_t153_act "[$(prt_t153_row author "$t153_cfp")]" "$(prt_t153_finding PARTIALLY_VALID false)")"
-assert_eq "foreign_action #153: resolved by someone else, VALID recurs -> NONE (row 6, human resolution honoured)" \
-  "NONE" "$(prt_t153_act "[$(prt_t153_row human "")]" "$(prt_t153_finding VALID false)")"
+# R2-P1: a foreign resolution is never trusted. The marker is editable by
+# its author, who can add a target fp (and drop content_fp) on an old,
+# human-resolved comment of theirs: the resolution must not suppress the
+# recurring finding, so it takes row 7's path like an author-resolved row.
+assert_eq "foreign_action #153 (R2-P1): resolved by someone else, empty content_fp, VALID recurs -> NEW (a foreign resolution never suppresses)" \
+  "NEW" "$(prt_t153_act "[$(prt_t153_row human "")]" "$(prt_t153_finding VALID false)")"
+assert_eq "foreign_action #153 (R2-P1): resolved by someone else, equal content_fp, VALID recurs -> NEW" \
+  "NEW" "$(prt_t153_act "[$(prt_t153_row human "$t153_cfp")]" "$(prt_t153_finding VALID false)")"
 assert_eq "foreign_action #153: resolved by its author, FALSE_POSITIVE -> NONE (resolved false positive)" \
   "NONE" "$(prt_t153_act "[$(prt_t153_row author "")]" "$(prt_t153_finding FALSE_POSITIVE false)")"
+assert_eq "foreign_action #153 (R2-P1): resolved by someone else, FALSE_POSITIVE -> NONE (this run's own verdict, not the marker)" \
+  "NONE" "$(prt_t153_act "[$(prt_t153_row human "")]" "$(prt_t153_finding FALSE_POSITIVE false)")"
+# R2-P2: a failed read returns 1, never a guessed NOMATCH. jq is shadowed to
+# fail only on the fp-presence filter, so every other call still runs. The
+# body is a subshell, so the shadow never outlives the call.
+t153_jq_fail_any() (
+  # Invoked indirectly by "$@"; the $fp is the literal jq filter text.
+  # shellcheck disable=SC2329,SC2016
+  jq() { case "$*" in *'any(.[]; .fp == $fp)'*) return 5 ;; esac; command jq "$@"; }
+  "$@" >/dev/null 2>&1
+  echo "$?"
+)
+assert_eq "foreign_action #153 (R2-P2): jq failure on the fp-presence check -> returns 1, not NOMATCH" \
+  "1" "$(t153_jq_fail_any prt_foreign_action "[$(prt_t153_row human "")]" "$(prt_t153_finding VALID false)")"
 assert_eq "foreign_action #153 (R1-P1): planted collision=true on an author-resolved marker -> NEW, the flag is never read" \
   "NEW" "$(prt_t153_act "[$(prt_t153_row author "$t153_cfp" kure-bot true)]" "$(prt_t153_finding VALID false)")"
 assert_eq "foreign_action #153 (R1-P1): author-resolved marker with another finding's content_fp -> NOMATCH (no-thread path), never QUARANTINE" \
@@ -761,10 +784,10 @@ assert_eq "foreign_action #153 (R1-P2b): open thread with an equal or absent con
   "EXISTING EXISTING" "$(prt_t153_act "[$(prt_t153_row open "$t153_cfp")]" "$(prt_t153_finding VALID false)") $(prt_t153_act "[$(prt_t153_row open "")]" "$(prt_t153_finding VALID false)")"
 assert_eq "foreign_action #153: no foreign row with the fp -> NOMATCH, no author" \
   "NOMATCH"$'\t' "$(prt_foreign_action "[$(jq -c '.fp="r9"' <<< "$(prt_t153_row open "")")]" "$(prt_t153_finding VALID false)")"
-assert_eq "foreign_action #153 (R1-P2a): open beats human-resolved beats author-resolved, in any row order" \
+assert_eq "foreign_action #153 (R1-P2a): an open row beats any resolved one, in any row order" \
   "EXISTING EXISTING" "$(prt_t153_act "[$(prt_t153_row author "" a1), $(prt_t153_row human "" h1), $(prt_t153_row open "" o1)]" "$(prt_t153_finding VALID false)") $(prt_t153_act "[$(prt_t153_row open "" o1), $(prt_t153_row author "" a1)]" "$(prt_t153_finding VALID false)")"
-assert_eq "foreign_action #153 (R1-P2a): author-resolved first, human-resolved second -> NONE, deciding row the human-resolved one" \
-  "NONE"$'\t'"h1" "$(prt_foreign_action "[$(prt_t153_row author "" a1), $(prt_t153_row human "" h1)]" "$(prt_t153_finding VALID false)")"
+assert_eq "foreign_action #153 (R2-P1): author-resolved + human-resolved pair -> NEW in either order (no resolution suppresses)" \
+  "NEW NEW" "$(prt_t153_act "[$(prt_t153_row author "" a1), $(prt_t153_row human "" h1)]" "$(prt_t153_finding VALID false)") $(prt_t153_act "[$(prt_t153_row human "" h1), $(prt_t153_row author "" a1)]" "$(prt_t153_finding VALID false)")"
 assert_eq "foreign_action #153 (R1-P2a): a content-mismatched open row does not outrank a matching author-resolved one" \
   "NEW"$'\t'"a1" "$(prt_foreign_action "[$(prt_t153_row open "$t153_other_cfp" o1), $(prt_t153_row author "" a1)]" "$(prt_t153_finding VALID false)")"
 # The cap walk sees every row (an open one still reserves) and releases the
@@ -776,8 +799,12 @@ assert_eq "cap_foreign_rows #153: every row is kept" \
   "3" "$(prt_cap_foreign_rows "[$(prt_t153_row human ""), $(prt_t153_row open "$t153_other_cfp"), $(jq -c '.fp="r3"' <<< "$(prt_t153_row author "")")]" "[$(prt_t153_finding VALID false)]" | jq length)"
 assert_eq "cap_foreign_rows #153: author-resolved match -> the finding is a CREATE candidate" \
   "r1" "$(t153_eligible "[$(prt_t153_row author "")]" "$(prt_t153_finding VALID false)")"
-assert_eq "cap_foreign_rows #153 (R1-P2a): author-resolved + human-resolved pair -> not a candidate (NONE), in either order" \
-  "none none" "$(t153_eligible "[$(prt_t153_row author "" a1), $(prt_t153_row human "" h1)]" "$(prt_t153_finding VALID false)") $(t153_eligible "[$(prt_t153_row human "" h1), $(prt_t153_row author "" a1)]" "$(prt_t153_finding VALID false)")"
+assert_eq "cap_foreign_rows #153 (R2-P1): only match resolved by someone else -> its rows tagged excludes:false, the finding a CREATE candidate" \
+  "false r1" "$(prt_cap_foreign_rows "[$(prt_t153_row human "" h1)]" "[$(prt_t153_finding VALID false)]" | jq -r '.[0].excludes') $(t153_eligible "[$(prt_t153_row human "" h1)]" "$(prt_t153_finding VALID false)")"
+assert_eq "cap_foreign_rows #153 (R2-P1): author-resolved + human-resolved pair -> a candidate, in either order" \
+  "r1 r1" "$(t153_eligible "[$(prt_t153_row author "" a1), $(prt_t153_row human "" h1)]" "$(prt_t153_finding VALID false)") $(t153_eligible "[$(prt_t153_row human "" h1), $(prt_t153_row author "" a1)]" "$(prt_t153_finding VALID false)")"
+assert_eq "cap_foreign_rows #153 (R2-P2): jq failure on the fp-presence check -> returns 1, not a silently unreleased finding" \
+  "1" "$(t153_jq_fail_any prt_cap_foreign_rows "[$(prt_t153_row human "" h1)]" "[$(prt_t153_finding VALID false)]")"
 assert_eq "cap_foreign_rows #153 (R1-P2a): two author-resolved rows -> one candidate" \
   "r1" "$(t153_eligible "[$(prt_t153_row author "" a1), $(prt_t153_row author "" a2)]" "$(prt_t153_finding VALID false)")"
 assert_eq "cap_foreign_rows #153 (R1-P2b): open row with a different content_fp -> the finding is a candidate AND the row still reserves" \
@@ -4880,18 +4907,23 @@ rc="$(run_orchestrator enforce 0 0 0)"
 assert_eq "orchestrator #153: FALSE_POSITIVE on a foreign open thread -> no resolve, no reply, no write at all" \
   "0 0 0 0 0 0" "$rc $(prt_foreign_writes)"
 
-# Resolved foreign thread: the finding is treated as an own thread in the
-# same state would be (prt_decide_finding rows 1, 6, 7), but the foreign
-# thread itself is never written to.
+# Resolved foreign thread: the finding is treated as an own thread resolved
+# by the bot would be (prt_decide_finding rows 1, 7, or the resolved
+# FALSE_POSITIVE branch), whoever resolved it, and the foreign thread itself
+# is never written to.
 #
-# Resolved by a human, VALID finding recurs: an own thread would stay
-# resolved (row 6, a human resolution is honoured), so nothing happens.
+# R2-P1: resolved by a human (someone other than its opener), no content_fp
+# on the marker, VALID finding recurs. A foreign resolution is not trusted:
+# its author can edit the marker onto any old resolved comment of theirs, so
+# the finding gets a new own thread (gating), not nothing.
 : > "$PRT_TEST_ISSUE_COMMENT_LOG"
 PRT_TEST_ASSESS_RESPONSE_MODE=valid_survivor
 PRT_TEST_THREAD1_RESOLVED=1
 rc="$(run_orchestrator enforce 0 0 0)"
-assert_eq "orchestrator #153: VALID finding recurs on a foreign thread a human resolved -> not reopened, no CREATE, logged as such" \
-  "0 0 0 0 0 0 true" "$rc $(prt_foreign_writes) $(grep -qF 'read-only; resolved, not reopened' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator #153 (R2-P1): VALID finding recurs on a foreign thread a human resolved -> exactly one new own thread, no write to the foreign one" \
+  "0 1 0 0 0 0" "$rc $(prt_foreign_writes)"
+assert_eq "orchestrator #153 (R2-P1): human-resolved foreign match -> logged as a new own thread, then CREATE, no overflow copy, no clean verdict" \
+  "true true 0 false" "$(grep -qF 'read-only; resolved and the finding recurs: new own thread instead of a reopen' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(grep -qE -- "fp=$(prt_fp_base x.go other) -> CREATE" "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(grep -c '^POST ' "$PRT_TEST_ISSUE_COMMENT_LOG") $(grep -qF 'Reviewed, no findings' "$PRT_TEST_ISSUE_COMMENT_LOG" && echo true || echo false)"
 # Resolved by the login that opened it (its own auto-resolve), VALID finding
 # recurs: an own thread would be reopened (row 7), so a new own thread is
 # created instead, and the foreign one is left as it is. This also closes the
@@ -4906,11 +4938,11 @@ assert_eq "orchestrator #153: VALID finding recurs on a foreign thread its autho
 assert_eq "orchestrator #153: the new thread carries this run's own marker for the finding's fp" \
   "true" "$(grep -qF "$(prt_fp_base x.go other)" "$PRT_TEST_CREATE_BODY_LOG" && echo true || echo false)"
 assert_eq "orchestrator #153: logged as a new own thread instead of a reopen, then CREATE" \
-  "true true" "$(grep -qF 'resolved by its author and the finding recurs: new own thread instead of a reopen' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(grep -qE -- "fp=$(prt_fp_base x.go other) -> CREATE" "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+  "true true" "$(grep -qF 'resolved and the finding recurs: new own thread instead of a reopen' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(grep -qE -- "fp=$(prt_fp_base x.go other) -> CREATE" "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 assert_eq "orchestrator #153: new own thread for a resolved foreign match -> accounted for, no overflow copy" \
   "false 0" "$(grep -qF 'accounting mismatch' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(grep -c '^POST ' "$PRT_TEST_ISSUE_COMMENT_LOG")"
-assert_eq "orchestrator #153: the foreign-marked-threads reason says a recurring finding then gets a new thread" \
-  "true" "$(grep -qF 'once its own author resolved it, a recurring finding gets a new thread from this login' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator #153: the foreign-marked-threads reason says a resolved one, by anyone, is not trusted and a recurring finding gets a new thread" \
+  "true" "$(grep -qF 'once it is resolved, by anyone, a recurring finding gets a new thread from this login (a foreign resolution is not trusted: its marker is editable by its author), and a human resolves that one' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 rm -f "$PRT_TEST_CREATE_BODY_LOG"
 unset PRT_TEST_CREATE_BODY_LOG
 # Resolved by its author, but the finding is now a FALSE_POSITIVE: an own
@@ -4939,13 +4971,14 @@ assert_eq "orchestrator #153 (R1-P1): planted marker with another finding's cont
   "0 1 0 0 0 0 false" "$rc $(prt_foreign_writes) $(grep -qE -- "fp=$(prt_fp_base x.go other) -> QUARANTINE" "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 PRT_TEST_OWNED_CONTENT_FP=""
 # R1-P2a: two resolved foreign threads for the same fp. Author-resolved
-# first, human-resolved second: one decision (the human resolution is
-# honoured, NONE), and the cap walk agrees (no overflow copy, no CREATE).
+# first, human-resolved second: one decision (no foreign resolution is
+# trusted, so NEW), and the cap walk agrees (one CREATE within the cap, no
+# overflow copy).
 : > "$PRT_TEST_ISSUE_COMMENT_LOG"
 PRT_TEST_THREAD2_RESOLVED_BY="a-human"
 rc="$(run_orchestrator enforce 0 0 0)"
-assert_eq "orchestrator #153 (R1-P2a): author-resolved + human-resolved pair -> NONE: no CREATE, no overflow copy, no write" \
-  "0 0 0 0 0 0 0 true" "$rc $(prt_foreign_writes) $(grep -c '^POST ' "$PRT_TEST_ISSUE_COMMENT_LOG") $(grep -qF 'read-only; resolved, not reopened' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator #153 (R1-P2a/R2-P1): author-resolved + human-resolved pair -> exactly one new own thread, no overflow copy, no write to either" \
+  "0 1 0 0 0 0 0 false" "$rc $(prt_foreign_writes) $(grep -c '^POST ' "$PRT_TEST_ISSUE_COMMENT_LOG") $(grep -qF 'read-only; resolved, not reopened' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 assert_eq "orchestrator #153 (R1-P2a): the pair is decided once and accounted for" \
   "1 false" "$(grep -c -- "fp=$(prt_fp_base x.go other) -> FOREIGN" "$PRT_TEST_STDERR_FILE") $(grep -qF 'accounting mismatch' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 # Both author-resolved: one replacement own thread, with a slot (CREATE, not

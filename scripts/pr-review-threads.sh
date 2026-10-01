@@ -953,19 +953,18 @@ for ((ti = 0; ti < n_threads; ti++)); do
         FOREIGN_MARKED_LOGINS="${FOREIGN_MARKED_LOGINS}${foreign_login}"$'\n'
       fi
       # Only what loop 1 and the cap walk read (prt_foreign_action): the
-      # fingerprint, who opened it, whether it is open, whether the login
-      # that opened it also resolved it (the foreign counterpart of an own
-      # row's resolved_by_bot; a missing resolver counts as someone else,
-      # as there), and the marker's content_fp, used only to tell that the
-      # thread is NOT a given finding. The marker's collision flag is not
-      # carried: a foreign marker is untrusted, and a collision flag could
-      # only ever withhold a finding. No ids a write would need.
+      # fingerprint, who opened it, whether it is open, and the marker's
+      # content_fp, used only to tell that the thread is NOT a given
+      # finding. Who resolved it is not carried: a foreign resolution is
+      # not trusted (its author can edit the marker onto any old resolved
+      # comment), so a resolved foreign thread never suppresses a finding.
+      # The marker's collision flag is not carried either: a foreign marker
+      # is untrusted, and a collision flag could only ever withhold a
+      # finding. No ids a write would need.
       if ! foreign_row="$(jq -ce --arg fp "$(cut -f1 <<< "$foreign_parsed")" \
-        --arg author "$foreign_login" --arg author_gql "$first_author" \
+        --arg author "$foreign_login" \
         --arg cfp "$(cut -f4 <<< "$foreign_parsed")" '
           {fp:$fp, foreign:true, author:$author, resolved:(.isResolved == true),
-           resolved_by_author:(.isResolved == true and $author_gql != ""
-             and ((.resolvedBy.login // "") == $author_gql)),
            content_fp:$cfp}
         ' <<< "$th" 2>/dev/null)"; then
         prt_inventory_fail "foreign-row construction at thread index $ti"
@@ -1081,7 +1080,7 @@ if [ "$FOREIGN_MARKED_COUNT" -gt 0 ]; then
     [ -n "$foreign_login" ] || continue
     foreign_logins_list="${foreign_logins_list:+${foreign_logins_list}, }${foreign_login}"
   done <<< "$FOREIGN_MARKED_LOGINS"
-  prt_mark_degraded "foreign-marked-threads: ${FOREIGN_MARKED_COUNT} thread(s) carry this action's marker but were opened by ${foreign_logins_list}, not the configured bot login ${PRT_BOT_LOGIN_GQL}; they are read-only to this run: none of them is resolved, reopened, replied to or re-stamped; while one is open, a matching finding gets no new thread and the open thread counts toward the cap and blocks merge until a human resolves it; once its own author resolved it, a recurring finding gets a new thread from this login, where an own thread would have been reopened — the bot identity likely changed (go-kure/.github#153)"
+  prt_mark_degraded "foreign-marked-threads: ${FOREIGN_MARKED_COUNT} thread(s) carry this action's marker but were opened by ${foreign_logins_list}, not the configured bot login ${PRT_BOT_LOGIN_GQL}; they are read-only to this run: none of them is resolved, reopened, replied to or re-stamped; while one is open, a matching finding gets no new thread and the open thread counts toward the cap and blocks merge until a human resolves it; once it is resolved, by anyone, a recurring finding gets a new thread from this login (a foreign resolution is not trusted: its marker is editable by its author), and a human resolves that one — the bot identity likely changed (go-kure/.github#153)"
 fi
 # "(pre-existing)": the count before this run writes anything, so a first
 # review reads "threads listed (pre-existing): 0" next to its CREATE lines
@@ -1113,7 +1112,9 @@ prt_degraded_reasons | grep -q 'review-parse-failed' && PRT_LIFT_EVIDENCE_COMPLE
 # that matches one out of the CREATE candidates, as for an owned match.
 # prt_cap_foreign_rows makes the same per-finding decision loop 1 makes
 # (prt_foreign_action) and releases the finding when loop 1 will send it
-# down the no-thread path, so it competes for a slot like any other CREATE.
+# down the no-thread path (a resolved foreign match included, whoever
+# resolved it), so it competes for a slot like any other CREATE. A failed
+# read there aborts the run below, never a guessed release.
 if ! cap_foreign="$(prt_cap_foreign_rows "$FOREIGN" "$ALL_FINDINGS")" ||
   ! cap_threads="$(prt_json_concat_arrays "$OWNED" "$cap_foreign")" ||
   ! capped_findings="$(prt_apply_cap "$PRT_MAX_FINDINGS_TOTAL" "$cap_threads" "$ALL_FINDINGS" 2>/dev/null)"; then
@@ -1289,14 +1290,16 @@ else
     #              whatever the verdict. It keeps blocking merge (the cap walk
     #              reserved its slot) and the finding still counts toward this
     #              run's total, so no clean verdict is posted.
-    #   NONE       a human resolution (someone other than the opener resolved
-    #              it), honoured as for an own thread, or a resolved false
-    #              positive: left alone, no thread.
+    #   NONE       every match is resolved and this run's own verdict is
+    #              FALSE_POSITIVE: left alone, no thread.
     #   QUARANTINE this run's own findings collide on the fp (never the
     #              marker's flag): row 1, as for an own resolved thread.
-    #   NEW        every match was resolved by its own opener and the finding
-    #              recurs: where an own thread would be reopened (row 7), it
-    #              takes the no-thread path instead (a new own thread).
+    #   NEW        every match is resolved, by its opener or anyone else, and
+    #              the finding recurs: where an own thread would be reopened
+    #              (row 7), it takes the no-thread path instead (a new own
+    #              thread). A foreign resolution is not trusted (its author
+    #              can edit the marker onto any old resolved comment), so it
+    #              never suppresses a finding; a human resolves the new one.
     #   NOMATCH    no foreign thread for this finding, or only ones whose
     #              marker content_fp shows a different defect: no-thread path.
     # A failed decision falls to NOMATCH, the more-gating side.
@@ -1315,7 +1318,7 @@ else
           continue
           ;;
         NEW)
-          prt_log "fp=$fp -> FOREIGN (thread opened by $foreign_author, read-only; resolved by its author and the finding recurs: new own thread instead of a reopen)"
+          prt_log "fp=$fp -> FOREIGN (thread opened by $foreign_author, read-only; resolved and the finding recurs: new own thread instead of a reopen)"
           ;;
         QUARANTINE)
           foreign_override=QUARANTINE
