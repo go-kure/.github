@@ -93,9 +93,18 @@ prt_gh_rest() {
 # above), which a bare status-code check would miss entirely.
 prt_gh_graphql() {
   local query="$1" variables="${2:-{\}}"
-  local payload body errors
+  local payload body errors tmp
   payload="$(jq -n --arg q "$query" --argjson v "$variables" '{query: $q, variables: $v}')"
-  body="$(prt_gh_rest POST /graphql "$payload")" || return 1
+  # Through a file, not $(...): prt_gh_rest then runs in this shell, so the
+  # rate-limit state it records reaches a caller that also avoids a
+  # subshell (prt_gh_rest_fresh_open under prt_retry, go-kure/.github#256).
+  tmp="$(mktemp)" || return 1
+  if ! prt_gh_rest POST /graphql "$payload" > "$tmp"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  body="$(cat "$tmp")"
+  rm -f "$tmp"
   errors="$(jq -c '.errors // empty' <<< "$body" 2>/dev/null || true)"
   if [ -n "$errors" ]; then
     echo "prt_gh_graphql: errors[] in response body: $errors" >&2
@@ -238,9 +247,16 @@ prt_thread_is_resolved() {
   # shellcheck disable=SC2016  # $id is a GraphQL variable reference, resolved
   # server-side from the `variables` JSON object below — never shell-expanded.
   local query='query($id:ID!){node(id:$id){... on PullRequestReviewThread{isResolved}}}'
-  local vars data resolved
+  local vars data resolved tmp
   vars="$(jq -n --arg id "$thread_id" '{id:$id}' 2>/dev/null)" || return 1
-  data="$(prt_gh_graphql "$query" "$vars" 2>/dev/null)" || return 1
+  # Through a file, so prt_gh_graphql's rate-limit state survives (above).
+  tmp="$(mktemp)" || return 1
+  if ! prt_gh_graphql "$query" "$vars" > "$tmp" 2>/dev/null; then
+    rm -f "$tmp"
+    return 1
+  fi
+  data="$(cat "$tmp")"
+  rm -f "$tmp"
   resolved="$(jq -r '.node.isResolved | if type == "boolean" then tostring else empty end' <<< "$data" 2>/dev/null)" || return 1
   case "$resolved" in
     true|false) echo "$resolved" ;;
@@ -290,10 +306,18 @@ prt_gh_rest_fresh() {
 # prt_gh_rest_fresh's 0-3 with:
 #   4 — the thread is resolved: nothing written. Terminal: prt_retry stops.
 #   5 — the thread's resolved state could not be read: nothing written.
+# The re-read runs in this shell (through a file, not $(...)), so a
+# rate-limited read leaves its Retry-After for prt_retry's backoff.
 prt_gh_rest_fresh_open() {
-  local thread_id="$1" live_resolved
+  local thread_id="$1" live_resolved tmp
   shift
-  live_resolved="$(prt_thread_is_resolved "$thread_id")" || return 5
+  tmp="$(mktemp)" || return 5
+  if ! prt_thread_is_resolved "$thread_id" > "$tmp"; then
+    rm -f "$tmp"
+    return 5
+  fi
+  live_resolved="$(cat "$tmp")"
+  rm -f "$tmp"
   [ "$live_resolved" = false ] || return 4
   prt_gh_rest_fresh "$@"
 }
