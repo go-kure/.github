@@ -190,7 +190,7 @@ jobs:
         run: bash scripts/test/check-doc-gate-test.sh .
       - name: check-doc-gate.sh against the previous commit
         run: bash scripts/check-doc-gate.sh "$(git rev-parse HEAD~1)" .
-      - name: check-workflow-refs.sh against AGENTS.md / docs/standards.md
+      - name: check-workflow-refs.sh against AGENTS.md / docs/standards.md / standards/github-workflows.md
         run: bash scripts/check-workflow-refs.sh .
       - name: check-action-pins.sh test suite
         run: bash scripts/test/check-action-pins-test.sh .

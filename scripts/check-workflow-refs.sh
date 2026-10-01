@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# check-workflow-refs.sh — Guard against AGENTS.md / docs/standards.md naming a
-# GitHub Actions workflow file that does not exist.
+# check-workflow-refs.sh — Guard against AGENTS.md, docs/standards.md or
+# standards/github-workflows.md naming a GitHub Actions workflow file that
+# does not exist.
 #
 # go-kure/.github#33: AGENTS.md named a nonexistent apply-settings.yml workflow
 # and a dry_run input it never had. The same defect had already been fixed once
@@ -8,7 +9,7 @@
 # script is the fix that makes it recur no further: it fails CI instead of a
 # human catching it.
 #
-# Scans AGENTS.md and docs/standards.md for backtick-quoted bare workflow
+# Scans those three files for backtick-quoted bare workflow
 # filenames (e.g. `settings.yml`) and asserts each exists under
 # .github/workflows/. Bare filename only — not `.github/dependabot.yml` or
 # `.gitlab-ci.yml`, which are other repos' config referenced by full/relative
@@ -29,6 +30,7 @@ fail() { echo "FAIL: $*" >&2; errors=$((errors + 1)); }
 DOCS=(
   "$ROOT/AGENTS.md"
   "$ROOT/docs/standards.md"
+  "$ROOT/standards/github-workflows.md"
 )
 
 checked=0

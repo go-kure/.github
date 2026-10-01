@@ -95,7 +95,7 @@ any other value means editing `pr-review.yml` in `go-kure/.github`.
 | `PR_REVIEW_MAX_TOKENS` | `1500` | Review pass |
 | `PR_REVIEW_ASSESS_MAX_TOKENS` | `4096` | Assessment pass |
 | `PR_REVIEW_AGENTS_FILE` | `AGENTS.md` | Read from the calling repository |
-| `PR_REVIEW_STANDARDS_FILE` | `docs/standards.md` | Read from `go-kure/.github` |
+| `PR_REVIEW_STANDARDS_FILE` | `docs/standards.md` | Read from `go-kure/.github` at the commit `pr-review.yml` pins its `pr-review-threads` action to, so a standards change reaches reviews only when that pin moves |
 
 The model names in `pr-review.yml` are labels only; the proxy decides which model answers.
 
@@ -134,7 +134,9 @@ body or issue title contains `@claude`.
 
 It runs [`anthropics/claude-code-action`](https://github.com/anthropics/claude-code-action) on
 the self-hosted runner, authenticated with the `CLAUDE_CODE_OAUTH_TOKEN` secret, with read
-access to contents, pull requests, issues and actions.
+access to contents, pull requests, issues and actions, plus `id-token: write`, its one write
+permission, which lets the job request an OIDC token from GitHub. A reusable workflow cannot
+raise the permissions its caller grants, so the calling workflow must grant all five.
 
 ## Merge Queue
 

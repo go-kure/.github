@@ -49,7 +49,7 @@ on a line of its own. Other test runners, such as the renovate lane's node scrip
 │   ├── check-doc-gate.sh                # Doc-sync Layer 3 (change-gate) — canonical
 │   ├── check-links.sh                   # Doc-sync Layer 1 (link check) — canonical
 │   ├── check-forbidden-terms.sh         # No Downstream References guard — canonical
-│   ├── check-workflow-refs.sh           # Guards AGENTS.md/standards.md against dead workflow refs
+│   ├── check-workflow-refs.sh           # Guards AGENTS.md and both workflow docs against dead workflow refs
 │   ├── check-mise-ci-parity.sh          # Guards mise.toml and ci.yml checking the same scripts
 │   ├── exact-array-member.sh            # Shared helper (check-doc-sync.sh, github-settings.sh)
 │   ├── pr-review-fail-closed-digest.sh  # Org-wide digest of fail-closed pr-review-threads runs
