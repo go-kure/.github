@@ -647,28 +647,35 @@ assert_eq "reserved_count: no content_fp on OWNED (pre-#196 thread) -> unverifia
 
 # go-kure/.github#148: prt_effective_collision, the predicate loop 1 and the
 # cap walk share. Arguments: owned collision, this-run collision, owned
-# content_fp, this finding's content_fp.
+# content_fp, this finding's content_fp, owned resolved, evidence complete.
 assert_eq "effective_collision: this-run multiplicity wins over a matching text" \
-  "this_run" "$(prt_effective_collision true true aaaa aaaa)"
+  "this_run" "$(prt_effective_collision true true aaaa aaaa false true)"
 assert_eq "effective_collision: this-run multiplicity on a non-collided thread" \
-  "this_run" "$(prt_effective_collision false true "" bbbb)"
+  "this_run" "$(prt_effective_collision false true "" bbbb false true)"
 assert_eq "effective_collision: stored content_fp differs -> content_mismatch (with or without a persisted flag)" \
-  "content_mismatch content_mismatch" "$(prt_effective_collision true false aaaa bbbb) $(prt_effective_collision false false aaaa bbbb)"
-assert_eq "effective_collision: persisted flag + identical text -> lift" \
-  "lift" "$(prt_effective_collision true false aaaa aaaa)"
+  "content_mismatch content_mismatch" "$(prt_effective_collision true false aaaa bbbb false true) $(prt_effective_collision false false aaaa bbbb false true)"
+assert_eq "effective_collision: persisted flag + identical text, open thread, complete evidence -> lift" \
+  "lift" "$(prt_effective_collision true false aaaa aaaa false true)"
 assert_eq "effective_collision: persisted flag, no stored content_fp -> persisted (unverifiable, never lifts)" \
-  "persisted" "$(prt_effective_collision true false "" aaaa)"
+  "persisted" "$(prt_effective_collision true false "" aaaa false true)"
+assert_eq "effective_collision: persisted flag + identical text on a resolved thread -> persisted (only open threads lift)" \
+  "persisted" "$(prt_effective_collision true false aaaa aaaa true true)"
+assert_eq "effective_collision: persisted flag + identical text, incomplete evidence -> persisted" \
+  "persisted persisted" "$(prt_effective_collision true false aaaa aaaa false false) $(prt_effective_collision true false aaaa aaaa false "")"
 assert_eq "effective_collision: no flag, matching or absent content_fp -> none" \
-  "none none" "$(prt_effective_collision false false aaaa aaaa) $(prt_effective_collision false false "" aaaa)"
+  "none none" "$(prt_effective_collision false false aaaa aaaa false true) $(prt_effective_collision false false "" aaaa false true)"
 assert_eq "effective_collision: only the literal 'true' sets a flag" \
-  "none" "$(prt_effective_collision null null "" aaaa)"
+  "none" "$(prt_effective_collision null null "" aaaa false true)"
 
-# The cap walk predicts the lift. A bot-resolved thread with a persisted
-# flag, whose finding is back with identical text: lifted -> row 7 reopens
-# it -> reserves 1. Quarantined (the pre-#148 prediction) it would reserve 0.
+# The cap walk predicts the lift, and its refusals. A bot-resolved thread
+# with a persisted flag, whose finding is back with identical text: only
+# open threads lift, so it stays quarantined and resolved -> reserves 0
+# (lifted, row 7 would reopen it and reserve 1).
+# shellcheck disable=SC2034  # read by prt_reserved_count in reconcile.sh (source=/dev/null above, so shellcheck can't see the cross-file read)
+PRT_LIFT_EVIDENCE_COMPLETE=true
 lift_walk_cfp="$(prt_content_fp 'lift issue' 'lift fix')"
-assert_eq "reserved_count #148: lifted bot-resolved thread with its finding back -> reserves 1 (reopens)" \
-  "1" "$(prt_reserved_count \
+assert_eq "reserved_count #148: persisted bot-resolved thread with its finding back -> not lifted, reserves 0" \
+  "0" "$(prt_reserved_count \
     "[{\"fp\":\"r1\",\"collision\":true,\"resolved\":true,\"resolved_by_bot\":true,\"content_fp\":\"$lift_walk_cfp\"}]" \
     '[{"fp":"r1","collision":false,"verdict":"VALID","issue":"lift issue","fix":"lift fix"}]')"
 assert_eq "reserved_count #148: same, no stored content_fp -> persisted, quarantined resolved -> reserves 0" \
@@ -3815,6 +3822,29 @@ assert_eq "orchestrator #148: GET before the lift returns no body -> exits 1, no
 assert_eq "orchestrator #148: GET before the lift returns no body -> still quarantined as persisted, not lifted" \
   "true false" "$(grep -qF '| persisted (earlier run) |' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && echo true || echo false) $(grep -qF 'collision lifted' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 PRT_TEST_COMMENT_GET_EMPTY=0
+
+# Only open threads lift: a resolved thread with a persisted flag and a
+# matching text stays quarantined (two identical-text findings share
+# fp_base and content_fp; lifting would hand the survivor to row 6/7).
+: > "$PRT_TEST_PATCH_BODY_LOG"
+PRT_TEST_OWNED_RESOLVED_BY_BOT=1
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #148: resolved thread, exact content match -> no PATCH, no lift, quarantined=1" \
+  "0 0 false true" "$rc $(cat "$PRT_TEST_PATCH_COUNTFILE") $(grep -qF 'collision lifted' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(grep -qE 'done:.*quarantined=1' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_OWNED_RESOLVED_BY_BOT=0
+
+# No lift on incomplete evidence: a dropped malformed row could have been
+# the other colliding finding, so the survivor is not trusted as a singleton.
+# partial_drop's survivor is x.go/other with issue "i", fix "f" — the same
+# text as the thread's.
+: > "$PRT_TEST_PATCH_BODY_LOG"
+PRT_TEST_MODEL_RESPONSE_MODE=partial_drop
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #148: partial-drop run, exact content match -> no PATCH, no lift, quarantined=1" \
+  "0 false true" "$(cat "$PRT_TEST_PATCH_COUNTFILE") $(grep -qF 'collision lifted' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(grep -qE 'done:.*quarantined=1' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator #148: partial-drop run -> the run is degraded for the drop (control: the fixture really dropped a row)" \
+  "true" "$(grep -qF 'partial-drop' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_MODEL_RESPONSE_MODE=clean_with_finding
 
 # This-run multiplicity beats a matching text: the group's fp_base thread
 # carries collision=true and the text of its first member, but three

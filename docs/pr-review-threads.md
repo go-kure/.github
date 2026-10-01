@@ -816,10 +816,24 @@ when the collision is back in this run, "content changed (recurring defect)" whe
 from the thread's stored text.
 
 The flag is lifted when a later run has a single finding on that `fp_base` whose `content_fp`
-equals the thread's stored one. That is safe because a thread is only ever created by `CREATE`,
-which row 1 makes unreachable for a colliding finding: every thread was opened for one finding,
-and its stored `content_fp` is that finding's text. Identical text means the same finding, so the
-ambiguity the flag guards against is gone. Loop 1 writes `collision=false` onto the marker (the
+equals the thread's stored one, the thread is open, and the run's evidence is complete. A thread
+is only ever created by `CREATE`, which row 1 makes unreachable for a colliding finding: every
+thread was opened for one finding, and its stored `content_fp` is that finding's text. The two
+extra conditions cover where identical text is not enough:
+
+- **Only open threads lift.** Two different findings in one file and category with identical
+  `issue`+`fix` text share both `fp_base` and `content_fp` (the line is in neither). If the
+  original is fixed and the twin remains, the lift attaches the twin to the original's thread.
+  On an open thread the twin still gates merge through it. On a resolved thread it would reach
+  row 6 (human) and surface nowhere, where quarantine keeps it in the withheld table. A resolved
+  thread gains nothing from a lift anyway: the lift exists so loop 2 can auto-resolve an open one.
+- **No lift on incomplete evidence.** A run that dropped a malformed row (`partial-drop`), left
+  a chunk unparsed (`review-parse-failed`), or is `REVIEW_INCOMPLETE` may be missing the other
+  colliding finding, so a lone survivor is not trusted as a singleton. This is the same evidence
+  loop 2 refuses to act on. It is decided once, before the cap walk, so the walk and loop 1
+  agree.
+
+When all three hold, loop 1 writes `collision=false` onto the marker (the
 same rewrite C5 uses, `content_fp` carried unchanged; a `first_absent_sha` stamp from before the
 collision is cleared, since the finding is present this run and a stale stamp would let the next
 absence auto-resolve the thread on one absence instead of two), logs
@@ -839,7 +853,7 @@ that thread quarantined and gating: an open thread whose finding is now `FALSE_P
 otherwise be predicted to resolve and free a slot it still holds.
 
 A thread with no stored `content_fp` (created before go-kure/.github#196) cannot be verified and
-is never lifted. Neither is a thread whose finding was reworded, which the next paragraph covers:
+is never lifted, and a resolved one stays persisted for the rest of the PR. Neither is a thread whose finding was reworded, which the next paragraph covers:
 the lift needs the exact text, so most recurrences still read as a content change and leave the
 flag in place.
 
