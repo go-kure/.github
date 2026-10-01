@@ -38,6 +38,7 @@ on a line of its own. Other test runners, such as the renovate lane's node scrip
 │   ├── repository-settings-policy.yaml  # Machine-readable settings policy
 │   └── repository-settings-policy.schema.json  # Its closed schema (checked before any audit/apply)
 ├── standards/
+│   ├── github-workflows.md              # Shared-workflow guide (vendored into kure/launcher docs)
 │   ├── labels.json                      # Standard issue labels
 │   ├── labels.schema.json               # Its closed schema (github-settings.sh, check-label-docs.sh)
 │   ├── labels.md                        # Label naming conventions

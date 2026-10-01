@@ -42,8 +42,11 @@ The go-kure repos are:
 | Config file      | `.gitlab-ci.yml`     | `.github/workflows/*.yml`   | `.github/workflows/*.yml`   | `.github/workflows/*.yml`   |
 | Shared workflows | `meta/ci-templates/` | Callers to `go-kure/.github`| Callers to `go-kure/.github`| Hosts the shared workflows  |
 
-kure and launcher stay thin — each repo has only caller workflows that delegate to the reusable
-workflows here.
+kure and launcher call the reusable workflows here for PR review, the `@claude` assistant and
+releases. Their CI and Deploy Docs workflows are their own files, which run the shared composite
+actions from this repository as steps. How the shared parts behave is described once, repo-neutrally,
+in [`standards/github-workflows.md`](../standards/github-workflows.md), which both repos vendor
+into their docs sites.
 
 ## Dependency Management
 
