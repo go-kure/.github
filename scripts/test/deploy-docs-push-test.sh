@@ -264,6 +264,51 @@ assert_eq "policy prints neither: exit 1" 1 "$RC"
 assert_contains "policy prints neither: names the output" "$OUT" "printed 'maybe', expected true or false"
 assert_eq "policy prints neither: nothing pushed" "$before" "$(pages_tip stubbed)"
 
+# ── 4b. the root is built only from the tag the label names ───────────────
+# The policy ranks a well-formed label without checking that it is a tag, or
+# that the source checkout is that tag (go-kure/.github#251). Case 1 is the
+# control: a real tag at HEAD writes the root.
+
+# A well-formed label that is no tag: the policy says true, the root is refused.
+new_case notag v1.1.0 v1.2.0
+builds notag v1.3.0
+before=$(pages_tip notag)
+deploy notag v1.3 v1.3.0 true
+assert_eq "label not a tag: exit 1" 1 "$RC"
+assert_contains "label not a tag: names the failure" "$OUT" "label 'v1.3.0' is not a tag in $WORK/notag/source; not writing the /kure/ root"
+assert_eq "label not a tag: nothing pushed" "$before" "$(pages_tip notag)"
+
+# The label is a tag, but the checkout is a later commit (a dispatch from main
+# with the label of the latest release).
+new_case offtag v1.1.0 v1.2.0
+printf 'later\n' >> "$WORK/offtag/srcwork/README"
+git -C "$WORK/offtag/srcwork" commit --quiet -am "feat: later"
+git -C "$WORK/offtag/srcwork" push --quiet origin main
+git -C "$WORK/offtag/source" pull --quiet origin main
+builds offtag v1.2.0
+before=$(pages_tip offtag)
+deploy offtag v1.2 v1.2.0 true
+head_full=$(git -C "$WORK/offtag/source" rev-parse HEAD)
+tag_full=$(git -C "$WORK/offtag/source" rev-parse 'v1.2.0^{commit}')
+assert_eq "HEAD not the tag: exit 1" 1 "$RC"
+assert_contains "HEAD not the tag: names the mismatch" "$OUT" "HEAD ${head_full} is not tag v1.2.0's commit ${tag_full}; not writing the /kure/ root (dispatch with --ref v1.2.0)"
+assert_eq "HEAD not the tag: nothing pushed" "$before" "$(pages_tip offtag)"
+
+# set_latest false never reaches the check: the same checkout deploys its slot.
+deploy offtag v1.2 v1.2.0 false
+assert_eq "HEAD not the tag, set_latest false: exit 0" 0 "$RC"
+assert_eq "HEAD not the tag, set_latest false: the slot is written" "slot v1.2.0" "$(pages_file offtag kure/v1.2/index.html)"
+assert_eq "HEAD not the tag, set_latest false: the root is untouched" "root seed" "$(pages_file offtag kure/index.html)"
+
+# An annotated tag at HEAD peels to its commit: the root is written.
+new_case annotated v1.1.0
+git -C "$WORK/annotated/srcwork" tag -a v1.2.0 -m "release v1.2.0"
+git -C "$WORK/annotated/srcwork" push --quiet origin v1.2.0
+builds annotated v1.2.0
+deploy annotated v1.2 v1.2.0 true
+assert_eq "annotated tag at HEAD: exit 0" 0 "$RC"
+assert_eq "annotated tag at HEAD: the root is written" "root v1.2.0" "$(pages_file annotated kure/index.html)"
+
 # ── 5. one rejected push, then a retry that keeps the other slot ──────────
 
 new_case retry v1.1.0 v1.2.0

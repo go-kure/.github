@@ -25,7 +25,7 @@ inputs:
     description: The version slot, one path segment, either dev or starting with v (e.g. v0.3), the names a root write keeps; <site-subdir>/<slot>/ is replaced.
     required: true
   label:
-    description: The version label; a release tag when set-latest is "true".
+    description: The version label; a release tag when set-latest is "true". If the write-time policy decides the root, the label must be an existing tag at the source checkout's HEAD, or the step fails.
     required: true
   set-latest:
     description: '"true" asks for the site root, re-checked at write time; "false" never writes it.'
