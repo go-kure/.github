@@ -5,8 +5,8 @@ paths:
   # job.workflow_repository and job.workflow_sha are documented job-context
   # properties (the repository and commit of the workflow file that defines the
   # job) that actionlint 1.7.12 does not know yet. Ignored for those two names
-  # only, in the two workflows that check out their own scripts with them; drop
+  # only, in the workflows that check out their own scripts with them; drop
   # this once actionlint's job context includes them.
-  .github/workflows/release{,-publish}.yml:
+  .github/workflows/release{,-publish,-state}.yml:
     ignore:
       - 'property "workflow_(repository|sha)" is not defined in object type'

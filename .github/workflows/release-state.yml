@@ -1,0 +1,86 @@
+name: Release / State
+
+# What did a tag's publish run actually do? Runs scripts/release-state.sh for
+# the calling repository and one of its tags, and writes the verdict and its
+# evidence to the job summary. A release repo's own release-state.yml calls
+# this from a workflow_dispatch, so an operator needs no checkout of this
+# repository and no token of their own: the query runs under the calling
+# repository's token and sees what that repository sees (go-kure/.github#209).
+#
+# Read-only. It reports a state; it does not recover anything. The recovery
+# for each state is in standards/release-process.md.
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: 'The release tag to inspect (e.g. v0.2.0-beta.11)'
+        type: string
+        required: true
+
+jobs:
+  state:
+    name: Release state
+    runs-on: autops-kube-kure
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      # actions/checkout reads an empty `ref` as "the default branch", which would
+      # run whatever script main holds instead of this workflow's own commit.
+      - name: Require this workflow's own commit
+        env:
+          WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          if [ -z "$WORKFLOW_REPOSITORY" ] || [ -z "$WORKFLOW_SHA" ]; then
+            echo "::error::job.workflow_repository or job.workflow_sha is empty, so release-state.sh cannot be checked out at this workflow's own commit."
+            exit 1
+          fi
+
+      - name: Check out release-state.sh
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .release-tools
+          sparse-checkout: |
+            scripts/release-state.sh
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Decide the state
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -uo pipefail
+          # The same tag shape release-publish.yml accepts. Checked here so a
+          # typo fails with its own message rather than as an empty run record.
+          if ! printf '%s\n' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-alpha\.[0-9]+|-beta\.[0-9]+|-rc\.[0-9]+)?$'; then
+            echo "::error::'$TAG' is not a release tag (vX.Y.Z, optionally -alpha.N, -beta.N or -rc.N)"
+            exit 2
+          fi
+          out="$(mktemp)"
+          # The step shell runs with -e: capture the exit instead of stopping
+          # here, so the summary is written for an undetermined state too.
+          rc=0
+          bash .release-tools/scripts/release-state.sh "$REPO" "$TAG" >"$out" 2>&1 || rc=$?
+          cat "$out"
+          {
+            echo "## Release state: \`$REPO\` \`$TAG\`"
+            echo
+            if [ "$rc" -ne 0 ]; then
+              echo "**No state was determined (exit $rc).** Do not branch on this run; read the output below, fix the cause and dispatch again."
+              echo
+            fi
+            echo '```'
+            cat "$out"
+            echo '```'
+            echo
+            echo "What each state means and its recovery: https://github.com/go-kure/.github/blob/main/standards/release-process.md#determining-what-a-release-actually-did"
+          } >>"$GITHUB_STEP_SUMMARY"
+          # Exit 1 is `undetermined`: the run turns red so it is never read as an answer.
+          exit "$rc"
