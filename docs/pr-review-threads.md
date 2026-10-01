@@ -701,7 +701,8 @@ fingerprint with another finding in this diff" — true only when this run's own
 quarantined purely because an *earlier* run's collision persisted onto the owned thread's marker
 (`pr-review-threads.sh:968-993`), with only one finding for that `fp_base` present this run — the
 other finding that originally caused the collision may be gone several pushes ago, and persisted
-collisions are never cleared automatically, so every later singleton run repeated the same false
+collisions were never cleared automatically (go-kure/.github#148 later added one narrow lift, see
+"How long a withheld finding stays withheld" below), so every later singleton run repeated the same false
 claim. Each quarantined finding is now tagged `persisted_only: true/false` (`$collision != true` at
 the point `effective_collision` was OR'd with the owned thread's flag) and the table gained a
 `Collision` column reading "this run" or "persisted (earlier run)" per row, with the intro reworded
@@ -799,17 +800,48 @@ plus the finding is surfaced instead of discarded), so the row-precedence is not
 
 ### How long a withheld finding stays withheld (go-kure/.github#148)
 
-Three behaviours decide how long a finding stays off the thread surface. All three are deliberate,
-and none of them loses a finding: each one either keeps an open thread gating merge or lists the
-finding in the withheld table.
+Three behaviours decide how long a finding stays off the thread surface. All three are deliberate.
+The first two never lose a finding: each either keeps an open thread gating merge or lists the
+finding in the withheld table. The third can: an unchanged finding that matches a thread a human
+resolved surfaces nowhere.
 
-**A persisted collision lasts for the life of the PR.** Once a run sees two findings on one
-`fp_base`, it writes `collision=true` onto the matching thread's marker (C5, above). From then on,
-loop 1 quarantines every finding that matches that thread (B3), even when only one finding is
-left. Loop 2 never acts on the thread's absence either (`prt_decide_absent` row 1): no
-`first_absent_sha` stamp, no auto-resolve. Nothing clears the flag, so the thread stays open until
-a human resolves it. While it is open it gates merge, and each run lists the matching finding in
-the withheld table as "persisted (earlier run)".
+**A persisted collision lasts until the original finding comes back word for word.** Once a run
+sees two findings on one `fp_base`, it writes `collision=true` onto the matching thread's marker
+(C5, above). From then on, loop 1 quarantines every finding that matches that thread (B3), even
+when only one finding is left. Loop 2 never acts on the thread's absence either
+(`prt_decide_absent` row 1): no `first_absent_sha` stamp, no auto-resolve. While the flag stands,
+the thread gates merge if open, and each run lists the matching finding in the withheld table. Its
+Collision cell reads "persisted (earlier run)" unless a source checked first applies: "this run"
+when the collision is back in this run, "content changed (recurring defect)" when the text differs
+from the thread's stored text.
+
+The flag is lifted when a later run has a single finding on that `fp_base` whose `content_fp`
+equals the thread's stored one. That is safe because a thread is only ever created by `CREATE`,
+which row 1 makes unreachable for a colliding finding: every thread was opened for one finding,
+and its stored `content_fp` is that finding's text. Identical text means the same finding, so the
+ambiguity the flag guards against is gone. Loop 1 writes `collision=false` onto the marker (the
+same rewrite C5 uses, `content_fp` carried unchanged; a `first_absent_sha` stamp from before the
+collision is cleared, since the finding is present this run and a stale stamp would let the next
+absence auto-resolve the thread on one absence instead of two), logs
+`collision lifted (content match)` and reconciles the finding normally. From the next run, loop 2
+can stamp and auto-resolve the thread once the finding is gone. The write is required: loop 2
+reads the marker's own flag on a run where the finding is absent, so a lift computed only in
+memory would never let the thread resolve. If the write fails, the finding stays quarantined as
+"persisted (earlier run)" for this run and the next run tries again. The failure is recorded the
+way every thread write records one: `REVIEW_INCOMPLETE`, or `REVIEW_DEGRADED` when the PR's head
+moved before the write (a newer run supersedes this one).
+
+One decision function, `prt_effective_collision` (`reconcile.sh`), names the collision source
+(`this_run`, `content_mismatch`, `persisted`, `lift` or `none`) for both loop 1 and the upfront cap
+walk, so the walk's prediction cannot drift from loop 1's decision. The walk treats a lift as no
+collision. It also keeps reserving a slot for an open lifted thread, because a failed write leaves
+that thread quarantined and gating: an open thread whose finding is now `FALSE_POSITIVE` would
+otherwise be predicted to resolve and free a slot it still holds.
+
+A thread with no stored `content_fp` (created before go-kure/.github#196) cannot be verified and
+is never lifted. Neither is a thread whose finding was reworded, which the next paragraph covers:
+the lift needs the exact text, so most recurrences still read as a content change and leave the
+flag in place.
 
 **A reworded finding reads as a different one.** `content_fp` hashes the exact `issue`+`fix` text
 (above), and the model rewrites that text on most runs. A recurring defect therefore often shows

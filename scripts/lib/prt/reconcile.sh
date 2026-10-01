@@ -108,6 +108,47 @@ prt_decide_finding() {
   echo REPLY_UNRESOLVE
 }
 
+# prt_effective_collision OWNED_COLLISION THIS_RUN_COLLISION OWNED_CFP THIS_CFP
+# For a finding matched to an OWNED thread, prints which collision source
+# applies, first match wins:
+#   this_run         — this run's own multiplicity (finding.sh group length>1)
+#   content_mismatch — the thread's stored content_fp differs from this
+#                      finding's (go-kure/.github#196)
+#   lift             — the thread carries a persisted collision flag, and this
+#                      run's single finding has exactly the text the thread
+#                      was created for (go-kure/.github#148)
+#   persisted        — the thread carries a persisted collision flag that
+#                      cannot be verified: it has no stored content_fp
+#   none             — no collision
+# this_run, content_mismatch and persisted mean prt_decide_finding gets
+# collision=true; lift and none mean false. Only "true" counts as set for
+# either collision flag. An empty OWNED_CFP (a thread that predates
+# content_fp) never mismatches and never lifts.
+#
+# lift is safe because a thread is only ever created by CREATE, which row 1
+# makes unreachable for a colliding finding: every owned thread was opened
+# for one non-colliding finding, and its content_fp is that finding's text.
+# A later singleton with the same fp and identical text is that same
+# finding, so the ambiguity the persisted flag guards against is gone. The
+# caller persists collision=false onto the thread's marker; until that write
+# succeeds the thread stays quarantined.
+#
+# Shared by loop 1 (pr-review-threads.sh) and the upfront cap walk
+# (prt_reserved_count below), so the cap walk predicts the outcome loop 1
+# reaches instead of re-deriving it.
+prt_effective_collision() {
+  local owned_collision="$1" this_run_collision="$2" owned_cfp="$3" this_cfp="$4"
+  [ "$this_run_collision" = true ] && { echo this_run; return 0; }
+  if [ -n "$owned_cfp" ] && [ "$owned_cfp" != "$this_cfp" ]; then
+    echo content_mismatch; return 0
+  fi
+  if [ "$owned_collision" = true ]; then
+    [ -n "$owned_cfp" ] && { echo lift; return 0; }
+    echo persisted; return 0
+  fi
+  echo none
+}
+
 # prt_decide_absent COLLISION HAS_HUMAN_REPLY THREAD_RESOLVED \
 #                    FIRST_ABSENT_SHA CURRENT_SHA REVIEW_INCOMPLETE \
 #                    UNANSWERED_MAINT_FAILURE
@@ -217,6 +258,8 @@ prt_decide_absent() {
 #     this branch never does, for any resolved absent thread, regardless of
 #     who resolved it (codex round 1 finding P1-1).
 #   effective collision (this run's or persisted)      -> row 1: gating iff open
+#   lifted collision (go-kure/.github#148)              -> the rows below, and
+#     also gating whenever open, in case loop 1's persist of the lift fails
 #   verdict FALSE_POSITIVE                              -> row 2/3: never gating,
 #     unless a human has replied (go-kure/.github#177): then row 3 returns
 #     NONE and the thread stays open, gating
@@ -291,27 +334,29 @@ prt_reserved_count() {
       local o_collision f_collision eff_collision verdict resolved rbb hhr action
       o_collision="$(jq -r '.collision' <<< "$row" 2>/dev/null)" || return 1
       f_collision="$(jq -r '.collision // false' <<< "$match" 2>/dev/null)" || return 1
-      eff_collision=false
-      { [ "$o_collision" = true ] || [ "$f_collision" = true ]; } && eff_collision=true
-      # go-kure/.github#200: a content_fp mismatch also ORs effective_collision
-      # in the main loop's owned_content_fp check (pr-review-threads.sh) and
+      # Same predicate loop 1 uses (prt_effective_collision above), so this
+      # walk cannot drift from it. go-kure/.github#200: a content_fp mismatch
       # routes to QUARANTINE, which keeps the OWNED thread gating exactly like
-      # a same-run collision. This upfront cap walk must predict that too, or
-      # it under-reserves by one for every singleton content_fp mismatch and
-      # lets a later CREATE exceed PRT_MAX_FINDINGS_TOTAL. "" (a thread that
-      # predates go-kure/.github#196,
-      # never a literal "null" — content_fp is built via jq --arg) stays
-      # unverifiable and trusts the match unchanged, same as the main loop.
-      local owned_content_fp
+      # a same-run collision; predicting otherwise under-reserves by one and
+      # lets a later CREATE exceed PRT_MAX_FINDINGS_TOTAL. go-kure/.github#148:
+      # a lift is predicted as no collision, plus the persist-failure guard
+      # after prt_decide_finding below. "" (a thread that predates
+      # go-kure/.github#196, never a literal "null" — content_fp is built via
+      # jq --arg) never mismatches and never lifts.
+      local owned_content_fp match_content_fp="" source
       owned_content_fp="$(jq -r '.content_fp' <<< "$row" 2>/dev/null)" || return 1
       [ "$owned_content_fp" = null ] && owned_content_fp=""
       if [ -n "$owned_content_fp" ]; then
-        local match_issue match_fix match_content_fp
+        local match_issue match_fix
         match_issue="$(jq -r '.issue' <<< "$match" 2>/dev/null)" || return 1
         match_fix="$(jq -r '.fix' <<< "$match" 2>/dev/null)" || return 1
         match_content_fp="$(prt_content_fp "$match_issue" "$match_fix")"
-        [ "$owned_content_fp" != "$match_content_fp" ] && eff_collision=true
       fi
+      source="$(prt_effective_collision "$o_collision" "$f_collision" "$owned_content_fp" "$match_content_fp")"
+      case "$source" in
+        lift|none) eff_collision=false ;;
+        *) eff_collision=true ;;
+      esac
       # verdict defaults to NONE when the matched finding's own .verdict is
       # absent/null — mirrors pr-review-threads.sh's assessment join, where
       # an unmatched-by-assessment finding stays verdict null.
@@ -328,6 +373,15 @@ prt_reserved_count() {
       # 1/5/6/7 all ignore it) — see prt_decide_finding's own comment.
       action="$(prt_decide_finding "$eff_collision" "$verdict" true "$resolved" "$rbb" false "$hhr")"
       [ "$(prt_thread_stays_gating "$action" "$resolved")" = true ] && gating=true
+      # A lift only takes effect once loop 1 persists it; if that write
+      # fails, loop 1 quarantines instead, and a quarantined thread gates
+      # iff open. Reserve when either outcome gates — over-reserving by one
+      # for this run is the safe direction (an open FALSE_POSITIVE thread
+      # would otherwise be predicted to resolve while a failed persist keeps
+      # it gating, letting a later CREATE exceed the cap).
+      if [ "$source" = lift ] && [ "$resolved" != true ]; then
+        gating=true
+      fi
     fi
 
     [ "$gating" = true ] && count=$((count + 1))

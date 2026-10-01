@@ -186,9 +186,10 @@ prt_normalize_findings() {
 # THIS run's assignment only; ordinals are never reassigned across runs by
 # re-sorting (that would misattribute a surviving finding onto an unrelated
 # pre-existing thread, the exact failure the collision flag exists to
-# prevent). Once collision=true, that finding's thread is permanently
-# ineligible for automated resolve/reopen — the caller enforces that via
-# reconcile.sh row 1, not here.
+# prevent). Once collision=true, that finding's thread is ineligible for
+# automated resolve/reopen until a later single finding repeats the
+# thread's original text exactly (go-kure/.github#148) — the caller enforces
+# that via reconcile.sh row 1 and prt_effective_collision, not here.
 prt_assign_ordinals() {
   local findings_json="$1"
   local n i item file category fp_base

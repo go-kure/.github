@@ -645,6 +645,48 @@ assert_eq "reserved_count: no content_fp on OWNED (pre-#196 thread) -> unverifia
     '[{"fp":"r1","collision":false,"resolved":false,"resolved_by_bot":false}]' \
     '[{"fp":"r1","collision":false,"verdict":"FALSE_POSITIVE","issue":"different issue text","fix":"different fix text"}]')"
 
+# go-kure/.github#148: prt_effective_collision, the predicate loop 1 and the
+# cap walk share. Arguments: owned collision, this-run collision, owned
+# content_fp, this finding's content_fp.
+assert_eq "effective_collision: this-run multiplicity wins over a matching text" \
+  "this_run" "$(prt_effective_collision true true aaaa aaaa)"
+assert_eq "effective_collision: this-run multiplicity on a non-collided thread" \
+  "this_run" "$(prt_effective_collision false true "" bbbb)"
+assert_eq "effective_collision: stored content_fp differs -> content_mismatch (with or without a persisted flag)" \
+  "content_mismatch content_mismatch" "$(prt_effective_collision true false aaaa bbbb) $(prt_effective_collision false false aaaa bbbb)"
+assert_eq "effective_collision: persisted flag + identical text -> lift" \
+  "lift" "$(prt_effective_collision true false aaaa aaaa)"
+assert_eq "effective_collision: persisted flag, no stored content_fp -> persisted (unverifiable, never lifts)" \
+  "persisted" "$(prt_effective_collision true false "" aaaa)"
+assert_eq "effective_collision: no flag, matching or absent content_fp -> none" \
+  "none none" "$(prt_effective_collision false false aaaa aaaa) $(prt_effective_collision false false "" aaaa)"
+assert_eq "effective_collision: only the literal 'true' sets a flag" \
+  "none" "$(prt_effective_collision null null "" aaaa)"
+
+# The cap walk predicts the lift. A bot-resolved thread with a persisted
+# flag, whose finding is back with identical text: lifted -> row 7 reopens
+# it -> reserves 1. Quarantined (the pre-#148 prediction) it would reserve 0.
+lift_walk_cfp="$(prt_content_fp 'lift issue' 'lift fix')"
+assert_eq "reserved_count #148: lifted bot-resolved thread with its finding back -> reserves 1 (reopens)" \
+  "1" "$(prt_reserved_count \
+    "[{\"fp\":\"r1\",\"collision\":true,\"resolved\":true,\"resolved_by_bot\":true,\"content_fp\":\"$lift_walk_cfp\"}]" \
+    '[{"fp":"r1","collision":false,"verdict":"VALID","issue":"lift issue","fix":"lift fix"}]')"
+assert_eq "reserved_count #148: same, no stored content_fp -> persisted, quarantined resolved -> reserves 0" \
+  "0" "$(prt_reserved_count \
+    '[{"fp":"r1","collision":true,"resolved":true,"resolved_by_bot":true}]' \
+    '[{"fp":"r1","collision":false,"verdict":"VALID","issue":"lift issue","fix":"lift fix"}]')"
+# An open thread lifted to a FALSE_POSITIVE verdict would resolve (row 3,
+# non-gating) — but if loop 1's persist fails it stays quarantined and
+# open, i.e. gating. The walk reserves for the worse case.
+assert_eq "reserved_count #148: lifted open thread, FALSE_POSITIVE verdict -> still reserves 1 (persist may fail)" \
+  "1" "$(prt_reserved_count \
+    "[{\"fp\":\"r1\",\"collision\":true,\"resolved\":false,\"resolved_by_bot\":false,\"content_fp\":\"$lift_walk_cfp\"}]" \
+    '[{"fp":"r1","collision":false,"verdict":"FALSE_POSITIVE","issue":"lift issue","fix":"lift fix"}]')"
+assert_eq "reserved_count #148: control — non-collided open thread, FALSE_POSITIVE verdict -> reserves 0" \
+  "0" "$(prt_reserved_count \
+    "[{\"fp\":\"r1\",\"collision\":false,\"resolved\":false,\"resolved_by_bot\":false,\"content_fp\":\"$lift_walk_cfp\"}]" \
+    '[{"fp":"r1","collision":false,"verdict":"FALSE_POSITIVE","issue":"lift issue","fix":"lift fix"}]')"
+
 # --- Regression scenario 1: reordered severities across reruns must not
 # un-reserve an already-gating thread (iteration 3/4/5's bug). 5 OWNED open
 # threads matched to low-priority findings, 7 brand-new high-priority
@@ -1736,7 +1778,9 @@ _prt_test_owned_thread_body() {
   # — every existing fixture that never sets it exercises the "thread
   # predates this field, unverifiable, trust the match" backward-compat
   # path unchanged.
-  marker="$(prt_marker_build "${PRT_TEST_OWNED_FP:-deadbeefcafebabe}" "" "${PRT_TEST_FIRST_ABSENT_SHA:-}" "${PRT_TEST_OWNED_CONTENT_FP:-}")"
+  # go-kure/.github#148: PRT_TEST_OWNED_COLLISION=true plants a persisted
+  # collision flag on the owned thread's marker.
+  marker="$(prt_marker_build "${PRT_TEST_OWNED_FP:-deadbeefcafebabe}" "${PRT_TEST_OWNED_COLLISION:-}" "${PRT_TEST_FIRST_ABSENT_SHA:-}" "${PRT_TEST_OWNED_CONTENT_FP:-}")"
   printf '**High**\n\nPlanted test finding for empty-diff absence reconciliation.\n\n%s\n' "$marker"
 }
 export -f _prt_test_owned_thread_body
@@ -2298,12 +2342,26 @@ fake_curl_orchestrator() {
     */pulls/comments/*)
       case "$method" in
         PATCH)
+          # go-kure/.github#148: PRT_TEST_PATCH_BODY_LOG captures each
+          # thread-marker rewrite's body; PRT_TEST_PATCH_FAIL=1 answers 500
+          # without counting it as a PATCH.
+          [ -n "${PRT_TEST_PATCH_BODY_LOG:-}" ] && \
+            jq -r '.body' <<< "$data" >> "$PRT_TEST_PATCH_BODY_LOG"
+          if [ "${PRT_TEST_PATCH_FAIL:-0}" = 1 ]; then
+            : > "$out"; echo 500; return 0
+          fi
           _prt_test_bump "${PRT_TEST_PATCH_COUNTFILE:?}" >/dev/null
           printf '%s' '{"id":1}' > "$out"
           echo 200
           ;;
         *)
-          jq -n --arg b "$(_prt_test_owned_thread_body)" '{body:$b}' > "$out"
+          # go-kure/.github#148: PRT_TEST_COMMENT_GET_EMPTY=1 answers the
+          # pre-rewrite GET with no body.
+          if [ "${PRT_TEST_COMMENT_GET_EMPTY:-0}" = 1 ]; then
+            printf '%s' '{}' > "$out"
+          else
+            jq -n --arg b "$(_prt_test_owned_thread_body)" '{body:$b}' > "$out"
+          fi
           echo 200
           ;;
       esac
@@ -2437,6 +2495,10 @@ run_orchestrator() {
     PRT_TEST_FIRST_ABSENT_SHA="${PRT_TEST_FIRST_ABSENT_SHA:-}" \
     PRT_TEST_OWNED_FP="${PRT_TEST_OWNED_FP:-deadbeefcafebabe}" \
     PRT_TEST_OWNED_CONTENT_FP="${PRT_TEST_OWNED_CONTENT_FP:-}" \
+    PRT_TEST_OWNED_COLLISION="${PRT_TEST_OWNED_COLLISION:-}" \
+    PRT_TEST_PATCH_BODY_LOG="${PRT_TEST_PATCH_BODY_LOG:-}" \
+    PRT_TEST_PATCH_FAIL="${PRT_TEST_PATCH_FAIL:-0}" \
+    PRT_TEST_COMMENT_GET_EMPTY="${PRT_TEST_COMMENT_GET_EMPTY:-0}" \
     PRT_TEST_OWNED_RESOLVED_BY_BOT="${PRT_TEST_OWNED_RESOLVED_BY_BOT:-0}" \
     PRT_TEST_RECHECK_MODE="${PRT_TEST_RECHECK_MODE:-}" \
     PRT_TEST_MODEL_RESPONSE_MODE="${PRT_TEST_MODEL_RESPONSE_MODE:-clean}" \
@@ -3669,6 +3731,122 @@ assert_eq "orchestrator: owned thread predates content_fp (field absent) -> stde
   "true" "$(grep -qE 'done:.*quarantined=0' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 PRT_TEST_OWNED_FP="deadbeefcafebabe"
 PRT_TEST_MODEL_RESPONSE_MODE=clean
+
+# ---- go-kure/.github#148: lift a persisted collision on an exact content match ----
+# Same fixture as the #196 cases above (clean_with_finding: x.go/other,
+# issue "i", fix "f" -> content_fp a9972e5c88f1fa3f), but the owned
+# thread's marker also carries a persisted collision=true.
+lift_cfp="$(prt_content_fp i f)"
+PRT_TEST_PATCH_BODY_LOG="$(mktemp)"
+PRT_TEST_ISSUE_COMMENT_BODY_FILE="$(mktemp)"
+
+# Lift: single finding, text identical to what the thread was created for
+# -> collision=false is written onto the marker (content_fp carried, still
+# the thread's own), and the finding reconciles normally: no quarantine.
+: > "$PRT_TEST_PATCH_BODY_LOG"
+PRT_TEST_MODEL_RESPONSE_MODE=clean_with_finding
+PRT_TEST_OWNED_FP="$(prt_fp_base x.go other)"
+PRT_TEST_OWNED_CONTENT_FP="$lift_cfp"
+PRT_TEST_OWNED_COLLISION=true
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #148: persisted collision + exact content match -> exits 0" "0" "$rc"
+assert_eq "orchestrator #148: persisted collision + exact content match -> quarantined=0 (lifted)" \
+  "true" "$(grep -qE 'done:.*quarantined=0' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator #148: lift -> exactly one marker PATCH" \
+  "1" "$(cat "$PRT_TEST_PATCH_COUNTFILE")"
+lift_marker="$(prt_marker_parse "$(cat "$PRT_TEST_PATCH_BODY_LOG")")"
+assert_eq "orchestrator #148: lift -> the rewritten marker has collision cleared" \
+  "" "$(cut -f2 <<< "$lift_marker")"
+assert_eq "orchestrator #148: lift -> the rewritten marker keeps the thread's own fp and content_fp" \
+  "$(prt_fp_base x.go other) $lift_cfp" "$(cut -f1 <<< "$lift_marker") $(cut -f4 <<< "$lift_marker")"
+assert_eq "orchestrator #148: lift -> logged" \
+  "true" "$(grep -qF 'collision lifted (content match)' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+
+# Lift clears a stale absence stamp: stamped on an earlier head before the
+# collision, the finding is present this run, so keeping it would let the
+# next absence auto-resolve on one absence (prt_decide_absent row 10).
+: > "$PRT_TEST_PATCH_BODY_LOG"
+PRT_TEST_FIRST_ABSENT_SHA="2222222222222222222222222222222222222222"
+rc="$(run_orchestrator enforce 0 0 0)"
+lift_marker="$(prt_marker_parse "$(cat "$PRT_TEST_PATCH_BODY_LOG")")"
+assert_eq "orchestrator #148: lift over a stale first_absent_sha -> one PATCH, stamp and collision cleared, content_fp kept" \
+  "0 1 ||$lift_cfp" "$rc $(cat "$PRT_TEST_PATCH_COUNTFILE") $(cut -f2 <<< "$lift_marker")|$(cut -f3 <<< "$lift_marker")|$(cut -f4 <<< "$lift_marker")"
+PRT_TEST_FIRST_ABSENT_SHA=""
+
+# No lift on a text mismatch: content_mismatch still wins, no marker write.
+: > "$PRT_TEST_PATCH_BODY_LOG"
+PRT_TEST_OWNED_CONTENT_FP="25122a0a5f719e16"
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #148: persisted collision + content mismatch -> quarantined=1, no PATCH" \
+  "0 true 0" "$rc $(grep -qE 'done:.*quarantined=1' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(cat "$PRT_TEST_PATCH_COUNTFILE")"
+assert_eq "orchestrator #148: persisted collision + content mismatch -> Collision cell reads 'content changed (recurring defect)'" \
+  "true" "$(grep -qF '| content changed (recurring defect) |' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && echo true || echo false)"
+
+# No lift without a stored content_fp (a thread that predates
+# go-kure/.github#196): unverifiable, stays persisted.
+PRT_TEST_OWNED_CONTENT_FP=""
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #148: persisted collision, no stored content_fp -> quarantined=1, no PATCH" \
+  "0 true 0" "$rc $(grep -qE 'done:.*quarantined=1' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(cat "$PRT_TEST_PATCH_COUNTFILE")"
+assert_eq "orchestrator #148: persisted collision, no stored content_fp -> Collision cell reads 'persisted (earlier run)'" \
+  "true" "$(grep -qF '| persisted (earlier run) |' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && echo true || echo false)"
+
+# Persist failure fails closed: the PATCH is refused, the finding stays
+# quarantined as persisted (the flag is still on the marker), and the run
+# is REVIEW_INCOMPLETE.
+: > "$PRT_TEST_PATCH_BODY_LOG"
+PRT_TEST_OWNED_CONTENT_FP="$lift_cfp"
+PRT_TEST_PATCH_FAIL=1
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #148: lift persist fails -> exits 1 (REVIEW_INCOMPLETE)" "1" "$rc"
+assert_eq "orchestrator #148: lift persist fails -> the lift was attempted" \
+  "true" "$(grep -qF 'lifting the persisted collision flag' "$PRT_TEST_STDERR_FILE" && [ -s "$PRT_TEST_PATCH_BODY_LOG" ] && echo true || echo false)"
+assert_eq "orchestrator #148: lift persist fails -> still quarantined as persisted, not lifted" \
+  "true false" "$(grep -qF '| persisted (earlier run) |' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && echo true || echo false) $(grep -qF 'collision lifted' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_PATCH_FAIL=0
+
+# The helper's early failure fails closed too: the GET before the rewrite
+# returns no body -> no PATCH, still quarantined as persisted, incomplete.
+: > "$PRT_TEST_PATCH_BODY_LOG"
+PRT_TEST_COMMENT_GET_EMPTY=1
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #148: GET before the lift returns no body -> exits 1, no PATCH" \
+  "1 0" "$rc $(cat "$PRT_TEST_PATCH_COUNTFILE")"
+assert_eq "orchestrator #148: GET before the lift returns no body -> still quarantined as persisted, not lifted" \
+  "true false" "$(grep -qF '| persisted (earlier run) |' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && echo true || echo false) $(grep -qF 'collision lifted' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_COMMENT_GET_EMPTY=0
+
+# This-run multiplicity beats a matching text: the group's fp_base thread
+# carries collision=true and the text of its first member, but three
+# findings collide this run -> this_run, no lift, no PATCH (already set).
+PRT_TEST_MODEL_RESPONSE_MODE=collision_triple
+PRT_TEST_OWNED_FP="$(prt_fp_base dup.go other)"
+PRT_TEST_OWNED_CONTENT_FP="$(prt_content_fp 'collision issue one' 'fix one')"
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #148: this-run collision with a matching owned text -> quarantined=3, no PATCH, no lift" \
+  "0 true 0 false" "$rc $(grep -qE 'done:.*quarantined=3' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(cat "$PRT_TEST_PATCH_COUNTFILE") $(grep -qF 'collision lifted' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+
+# Absence: why the lift must be persisted. With no finding this run, loop 2
+# reads the marker's own flag — collision=true blocks SET_FIRST_ABSENT
+# (prt_decide_absent row 1), the lifted marker takes it.
+PRT_TEST_MODEL_RESPONSE_MODE=clean
+PRT_TEST_OWNED_FP="$(prt_fp_base x.go other)"
+PRT_TEST_OWNED_CONTENT_FP="$lift_cfp"
+PRT_TEST_OWNED_COLLISION=true
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #148: absent finding, marker still collision=true -> no SET_FIRST_ABSENT PATCH" \
+  "0 0" "$rc $(cat "$PRT_TEST_PATCH_COUNTFILE")"
+PRT_TEST_OWNED_COLLISION=""
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #148: absent finding, marker lifted -> SET_FIRST_ABSENT PATCH" \
+  "0 1" "$rc $(cat "$PRT_TEST_PATCH_COUNTFILE")"
+
+PRT_TEST_OWNED_COLLISION=""
+PRT_TEST_OWNED_CONTENT_FP=""
+PRT_TEST_OWNED_FP="deadbeefcafebabe"
+PRT_TEST_MODEL_RESPONSE_MODE=clean
+rm -f "$PRT_TEST_PATCH_BODY_LOG" "$PRT_TEST_ISSUE_COMMENT_BODY_FILE"
+unset PRT_TEST_PATCH_BODY_LOG PRT_TEST_ISSUE_COMMENT_BODY_FILE
 
 # advisory + empty diff -> the cheap exit (Step 3b's non-enforce branch)
 # must stay ahead of the thread-listing GraphQL call entirely.

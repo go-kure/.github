@@ -1025,6 +1025,52 @@ MATCHED_FPS='[]'
 THREADS_WRITTEN=0
 NONE_ANCHORED_COUNT=0
 
+# prt_persist_owned_collision OWNED_ROW FP true|false CONTEXT — rewrites the
+# owned thread's first-comment marker with collision set to the given value.
+# Used for both directions: persisting a this-run collision (C5) and lifting
+# one (go-kure/.github#148). content_fp is carried forward unchanged — this
+# rewrite never recomputes identity from this run's finding
+# (go-kure/.github#196). first_absent_sha is carried when persisting and
+# cleared when lifting: a lift happens because the finding is present this
+# run, so an absence stamp from before the collision is stale, and keeping
+# it would let the next absence auto-resolve on one absence, not two. Returns
+# 0 only when the PATCH succeeded; every failure has already been recorded
+# (prt_handle_freshness_rc / prt_mark_incomplete) when it returns 1.
+prt_persist_owned_collision() {
+  local row="$1" fp="$2" flag="$3" context="$4"
+  local db_id cur_resp cur_body fas cfp marker_flag="" new_marker new_body rc
+  prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    prt_handle_freshness_rc "$rc" "$context"
+    return 1
+  fi
+  db_id="$(jq -r '.first_comment_db_id' <<< "$row")"
+  cur_resp="$(prt_gh_rest GET "/repos/${PRT_REPO}/pulls/comments/${db_id}")"
+  cur_body="$(jq -r '.body // empty' <<< "${cur_resp:-}" 2>/dev/null || true)"
+  if [ -z "$cur_body" ]; then
+    prt_mark_incomplete "${context}: GET before the marker rewrite failed or returned an empty body, skipped"
+    return 1
+  fi
+  fas="$(jq -r '.first_absent_sha' <<< "$row")"
+  [ "$fas" = null ] && fas=""
+  [ "$flag" = false ] && fas=""
+  cfp="$(jq -r '.content_fp' <<< "$row")"
+  [ "$cfp" = null ] && cfp=""
+  [ "$flag" = true ] && marker_flag=true
+  new_marker="$(prt_marker_build "$fp" "$marker_flag" "$fas" "$cfp")"
+  new_body="$(prt_marker_replace "$cur_body" "$new_marker")"
+  prt_retry 3 prt_gh_rest_fresh PATCH "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA" \
+    "/repos/${PRT_REPO}/pulls/comments/${db_id}" \
+    "$(jq -n --arg b "$new_body" '{body:$b}')" >/dev/null
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    prt_handle_freshness_rc "$rc" "${context} (after up to 3 retries)"
+    return 1
+  fi
+  return 0
+}
+
 if [ "$PRT_MODE" = advisory ]; then
   # advisory: zero thread creates/mutations, one plain issue comment with
   # the merged findings table — the staged-rollout mechanism itself.
@@ -1077,32 +1123,7 @@ else
       if [ "$collision" = true ]; then
         owned_collision="$(jq -r '.collision' <<< "$owned_match")"
         if [ "$owned_collision" != true ]; then
-          if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
-            db_id="$(jq -r '.first_comment_db_id' <<< "$owned_match")"
-            cur_resp="$(prt_gh_rest GET "/repos/${PRT_REPO}/pulls/comments/${db_id}")"
-            cur_body="$(jq -r '.body // empty' <<< "${cur_resp:-}" 2>/dev/null || true)"
-            if [ -n "$cur_body" ]; then
-              fas="$(jq -r '.first_absent_sha' <<< "$owned_match")"
-              [ "$fas" = null ] && fas=""
-              # go-kure/.github#196: carry the thread's own stored content_fp
-              # forward unchanged — this rewrite persists the collision flag
-              # only, never recomputes identity from this run's finding.
-              cfp="$(jq -r '.content_fp' <<< "$owned_match")"
-              [ "$cfp" = null ] && cfp=""
-              new_marker="$(prt_marker_build "$fp" "true" "$fas" "$cfp")"
-              new_body="$(prt_marker_replace "$cur_body" "$new_marker")"
-              prt_retry 3 prt_gh_rest_fresh PATCH "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA" \
-                "/repos/${PRT_REPO}/pulls/comments/${db_id}" \
-                "$(jq -n --arg b "$new_body" '{body:$b}')" >/dev/null
-              retry_rc=$?
-              [ "$retry_rc" -eq 0 ] || \
-                prt_handle_freshness_rc "$retry_rc" "fp=$fp: persisting collision=true onto existing thread (after up to 3 retries)"
-            else
-              prt_mark_incomplete "fp=$fp: GET before collision-marker persist failed or returned empty body, skipped"
-            fi
-          else
-            prt_handle_freshness_rc "$?" "fp=$fp: collision-marker persist"
-          fi
+          prt_persist_owned_collision "$owned_match" "$fp" true "fp=$fp: persisting collision=true onto existing thread"
         fi
       fi
     fi
@@ -1115,37 +1136,55 @@ else
     # a single (non-colliding) finding on an fp_base a prior run quarantined
     # would resume normal resolve/reopen here, exactly what the C5 write
     # above exists to prevent (dot-github#50 gmr finding B3).
+    #
+    # go-kure/.github#196: a bare-fp match against an OWNED thread whose
+    # marker carries a DIFFERENT content_fp means this run's finding is
+    # not actually the defect that thread was opened for — the same
+    # fp_base collided across two separate runs, which
+    # prt_assign_ordinals (scoped to one run only) has no way to see.
+    # Route it through the existing QUARANTINE path (row 1) rather than
+    # letting prt_decide_finding evaluate this finding's verdict against
+    # that thread's state — a human-resolved thread would silently
+    # discard this finding (row 6), a bot-resolved one would reopen with
+    # a content-free "recurs" reply naming neither finding
+    # (go-kure/.github#196's reachability trace). An empty
+    # owned_content_fp means the thread predates this field —
+    # unverifiable, trust the match, unchanged behavior; never
+    # retroactively quarantine a pre-existing thread on the strength of
+    # a field it was never given the chance to carry. Deliberately not
+    # persisted onto the thread's own marker the way the collision flag
+    # above is (C5): a mismatch is recomputed fresh every run this
+    # finding recurs, which is enough — persisting would need its own
+    # durability argument this design doesn't need to make.
+    #
+    # go-kure/.github#148: a persisted flag is lifted when this run's
+    # single finding has exactly the text the thread was created for
+    # (prt_effective_collision, reconcile.sh, explains why that is safe).
+    # The lift is written onto the marker, because loop 2 reads the
+    # marker's flag on a later run when the finding is gone; without the
+    # write the thread could never auto-resolve. If the write fails, the
+    # thread stays quarantined this run (fail closed) and the next run
+    # tries again.
     effective_collision="$collision"
-    content_mismatch=false
+    collision_source=none
+    [ "$collision" = true ] && collision_source=this_run
     if [ "$thread_exists" = true ]; then
       owned_collision_eff="$(jq -r '.collision' <<< "$owned_match")"
-      [ "$owned_collision_eff" = true ] && effective_collision=true
-
-      # go-kure/.github#196: a bare-fp match against an OWNED thread whose
-      # marker carries a DIFFERENT content_fp means this run's finding is
-      # not actually the defect that thread was opened for — the same
-      # fp_base collided across two separate runs, which
-      # prt_assign_ordinals (scoped to one run only) has no way to see.
-      # Route it through the existing QUARANTINE path (row 1) rather than
-      # letting prt_decide_finding evaluate this finding's verdict against
-      # that thread's state — a human-resolved thread would silently
-      # discard this finding (row 6), a bot-resolved one would reopen with
-      # a content-free "recurs" reply naming neither finding
-      # (go-kure/.github#196's reachability trace). An empty
-      # owned_content_fp means the thread predates this field —
-      # unverifiable, trust the match, unchanged behavior; never
-      # retroactively quarantine a pre-existing thread on the strength of
-      # a field it was never given the chance to carry. Deliberately not
-      # persisted onto the thread's own marker the way the collision flag
-      # above is (C5): a mismatch is recomputed fresh every run this
-      # finding recurs, which is enough — persisting would need its own
-      # durability argument this design doesn't need to make.
       owned_content_fp="$(jq -r '.content_fp' <<< "$owned_match")"
       [ "$owned_content_fp" = null ] && owned_content_fp=""
-      if [ -n "$owned_content_fp" ] && [ "$owned_content_fp" != "$content_fp" ]; then
-        effective_collision=true
-        content_mismatch=true
+      collision_source="$(prt_effective_collision "$owned_collision_eff" "$collision" "$owned_content_fp" "$content_fp")"
+      if [ "$collision_source" = lift ]; then
+        if prt_persist_owned_collision "$owned_match" "$fp" false "fp=$fp: lifting the persisted collision flag (content match)"; then
+          prt_log "fp=$fp collision lifted (content match)"
+          collision_source=none
+        else
+          collision_source=persisted
+        fi
       fi
+      case "$collision_source" in
+        none) effective_collision=false ;;
+        *) effective_collision=true ;;
+      esac
     fi
 
     action="$(prt_decide_finding "$effective_collision" "$verdict" "$thread_exists" "$thread_resolved" "$resolved_by_bot" "$within_cap" "$has_human_reply")"
@@ -1196,14 +1235,10 @@ else
         # as "persisted (earlier run)", which is a false claim — no
         # persisted collision flag was ever set on that thread. Track the
         # actual reason so the render layer can tell all three cases apart.
-        quarantine_reason=this_run
-        if [ "$collision" != true ]; then
-          if [ "$content_mismatch" = true ]; then
-            quarantine_reason=content_mismatch
-          else
-            quarantine_reason=persisted
-          fi
-        fi
+        # collision_source (prt_effective_collision above) already names
+        # exactly one of the three; a lift whose persist failed reads
+        # persisted, which is true — the flag is still on the marker.
+        quarantine_reason="$collision_source"
         persisted_only_flag=false
         [ "$quarantine_reason" = persisted ] && persisted_only_flag=true
         QUARANTINED="$(jq -c --argjson f "$f" --argjson g "$gating_flag" --argjson p "$persisted_only_flag" --arg r "$quarantine_reason" \
