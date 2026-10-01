@@ -165,7 +165,7 @@ prt_effective_collision() {
 
 # prt_decide_absent COLLISION HAS_HUMAN_REPLY THREAD_RESOLVED \
 #                    FIRST_ABSENT_SHA CURRENT_SHA REVIEW_INCOMPLETE \
-#                    UNANSWERED_MAINT_FAILURE
+#                    STAMP_KNOWN_STALE
 # FIRST_ABSENT_SHA may be "" (unset).
 #
 # Evaluation order below deliberately differs from the table's numeric
@@ -180,17 +180,17 @@ prt_effective_collision() {
 # first-match-wins evaluation.
 #
 # Prints one action word:
-#   NONE             — do nothing (rows 6-analog/9/11/13, or thread already
+#   NONE             — do nothing (rows 6-analog/9/13, or thread already
 #                       resolved so absence is moot)
 #   CLEAR_MARKER      — row 12: clear first_absent_sha, forcing a clean
 #                       restart on a later run
-#   SET_FIRST_ABSENT  — row 8: stamp first_absent_sha=<current head sha>
+#   SET_FIRST_ABSENT  — rows 8 and 11: stamp first_absent_sha=<current head sha>
 #   REPLY_RESOLVE      — row 10: post the auto-close reply, then
 #                       resolveReviewThread
 prt_decide_absent() {
   local collision="$1" has_human_reply="$2" thread_resolved="$3" \
         first_absent_sha="$4" current_sha="$5" review_incomplete="$6" \
-        unanswered_maint_failure="$7"
+        stamp_known_stale="$7"
 
   # Row 1: collision beats every row, matched or absent.
   [ "$collision" = true ] && { echo NONE; return 0; }
@@ -221,9 +221,12 @@ prt_decide_absent() {
 
   # Row 11: a marker clear failed after 3 retries and its MAINT_FAILURE reply
   # recorded the stamp the thread still carries (go-kure/.github#261) — that
-  # stamp is stale, so it is not the first of two absences. Held until a
-  # later run clears it; a human reply already stopped this at row 13.
-  [ "$unanswered_maint_failure" = true ] && { echo NONE; return 0; }
+  # stamp is stale, so it is not the first of two absences. This absence is:
+  # re-stamp at the current head, exactly as row 8 does. The reply's stamp no
+  # longer matches afterwards, so the next absence on another head resolves
+  # through row 10. A re-stamp that fails leaves the stale stamp, and the
+  # next run retries it here. A human reply already stopped this at row 13.
+  [ "$stamp_known_stale" = true ] && { echo SET_FIRST_ABSENT; return 0; }
 
   # Row 10: two consecutive absences on different SHAs, nothing blocking it.
   echo REPLY_RESOLVE

@@ -57,9 +57,9 @@ PRT_MARKER_STATE_SUPERSEDED='<!-- gokure-pr-review:state=superseded -->'
 PRT_MARKER_PARTIAL='<!-- gokure-pr-review:v1-partial -->'
 # State line on a MAINT_FAILURE reply (go-kure/.github#261), next to
 # PRT_MARKER_NOTE: records the absence stamp the failed clear left behind.
-# Loop 2's row 11 holds back an absence auto-resolve while the thread still
-# carries that same stamp, so a later run that does clear it (and a later
-# absence that stamps a new head) is not blocked forever. Same `v1-<kind>`
+# While the thread still carries that same stamp, loop 2's row 11 re-stamps
+# an absence at the current head instead of resolving on it; once the stamp
+# differs, the reply no longer applies. Same `v1-<kind>`
 # shape as the markers above, so PRT_MARKER_RE cannot match it.
 PRT_MARKER_MAINT_FAILURE_RE='^<!-- gokure-pr-review:v1-maint-failure( first_absent_sha=([0-9a-f]{40}))? -->$'
 
@@ -114,13 +114,13 @@ prt_marker_build_maint_failure() {
 
 # prt_marker_maint_failure_sha BODY — for a bot reply (the caller has already
 # checked prt_marker_has_note): if BODY is a MAINT_FAILURE reply, prints the
-# stamp it recorded and returns 0. A reply posted before the state line
-# existed carries only the `**MAINT_FAILURE:**` line and prints "" (the stamp
-# is unknown). Returns 1 for any other reply.
-# Only the line directly after the note marker is read: both forms put their
-# line there, and a reply that carries model prose (the false-positive
-# reasoning) has its own fixed text there, so prose quoting either line
-# further down can neither forge nor suppress one.
+# stamp it recorded ("" if none) and returns 0. Returns 1 for any other
+# reply, including one posted before the state line existed: its stamp is
+# unknown, and row 11 re-stamps on a match, so a wildcard would re-stamp on
+# every run and never let the thread resolve.
+# Only the line directly after the note marker is read: the state line sits
+# there, and a reply that carries model prose (the false-positive
+# reasoning) has its own fixed text there.
 prt_marker_maint_failure_sha() {
   local body="$1" line after_note=0
   while IFS= read -r line; do
@@ -129,7 +129,6 @@ prt_marker_maint_failure_sha() {
         printf '%s' "${BASH_REMATCH[2]:-}"
         return 0
       fi
-      [[ "$line" == '**MAINT_FAILURE:** '* ]] && return 0
       return 1
     fi
     [ "$line" = "$PRT_MARKER_NOTE" ] && after_note=1

@@ -68,8 +68,8 @@ EOF
 # marker write that should clear first_absent_sha failed after retries;
 # structurally independent of the marker itself, so the audit trail survives
 # even when the edit did not. FIRST_ABSENT_SHA is the stamp left behind; the
-# state line records it so loop 2's row 11 can hold back an absence
-# auto-resolve while the thread still carries it (go-kure/.github#261).
+# state line records it so loop 2's row 11 re-stamps, instead of resolving
+# on, an absence while the thread still carries it (go-kure/.github#261).
 prt_render_reply_maint_failure() {
   local reason
   reason="$(prt_marker_neutralize "$1")"
@@ -78,9 +78,9 @@ ${PRT_MARKER_NOTE}
 $(prt_marker_build_maint_failure "${2:-}")
 **MAINT_FAILURE:** ${reason}
 
-This thread will not be resolved automatically for absence until a later
-run clears its stale absence marker. A maintainer reply here hands the
-thread to humans, as any reply does.
+The stale absence marker is not counted: if the finding stays absent, this
+thread resolves automatically only after two further absences. A
+maintainer reply here hands the thread to humans, as any reply does.
 EOF
 }
 
