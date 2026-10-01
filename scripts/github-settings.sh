@@ -205,7 +205,7 @@ declare -A RULE_KIND=(
 
 # Rule types that restrict a push to, or a merge into, the branch. Only these
 # count when a ruleset is judged as replacing classic branch protection
-# (ruleset_covers_main): copilot_code_review is review automation and blocks
+# (ruleset_json_covers_branch): copilot_code_review is review automation and blocks
 # nothing, so a ruleset carrying only that rule protects nothing. A new
 # RULE_TYPE_ORDER entry is added here only when it blocks a push or a merge.
 PROTECTIVE_RULE_TYPES=(
@@ -852,68 +852,101 @@ repo_default_branch() {
     gh api "repos/$GITHUB_ORG/$repo" --jq '.default_branch // empty' 2>/dev/null || true
 }
 
-# True when at least one of the named rulesets (the caller passes the ones
-# applicable to `repo`) actually protects main: a branch ruleset, enforcement
-# active (not disabled, not evaluate), whose include list reaches main —
-# literally, via ~ALL, or via ~DEFAULT_BRANCH when the repo's default branch
-# IS main — and whose exclude list does not take it away again. The sentinel
-# is resolved against the live repo, never assumed: a consumer whose default
-# branch is not main would otherwise lose classic protection on main to a
-# ruleset that protects a different branch. An unreadable default branch
-# makes the sentinel undecidable, so a ruleset using it in EITHER list is
-# treated as not covering main — an unknown include might protect another
-# branch, an unknown exclude might carve main back out (~ALL minus
-# ~DEFAULT_BRANCH). Both are the fail-closed side. The ruleset must also
-# declare at least one rule: an active ruleset with `rules: {}` targets main
-# and restricts nothing, which is no replacement for classic protection.
-# Gates the classic-protection migration in audit_rulesets: anything less
-# would remove protection without replacing it.
-ruleset_covers_main() {
-    local repo="$1"
-    shift
-    local name default_branch protective_json
-    default_branch=$(repo_default_branch "$repo")
+# True when the one ruleset described on stdin protects BRANCH. Input is the
+# normalized shape both callers build — from policy (ruleset_covers_branch)
+# and from a live GET (live_ruleset_covers_branch) — so the policy pre-check
+# and the post-apply re-read judge coverage by the same rule:
+#   {target, enforcement, rule_types: [...], conditions: {ref_name: {include, exclude}}}
+# A branch ruleset, enforcement active (not disabled, not evaluate), at least
+# one rule in PROTECTIVE_RULE_TYPES (an active ruleset with no rules, or only
+# review automation, targets the branch and restricts nothing, which is no
+# replacement for classic protection), and an include list that reaches the
+# branch — literally, via ~ALL, or via ~DEFAULT_BRANCH when DEFAULT_BRANCH is
+# BRANCH — whose exclude list does not take it away again. The sentinel is
+# resolved against the live repo, never assumed: a consumer whose default
+# branch differs would otherwise lose classic protection to a ruleset that
+# protects a different branch. An empty DEFAULT_BRANCH (unreadable) makes the
+# sentinel undecidable, so a ruleset using it in EITHER list is treated as not
+# covering — an unknown include might protect another branch, an unknown
+# exclude might carve this one back out (~ALL minus ~DEFAULT_BRANCH). Both are
+# the fail-closed side.
+ruleset_json_covers_branch() {
+    local branch="$1" default_branch="$2" protective_json
     protective_json=$(printf '%s\n' "${PROTECTIVE_RULE_TYPES[@]}" | jq -R . | jq -sc .)
+    # Ref-name conditions are fnmatch patterns, so an entry matches the branch
+    # when its glob does (`refs/heads/ma*`), not only when it is the literal
+    # ref. Every translation errs towards "not covered": on the include side a
+    # single `*`/`?` stops at `/` (so `refs/*` is not trusted to reach
+    # `refs/heads/main`; only `**` crosses separators), on the exclude side
+    # they match anything (so `refs/*` counts as possibly removing the
+    # branch), and a bracket expression (`[!x]`, `[a-z]`) is never trusted on
+    # either side. An unmodelled or ambiguous pattern can therefore only keep
+    # classic protection, never drop it.
+    jq -e --arg branch "$branch" --arg def "$default_branch" --argjson prot "$protective_json" '
+        def uses_sentinel: index("~DEFAULT_BRANCH") != null;
+        def has_bracket: test("[\\[\\]]");
+        def glob_re(star; qmark): gsub("(?<c>[.+^${}()|\\[\\]\\\\])"; "\\\(.c)")
+            | gsub("\\*\\*"; "\u0001") | gsub("\\*"; star) | gsub("\\?"; qmark) | gsub("\u0001"; ".*");
+        def matches_branch(star; qmark): . as $p |
+            $p == "~ALL"
+            or ($def == $branch and $p == "~DEFAULT_BRANCH")
+            or (($p | startswith("~") | not) and (("refs/heads/" + $branch) | test("^" + ($p | glob_re(star; qmark)) + "$")));
+        def include_reaches: (. // []) | any((has_bracket | not) and matches_branch("[^/]*"; "[^/]"));
+        def exclude_may_remove: (. // []) | any(has_bracket or matches_branch(".*"; "."));
+        .target == "branch"
+        and .enforcement == "active"
+        and ((.rule_types // []) | any(. as $t | $prot | index($t) != null))
+        and (.conditions as $c
+            | if $def == "" and (($c.ref_name.include | uses_sentinel) or ($c.ref_name.exclude | uses_sentinel))
+              then false
+              else ($c.ref_name.include | include_reaches) and ($c.ref_name.exclude | exclude_may_remove | not)
+              end)
+    ' >/dev/null
+}
+
+# True when at least one of the named rulesets (the caller passes the ones
+# applicable to `repo`) would, as policy declares it, protect BRANCH
+# (ruleset_json_covers_branch). This is the pre-check: a policy that leaves
+# the branch without such a ruleset must not lose unmanaged classic
+# protection on --apply with nothing replacing it (go-kure/.github#154). It
+# judges the rules the API would actually receive, not the policy object: a
+# flag rule declared `false` is omitted from the payload, so
+# `rules: {deletion: false}` is non-empty in policy and empty on the wire.
+ruleset_covers_branch() {
+    local repo="$1" branch="$2" default_branch="$3"
+    shift 3
+    local name
     for name in "$@"; do
-        [ "$(ruleset_field "$repo" "$name" target branch)" = "branch" ] || continue
-        [ "$(ruleset_field "$repo" "$name" enforcement active)" = "active" ] || continue
-        # Judge the rules the API would actually receive, not the policy
-        # object: a flag rule declared `false` is omitted from the payload,
-        # so `rules: {deletion: false}` is non-empty in policy and empty on
-        # the wire. And judge them by kind: at least one emitted rule must be
-        # in PROTECTIVE_RULE_TYPES, or the ruleset protects nothing.
-        build_ruleset_payload "$repo" "$name" \
-            | jq -e --argjson prot "$protective_json" '[.rules[].type] | any(. as $t | $prot | index($t) != null)' >/dev/null \
-            || continue
-        # Ref-name conditions are fnmatch patterns, so an entry matches main
-        # when its glob does (`refs/heads/ma*`), not only when it is the
-        # literal `refs/heads/main`. The two sentinels are resolved as above.
-        # Every translation errs towards "not covered": on the include side a
-        # single `*`/`?` stops at `/` (so `refs/*` is not trusted to reach
-        # `refs/heads/main`; only `**` crosses separators), on the exclude
-        # side they match anything (so `refs/*` counts as possibly removing
-        # main), and a bracket expression (`[!x]`, `[a-z]`) is never trusted
-        # on either side. An unmodelled or ambiguous pattern can therefore
-        # only keep classic protection, never drop it.
-        if ruleset_conditions_json "$repo" "$name" \
-            | jq -e --arg def "$default_branch" '
-                def uses_sentinel: index("~DEFAULT_BRANCH") != null;
-                def has_bracket: test("[\\[\\]]");
-                def glob_re(star; qmark): gsub("(?<c>[.+^${}()|\\[\\]\\\\])"; "\\\(.c)")
-                    | gsub("\\*\\*"; "") | gsub("\\*"; star) | gsub("\\?"; qmark) | gsub(""; ".*");
-                def matches_main(star; qmark): . as $p |
-                    $p == "~ALL"
-                    or ($def == "main" and $p == "~DEFAULT_BRANCH")
-                    or (($p | startswith("~") | not) and ("refs/heads/main" | test("^" + ($p | glob_re(star; qmark)) + "$")));
-                def include_reaches_main: (. // []) | any((has_bracket | not) and matches_main("[^/]*"; "[^/]"));
-                def exclude_may_remove_main: (. // []) | any(has_bracket or matches_main(".*"; "."));
-                if $def == "" and ((.ref_name.include | uses_sentinel) or (.ref_name.exclude | uses_sentinel))
-                then false
-                else (.ref_name.include | include_reaches_main) and (.ref_name.exclude | exclude_may_remove_main | not)
-                end
-            ' >/dev/null; then
-            return 0
-        fi
+        jq -n \
+            --arg target "$(ruleset_field "$repo" "$name" target branch)" \
+            --arg enforcement "$(ruleset_field "$repo" "$name" enforcement active)" \
+            --argjson rule_types "$(build_ruleset_payload "$repo" "$name" | jq -c '[.rules[].type]')" \
+            --argjson conditions "$(ruleset_conditions_json "$repo" "$name")" \
+            '{target: $target, enforcement: $enforcement, rule_types: $rule_types, conditions: $conditions}' \
+            | ruleset_json_covers_branch "$branch" "$default_branch" && return 0
+    done
+    return 1
+}
+
+# True when at least one of the named rulesets, as it exists on the repo NOW,
+# protects BRANCH (ruleset_json_covers_branch on the live GET). Run after the
+# rulesets are reconciled and before classic protection is deleted
+# (go-kure/.github#160): the policy pre-check says what should be there, this
+# says what is. A ruleset that is missing, or a read that fails, does not
+# cover — a failed POST/PUT must leave classic protection in place.
+live_ruleset_covers_branch() {
+    local repo="$1" branch="$2" default_branch="$3"
+    shift 3
+    local listing name id live
+    listing=$(gh api "repos/$GITHUB_ORG/$repo/rulesets?includes_parents=false" 2>/dev/null) || return 1
+    for name in "$@"; do
+        id=$(jq -r --arg n "$name" 'first(.[] | select(.name == $n) | .id) // empty' <<<"$listing" 2>/dev/null) || continue
+        [ -n "$id" ] || continue
+        live=$(gh api "repos/$GITHUB_ORG/$repo/rulesets/$id" 2>/dev/null) || continue
+        jq -c '{target, enforcement, rule_types: [(.rules // [])[].type],
+                conditions: {ref_name: {include: (.conditions.ref_name.include // []),
+                                        exclude: (.conditions.ref_name.exclude // [])}}}' <<<"$live" 2>/dev/null \
+            | ruleset_json_covers_branch "$branch" "$default_branch" && return 0
     done
     return 1
 }
@@ -1076,20 +1109,60 @@ apply_ruleset() {
     fi
 }
 
-# Remove classic branch protection if it still exists (migration)
+# Remove classic branch protection on BRANCH if it still exists (migration).
+# Called only once a live ruleset is shown to cover BRANCH
+# (audit_classic_protection).
 remove_classic_branch_protection() {
-    local repo="$1"
+    local repo="$1" branch="$2"
 
-    if gh api "repos/$GITHUB_ORG/$repo/branches/main/protection" --silent 2>/dev/null; then
-        echo -e "  ${YELLOW}MIGRATING${NC}: Removing classic branch protection (replaced by rulesets)"
-        if gh api "repos/$GITHUB_ORG/$repo/branches/main/protection" \
+    if gh api "repos/$GITHUB_ORG/$repo/branches/$branch/protection" --silent 2>/dev/null; then
+        echo -e "  ${YELLOW}MIGRATING${NC}: Removing classic branch protection on $branch (replaced by rulesets)"
+        if gh api "repos/$GITHUB_ORG/$repo/branches/$branch/protection" \
             --method DELETE \
             --silent 2>/dev/null; then
-            echo -e "  ${GREEN}REMOVED${NC}: Classic branch protection deleted"
+            echo -e "  ${GREEN}REMOVED${NC}: Classic branch protection on $branch deleted"
         else
-            echo -e "  ${RED}FAILED${NC}: Could not remove classic branch protection (requires admin access)"
-            record_apply_failure "$repo: remove classic branch protection on main"
+            echo -e "  ${RED}FAILED${NC}: Could not remove classic branch protection on $branch (requires admin access)"
+            record_apply_failure "$repo: remove classic branch protection on $branch"
         fi
+    fi
+}
+
+# Leftover classic branch protection on the repo's default branch (BRANCH;
+# DEFAULT_BRANCH is the raw read, empty when unreadable, and BRANCH falls back
+# to main then). Migrated away only when both hold:
+#   1. the policy installs a branch ruleset covering BRANCH on this repo
+#      (ruleset_covers_branch). A policy that leaves the branch without one
+#      (empty map, tag rulesets only, branch not included) would otherwise
+#      lose unmanaged classic protection on --apply with nothing replacing it
+#      (go-kure/.github#154). That case is reported, not counted as drift:
+#      the policy is not asking for anything on the branch.
+#   2. on --apply, a LIVE ruleset covers BRANCH, re-read after the rulesets
+#      were reconciled (live_ruleset_covers_branch). Deleting first, or on
+#      the policy's word alone, left the branch with no protection at all
+#      when the ruleset POST/PUT then failed, and with none for the window
+#      between DELETE and POST even when it succeeded (go-kure/.github#160).
+#      When it does not, protection is kept and the apply run fails.
+audit_classic_protection() {
+    local repo="$1" apply="$2" branch="$3" default_branch="$4"
+    shift 4
+
+    gh api "repos/$GITHUB_ORG/$repo/branches/$branch/protection" --silent 2>/dev/null || return 0
+
+    if ! ruleset_covers_branch "$repo" "$branch" "$default_branch" "$@"; then
+        echo -e "  ${YELLOW}SKIP${NC}: Classic branch protection on $branch kept — no policy ruleset targets $branch on this repo, so nothing would replace it"
+        return 0
+    fi
+
+    RULESET_MISSING=$((RULESET_MISSING + 1))
+    echo -e "  ${YELLOW}LEGACY${NC}: Classic branch protection on $branch still exists (should be replaced by rulesets)"
+    [ "$apply" = "true" ] || return 0
+
+    if live_ruleset_covers_branch "$repo" "$branch" "$default_branch" "$@"; then
+        remove_classic_branch_protection "$repo" "$branch"
+    else
+        echo -e "  ${RED}SKIP${NC}: Classic branch protection on $branch kept — replacement ruleset not live"
+        record_apply_failure "$repo: classic branch protection on $branch kept, replacement ruleset not live"
     fi
 }
 
@@ -1696,24 +1769,12 @@ audit_rulesets() {
         ruleset_applies "$repo" "$name" && applicable_names+=("$name")
     done
 
-    # Check for leftover classic branch protection. It is migrated away only
-    # when the policy installs a branch ruleset covering main on this repo;
-    # a policy that leaves main without one (empty map, tag rulesets only,
-    # main not included) would otherwise lose unmanaged classic protection
-    # on --apply with nothing replacing it (go-kure/.github#154 review
-    # finding). That case is reported, not counted as drift: the policy is
-    # not asking for anything on main.
-    if gh api "repos/$GITHUB_ORG/$repo/branches/main/protection" --silent 2>/dev/null; then
-        if ruleset_covers_main "$repo" "${applicable_names[@]}"; then
-            RULESET_MISSING=$((RULESET_MISSING + 1))
-            echo -e "  ${YELLOW}LEGACY${NC}: Classic branch protection still exists (should be replaced by rulesets)"
-            if [ "$apply" = "true" ]; then
-                remove_classic_branch_protection "$repo"
-            fi
-        else
-            echo -e "  ${YELLOW}SKIP${NC}: Classic branch protection kept — no policy ruleset targets main on this repo, so nothing would replace it"
-        fi
-    fi
+    # The default branch is resolved once and used for the classic-protection
+    # probe, the coverage checks and the delete alike (go-kure/.github#160).
+    # Classic protection is handled after the rulesets are reconciled below.
+    local default_branch protected_branch
+    default_branch=$(repo_default_branch "$repo")
+    protected_branch="${default_branch:-main}"
 
     # Get existing rulesets. includes_parents=false excludes org-level rulesets that
     # apply here by inheritance — those are managed at the org level, not this repo's,
@@ -1736,6 +1797,9 @@ audit_rulesets() {
         if [ "${#applicable_names[@]}" -gt 0 ]; then
             echo -e "  ${YELLOW}SKIP${NC}: Could not read rulesets for $GITHUB_ORG/$repo (unsupported on this plan/visibility, or a permissions/rate-limit error) — ${#applicable_names[@]} ruleset(s) declared in policy could not be audited"
         fi
+        # Still reported; on --apply the live re-read fails the same way, so
+        # classic protection is kept.
+        audit_classic_protection "$repo" "$apply" "$protected_branch" "$default_branch" "${applicable_names[@]}"
         return
     fi
 
@@ -1811,6 +1875,8 @@ audit_rulesets() {
         RULESET_MISSING=$((RULESET_MISSING + $(jq 'length' <<<"$unmanaged_rulesets")))
         echo -e "  ${RED}UNMANAGED${NC}: Ruleset(s) not in policy (created out-of-band): $unmanaged_rulesets"
     fi
+
+    audit_classic_protection "$repo" "$apply" "$protected_branch" "$default_branch" "${applicable_names[@]}"
 }
 
 # Does this known (policy-declared) ruleset's live config match what policy
