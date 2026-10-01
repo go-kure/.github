@@ -573,6 +573,36 @@ validate_policy() {
         errors=$((errors + 1))
     fi
 
+    # 7. Bypass actors the rulesets API refuses. The schema checks each
+    #    actor's shape; these rules depend on the actor type or on the
+    #    ruleset's target (which may come from github_defaults), so a closed
+    #    per-layer schema cannot state them. GitHub's REST description
+    #    (repository-ruleset-bypass-actor): actor_id is required for
+    #    Integration, RepositoryRole, Team and User; bypass_mode pull_request
+    #    is not applicable to DeployKey and applies only to branch rulesets.
+    #    --apply would otherwise fail mid-run, at that ruleset's write.
+    local bad_bypass=""
+    [ "$policy_shape_ok" -eq 1 ] && bad_bypass=$(jq -r '
+        (.github_defaults.rulesets // {}) as $d
+        | (.github_repos // {}) | to_entries[] | .key as $repo
+        | (.value.rulesets // {}) | to_entries[] | .key as $name
+        | (.value.target // $d[$name].target // "branch") as $target
+        | (.value.bypass_actors // []) | to_entries[] | .key as $i | .value as $a
+        | ( if ($a.actor_type | IN("Integration", "RepositoryRole", "Team", "User")) and $a.actor_id == null
+            then "actor_id is required for actor_type \($a.actor_type)" else empty end,
+            if $a.bypass_mode == "pull_request" and $a.actor_type == "DeployKey"
+            then "bypass_mode pull_request is not applicable to actor_type DeployKey"
+            elif $a.bypass_mode == "pull_request" and $target != "branch"
+            then "bypass_mode pull_request applies only to a branch ruleset (target is \($target))"
+            else empty end )
+        | "github_repos[\"\($repo)\"].rulesets[\"\($name)\"].bypass_actors[\($i)]: \(.)"
+    ' <<<"$POLICY_JSON")
+    if [ -n "$bad_bypass" ]; then
+        echo -e "${RED}ERROR: bypass actor(s) the rulesets API refuses:${NC}"
+        while IFS= read -r line; do echo "    $line"; done <<<"$bad_bypass"
+        errors=$((errors + 1))
+    fi
+
     if [ "$errors" -gt 0 ]; then
         exit 1
     fi

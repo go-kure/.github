@@ -288,6 +288,26 @@ schema_reject "a merge queue build size above the API's 100" '.github_repos.kure
     "merge_queue.max_entries_to_build: 101 is above the maximum 100"
 schema_reject "a merge queue check timeout above the API's 360 minutes" '.github_repos.kure.rulesets["main-protection"].rules.merge_queue.check_response_timeout_minutes = 361' \
     "merge_queue.check_response_timeout_minutes: 361 is above the maximum 360"
+schema_reject "a merge queue minimum group size above the API's 100" '.github_repos.kure.rulesets["main-protection"].rules.merge_queue.min_entries_to_merge = 101' \
+    "merge_queue.min_entries_to_merge: 101 is above the maximum 100"
+schema_reject "a merge queue maximum group size above the API's 100" '.github_repos.kure.rulesets["main-protection"].rules.merge_queue.max_entries_to_merge = 101' \
+    "merge_queue.max_entries_to_merge: 101 is above the maximum 100"
+schema_reject "a merge queue group wait above the API's 360 minutes" '.github_repos.kure.rulesets["main-protection"].rules.merge_queue.min_entries_to_merge_wait_minutes = 361' \
+    "merge_queue.min_entries_to_merge_wait_minutes: 361 is above the maximum 360"
+# Bypass actors the rulesets API refuses, though each is the schema's shape.
+schema_reject "a DeployKey bypass actor in pull_request mode" '.github_repos.kure.rulesets["main-protection"].bypass_actors = [{actor_id: null, actor_type: "DeployKey", bypass_mode: "pull_request"}]' \
+    'github_repos["kure"].rulesets["main-protection"].bypass_actors[0]: bypass_mode pull_request is not applicable to actor_type DeployKey'
+schema_reject "pull_request bypass mode on a tag ruleset" '.github_repos.kure.rulesets["main-protection"].target = "tag" | .github_repos.kure.rulesets["main-protection"].bypass_actors = [{actor_id: 5, actor_type: "Team", bypass_mode: "pull_request"}]' \
+    'bypass_actors[0]: bypass_mode pull_request applies only to a branch ruleset (target is tag)'
+schema_reject "pull_request bypass mode on a ruleset whose github_defaults target is push" '.github_defaults.rulesets["main-protection"].target = "push" | .github_repos.kure.rulesets["main-protection"].bypass_actors = [{actor_id: 5, actor_type: "Team", bypass_mode: "pull_request"}]' \
+    'bypass_actors[0]: bypass_mode pull_request applies only to a branch ruleset (target is push)'
+schema_reject "a Team bypass actor with a null actor_id" '.github_repos.kure.rulesets["main-protection"].bypass_actors = [{actor_id: null, actor_type: "Team", bypass_mode: "always"}]' \
+    'bypass_actors[0]: actor_id is required for actor_type Team'
+# The same modes stay accepted where the API accepts them.
+bypass_ok_json=$(jq '.github_repos.kure.rulesets["main-protection"].bypass_actors = [{actor_id: 5, actor_type: "Team", bypass_mode: "pull_request"}, {actor_id: null, actor_type: "DeployKey", bypass_mode: "always"}, {actor_id: null, actor_type: "OrganizationAdmin", bypass_mode: "exempt"}]' <<<"$POLICY_JSON")
+bypass_ok_out=$( (POLICY_JSON="$bypass_ok_json" validate_policy) 2>&1 )
+assert_eq "validate_policy accepts pull_request mode for a Team on a branch ruleset, and null actor_id for DeployKey and OrganizationAdmin" "0" "$?"
+assert_eq "with no bypass actor error" "0" "$(grep -c 'rulesets API refuses' <<<"$bypass_ok_out")"
 schema_reject "an invalid ruleset enforcement" '.github_defaults.rulesets["main-protection"].enforcement = "on"' \
     "main-protection.enforcement: \"on\" is not one of"
 schema_reject "an invalid squash commit title" '.github_defaults.squash_merge_commit_title = "PR_TITEL"' \
