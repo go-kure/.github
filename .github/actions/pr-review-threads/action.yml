@@ -35,7 +35,11 @@ inputs:
       author login must both match). Ownership is checked against GraphQL's
       author.login, which omits the "[bot]" suffix REST uses for the same
       account; the script strips it internally before comparing, so pass the
-      REST spelling here unchanged.
+      REST spelling here unchanged. Changing it leaves the old login's marked
+      threads and comments read-only: never edited, resolved or reopened, and
+      no duplicate thread while one is open; where an own thread would be
+      reopened, a new own thread is opened instead. Reported as
+      REVIEW_DEGRADED.
     required: true
   model:
     description: Review model.
