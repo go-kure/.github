@@ -28,10 +28,20 @@
 #     retried up to --max-attempts times in all; then the deploy fails. Any
 #     other push failure fails the deploy at once.
 #
+# --remove deletes one version slot instead (go-kure/.github#259). It runs in
+# the slot's own deploy group, so it never overlaps a deploy of the same slot,
+# but another slot's deploy can push between its fetch and its push. It uses the
+# same attempt loop: each attempt starts from the pages branch's current tip,
+# removes <site-subdir>/<slot>/ there, and pushes, and only a push rejected
+# because the branch moved is retried. A slot missing from the tip fails the
+# removal; it writes no CNAME, build or root.
+#
 # Usage:
 #   deploy-docs-push.sh --source DIR --target DIR --site-subdir NAME
 #       --slot SLOT --label LABEL --set-latest true|false --slot-site DIR
 #       [--root-site DIR] [--cname HOST] [--max-attempts N] [--backoff SECONDS]
+#   deploy-docs-push.sh --remove --target DIR --site-subdir NAME --slot SLOT
+#       [--max-attempts N] [--backoff SECONDS]
 #
 #   --source        the caller's checkout; its `origin` tags decide the root,
 #                   and its HEAD names the deploy commit
@@ -39,8 +49,12 @@
 #                   `origin` it can push to
 #   --site-subdir   the caller's directory in the pages repository (one path
 #                   segment, e.g. `kure`)
-#   --slot          <site-subdir>/<slot>/ is replaced (one path segment: `dev`
-#                   or starting with `v`, the names a root write keeps)
+#   --slot          <site-subdir>/<slot>/ is replaced, or removed with --remove
+#                   (one path segment: `dev` or starting with `v`, the names a
+#                   root write keeps)
+#   --remove        remove the slot; takes none of the deploy-only options
+#                   (--source, --label, --set-latest, --slot-site, --root-site,
+#                   --cname)
 #   --label         the version label; when the root is requested, an existing
 #                   release tag at the source's HEAD
 #   --set-latest    `true` asks for the root; `false` never writes it
@@ -66,6 +80,7 @@ die() {
 
 usage() {
     echo "usage: deploy-docs-push.sh --source DIR --target DIR --site-subdir NAME --slot SLOT --label LABEL --set-latest true|false --slot-site DIR [--root-site DIR] [--cname HOST] [--max-attempts N] [--backoff SECONDS]" >&2
+    echo "       deploy-docs-push.sh --remove --target DIR --site-subdir NAME --slot SLOT [--max-attempts N] [--backoff SECONDS]" >&2
     exit 64
 }
 
@@ -82,8 +97,17 @@ inside() {
 
 src="" target="" site="" slot="" label="" set_latest="" slot_site="" root_site=""
 cname="www.gokure.dev" max_attempts=5 backoff=5
+remove=false deploy_only=()
 while [[ $# -gt 0 ]]; do
+    if [[ "$1" == --remove ]]; then
+        remove=true
+        shift
+        continue
+    fi
     [[ $# -ge 2 ]] || usage
+    case "$1" in
+        --source | --label | --set-latest | --slot-site | --root-site | --cname) deploy_only+=("$1") ;;
+    esac
     case "$1" in
         --source) src="$2" ;;
         --target) target="$2" ;;
@@ -101,7 +125,14 @@ while [[ $# -gt 0 ]]; do
     shift 2
 done
 
-[[ -n "$src" && -n "$target" && -n "$slot_site" ]] || usage
+if [[ "$remove" == true ]]; then
+    [[ -n "$target" ]] || usage
+    # A removal writes no build, root or CNAME: a deploy option passed with it
+    # would be silently ignored, so it is refused instead.
+    ((${#deploy_only[@]} == 0)) || die "--remove takes no ${deploy_only[*]}"
+else
+    [[ -n "$src" && -n "$target" && -n "$slot_site" ]] || usage
+fi
 # Both name directories that `rm -rf` replaces: one plain path segment each.
 segment_re='^[A-Za-z0-9][A-Za-z0-9._-]*$'
 [[ "$site" =~ $segment_re ]] || die "site subdir '$site' is not a single path segment (letters, digits, '.', '_', '-'; not starting with '.')"
@@ -109,16 +140,22 @@ segment_re='^[A-Za-z0-9][A-Za-z0-9._-]*$'
 # A root write replaces everything under <site-subdir>/ except `dev` and `v*`,
 # so any other slot would be deleted by this deploy's root write or the next.
 [[ "$slot" == dev || "$slot" == v* ]] || die "slot '$slot' is neither 'dev' nor a 'v*' version slot; a root write would delete it"
-[[ -n "$label" ]] || die "empty label"
-[[ "$set_latest" == true || "$set_latest" == false ]] || die "set-latest must be true or false, got '$set_latest'"
-[[ -n "$cname" ]] || die "empty cname"
+if [[ "$remove" == false ]]; then
+    [[ -n "$label" ]] || die "empty label"
+    [[ "$set_latest" == true || "$set_latest" == false ]] || die "set-latest must be true or false, got '$set_latest'"
+    [[ -n "$cname" ]] || die "empty cname"
+fi
 [[ "$max_attempts" =~ ^[1-9][0-9]*$ ]] || die "max-attempts must be a positive integer, got '$max_attempts'"
 [[ "$backoff" =~ ^[0-9]+$ ]] || die "backoff must be a non-negative integer, got '$backoff'"
 
-src="$(abs_dir "$src")"
 target="$(abs_dir "$target")"
-slot_site="$(abs_dir "$slot_site")"
-if [[ "$set_latest" == true ]]; then
+if [[ "$remove" == true ]]; then
+    root_site=""
+else
+    src="$(abs_dir "$src")"
+    slot_site="$(abs_dir "$slot_site")"
+fi
+if [[ "$remove" == false && "$set_latest" == true ]]; then
     [[ -n "$root_site" ]] || die "root-site is required with set-latest true"
     root_site="$(abs_dir "$root_site")"
 else
@@ -133,7 +170,9 @@ for d in "$slot_site" "$root_site"; do
 done
 
 branch="$(git -C "$target" symbolic-ref --quiet --short HEAD)" || die "$target is not on a branch"
-source_sha="$(git -C "$src" rev-parse --short HEAD)" || die "cannot read HEAD of $src"
+if [[ "$remove" == false ]]; then
+    source_sha="$(git -C "$src" rev-parse --short HEAD)" || die "cannot read HEAD of $src"
+fi
 
 decision_file="$(mktemp)"
 trap 'rm -f "$decision_file"' EXIT
@@ -152,74 +191,88 @@ for ((attempt = 1; attempt <= max_attempts; attempt++)); do
     git -C "$target" reset --quiet --hard "refs/remotes/origin/${branch}"
     git -C "$target" clean --quiet -ffdx
 
-    # Deployment infrastructure files.
-    printf '%s\n' "$cname" >"$target/CNAME"
-    touch "$target/.nojekyll"
-
-    echo "Deploying to /${site}/${slot}/..."
-    mkdir -p "$site_dir"
-    rm -rf "${site_dir:?}/${slot}"
-    cp -R "$slot_site" "$site_dir/${slot}"
-
-    root_written=false
-    if [[ "$set_latest" == true ]]; then
-        # Decide again from the tags as they are now: Publish's decision may be
-        # stale, and a retry must not reuse the previous attempt's answer.
-        # --prune drops a local tag that origin no longer has: a tag deleted
-        # after the checkout must neither rank nor pass the tag check below.
-        git -C "$src" fetch --quiet --force --prune origin '+refs/tags/*:refs/tags/*' \
-            || die "could not fetch tags into $src; not deciding the /${site}/ root from stale tags"
-        # The policy reads the tags of its working directory.
-        cd "$src"
-        set +e
-        bash "$SCRIPT_DIR/publish-policy.sh" latest "$label" >"$decision_file"
-        policy_rc=$?
-        set -e
-        [[ "$policy_rc" -eq 0 ]] || die "publish-policy.sh latest '$label' failed (exit $policy_rc); not deciding the /${site}/ root"
-        decision="$(<"$decision_file")"
-        case "$decision" in
-            true)
-                # The policy ranks the label against the tags; it does not
-                # check that the label is one, or that this checkout is it.
-                # The root must be built from the tag itself: a dispatch from
-                # another ref with a well-formed label would otherwise put
-                # that ref's docs at the root. Checked on every attempt,
-                # against the tags this attempt just fetched.
-                tag_commit="$(git -C "$src" rev-parse --verify --quiet "refs/tags/${label}^{commit}")" \
-                    || die "label '${label}' is not a tag in $src; not writing the /${site}/ root"
-                head_commit="$(git -C "$src" rev-parse --verify "HEAD^{commit}")" \
-                    || die "cannot read HEAD of $src; not writing the /${site}/ root"
-                [[ "$tag_commit" == "$head_commit" ]] \
-                    || die "$src HEAD ${head_commit} is not tag ${label}'s commit ${tag_commit}; not writing the /${site}/ root (dispatch with --ref ${label})"
-                echo "Deploying to /${site}/ (latest stable)..."
-                find "$site_dir" -mindepth 1 -maxdepth 1 -not -name 'dev' -not -name 'v*' -exec rm -rf {} +
-                cp -R "$root_site/." "$site_dir/"
-                root_written=true
-                ;;
-            false)
-                echo "::notice::deploy-docs-push: left the /${site}/ root untouched: ${label} is no longer the highest stable tag"
-                ;;
-            *)
-                die "publish-policy.sh latest '$label' printed '${decision}', expected true or false"
-                ;;
-        esac
-    fi
-
-    git -C "$target" add -A
-    if git -C "$target" diff --staged --quiet; then
-        echo "No changes to deploy"
-        exit 0
-    fi
-    if [[ "$root_written" == true ]]; then
-        msg="deploy: ${label} → /${site}/${slot}/ + /${site}/ (latest) from ${site}@${source_sha}"
+    if [[ "$remove" == true ]]; then
+        # Checked on every attempt, against the tip this attempt starts from.
+        # Only a removal of the same slot could take it away between attempts,
+        # and that runs in the same deploy group as this one.
+        [[ -d "$site_dir/$slot" ]] || die "/${site}/${slot}/ does not exist on ${branch}; nothing to remove"
+        echo "Removing /${site}/${slot}/..."
+        git -C "$target" rm -r -q -- "$site/$slot"
+        msg="docs: remove /${site}/${slot}/ version"
     else
-        msg="deploy: ${label} → /${site}/${slot}/ from ${site}@${source_sha}"
+        # Deployment infrastructure files.
+        printf '%s\n' "$cname" >"$target/CNAME"
+        touch "$target/.nojekyll"
+
+        echo "Deploying to /${site}/${slot}/..."
+        mkdir -p "$site_dir"
+        rm -rf "${site_dir:?}/${slot}"
+        cp -R "$slot_site" "$site_dir/${slot}"
+
+        root_written=false
+        if [[ "$set_latest" == true ]]; then
+            # Decide again from the tags as they are now: Publish's decision may be
+            # stale, and a retry must not reuse the previous attempt's answer.
+            # --prune drops a local tag that origin no longer has: a tag deleted
+            # after the checkout must neither rank nor pass the tag check below.
+            git -C "$src" fetch --quiet --force --prune origin '+refs/tags/*:refs/tags/*' \
+                || die "could not fetch tags into $src; not deciding the /${site}/ root from stale tags"
+            # The policy reads the tags of its working directory.
+            cd "$src"
+            set +e
+            bash "$SCRIPT_DIR/publish-policy.sh" latest "$label" >"$decision_file"
+            policy_rc=$?
+            set -e
+            [[ "$policy_rc" -eq 0 ]] || die "publish-policy.sh latest '$label' failed (exit $policy_rc); not deciding the /${site}/ root"
+            decision="$(<"$decision_file")"
+            case "$decision" in
+                true)
+                    # The policy ranks the label against the tags; it does not
+                    # check that the label is one, or that this checkout is it.
+                    # The root must be built from the tag itself: a dispatch from
+                    # another ref with a well-formed label would otherwise put
+                    # that ref's docs at the root. Checked on every attempt,
+                    # against the tags this attempt just fetched.
+                    tag_commit="$(git -C "$src" rev-parse --verify --quiet "refs/tags/${label}^{commit}")" \
+                        || die "label '${label}' is not a tag in $src; not writing the /${site}/ root"
+                    head_commit="$(git -C "$src" rev-parse --verify "HEAD^{commit}")" \
+                        || die "cannot read HEAD of $src; not writing the /${site}/ root"
+                    [[ "$tag_commit" == "$head_commit" ]] \
+                        || die "$src HEAD ${head_commit} is not tag ${label}'s commit ${tag_commit}; not writing the /${site}/ root (dispatch with --ref ${label})"
+                    echo "Deploying to /${site}/ (latest stable)..."
+                    find "$site_dir" -mindepth 1 -maxdepth 1 -not -name 'dev' -not -name 'v*' -exec rm -rf {} +
+                    cp -R "$root_site/." "$site_dir/"
+                    root_written=true
+                    ;;
+                false)
+                    echo "::notice::deploy-docs-push: left the /${site}/ root untouched: ${label} is no longer the highest stable tag"
+                    ;;
+                *)
+                    die "publish-policy.sh latest '$label' printed '${decision}', expected true or false"
+                    ;;
+            esac
+        fi
+
+        git -C "$target" add -A
+        if git -C "$target" diff --staged --quiet; then
+            echo "No changes to deploy"
+            exit 0
+        fi
+        if [[ "$root_written" == true ]]; then
+            msg="deploy: ${label} → /${site}/${slot}/ + /${site}/ (latest) from ${site}@${source_sha}"
+        else
+            msg="deploy: ${label} → /${site}/${slot}/ from ${site}@${source_sha}"
+        fi
     fi
     git -C "$target" commit --quiet -m "$msg"
     push_rc=0
     push_out="$(git -C "$target" push --porcelain --quiet origin "HEAD:refs/heads/${branch}")" || push_rc=$?
     if ((push_rc == 0)); then
-        echo "Deployed: ${msg}"
+        if [[ "$remove" == true ]]; then
+            echo "Removed: ${msg}"
+        else
+            echo "Deployed: ${msg}"
+        fi
         exit 0
     fi
     # Only a push refused because the pages branch moved is worth writing again;

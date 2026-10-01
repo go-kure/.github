@@ -434,7 +434,8 @@ by hand once its provenance is settled.
   or the checked-out commit is not the tag's, the step fails instead of putting another commit's
   docs at the root. A push rejected
   because another slot's deploy landed first is written again on the new tip and retried a bounded
-  number of times. The slot decision is still the one Publish took. A deploy runs the
+  number of times; a slot removal through the action's `remove` input retries the same way. The
+  slot decision is still the one Publish took. A deploy runs the
   `deploy-docs.yml` of its `--ref`, so a tag cut before its repository adopted the action deploys
   without either: an older tag's `set_latest=true` deploy can then replace the root after a newer
   release's, and the second of two concurrent pushes fails.
