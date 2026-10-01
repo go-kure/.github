@@ -2134,6 +2134,10 @@ fake_curl_orchestrator() {
       # go-kure/.github#173: PRT_TEST_MODEL_REQUEST_LOG captures each call's user message.
       [ -n "${PRT_TEST_MODEL_REQUEST_LOG:-}" ] && \
         jq -r '.messages[] | select(.role == "user") | .content' <<< "$req_body" >> "$PRT_TEST_MODEL_REQUEST_LOG"
+      # go-kure/.github#156: PRT_TEST_MODEL_SYSTEM_LOG captures each call's
+      # system prompt, where PROJECT STANDARDS is injected.
+      [ -n "${PRT_TEST_MODEL_SYSTEM_LOG:-}" ] && \
+        jq -r '.messages[] | select(.role == "system") | .content' <<< "$req_body" >> "$PRT_TEST_MODEL_SYSTEM_LOG"
       case "$req_body" in
         *'FINDINGS (JSON)'*)
           # PRT_TEST_ASSESS_* (go-kure/.github assess-resilience workstream):
@@ -2717,7 +2721,19 @@ run_orchestrator() {
   [ -n "${PRT_TEST_ISSUE_COMMENT_BODY_FILE:-}" ] && : > "$PRT_TEST_ISSUE_COMMENT_BODY_FILE"
   : > "$PRT_TEST_STDOUT_FILE"
   : > "$PRT_TEST_STDERR_FILE"
+  # go-kure/.github#156: $scratch is the run's working directory, i.e. the
+  # caller's checkout. PRT_TEST_CALLER_FILE=<relative path> with
+  # PRT_TEST_CALLER_FILE_CONTENT plants a file there. PRT_TEST_STANDARDS_FILE
+  # and PRT_TEST_STANDARDS_SOURCE are forwarded only when set (set-but-empty
+  # included), so a test that sets neither runs with the script's defaults.
+  if [ -n "${PRT_TEST_CALLER_FILE:-}" ]; then
+    mkdir -p "$scratch/$(dirname "$PRT_TEST_CALLER_FILE")"
+    printf '%s\n' "${PRT_TEST_CALLER_FILE_CONTENT:-}" > "$scratch/$PRT_TEST_CALLER_FILE"
+  fi
   (
+    unset PRT_STANDARDS_FILE PRT_STANDARDS_SOURCE
+    [ -n "${PRT_TEST_STANDARDS_FILE+set}" ] && export PRT_STANDARDS_FILE="$PRT_TEST_STANDARDS_FILE"
+    [ -n "${PRT_TEST_STANDARDS_SOURCE+set}" ] && export PRT_STANDARDS_SOURCE="$PRT_TEST_STANDARDS_SOURCE"
     cd "$scratch" && \
     PRT_CURL=fake_curl_orchestrator \
     PRT_TEST_DIFF_COUNTFILE="$PRT_TEST_DIFF_COUNTFILE" \
@@ -2753,6 +2769,7 @@ run_orchestrator() {
     PRT_TEST_REPLY_BODY_LOG="${PRT_TEST_REPLY_BODY_LOG:-}" \
     PRT_TEST_CREATE_BODY_LOG="${PRT_TEST_CREATE_BODY_LOG:-}" \
     PRT_TEST_MODEL_REQUEST_LOG="${PRT_TEST_MODEL_REQUEST_LOG:-}" \
+    PRT_TEST_MODEL_SYSTEM_LOG="${PRT_TEST_MODEL_SYSTEM_LOG:-}" \
     PRT_TEST_REPLY_FAIL="${PRT_TEST_REPLY_FAIL:-0}" \
     PRT_TEST_MODEL_RESPONSE_MODE="${PRT_TEST_MODEL_RESPONSE_MODE:-clean}" \
     PRT_TEST_ASSESS_RESPONSE_MODE="${PRT_TEST_ASSESS_RESPONSE_MODE:-clean}" \
@@ -4654,6 +4671,84 @@ assert_eq "orchestrator: normal run -> no foreign-marked-threads reason" \
   "false" "$(grep -qF 'foreign-marked-threads' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 rm -f "$PRT_TEST_ISSUE_COMMENT_BODY_FILE"
 unset PRT_TEST_ISSUE_COMMENT_BODY_FILE PRT_TEST_OWNED_AUTHOR
+
+# ---- go-kure/.github#156: where the standards document is read from ----
+# The run's working directory stands in for the caller's checkout; the
+# script's own tree ($ROOT) for the action's. Each case plants a caller file
+# carrying a sentinel, so a read from the wrong checkout shows up in the
+# system prompt either way. The model log holds both calls' system prompts
+# only when the review finds something; the default review finds nothing, so
+# there is one (review) call per run here.
+PRT_TEST_MODEL_SYSTEM_LOG="$(mktemp)"
+prt_std_action_line='# go-kure Org Standards'
+prt_std_sentinel='CALLER-STANDARDS-SENTINEL-156'
+prt_std_has() { grep -qF -- "$1" "$PRT_TEST_MODEL_SYSTEM_LOG" && echo true || echo false; }
+
+# Default source (action): the caller's same-named file is NOT read.
+PRT_TEST_CALLER_FILE=docs/standards.md
+PRT_TEST_CALLER_FILE_CONTENT="$prt_std_sentinel"
+: > "$PRT_TEST_MODEL_SYSTEM_LOG"
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "orchestrator #156: default standards source reads the action's docs/standards.md, not the caller's file of the same name" \
+  "0 true true false" "$rc $(prt_std_has 'PROJECT STANDARDS:') $(prt_std_has "$prt_std_action_line") $(prt_std_has "$prt_std_sentinel")"
+
+# Explicit action: identical to the default.
+PRT_TEST_STANDARDS_SOURCE=action
+: > "$PRT_TEST_MODEL_SYSTEM_LOG"
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "orchestrator #156: standards-source=action reads the action's checkout" \
+  "0 true false" "$rc $(prt_std_has "$prt_std_action_line") $(prt_std_has "$prt_std_sentinel")"
+
+# caller: a caller-relative path that does not exist in the action's tree.
+PRT_TEST_STANDARDS_SOURCE=caller
+PRT_TEST_STANDARDS_FILE=policy/review-rules.md
+PRT_TEST_CALLER_FILE=policy/review-rules.md
+: > "$PRT_TEST_MODEL_SYSTEM_LOG"
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "orchestrator #156: standards-source=caller reads the caller's file, and not the action's standards" \
+  "0 true true false" "$rc $(prt_std_has 'PROJECT STANDARDS:') $(prt_std_has "$prt_std_sentinel") $(prt_std_has "$prt_std_action_line")"
+
+# caller with the default path: the caller's docs/standards.md, not the action's.
+unset PRT_TEST_STANDARDS_FILE
+PRT_TEST_CALLER_FILE=docs/standards.md
+: > "$PRT_TEST_MODEL_SYSTEM_LOG"
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "orchestrator #156: standards-source=caller with the default path reads the caller's docs/standards.md" \
+  "0 true false" "$rc $(prt_std_has "$prt_std_sentinel") $(prt_std_has "$prt_std_action_line")"
+
+# caller, file missing: no standards at all (never the action's), and logged.
+PRT_TEST_STANDARDS_FILE=missing/standards.md
+: > "$PRT_TEST_MODEL_SYSTEM_LOG"
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "orchestrator #156: standards-source=caller with a missing file sends no PROJECT STANDARDS and logs it" \
+  "0 false true" "$rc $(prt_std_has 'PROJECT STANDARDS:') $(grep -qF "standards file 'missing/standards.md' not found in the caller checkout" "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+
+# Empty standards file disables it in caller mode too, even with a file there.
+PRT_TEST_STANDARDS_FILE=''
+: > "$PRT_TEST_MODEL_SYSTEM_LOG"
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "orchestrator #156: an empty standards file disables PROJECT STANDARDS under standards-source=caller" \
+  "0 false false" "$rc $(prt_std_has 'PROJECT STANDARDS:') $(prt_std_has "$prt_std_sentinel")"
+PRT_TEST_STANDARDS_SOURCE=action
+: > "$PRT_TEST_MODEL_SYSTEM_LOG"
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "orchestrator #156: an empty standards file disables PROJECT STANDARDS under standards-source=action" \
+  "0 false" "$rc $(prt_std_has 'PROJECT STANDARDS:')"
+
+# An unknown source is a configuration error: exit 1 before any network call.
+unset PRT_TEST_STANDARDS_FILE
+PRT_TEST_STANDARDS_SOURCE=callr
+: > "$PRT_TEST_MODEL_SYSTEM_LOG"
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "orchestrator #156: an unknown standards source exits 1 naming the value, before the diff fetch or any model call" \
+  "1 true 0 0" "$rc $(grep -qF "ERROR: PRT_STANDARDS_SOURCE must be 'action' or 'caller', got 'callr'" "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(cat "$PRT_TEST_DIFF_COUNTFILE") $(cat "$PRT_TEST_MODEL_COUNTFILE")"
+# Except in off mode: the incident escape hatch exits 0 before the check.
+rc="$(run_orchestrator off 0 0 0)"
+assert_eq "orchestrator #156: off mode still exits 0 with an unknown standards source" "0" "$rc"
+
+rm -f "$PRT_TEST_MODEL_SYSTEM_LOG"
+unset PRT_TEST_MODEL_SYSTEM_LOG PRT_TEST_STANDARDS_SOURCE PRT_TEST_STANDARDS_FILE PRT_TEST_CALLER_FILE PRT_TEST_CALLER_FILE_CONTENT
+unset -f prt_std_has
 
 rm -f "$PRT_TEST_DIFF_COUNTFILE" "$PRT_TEST_META_COUNTFILE" "$PRT_TEST_MODEL_COUNTFILE" \
       "$PRT_TEST_ASSESS_COUNTFILE" \

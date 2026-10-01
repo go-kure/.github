@@ -97,7 +97,9 @@
 #   PR_REVIEW_ASSESS_MODEL      (default: claude-sonnet-4-6)
 #   PR_REVIEW_ASSESS_MAX_TOKENS (default: 4096)
 #   PR_REVIEW_AGENTS_FILE       (default: AGENTS.md)
-#   PR_REVIEW_STANDARDS_FILE    (default: docs/standards.md; resolved against
+#   PR_REVIEW_STANDARDS_FILE    (default: docs/standards.md; set from the
+#                                 `standards-file` workflow_call input, ''
+#                                 disables it; resolved against
 #                                 go-kure/.github's own checkout at the pinned
 #                                 action SHA, not the caller's — see
 #                                 pr-review-threads.sh's PRT_SCRIPT_DIR note.
@@ -107,6 +109,15 @@
 #                                 lacked until now.)
 #   PR_REVIEW_THREADS_MODE      (default: enforce; vars.PR_REVIEW_THREADS_MODE overrides — see note above)
 #   PR_REVIEW_MAX_FINDINGS_TOTAL (default: 5)
+#
+# Bot identity (go-kure/.github#156): a caller without KURE_BOT_PAT passes its
+# own PAT as the BOT_PAT secret and the login that PAT posts as as the
+# `bot-login` input — both or neither; the first step fails the job on one
+# without the other. Neither keeps the KURE_BOT_PAT / kure-bot behaviour below
+# unchanged. Self-hosted runners still limit this workflow to callers in this
+# org (docs/pr-review-threads.md, "Components"); a caller in another org uses
+# the composite action from its own workflow, where the same identity inputs
+# exist directly.
 
 name: PR Review
 
@@ -118,6 +129,35 @@ on:
         type: string
         required: false
         default: ''
+      bot-login:
+        description: >-
+          The login BOT_PAT posts as, REST spelling (a user login, or
+          name[bot] for an App). Required with BOT_PAT, refused without it.
+          Empty (default): kure-bot when KURE_BOT_PAT is set, else
+          github-actions[bot].
+        type: string
+        required: false
+        default: ''
+      standards-file:
+        description: >-
+          Standards document injected as PROJECT STANDARDS, a path in
+          go-kure/.github at the pinned action SHA. Empty disables it.
+        type: string
+        required: false
+        default: 'docs/standards.md'
+    secrets:
+      BOT_PAT:
+        description: >-
+          A caller's own PAT for the review threads, used instead of
+          KURE_BOT_PAT. Must belong to a user account (an App or GITHUB_TOKEN
+          cannot resolve threads). Requires the bot-login input.
+        required: false
+      KURE_BOT_PAT:
+        description: >-
+          The go-kure kure-bot PAT (org secret, reaches kure, launcher and
+          .github through `secrets: inherit`). Declared so the job's
+          reference to it is a declared secret, not an undeclared one.
+        required: false
 
 concurrency:
   group: pr-review-threads-${{ github.repository }}-${{ github.event.pull_request.number }}
@@ -146,11 +186,32 @@ jobs:
       PR_REVIEW_ASSESS_MODEL: "claude-sonnet-4-6"
       PR_REVIEW_ASSESS_MAX_TOKENS: "4096"
       PR_REVIEW_AGENTS_FILE: "AGENTS.md"
-      PR_REVIEW_STANDARDS_FILE: "docs/standards.md"
+      PR_REVIEW_STANDARDS_FILE: ${{ inputs.standards-file }}
       PR_REVIEW_THREADS_MODE: "enforce"
       PR_REVIEW_MAX_FINDINGS_TOTAL: "5"
 
     steps:
+      # go-kure/.github#156: a PAT whose login is unknown cannot own the
+      # threads it opens (ownership needs marker AND author == bot-login), and
+      # a bot-login without its PAT names an account the token does not post
+      # as. Either half alone would open threads this job never owns, so never
+      # resolves; refuse it before anything else runs. The secret only reaches
+      # this step as a true/false string: secrets are not allowed in a step
+      # `if:`, and the value itself is never needed here.
+      - name: Check bot identity inputs
+        env:
+          BOT_PAT_SET: ${{ secrets.BOT_PAT != '' }}
+          BOT_LOGIN: ${{ inputs.bot-login }}
+        run: |
+          if [ "$BOT_PAT_SET" = true ] && [ -z "$BOT_LOGIN" ]; then
+            echo "::error title=pr-review bot identity::BOT_PAT is set but the bot-login input is empty; pass the login BOT_PAT posts as, or its threads are never owned and never resolved."
+            exit 1
+          fi
+          if [ "$BOT_PAT_SET" != true ] && [ -n "$BOT_LOGIN" ]; then
+            echo "::error title=pr-review bot identity::the bot-login input is set but the BOT_PAT secret is not; pass both, or neither to keep the default identity."
+            exit 1
+          fi
+
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -180,12 +241,14 @@ jobs:
           # via pr-review-caller.yml's `secrets: inherit`; falls back to
           # github.token/github-actions[bot] in any repo where it isn't set, so
           # this degrades to today's create-only behavior rather than failing.
-          github-token: ${{ secrets.KURE_BOT_PAT || github.token }}
+          # A caller's own BOT_PAT + bot-login pair (go-kure/.github#156, the
+          # first step checks they come together) takes precedence over both.
+          github-token: ${{ secrets.BOT_PAT || secrets.KURE_BOT_PAT || github.token }}
           pr-number: ${{ github.event.pull_request.number }}
           head-sha: ${{ github.event.pull_request.head.sha }}
           mode: ${{ vars.PR_REVIEW_THREADS_MODE || env.PR_REVIEW_THREADS_MODE }}
           proxy-url: ${{ env.CCPROXY_URL }}
-          bot-login: ${{ secrets.KURE_BOT_PAT != '' && 'kure-bot' || 'github-actions[bot]' }}
+          bot-login: ${{ inputs.bot-login != '' && inputs.bot-login || (secrets.KURE_BOT_PAT != '' && 'kure-bot' || 'github-actions[bot]') }}
           model: ${{ env.PR_REVIEW_MODEL }}
           max-tokens: ${{ env.PR_REVIEW_MAX_TOKENS }}
           assess-model: ${{ env.PR_REVIEW_ASSESS_MODEL }}
