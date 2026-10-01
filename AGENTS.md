@@ -23,6 +23,12 @@ labels reference, and design docs in sync when you change them.
 
 `mise tasks` lists every local check, test, and script wrapper (lint, doc-sync, action-pins,
 settings audit/apply, ...); `mise run <task>` runs one, `mise run verify` runs everything CI runs.
+`scripts/check-mise-ci-parity.sh` (`mise run check:mise-ci-parity`, also in CI) keeps that true for the
+script lists. A `.sh` file that `lint:shell` shellchecks, or a `scripts/test/*-test.sh` suite that
+`test` runs, must appear in `ci.yml` too, and the reverse. Adding a script means adding it to both,
+or the check fails. It reads one form per list and refuses anything else: a line starting with
+`shellcheck` followed by plain flags and paths, and a suite run as `bash scripts/test/<name>-test.sh .`
+on a line of its own. Other test runners, such as the renovate lane's node script, are not compared.
 
 ## Repository Structure
 
@@ -41,6 +47,7 @@ settings audit/apply, ...); `mise run <task>` runs one, `mise run verify` runs e
 │   ├── check-links.sh                   # Doc-sync Layer 1 (link check) — canonical
 │   ├── check-forbidden-terms.sh         # No Downstream References guard — canonical
 │   ├── check-workflow-refs.sh           # Guards AGENTS.md/standards.md against dead workflow refs
+│   ├── check-mise-ci-parity.sh          # Guards mise.toml and ci.yml checking the same scripts
 │   ├── exact-array-member.sh            # Shared helper (check-doc-sync.sh, github-settings.sh)
 │   ├── pr-review-fail-closed-digest.sh  # Org-wide digest of fail-closed pr-review-threads runs
 │   ├── release-state.sh                 # What a tag's publish run actually did (read-only)
