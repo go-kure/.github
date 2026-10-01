@@ -249,8 +249,9 @@ gh run watch --repo go-kure/<repo> <run ID from the URL the previous command pri
 
 Watch the run that command created, by the ID at the end of the URL it prints. Do not pick the
 newest run from the list: another dispatch, possibly for another tag, can be newer. Or, in the
-repository, open Actions, then **Release / State**, then **Run workflow** with the tag; each run's
-title names its tag. The verdict is in the run's job summary. A red run means no state was determined (below): do not
+repository, open Actions, then **Release / State**, then **Run workflow** with the tag, and open
+the run whose title names that tag (the repository's workflow sets the title from the tag). The
+verdict is in the run's job summary. A red run means no state was determined (below): do not
 branch on it. From a checkout of `go-kure/.github`, with a token that can read the repository's
 runs and releases, the script runs directly as well:
 

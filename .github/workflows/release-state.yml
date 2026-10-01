@@ -9,6 +9,10 @@ name: Release / State
 #
 # Read-only. It reports a state; it does not recover anything. The recovery
 # for each state is in standards/release-process.md.
+#
+# A caller sets `run-name: Release state ${{ inputs.tag }}` so each run's
+# title names its tag; the release guide relies on that to pick a run in the
+# Actions tab.
 
 on:
   workflow_call:
@@ -88,8 +92,10 @@ jobs:
               echo
             fi
             # An indented code block, not a fence: no line of the output can
-            # end it, whatever backticks the quoted names carry.
-            sed 's/^/    /' "$out"
+            # end it, whatever backticks the quoted names carry. A bare carriage
+            # return is a line break in Markdown, so each one becomes a newline
+            # first and every resulting line is indented.
+            tr '\r' '\n' <"$out" | sed 's/^/    /'
             echo
             echo "What each state means and its recovery: https://github.com/go-kure/.github/blob/main/standards/release-process.md#determining-what-a-release-actually-did"
           } >>"$GITHUB_STEP_SUMMARY"
