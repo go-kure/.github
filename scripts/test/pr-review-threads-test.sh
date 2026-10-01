@@ -578,6 +578,14 @@ assert_eq "chunk_scope: chunk 1 of 2 names itself, the whole diff's files and it
       'Files in the whole diff:' '- x.go' '- y.go' 'Files in this chunk:' '- x.go' \
       'Code in the other chunks exists but is not shown here: not seeing something in this chunk says nothing about the rest of the diff.')" \
   "$(source "$LIB/model.sh"; prt_chunk_scope 0 2 "$(printf '%s\n' x.go y.go)" "x.go")"
+# The whole-diff list is capped at PRT_MAX_DIFF_CHARS/10 (each line costs its
+# path plus 3); the rest are counted, and a shorter path after the cut is not
+# listed out of order.
+assert_eq "chunk_scope: the whole-diff list stops at a tenth of PRT_MAX_DIFF_CHARS and counts the rest" \
+  "$(printf '%s\n' 'Files in the whole diff:' '- aaaa.go' '- bbbb.go' '- (2 more file(s), not listed)' 'Files in this chunk:')" \
+  "$(source "$LIB/model.sh"; PRT_MAX_DIFF_CHARS=270 prt_chunk_scope 0 2 "$(printf '%s\n' aaaa.go bbbb.go cccccccc.go d.go)" "aaaa.go" | sed -n '2,6p')"
+assert_eq "chunk_scope: a list within the cap gets no count line" \
+  "0" "$(source "$LIB/model.sh"; PRT_MAX_DIFF_CHARS=270 prt_chunk_scope 0 2 "$(printf '%s\n' aaaa.go bbbb.go)" "aaaa.go" | grep -c 'not listed')"
 
 assert_eq "chunk_label: 0-based _chunk 1 of 3 -> chunk 2/3" "chunk 2/3" "$(prt_chunk_label '{"_chunk":1}' 3)"
 assert_eq "chunk_label: single-chunk review -> empty" "" "$(prt_chunk_label '{"_chunk":0}' 1)"

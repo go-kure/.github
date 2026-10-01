@@ -29,7 +29,12 @@ This is the design/operations reference the code cites but didn't yet have:
   the diff, runs the two-pass model call (review, then assess) per chunk, computes the PR-wide
   gating cap, and reconciles findings against existing threads via two loops: one over this
   run's findings, one over existing threads no longer matched by any finding (an "absence"
-  pass that handles auto-resolve when an issue is fixed).
+  pass that handles auto-resolve when an issue is fixed). When the diff splits into more than
+  one chunk, both prompts of each chunk carry a scope block (`prt_chunk_scope`): the chunk's
+  number, the files of the whole diff and of the chunk, and the rule that a claim depending on
+  code outside the chunk is omitted; posted findings carry `chunk i/N` (go-kure/.github#173).
+  The whole-diff list stops at a tenth of `PRT_MAX_DIFF_CHARS` and counts the files past that,
+  so the block does not grow with the PR.
 - `scripts/lib/prt/*.sh` — the modules it sources: `state.sh` (REVIEW_INCOMPLETE tracking),
   `json.sh` (stdin-only transforms for unbounded reconciliation collections), `gh.sh` (all
   GitHub I/O — REST, GraphQL, retry, freshness), `diff.sh` (chunking, the
