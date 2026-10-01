@@ -1143,6 +1143,10 @@ assert_eq "--report-only exits 0 on drift" "0" "$report_rc"
 report_out=$( (REPORT_ONLY=true RULESET_MISSING=2 LABELS_EXTRA=1 JSON_OUTPUT=false print_summary false) 2>&1)
 assert_contains "--report-only still prints the drift" "$report_out" "2 wrong"
 assert_contains "--report-only warns with the failing count" "$report_out" "::warning::3 drift issue(s) found; not failing (--report-only)"
+manual_out=$( (REPORT_ONLY=true LABELS_DUPLICATE=1 SETTINGS_BLOCKED=1 RULESET_MISSING=1 JSON_OUTPUT=false print_summary false) 2>&1)
+assert_contains "the audit names the drift --apply cannot fix" "$manual_out" "2 of them (duplicate labels, audit-only settings) --apply cannot fix: reconcile those by hand"
+fixable_out=$( (RULESET_MISSING=1 JSON_OUTPUT=false print_summary false) 2>&1)
+assert_eq "no manual-reconciliation line when --apply can fix everything" "0" "$(grep -c 'cannot fix' <<< "$fixable_out")"
 plain_ruleset_rc=$( (RULESET_MISSING=2 JSON_OUTPUT=false print_summary false) >/dev/null 2>&1; echo $?)
 assert_eq "a plain audit still exits 1 on ruleset drift" "1" "$plain_ruleset_rc"
 
