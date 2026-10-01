@@ -1348,6 +1348,20 @@ summary_line_pipe_hazard="$(prt_render_summary enforce abc1234 1 '[{"fp":"deadbe
 assert_eq "prt_render_summary: Line cell escapes a literal pipe, not a phantom column (go-kure/.github#191 kure-bot)" \
   "true" "$(grep -qF '1 \| injected' <<< "$summary_line_pipe_hazard" && echo true || echo false)"
 
+# go-kure/.github#183 part A: a suppressed finding (row 2, FALSE_POSITIVE with
+# no thread) has no thread or comment, so the summary lists its content: the
+# line and the first non-blank line of the issue and of the reasoning.
+sup_json='[{"fp":"feedface","severity":"High","category":"other","file":"z.go","line":42,"issue":"\nfirst | line\nsecond line","fix":"f","verdict":"FALSE_POSITIVE","reasoning":"helper is routed elsewhere\nmore"}]'
+summary_sup="$(prt_render_summary enforce abc1234 1 "$sup_json" 1 '' '' "$sup_json")"
+assert_eq "prt_render_summary #183: a suppressed finding gets its own section" \
+  "true" "$(grep -qF '### Suppressed findings (FALSE POSITIVE, no thread created)' <<< "$summary_sup" && echo true || echo false)"
+assert_eq "prt_render_summary #183: the row carries fp, line, the issue's first line (pipe escaped) and the reasoning's first line" \
+  "true" "$(grep -qF "| \`feedface\` | High | z.go | 42 | first \\| line | helper is routed elsewhere |" <<< "$summary_sup" && echo true || echo false)"
+assert_eq "prt_render_summary #183: later lines of the issue are not rendered" \
+  "false" "$(grep -qF 'second line' <<< "$summary_sup" && echo true || echo false)"
+assert_eq "prt_render_summary #183: no suppressed findings -> no section" \
+  "false" "$(grep -qF 'Suppressed findings' <<< "$summary_with_line" && echo true || echo false)"
+
 # ============================================================ render.sh: prt_render_overflow_comment quarantined section (go-kure/.github#155)
 # QUARANTINED_JSON is the second, optional argument — findings withheld by
 # reconcile.sh row 1 (fp_base collision). Both polarities per criterion 3:
@@ -2648,6 +2662,7 @@ run_orchestrator() {
     bash "$ROOT/scripts/pr-review-threads.sh" >"$PRT_TEST_STDOUT_FILE" 2>"$PRT_TEST_STDERR_FILE"
   )
   rc=$?
+  [ -n "${PRT_TEST_SUMMARY_COPY:-}" ] && cp "$summary" "$PRT_TEST_SUMMARY_COPY"
   rm -rf "$scratch" "$summary"
   echo "$rc"
 }
@@ -2981,6 +2996,22 @@ PRT_TEST_MODEL_RESPONSE_MODE=clean
 PRT_TEST_ASSESS_RESPONSE_MODE=clean
 rm -f "$PRT_TEST_ISSUE_COMMENT_BODY_FILE"
 unset PRT_TEST_ISSUE_COMMENT_BODY_FILE
+
+# go-kure/.github#183 part A — enforce mode, a finding assessed FALSE_POSITIVE
+# with no thread (the default owned fp never matches) is suppressed (row 2):
+# no thread, no reply, and the step summary lists it with its content.
+PRT_TEST_SUMMARY_COPY="$(mktemp)"
+PRT_TEST_MODEL_RESPONSE_MODE=clean_with_finding
+PRT_TEST_ASSESS_RESPONSE_MODE=false_positive_survivor
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #183: suppressed finding -> exits 0, no thread created, suppressed=1" \
+  "0 0 true" "$rc $(cat "$PRT_TEST_CREATE_COUNTFILE") $(grep -qE 'done:.*suppressed=1' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator #183: the step summary lists the suppressed finding with its line, issue and reasoning" \
+  "true" "$(grep -qF "| \`$(prt_fp_base x.go other)\` | Medium | x.go | 1 | i | not a real issue |" "$PRT_TEST_SUMMARY_COPY" && echo true || echo false)"
+PRT_TEST_MODEL_RESPONSE_MODE=clean
+PRT_TEST_ASSESS_RESPONSE_MODE=clean
+rm -f "$PRT_TEST_SUMMARY_COPY"
+unset PRT_TEST_SUMMARY_COPY
 
 # Case xiii — the reconciliation this whole mechanism exists for
 # (go-kure/.github#98): a partial-drop run (Case xii's exact scenario) must

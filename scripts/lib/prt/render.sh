@@ -113,14 +113,21 @@ EOF
 }
 
 # prt_render_summary MODE SOURCE_SHA CHUNK_COUNT FINDINGS_JSON \
-#                     SUPPRESSED_COUNT INCOMPLETE_REASONS [DEGRADED_REASONS]
+#                     SUPPRESSED_COUNT INCOMPLETE_REASONS [DEGRADED_REASONS] \
+#                     [SUPPRESSED_JSON]
 # Written to $GITHUB_STEP_SUMMARY — free, no API call, so it survives even
 # when the job itself fails closed on a REVIEW_INCOMPLETE state.
 # DEGRADED_REASONS (go-kure/.github#98) is optional and defaults to empty —
 # a caller that hasn't sourced state.sh's prt_mark_degraded family yet still
 # gets a summary, just without a REVIEW_DEGRADED section.
+# SUPPRESSED_JSON (go-kure/.github#183) is the array of findings row 2
+# suppressed (FALSE_POSITIVE, no thread). No thread or comment ever carries
+# them, so this section is the one place the finding's argument and the
+# assessor's reason can be read to check the call: each row carries the
+# line and the first line of the issue and of the reasoning, which the
+# findings table above does not.
 prt_render_summary() {
-  local mode="$1" sha="$2" chunk_count="$3" findings="$4" suppressed_count="$5" incomplete_reasons="$6" degraded_reasons="${7:-}"
+  local mode="$1" sha="$2" chunk_count="$3" findings="$4" suppressed_count="$5" incomplete_reasons="$6" degraded_reasons="${7:-}" suppressed="${8:-[]}"
   {
     printf '## PR Review Threads (%s mode)\n\n' "$mode"
     printf -- '- Source SHA: %s\n' "$sha"
@@ -140,6 +147,17 @@ prt_render_summary() {
         def esc: tostring | gsub("\r\n"; " ") | gsub("[\n\r]"; " ") | gsub("\\|"; "\\|");
         .[] | "| `\(.fp)` | \(.severity|esc) | \(.category|esc) | \(.file|esc) | \((.line // "n/a")|esc) | \((.verdict // "n/a")|esc) |"
       ' <<< "$findings"
+    fi
+    if [ "$(jq 'length' <<< "$suppressed")" -gt 0 ]; then
+      printf '\n### Suppressed findings (FALSE POSITIVE, no thread created)\n\n'
+      printf 'The assessor judged these false positives and no thread existed, so nothing was posted.\n\n'
+      printf '| fp | Severity | File | Line | Issue | Assessor reasoning |\n'
+      printf '|----|----------|------|------|-------|--------------------|\n'
+      jq -r '
+        def esc: tostring | gsub("\r\n"; " ") | gsub("[\n\r]"; " ") | gsub("\\|"; "\\|");
+        def first_line: tostring | split("\n") | map(select(test("[^[:space:]]"))) | (.[0] // "");
+        .[] | "| `\(.fp)` | \(.severity|esc) | \(.file|esc) | \((.line // "n/a")|esc) | \((.issue // "")|first_line|esc) | \((.reasoning // "")|first_line|esc) |"
+      ' <<< "$suppressed"
     fi
     if [ -n "$incomplete_reasons" ]; then
       printf '\n### REVIEW_INCOMPLETE\n\n'
