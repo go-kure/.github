@@ -5368,8 +5368,12 @@ prt_wiring() { # INPUT JOB_ENV PRT_VAR
 }
 assert_eq "wiring #156: standards-file declared by pr-review.yml, bound to its env, passed to the action, declared there and bound to PRT_STANDARDS_FILE" \
   "'docs/standards.md' true true \"docs/standards.md\" true" "$(prt_wiring standards-file PR_REVIEW_STANDARDS_FILE PRT_STANDARDS_FILE)"
-assert_eq "wiring #156: standards-source declared by pr-review.yml (default action), bound to its env, passed to the action, declared there and bound to PRT_STANDARDS_SOURCE" \
-  "'action' true true \"action\" true" "$(prt_wiring standards-source PR_REVIEW_STANDARDS_SOURCE PRT_STANDARDS_SOURCE)"
+# standards-source is new to the action. Until the pin-bump PR points
+# pr-review.yml at an action commit that has it, the workflow must not
+# declare or pass it (docs/standards.md, pin-bump procedure): the pinned
+# action would ignore it.
+assert_eq "wiring #156: standards-source declared by the action (default action) and bound to PRT_STANDARDS_SOURCE, not yet declared or passed by pr-review.yml" \
+  " false false \"action\" true" "$(prt_wiring standards-source PR_REVIEW_STANDARDS_SOURCE PRT_STANDARDS_SOURCE)"
 unset prt_wf prt_act
 unset -f prt_has_line prt_input_default prt_wiring
 unset PRT_TEST_MODEL_SYSTEM_LOG PRT_TEST_STANDARDS_SOURCE PRT_TEST_STANDARDS_FILE PRT_TEST_CALLER_FILE PRT_TEST_CALLER_FILE_CONTENT

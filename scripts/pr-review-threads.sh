@@ -960,8 +960,11 @@ for ((ti = 0; ti < n_threads; ti++)); do
       # comment), so a resolved foreign thread never suppresses a finding.
       # The marker's collision flag is not carried either: a foreign marker
       # is untrusted, and a collision flag could only ever withhold a
-      # finding. No ids a write would need. Each field read is checked: an
-      # empty content_fp would make the thread match a different finding.
+      # finding. No ids a write would need. Each field read is checked: a
+      # failed read would leave content_fp empty, which reads as a marker
+      # without one (a legacy marker, matched on fp alone), so the thread
+      # could stand in for a different finding. An empty value that was read
+      # is that legacy case; fp itself is required by PRT_MARKER_RE.
       if ! foreign_fp="$(cut -f1 <<< "$foreign_parsed")" \
         || ! foreign_cfp="$(cut -f4 <<< "$foreign_parsed")" \
         || ! foreign_row="$(jq -ce --arg fp "$foreign_fp" \

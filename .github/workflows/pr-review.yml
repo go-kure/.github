@@ -99,18 +99,14 @@
 #   PR_REVIEW_AGENTS_FILE       (default: AGENTS.md)
 #   PR_REVIEW_STANDARDS_FILE    (default: docs/standards.md; set from the
 #                                 `standards-file` workflow_call input, ''
-#                                 disables it; resolved against the checkout
-#                                 PR_REVIEW_STANDARDS_SOURCE names — see
+#                                 disables it; resolved against
+#                                 go-kure/.github's own checkout at the pinned
+#                                 action SHA, not the caller's — see
 #                                 pr-review-threads.sh's PRT_SCRIPT_DIR note.
 #                                 GitLab parity: mirrors
 #                                 MR_REVIEW_STANDARDS_FILES in
 #                                 ci-templates/mr-review.yml, which this port
 #                                 lacked until now.)
-#   PR_REVIEW_STANDARDS_SOURCE  (default: action; set from the
-#                                 `standards-source` workflow_call input:
-#                                 action is go-kure/.github's own checkout at
-#                                 the pinned action SHA, caller the calling
-#                                 repository's checkout)
 #   PR_REVIEW_THREADS_MODE      (default: enforce; vars.PR_REVIEW_THREADS_MODE overrides — see note above)
 #   PR_REVIEW_MAX_FINDINGS_TOTAL (default: 5)
 #
@@ -144,19 +140,11 @@ on:
         default: ''
       standards-file:
         description: >-
-          Standards document injected as PROJECT STANDARDS, a path in the
-          checkout standards-source names. Empty disables it.
+          Standards document injected as PROJECT STANDARDS, a path in
+          go-kure/.github at the pinned action SHA. Empty disables it.
         type: string
         required: false
         default: 'docs/standards.md'
-      standards-source:
-        description: >-
-          Which checkout standards-file is read from: "action" (default),
-          go-kure/.github at the pinned action SHA; "caller", the calling
-          repository's own checkout. Any other value fails the review.
-        type: string
-        required: false
-        default: 'action'
     secrets:
       BOT_PAT:
         description: >-
@@ -199,7 +187,6 @@ jobs:
       PR_REVIEW_ASSESS_MAX_TOKENS: "4096"
       PR_REVIEW_AGENTS_FILE: "AGENTS.md"
       PR_REVIEW_STANDARDS_FILE: ${{ inputs.standards-file }}
-      PR_REVIEW_STANDARDS_SOURCE: ${{ inputs.standards-source }}
       PR_REVIEW_THREADS_MODE: "enforce"
       PR_REVIEW_MAX_FINDINGS_TOTAL: "5"
 
@@ -271,4 +258,3 @@ jobs:
           project-context: ${{ env.PR_REVIEW_CONTEXT }}
           agents-file: ${{ env.PR_REVIEW_AGENTS_FILE }}
           standards-file: ${{ env.PR_REVIEW_STANDARDS_FILE }}
-          standards-source: ${{ env.PR_REVIEW_STANDARDS_SOURCE }}

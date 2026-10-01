@@ -80,13 +80,12 @@ together with `standards-file` and `standards-source` (below).
 
 **Which standards document is injected.** `standards-file` (workflow input and action input,
 default `docs/standards.md`) is injected into both prompts as PROJECT STANDARDS; an empty value
-disables it. `standards-source` (workflow input and action input) says which checkout the path is
-read from: `action` (the default, and the meaning of an empty value) reads it from the action's own
-checkout, i.e. go-kure/.github at the pinned SHA, which is today's behaviour; `caller` reads it from
-the caller's checkout (the working directory), where `agents-file` is read from too. A workflow
-caller with its own document passes both, e.g. `standards-file: policy/review-rules.md` with
-`standards-source: caller`; the path alone is looked up in go-kure/.github and, missing there,
-leaves the review without PROJECT STANDARDS. Any other value
+disables it. The action's `standards-source` input says which checkout the path is read from:
+`action` (the default, and the meaning of an empty value) reads it from the action's own checkout,
+i.e. go-kure/.github at the pinned SHA, which is today's behaviour; `caller` reads it from the
+caller's checkout (the working directory), where `agents-file` is read from too. `pr-review.yml`
+does not pass `standards-source`, so its `standards-file` input always names a file in
+go-kure/.github. Any other value
 fails the run before any network call, except under `PRT_MODE=off`, which still exits 0 first. A
 file missing from the chosen checkout is logged and the review runs without PROJECT STANDARDS. The
 path is not checked for `..` or an absolute prefix, as `agents-file` is not.
@@ -1319,7 +1318,7 @@ on either side and prompted the comparison):
   *this* checkout via `PRT_SCRIPT_DIR`, not the caller's, since the doc lives here, not in
   kure/launcher. See `pr-review-threads.sh`'s `PRT_SCRIPT_DIR` comment and `model.sh`'s
   `project_standards` parameter. That stays the default; `PRT_STANDARDS_SOURCE=caller` (the
-  `standards-source` workflow and action input, go-kure/.github#156) reads the file from the caller's
+  action's `standards-source` input, go-kure/.github#156) reads the file from the caller's
   checkout instead, for a consumer with its own standards document (see "Token and bot
   identity").
 - **Review token budget — investigated, NOT bumped; the doc's own claim wins.** GitLab bumped
