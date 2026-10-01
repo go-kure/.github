@@ -64,6 +64,34 @@ runs on different commits. Resolving this thread automatically.
 EOF
 }
 
+# prt_maint_failure_reason STAGE [RC] — the reason a MAINT_FAILURE reply
+# states, one per path where a clear does not land (go-kure/.github#265).
+# The reply is the thread's only durable record of why the stamp stayed, so
+# it names the step that stopped the clear: the freshness check before the
+# write (RC 1: the head moved; anything else: the PR could not be read), the
+# GET of the first comment, the re-read of the thread's resolved state, or
+# the PATCH itself (RC 1: the head moved between retries; anything else: it
+# failed after its retries).
+prt_maint_failure_reason() {
+  local stage="$1" rc="${2:-}"
+  case "$stage" in
+    freshness)
+      if [ "$rc" = 1 ]; then
+        echo "the head moved before the marker write, so the absence marker was not cleared"
+      else
+        echo "the PR could not be read before the marker write, so the absence marker was not cleared"
+      fi ;;
+    read) echo "the thread's first comment could not be read before the marker write, so the absence marker was not cleared" ;;
+    resolved) echo "the thread's resolved state could not be re-read before the marker write, so the absence marker was not cleared" ;;
+    *)
+      if [ "$rc" = 1 ]; then
+        echo "the head moved while the marker write was being retried, so the absence marker was not cleared"
+      else
+        echo "clearing the absence marker failed after 3 retries"
+      fi ;;
+  esac
+}
+
 # prt_render_reply_maint_failure REASON [FIRST_ABSENT_SHA] — posted when a
 # marker write that should clear first_absent_sha failed after retries;
 # structurally independent of the marker itself, so the audit trail survives

@@ -1065,22 +1065,23 @@ MATCHED_FPS='[]'
 THREADS_WRITTEN=0
 NONE_ANCHORED_COUNT=0
 
-# prt_post_maint_failure OWNED_ROW STALE_SHA FIRST_COMMENT_DB_ID CONTEXT —
-# called after a clear of STALE_SHA failed (go-kure/.github#261). Posts the
-# MAINT_FAILURE reply recording it, unless one of the thread's replies
-# already records that stamp: a clear that keeps failing on later runs adds
-# no further reply. No freshness gate: the reply documents a failure that
+# prt_post_maint_failure OWNED_ROW STALE_SHA FIRST_COMMENT_DB_ID CONTEXT REASON
+# — called after a clear of STALE_SHA did not land (go-kure/.github#261).
+# Posts the MAINT_FAILURE reply recording it, with REASON from
+# prt_maint_failure_reason, unless one of the thread's replies already
+# records that stamp: a clear that keeps failing on later runs adds no
+# further reply. No freshness gate: the reply documents a failure that
 # already happened and is independent of the marker, so it posts even if the
 # head moved meanwhile. The reply is the only durable record of the stale
 # stamp; if it fails too, the run is marked incomplete, because the next
 # absence at a new head can then resolve on one absence.
 prt_post_maint_failure() {
-  local row="$1" stale="$2" db_id="$3" context="$4" reply
+  local row="$1" stale="$2" db_id="$3" context="$4" reason="$5" reply
   if [ "$(jq -r --arg s "$stale" '(.maint_failure_shas // []) | index($s) != null' <<< "$row" 2>/dev/null)" = true ]; then
     prt_log "${context}: a MAINT_FAILURE reply already records stamp ${stale}, not posting another"
     return 0
   fi
-  reply="$(prt_render_reply_maint_failure "clearing the absence marker failed after 3 retries (or went stale mid-retry)" "$stale")"
+  reply="$(prt_render_reply_maint_failure "$reason" "$stale")"
   if ! prt_gh_rest POST "/repos/${PRT_REPO}/pulls/${PRT_PR_NUMBER}/comments" \
     "$(jq -n --arg b "$reply" --argjson r "$db_id" '{body:$b, in_reply_to:$r}')" >/dev/null; then
     prt_mark_incomplete "${context}: the MAINT_FAILURE reply recording stale stamp ${stale} failed; the next absence at a new head may resolve this thread on one absence"
@@ -1115,14 +1116,14 @@ prt_persist_owned_collision() {
   rc=$?
   if [ "$rc" -ne 0 ]; then
     prt_handle_freshness_rc "$rc" "$context"
-    [ -n "$stale_fas" ] && prt_post_maint_failure "$row" "$stale_fas" "$db_id" "$context"
+    [ -n "$stale_fas" ] && prt_post_maint_failure "$row" "$stale_fas" "$db_id" "$context" "$(prt_maint_failure_reason freshness "$rc")"
     return 1
   fi
   cur_resp="$(prt_gh_rest GET "/repos/${PRT_REPO}/pulls/comments/${db_id}")"
   cur_body="$(jq -r '.body // empty' <<< "${cur_resp:-}" 2>/dev/null || true)"
   if [ -z "$cur_body" ]; then
     prt_mark_incomplete "${context}: GET before the marker rewrite failed or returned an empty body, skipped"
-    [ -n "$stale_fas" ] && prt_post_maint_failure "$row" "$stale_fas" "$db_id" "$context"
+    [ -n "$stale_fas" ] && prt_post_maint_failure "$row" "$stale_fas" "$db_id" "$context" "$(prt_maint_failure_reason read)"
     return 1
   fi
   cfp="$(jq -r '.content_fp' <<< "$row")"
@@ -1151,12 +1152,12 @@ prt_persist_owned_collision() {
   fi
   if [ "$rc" -eq 5 ]; then
     prt_mark_incomplete "${context}: could not re-read the thread's resolved state before the lift, skipped"
-    [ -n "$stale_fas" ] && prt_post_maint_failure "$row" "$stale_fas" "$db_id" "$context"
+    [ -n "$stale_fas" ] && prt_post_maint_failure "$row" "$stale_fas" "$db_id" "$context" "$(prt_maint_failure_reason resolved)"
     return 1
   fi
   if [ "$rc" -ne 0 ]; then
     prt_handle_freshness_rc "$rc" "${context} (after up to 3 retries)"
-    [ -n "$stale_fas" ] && prt_post_maint_failure "$row" "$stale_fas" "$db_id" "$context"
+    [ -n "$stale_fas" ] && prt_post_maint_failure "$row" "$stale_fas" "$db_id" "$context" "$(prt_maint_failure_reason write "$rc")"
     return 1
   fi
   return 0
@@ -1655,7 +1656,7 @@ if [ "$PRT_MODE" = enforce ]; then
         retry_rc=$?
         if [ "$retry_rc" -ne 0 ]; then
           prt_handle_freshness_rc "$retry_rc" "fp=$fp: marker clear"
-          prt_post_maint_failure "$th" "$first_absent_sha" "$first_comment_db_id" "fp=$fp: marker clear"
+          prt_post_maint_failure "$th" "$first_absent_sha" "$first_comment_db_id" "fp=$fp: marker clear" "$(prt_maint_failure_reason freshness "$retry_rc")"
           continue
         fi
         new_marker="$(prt_marker_build "$fp" "$collision" "" "$content_fp")"
@@ -1663,7 +1664,7 @@ if [ "$PRT_MODE" = enforce ]; then
         cur_body="$(jq -r '.body // empty' <<< "${cur_resp:-}" 2>/dev/null || true)"
         if [ -z "$cur_body" ]; then
           prt_mark_incomplete "fp=$fp: GET before clearing marker failed or returned empty body, skipped"
-          prt_post_maint_failure "$th" "$first_absent_sha" "$first_comment_db_id" "fp=$fp: marker clear"
+          prt_post_maint_failure "$th" "$first_absent_sha" "$first_comment_db_id" "fp=$fp: marker clear" "$(prt_maint_failure_reason read)"
           continue
         fi
         new_body="$(prt_marker_replace "$cur_body" "$new_marker")"
@@ -1673,7 +1674,7 @@ if [ "$PRT_MODE" = enforce ]; then
         retry_rc=$?
         if [ "$retry_rc" -ne 0 ]; then
           prt_handle_freshness_rc "$retry_rc" "fp=$fp: clearing the absence marker (after up to 3 retries)"
-          prt_post_maint_failure "$th" "$first_absent_sha" "$first_comment_db_id" "fp=$fp: marker clear"
+          prt_post_maint_failure "$th" "$first_absent_sha" "$first_comment_db_id" "fp=$fp: marker clear" "$(prt_maint_failure_reason write "$retry_rc")"
         fi
         ;;
       REPLY_RESOLVE)

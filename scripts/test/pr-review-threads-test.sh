@@ -4042,6 +4042,8 @@ PRT_TEST_FIRST_ABSENT_SHA="2222222222222222222222222222222222222222"
 rc="$(run_orchestrator enforce 0 0 0)"
 assert_eq "orchestrator #261: unreadable lift on a stamped thread -> one MAINT_FAILURE reply recording the stamp" \
   "1 1 $PRT_TEST_FIRST_ABSENT_SHA" "$rc $(cat "$PRT_TEST_REPLY_COUNTFILE") $(prt_marker_maint_failure_sha "$(cat "$PRT_TEST_REPLY_BODY_LOG")")"
+assert_eq "orchestrator #265: that reply names the unreadable resolved state, not a failed PATCH" \
+  "true" "$(grep -qF "**MAINT_FAILURE:** $(prt_maint_failure_reason resolved)" "$PRT_TEST_REPLY_BODY_LOG" && echo true || echo false)"
 PRT_TEST_LIVE_RESOLVED=true
 rc="$(run_orchestrator enforce 0 0 0)"
 assert_eq "orchestrator #261: lift refused on a resolved stamped thread -> no MAINT_FAILURE reply (control)" \
@@ -4195,6 +4197,8 @@ PRT_TEST_PATCH_FAIL=1
 rc="$(run_orchestrator enforce 0 0 0)"
 assert_eq "orchestrator #261: loop-1 stamp clear fails -> exits 1, one MAINT_FAILURE reply recording the stamp" \
   "1 1 $mf_stamp" "$rc $(cat "$PRT_TEST_REPLY_COUNTFILE") $(prt_marker_maint_failure_sha "$(cat "$PRT_TEST_REPLY_BODY_LOG")")"
+assert_eq "orchestrator #265: loop-1 failed PATCH -> the reply names the failed retries" \
+  "true" "$(grep -qF "**MAINT_FAILURE:** $(prt_maint_failure_reason write 3)" "$PRT_TEST_REPLY_BODY_LOG" && echo true || echo false)"
 # (a2) The clear fails again on a later run: a reply already records the stamp.
 PRT_TEST_THREAD1_REPLIES="$(mf_reply_node "$(prt_render_reply_maint_failure "clear failed" "$mf_stamp")")"
 rc="$(run_orchestrator enforce 0 0 0)"
@@ -4214,6 +4218,8 @@ PRT_TEST_OWNED_FP="0000000000000000"
 rc="$(run_orchestrator enforce 0 0 0)"
 assert_eq "orchestrator #261: loop-2 CLEAR_MARKER fails -> one MAINT_FAILURE reply recording the stamp" \
   "1 $mf_stamp" "$(cat "$PRT_TEST_REPLY_COUNTFILE") $(prt_marker_maint_failure_sha "$(cat "$PRT_TEST_REPLY_BODY_LOG")")"
+assert_eq "orchestrator #265: loop-2 failed PATCH -> the reply names the failed retries" \
+  "true" "$(grep -qF "**MAINT_FAILURE:** $(prt_maint_failure_reason write 3)" "$PRT_TEST_REPLY_BODY_LOG" && echo true || echo false)"
 # (b2) and (b3): loop 2's dedupe and failed reply, as (a2) and (a3).
 PRT_TEST_THREAD1_REPLIES="$(mf_reply_node "$(prt_render_reply_maint_failure "clear failed" "$mf_stamp")")"
 rc="$(run_orchestrator enforce 0 0 0)"
@@ -4233,12 +4239,16 @@ PRT_TEST_COMMENT_GET_EMPTY=1
 rc="$(run_orchestrator enforce 0 0 0)"
 assert_eq "orchestrator #261: loop-2 CLEAR_MARKER skipped on a failed GET -> one MAINT_FAILURE reply recording the stamp" \
   "1 $mf_stamp" "$(cat "$PRT_TEST_REPLY_COUNTFILE") $(prt_marker_maint_failure_sha "$(cat "$PRT_TEST_REPLY_BODY_LOG")")"
+assert_eq "orchestrator #265: loop-2 failed GET -> the reply names the unread comment, not a failed PATCH" \
+  "true" "$(grep -qF "**MAINT_FAILURE:** $(prt_maint_failure_reason read)" "$PRT_TEST_REPLY_BODY_LOG" && echo true || echo false)"
 PRT_TEST_OWNED_FP="$(prt_fp_base x.go other)"
 PRT_TEST_MODEL_RESPONSE_MODE=clean_with_finding
 : > "$PRT_TEST_REPLY_BODY_LOG"
 rc="$(run_orchestrator enforce 0 0 0)"
 assert_eq "orchestrator #261: loop-1 stamp clear skipped on a failed GET -> exits 1, one MAINT_FAILURE reply recording the stamp" \
   "1 1 $mf_stamp" "$rc $(cat "$PRT_TEST_REPLY_COUNTFILE") $(prt_marker_maint_failure_sha "$(cat "$PRT_TEST_REPLY_BODY_LOG")")"
+assert_eq "orchestrator #265: loop-1 failed GET -> the reply names the unread comment, not a failed PATCH" \
+  "true" "$(grep -qF "**MAINT_FAILURE:** $(prt_maint_failure_reason read)" "$PRT_TEST_REPLY_BODY_LOG" && echo true || echo false)"
 PRT_TEST_COMMENT_GET_EMPTY=0
 # (b5) A clear skipped on a stale head (its own freshness check) also records
 # the stamp. The read count before that check differs per path, so each case
@@ -4262,10 +4272,16 @@ mf_stale_case() { # MODE OWNED_FP REASON_TEXT -> "<replies> <recorded stamp>" at
   done
   echo none
 }
+# mf_stale_case returns on the matching run, so the reply log still holds
+# that run's reply for the #265 reason check.
 assert_eq "orchestrator #261: loop-1 stamp clear skipped on a stale head -> one MAINT_FAILURE reply recording the stamp" \
   "1 $mf_stamp" "$(mf_stale_case clean_with_finding "$(prt_fp_base x.go other)" "fp=$(prt_fp_base x.go other): clearing a stale absence stamp ($mf_stamp)")"
+assert_eq "orchestrator #265: loop-1 stale head -> the reply names the moved head, not a failed PATCH" \
+  "true" "$(grep -qF "**MAINT_FAILURE:** $(prt_maint_failure_reason freshness 1)" "$PRT_TEST_REPLY_BODY_LOG" && echo true || echo false)"
 assert_eq "orchestrator #261: loop-2 CLEAR_MARKER skipped on a stale head -> one MAINT_FAILURE reply recording the stamp" \
   "1 $mf_stamp" "$(mf_stale_case partial_drop 0000000000000000 "fp=0000000000000000: marker clear")"
+assert_eq "orchestrator #265: loop-2 stale head -> the reply names the moved head, not a failed PATCH" \
+  "true" "$(grep -qF "**MAINT_FAILURE:** $(prt_maint_failure_reason freshness 1)" "$PRT_TEST_REPLY_BODY_LOG" && echo true || echo false)"
 PRT_TEST_OWNED_FP="$(prt_fp_base x.go other)"
 # (c) The next complete run is an absence at a new head, over the same stamp.
 PRT_TEST_MODEL_RESPONSE_MODE=clean

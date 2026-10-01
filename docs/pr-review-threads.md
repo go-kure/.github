@@ -157,8 +157,10 @@ overrides the workflow's own default) is one of three values. An unrecognized va
   the comment or of the thread's resolved state; not a lift refused because the thread is
   resolved), also posts a `**MAINT_FAILURE:**` reply whose state line
   `<!-- gokure-pr-review:v1-maint-failure first_absent_sha=<sha> -->`, directly after the note
-  marker, records the stamp it left; a clear that fails again on a later run posts no second
-  reply for the same stamp. While the thread still carries that stamp, row 11 does not read it as
+  marker, records the stamp it left. The reply's reason names the step that stopped the clear
+  (the head moved, the PR or the comment could not be read, the resolved state could not be
+  re-read, or the PATCH failed after its retries; go-kure/.github#265). A clear that fails again
+  on a later run posts no second reply for the same stamp. While the thread still carries that stamp, row 11 does not read it as
   the first of two absences: an absence at a new head re-stamps the thread at that head instead,
   and the next absence on another head resolves it. A reply counts only while it is newer than
   the thread's first comment was last edited: a later rewrite of the marker (a clear or re-stamp
