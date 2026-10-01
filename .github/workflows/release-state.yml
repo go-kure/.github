@@ -54,6 +54,21 @@ jobs:
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
+      # release-state.sh needs jq, and the policy command below fetches with
+      # curl; the runner image is not guaranteed to carry either.
+      - name: Setup tools
+        run: |
+          for cmd in curl jq; do
+            if ! command -v "$cmd" &>/dev/null; then
+              if command -v sudo &>/dev/null; then
+                sudo apt-get update -qq && sudo apt-get install -y -qq curl jq
+              else
+                apt-get update -qq && apt-get install -y -qq curl jq
+              fi
+              break
+            fi
+          done
+
       - name: Decide the state
         env:
           GH_TOKEN: ${{ github.token }}

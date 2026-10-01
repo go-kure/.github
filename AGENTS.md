@@ -317,7 +317,8 @@ kure/launcher.
   not `main` — so a workflow and the script it runs always change together. A guard step refuses an
   empty value first, because `actions/checkout` would silently take the default branch.
   actionlint 1.7.12 does not know these two `job` properties yet; `.github/actionlint.yaml` ignores
-  exactly that message in exactly these two files. `scripts/test/release-test.sh` tests both scripts
+  exactly that message in these two files and in `release-state.yml`, which checks out
+  `release-state.sh` the same way. `scripts/test/release-test.sh` tests both scripts
   against real git repositories with the git-cliff version the workflows pin.
 - `release-publish.yml`'s `validate` job checks **version progression within the tag's own line**
   (`publish-policy.sh progression`): the tag must be greater, in semver order, than every other
