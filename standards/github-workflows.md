@@ -25,8 +25,9 @@ Renovate bumps the composite-action pins as one `go-kure/.github` update.
 
 ## PR Review
 
-An AI review of every same-repository pull request. Findings become review threads that must be
-resolved before the pull request can merge.
+An AI review of same-repository pull requests. Findings become review threads that must be
+resolved before the pull request can merge. A diff too large for the GitHub API (HTTP 406) is
+not reviewed: the run notes it in its job summary and passes.
 
 ### Triggers
 
@@ -46,8 +47,8 @@ Draft pull requests are reviewed. Draft status blocks merge, not review.
 ### How it works
 
 1. The job, named `AI Code Review` (check context `pr-review / AI Code Review`), runs on the
-   self-hosted runner with a 20-minute timeout. Runs for the same pull request queue behind each
-   other instead of cancelling.
+   self-hosted runner with a 20-minute timeout. A run already in progress for the same pull
+   request is never cancelled; a newer run waits for it, and replaces any older run still waiting.
 2. It fetches the pull request's diff and splits a large diff into chunks.
 3. A first pass reviews each chunk. The prompt carries the project context, the calling
    repository's `AGENTS.md` and `.claude/CLAUDE.md`, and the org standards from `go-kure/.github`.
@@ -62,13 +63,16 @@ credentials, so no API key secret is needed.
 The default mode, `enforce`, turns each finding into a resolvable review thread:
 
 - a new finding opens a thread;
-- a thread whose issue disappears from the diff, or that the assessment calls a false positive,
+- a thread the assessment calls a false positive gets a reply and is resolved;
+- a thread whose issue is absent from two consecutive reviews, at two different head commits,
   gets a reply and is resolved;
+- a thread with a reply from a person is never auto-resolved by either rule; a person resolves it;
 - a thread the review resolved is reopened if its issue comes back;
 - a thread a person resolved is never reopened.
 
-At most 5 new threads start per run across the whole pull request. Findings past that limit go
-into one overflow comment.
+At most 5 review threads gate the pull request at once. Threads already open, or about to be
+reopened, count first; new findings, most severe first, get the remaining places. Findings past
+that limit go into one overflow comment.
 
 The check is required on `main` and on `release/*` branches, so a failed review run blocks the
 merge. Separately, the rulesets require every review thread to be resolved before merge.
@@ -85,7 +89,7 @@ any other value means editing `pr-review.yml` in `go-kure/.github`.
 | Setting | Default | Notes |
 |---------|---------|-------|
 | `PR_REVIEW_THREADS_MODE` | `enforce` | Overridable through the `PR_REVIEW_THREADS_MODE` variable |
-| `PR_REVIEW_MAX_FINDINGS_TOTAL` | `5` | New threads per run, across the pull request |
+| `PR_REVIEW_MAX_FINDINGS_TOTAL` | `5` | Gating threads open at once, across the pull request |
 | `PR_REVIEW_MAX_DIFF_CHARS` | `50000` | Size of one diff chunk |
 | `PR_REVIEW_MAX_TOKENS` | `1500` | Review pass |
 | `PR_REVIEW_ASSESS_MAX_TOKENS` | `4096` | Assessment pass |
@@ -99,7 +103,7 @@ The three modes:
 | Mode | Behaviour |
 |------|-----------|
 | `enforce` | Findings become resolvable review threads, as above |
-| `advisory` | One plain comment per run with the findings table; no threads |
+| `advisory` | One plain comment per run with the findings table; no threads, and no comment when the diff is empty |
 | `off` | The job is skipped |
 
 An unrecognised mode is treated as `advisory`, never as `enforce`.
@@ -107,9 +111,10 @@ An unrecognised mode is treated as `advisory`, never as `enforce`.
 ### When the review is broken
 
 If the review fails on every pull request (proxy down, rate limits, a bug in the review script),
-set the variable `PR_REVIEW_THREADS_MODE` to `off`. The job is then skipped before checkout, the
-skipped check counts as passing, and merges are unblocked at once. Unset the variable, or set it
-back to `enforce`, to resume.
+set the variable `PR_REVIEW_THREADS_MODE` to `off`. From the next run on, the job is skipped
+before checkout and the skipped check counts as passing. A pull request whose check already
+failed needs a new run (push, or re-run the check), and threads already open still have to be
+resolved. Unset the variable, or set it back to `enforce`, to resume.
 
 Inside the reusable workflow, the variable resolves against the calling repository, not
 `go-kure/.github`. Set it as an organization variable to stop the review everywhere, or on the
@@ -187,12 +192,12 @@ script of the same name from `go-kure/.github` at the pinned commit.
 
 | Action | What it checks |
 |--------|----------------|
-| `check-action-pins` | Every third-party action reference is a full 40-character commit SHA |
+| `check-action-pins` | Every third-party action reference is a full 40-character commit SHA (local `./` and `docker://` references are exempt) |
 | `check-forbidden-terms` | No tracked file in scope references the downstream platform (the No Downstream References standard); always scans the whole tree, on every event |
 | `govulncheck-gate` | A govulncheck JSON report has no reachable advisory outside the allowlist |
 | `check-doc-sync` | `docs-map.yaml` matches the tree: every public package mapped, every mapped path present, mount targets unique, generated tables current |
-| `check-doc-gate` | When a mapped package changes, its mapped docs change in the same pull request |
-| `check-links` | Every internal link in the built site resolves (external links are not checked) |
+| `check-doc-gate` | When a mapped package's own non-test `.go` files change, other than changes marked trivial, its mapped docs change in the same pull request |
+| `check-links` | Every internal link in the built site points at an existing page (external links and `#fragment` anchors are not checked) |
 
 ### govulncheck gate
 
@@ -242,7 +247,9 @@ Each deploy writes one version slot under the repository's directory in the page
 `dev` for `main`, or `v<major>.<minor>` for a release. The slot is replaced as a whole. A slot
 name is one path segment, either `dev` or starting with `v`; anything else fails the step.
 
-A release deploy also asks for the site root. The root is written only if, at write time:
+A release deploy asks for the site root only when Publish decided the tag is the highest stable
+tag (`set_latest=true`); a backport deploys its slot alone. When asked, the root is written only
+if, at write time:
 
 - the label is a stable `vX.Y.Z` version and, after the tags are fetched again from the calling
   repository, no stable tag is higher (the same rule Publish uses); otherwise the slot is deployed
@@ -255,12 +262,13 @@ A root write replaces everything in the repository's directory except `dev` and 
 
 ### Concurrent deploys
 
-Deploys of the same slot run one at a time (concurrency group `deploy-docs-<slot>`, no
-cancellation). Deploys of different slots can race. A push rejected because another deploy
-landed first is written again on the new tip and retried, up to 5 attempts with 5 seconds
+Deploys of the same slot run one at a time (concurrency group `deploy-docs-<slot>`): a deploy in
+progress is never cancelled, a newer one waits for it, and a newer one replaces any older deploy
+of that slot still waiting. Deploys of different slots can race. A push rejected because another
+deploy landed first is written again on the new tip and retried, up to 5 attempts with 5 seconds
 between them. Any other push failure fails the step at once.
 
-Two deploys to the same slot are queued, not re-checked, so an older patch release deployed after
+Deploys to the same slot are serialized, not re-checked, so an older patch release deployed after
 a newer one still replaces that slot's content.
 
 ### Files at the pages root
