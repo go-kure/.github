@@ -83,8 +83,9 @@ EOF
 # it names the step that stopped the clear: the freshness check before the
 # write (RC 1: the head moved; anything else: the PR could not be read), the
 # GET of the first comment, the re-read of the thread's resolved state, or
-# the PATCH itself (RC 1: the head moved between retries; anything else: it
-# failed after its retries).
+# the retried write, whose RC is its last attempt's (prt_retry): 1, the head
+# moved between attempts; 2, that attempt's freshness check could not read
+# the PR, so it sent no PATCH; anything else, the PATCH itself failed.
 prt_maint_failure_reason() {
   local stage="$1" rc="${2:-}"
   case "$stage" in
@@ -97,11 +98,11 @@ prt_maint_failure_reason() {
     read) echo "the thread's first comment could not be read before the marker write, so the absence marker was not cleared" ;;
     resolved) echo "the thread's resolved state could not be re-read before the marker write, so the absence marker was not cleared" ;;
     *)
-      if [ "$rc" = 1 ]; then
-        echo "the head moved while the marker write was being retried, so the absence marker was not cleared"
-      else
-        echo "clearing the absence marker failed after 3 retries"
-      fi ;;
+      case "$rc" in
+        1) echo "the head moved while the marker write was being retried, so the absence marker was not cleared" ;;
+        2) echo "the PR could not be read before the last of up to 3 marker write attempts, so the absence marker was not cleared" ;;
+        *) echo "clearing the absence marker failed after 3 retries" ;;
+      esac ;;
   esac
 }
 
@@ -153,11 +154,14 @@ prt_render_summary() {
     printf -- '- Diff chunks reviewed: %s\n' "$chunk_count"
     printf -- '- Findings: %s\n' "$(jq 'length' <<< "$findings")"
     printf -- '- Suppressed (FALSE POSITIVE, no thread created): %s\n\n' "$suppressed_count"
+    # esc keeps model-derived text inside its table cell: a newline would end
+    # the row, a pipe would split it, and raw HTML (a `</table>`) would close
+    # the table, so `&`, `<` and `>` are entity-encoded (#183 review).
     if [ "$(jq 'length' <<< "$findings")" -gt 0 ]; then
       printf '| fp | Severity | Category | File | Line | Verdict |\n'
       printf '|----|----------|----------|------|------|---------|\n'
       jq -r '
-        def esc: tostring | gsub("\r\n"; " ") | gsub("[\n\r]"; " ") | gsub("\\|"; "\\|");
+        def esc: tostring | gsub("\r\n"; " ") | gsub("[\n\r]"; " ") | gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;") | gsub("\\|"; "\\|");
         .[] | "| `\(.fp)` | \(.severity|esc) | \(.category|esc) | \(.file|esc) | \((.line // "n/a")|esc) | \((.verdict // "n/a")|esc) |"
       ' <<< "$findings"
     fi
@@ -167,7 +171,7 @@ prt_render_summary() {
       printf '| fp | Severity | File | Line | Issue | Assessor reasoning |\n'
       printf '|----|----------|------|------|-------|--------------------|\n'
       jq -r '
-        def esc: tostring | gsub("\r\n"; " ") | gsub("[\n\r]"; " ") | gsub("\\|"; "\\|");
+        def esc: tostring | gsub("\r\n"; " ") | gsub("[\n\r]"; " ") | gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;") | gsub("\\|"; "\\|");
         def first_line: tostring | split("\n") | map(select(test("[^[:space:]]"))) | (.[0] // "");
         .[] | "| `\(.fp)` | \(.severity|esc) | \(.file|esc) | \((.line // "n/a")|esc) | \((.issue // "")|first_line|esc) | \((.reasoning // "")|first_line|esc) |"
       ' <<< "$suppressed"

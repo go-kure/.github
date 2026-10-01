@@ -212,26 +212,110 @@ prt_build_line_index() {
 # prt_diff_files DIFF_FILE — prints each file a unified diff touches, one per
 # line, in diff order, once each (go-kure/.github#173: the file lists a
 # chunked review is told about). The path is the new side (`+++ b/`), or the
-# old side (`--- a/`) for a deleted file; a record with no `---`/`+++` pair
-# (a binary or mode-only change) falls back to the last field of its
-# `diff --git` line. Header lines are position-gated as in
-# prt_build_line_index: a body line that reads `+++ x` inside a hunk is
-# never a header.
+# old side (`--- a/`) for a deleted file. A record with no `---`/`+++` pair
+# takes, in order, its `rename to`/`copy to` line (a pure rename or copy), the
+# new side of its `Binary files … differ` line, or its `diff --git` line,
+# split where both halves name the same path so a name with spaces survives.
+# Git C-quotes a path holding `"`, `\`, a control character or a non-ASCII
+# byte (`"b/quote\"name.go"`, octal `\303\251`); such a path is decoded to its
+# bytes, except that one holding a control character (a newline would split
+# the one-per-line list) is printed in its quoted form, prefix removed. Git
+# ends an unquoted `---`/`+++` path that holds a space with a tab; it is
+# dropped. Header lines are position-gated as in prt_build_line_index: a body
+# line that reads `+++ x` inside a hunk is never a header.
 prt_diff_files() {
-  awk '
+  LC_ALL=C awk '
+    # name(tok, pfx): the path at the start of tok, with the side prefix pfx
+    # ("a/", "b/" or "") removed. Sets REST to whatever follows the path when
+    # it is quoted.
+    function name(tok, pfx,   n, i, c, k, o, out, ctrl, raw) {
+      REST = ""
+      if (substr(tok, 1, 1) != "\"") {
+        sub(/\t$/, "", tok)
+        if (pfx != "" && substr(tok, 1, length(pfx)) == pfx) tok = substr(tok, length(pfx) + 1)
+        return tok
+      }
+      out = ""; ctrl = 0; n = length(tok)
+      for (i = 2; i <= n; i++) {
+        c = substr(tok, i, 1)
+        if (c == "\"") break
+        if (c != "\\") { out = out c; continue }
+        i++; c = substr(tok, i, 1)
+        if (c ~ /[0-7]/) {
+          o = 0
+          for (k = 0; k < 3 && substr(tok, i, 1) ~ /[0-7]/; k++) { o = o * 8 + substr(tok, i, 1); i++ }
+          i--
+          if (o < 32 || o == 127) ctrl = 1
+          else out = out sprintf("%c", o)
+        } else if (c ~ /[abfnrtv]/) {
+          ctrl = 1
+        } else {
+          out = out c
+        }
+      }
+      if (i > n) return tok
+      raw = substr(tok, 1, i); REST = substr(tok, i + 1)
+      if (ctrl) {
+        if (pfx != "" && substr(raw, 2, length(pfx)) == pfx) raw = "\"" substr(raw, length(pfx) + 2)
+        return raw
+      }
+      if (pfx != "" && substr(out, 1, length(pfx)) == pfx) out = substr(out, length(pfx) + 1)
+      return out
+    }
+    # gitline(rest): the new-side path of a `diff --git` line.
+    function gitline(rest,   n, h, i) {
+      if (substr(rest, 1, 1) == "\"") { name(rest, "a/"); rest = REST; sub(/^ /, "", rest); return name(rest, "b/") }
+      i = index(rest, " \"b/")
+      if (i > 0) return name(substr(rest, i + 1), "b/")
+      n = length(rest)
+      if (n > 5 && (n - 5) % 2 == 0) {
+        h = (n - 5) / 2
+        if (substr(rest, 1, 2) == "a/" && substr(rest, h + 3, 3) == " b/" && substr(rest, 3, h) == substr(rest, h + 6))
+          return substr(rest, h + 6)
+      }
+      sub(/.* b\//, "", rest)
+      return rest
+    }
+    # binline(s): the new side (old side if the new is /dev/null) of
+    # `Binary files A and B differ`, given s = "A and B".
+    # An unquoted pair is split where both halves name the same path, else at
+    # the last " and " that a new side (b/, "b/ or /dev/null) follows.
+    function binline(s,   a, b, i, j, n, h, off) {
+      n = length(s)
+      if (substr(s, 1, 1) == "\"") { a = name(s, "a/"); b = REST; sub(/^ and /, "", b) }
+      else if (substr(s, 1, 14) == "/dev/null and ") { a = "/dev/null"; b = substr(s, 15) }
+      else if (n > 9 && (n - 9) % 2 == 0 && substr(s, 1, 2) == "a/" && substr(s, (n - 9) / 2 + 3, 7) == " and b/" && substr(s, 3, (n - 9) / 2) == substr(s, (n - 9) / 2 + 10)) {
+        h = (n - 9) / 2; a = substr(s, 1, h + 2); b = substr(s, h + 8)
+      }
+      else {
+        i = 0; off = 0
+        while ((j = index(substr(s, off + 1), " and ")) > 0) {
+          j += off
+          if (substr(s, j + 5, 2) == "b/" || substr(s, j + 5, 3) == "\"b/" || substr(s, j + 5) == "/dev/null") i = j
+          off = j
+        }
+        if (i == 0) return ""
+        a = substr(s, 1, i - 1); b = substr(s, i + 5)
+      }
+      if (b != "/dev/null") return name(b, "b/")
+      if (substr(s, 1, 1) == "\"") return a
+      return name(a, "a/")
+    }
     function emit(p) { if (p != "" && !(p in seen)) { seen[p] = 1; print p } done = 1 }
-    function flush() { if (have && !done) emit(fallback) }
+    function flush() { if (have && !done) emit(ren != "" ? ren : (bin != "" ? bin : fallback)) }
     /^diff --git / {
       flush()
-      have = 1; done = 0; in_hunk = 0; minus = ""
-      fallback = $NF; sub(/^b\//, "", fallback)
+      have = 1; done = 0; in_hunk = 0; minus = ""; ren = ""; bin = ""
+      fallback = gitline(substr($0, 12))
       next
     }
     in_hunk { next }
-    /^--- / { minus = substr($0, 5); sub(/^a\//, "", minus); next }
+    /^(rename|copy) to / { ren = name(substr($0, index($0, " to ") + 4), ""); next }
+    /^Binary files .* differ$/ { bin = binline(substr($0, 14, length($0) - 20)); next }
+    /^--- / { minus = substr($0, 5); if (minus != "/dev/null") minus = name(minus, "a/"); next }
     /^\+\+\+ / {
       p = substr($0, 5)
-      if (p == "/dev/null") p = minus; else sub(/^b\//, "", p)
+      if (p == "/dev/null") p = minus; else p = name(p, "b/")
       if (p != "/dev/null") emit(p)
       next
     }
