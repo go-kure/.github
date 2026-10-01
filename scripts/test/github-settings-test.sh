@@ -1266,7 +1266,7 @@ assert_eq "#160: an unreadable default branch is not guessed as main either" \
 co="$(CO_POLICY="$co_policy_main" CO_LIVE="$co_live_main" CO_BRANCH=main CO_DEFAULT='' run_classic_order false)"
 assert_eq "#160: audit mode counts the unreadable default branch" "2" "$(co_ruleset_issues)"
 assert_eq "#160: and the audit fails" "1" "$(co_summary_rc)"
-rm -f "$CO_OUT" "$CO_STATS"
+rm -f "$CO_OUT" "$CO_STATS" "$CO_PATHS"
 
 # One labels file drives all four label writes: test/foo drifts (PATCH),
 # type/bug is renamed from a live `bug` (PATCH new_name), test/new is missing
