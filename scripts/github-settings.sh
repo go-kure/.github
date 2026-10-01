@@ -855,6 +855,16 @@ repo_default_branch() {
     printf '%s' "$out"
 }
 
+# The classic-protection REST path for BRANCH. gh sends an endpoint path as
+# given, so a raw branch is decoded by the server: `%6dain` would address
+# `main`, `a/b` another route, `?`/`#` cut the path. The branch is therefore
+# percent-encoded, `/` included. Fails, printing nothing, if it cannot be.
+classic_protection_path() {
+    local repo="$1" branch="$2" enc
+    enc=$(printf '%s' "$branch" | jq -sRr @uri) && [ -n "$enc" ] || return 1
+    printf 'repos/%s/%s/branches/%s/protection' "$GITHUB_ORG" "$repo" "$enc"
+}
+
 # True when the one ruleset described on stdin protects BRANCH. Input is the
 # normalized shape both callers build — from policy (ruleset_covers_branch)
 # and from a live GET (live_ruleset_covers_branch) — so the policy pre-check
@@ -1124,11 +1134,16 @@ apply_ruleset() {
 # Called only once a live ruleset is shown to cover BRANCH
 # (audit_classic_protection).
 remove_classic_branch_protection() {
-    local repo="$1" branch="$2"
+    local repo="$1" branch="$2" path
+    path=$(classic_protection_path "$repo" "$branch") || {
+        echo -e "  ${RED}FAILED${NC}: Could not encode branch $branch — classic branch protection kept"
+        record_apply_failure "$repo: classic branch protection on $branch kept, branch not encodable"
+        return 0
+    }
 
-    if gh api "repos/$GITHUB_ORG/$repo/branches/$branch/protection" --silent 2>/dev/null; then
+    if gh api "$path" --silent 2>/dev/null; then
         echo -e "  ${YELLOW}MIGRATING${NC}: Removing classic branch protection on $branch (replaced by rulesets)"
-        if gh api "repos/$GITHUB_ORG/$repo/branches/$branch/protection" \
+        if gh api "$path" \
             --method DELETE \
             --silent 2>/dev/null; then
             echo -e "  ${GREEN}REMOVED${NC}: Classic branch protection on $branch deleted"
@@ -1167,9 +1182,15 @@ audit_classic_protection() {
         [ "$apply" = "true" ] && record_apply_failure "$repo: default branch unreadable, classic branch protection not checked"
         return 0
     fi
-    local default_branch="$branch"
+    local default_branch="$branch" path
+    if ! path=$(classic_protection_path "$repo" "$branch"); then
+        RULESET_MISSING=$((RULESET_MISSING + 1))
+        echo -e "  ${RED}FAILED${NC}: Could not encode the default branch $branch — classic branch protection not checked"
+        [ "$apply" = "true" ] && record_apply_failure "$repo: default branch not encodable, classic branch protection not checked"
+        return 0
+    fi
 
-    gh api "repos/$GITHUB_ORG/$repo/branches/$branch/protection" --silent 2>/dev/null || return 0
+    gh api "$path" --silent 2>/dev/null || return 0
 
     if ! ruleset_covers_branch "$repo" "$branch" "$default_branch" "$@"; then
         echo -e "  ${YELLOW}SKIP${NC}: Classic branch protection on $branch kept — no policy ruleset targets $branch on this repo, so nothing would replace it"

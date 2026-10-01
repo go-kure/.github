@@ -1089,6 +1089,8 @@ assert_eq "a failed classic-protection DELETE is recorded" "kure: remove classic
 #   log      — every write, in order ("POST", "DELETE <branch>").
 # $CO_LIVE is the full ruleset the live re-read returns once it exists.
 # STUB_POST_FAIL=1 refuses the POST; CO_LIST_FAIL=1 fails every list read.
+# CO_DECODE=1 percent-decodes each path as the server would, and records the
+# path as sent in $CO_DIR/paths.
 # ---------------------------------------------------------------------------
 
 classic_order_gh() {
@@ -1099,6 +1101,11 @@ classic_order_gh() {
             [ "$prev" = "--method" ] && method="$a"
             prev="$a"
         done
+        if [ "${CO_DECODE:-0}" = 1 ]; then
+            # Decode the path as the server does, after recording what was sent.
+            echo "$method $path" >>"$CO_DIR/paths"
+            path=$(printf '%b' "${path//[%]/\\x}")
+        fi
         case "$method $path" in
             "GET "*"/branches/$CO_BRANCH/protection") [ -e "$CO_DIR/classic" ] ;;
             "DELETE "*"/branches/$CO_BRANCH/protection") echo "DELETE $CO_BRANCH" >>"$CO_DIR/log"; rm -f "$CO_DIR/classic" ;;
@@ -1133,6 +1140,7 @@ co_live_main='{"id":7,"name":"Main Literal","target":"branch","enforcement":"act
 # check that a kept protection really fails the run and what counts as drift.
 CO_OUT="$(mktemp)"
 CO_STATS="$(mktemp)"
+CO_PATHS="$(mktemp)"
 run_classic_order() {
     (
         CO_DIR="$(mktemp -d)"
@@ -1150,6 +1158,7 @@ run_classic_order() {
         local summary_rc=0
         JSON_OUTPUT=false REPORT_ONLY=false print_summary "$1" >/dev/null 2>&1 || summary_rc=$?
         echo "$RULESET_MISSING $summary_rc" >"$CO_STATS"
+        cat "$CO_DIR/paths" >"$CO_PATHS" 2>/dev/null || : >"$CO_PATHS"
         printf '%s\t%s\t%s\n' \
             "$(paste -sd, "$CO_DIR/log")" \
             "$([ -e "$CO_DIR/classic" ] && echo kept || echo gone)" \
@@ -1211,6 +1220,19 @@ assert_eq "#160: and does not fail the apply run" "0" "$(co_summary_rc)"
 co="$(CO_POLICY="$co_policy_main" CO_LIVE="$co_live_main" CO_BRANCH=master CO_DEFAULT=master run_classic_order false)"
 # One issue only: the missing ruleset. The kept classic protection adds none.
 assert_eq "#160: in audit mode the uncovered classic protection is not counted as drift" "1" "$(co_ruleset_issues)"
+
+# The branch is percent-encoded in the protection paths (#160 round 3). gh
+# sends a path as given and the server decodes it: a default branch named
+# `%6dain`, covered by ~DEFAULT_BRANCH, would probe and DELETE classic
+# protection on `main`, which no ruleset covers.
+co="$(CO_POLICY="$co_policy_default" CO_LIVE="$co_live_default" CO_BRANCH=main CO_DEFAULT='%6dain' CO_DECODE=1 run_classic_order true)"
+assert_eq "#160: a default branch that decodes to another branch never touches that branch's protection" \
+    "POST	kept	" "$co"
+assert_contains "#160: the probe sends the branch percent-encoded" "$(cat "$CO_PATHS")" "GET repos/$GITHUB_ORG/kure/branches/%256dain/protection"
+co="$(CO_POLICY="$co_policy_default" CO_LIVE="$co_live_default" CO_BRANCH='rel/a%b' CO_DEFAULT='rel/a%b' CO_DECODE=1 run_classic_order true)"
+assert_eq "#160: a default branch with / and % is probed and migrated on itself" \
+    "POST,DELETE rel/a%b	gone	" "$co"
+assert_contains "#160: its DELETE path encodes / and %" "$(cat "$CO_PATHS")" "DELETE repos/$GITHUB_ORG/kure/branches/rel%2Fa%25b/protection"
 
 # The real repo_default_branch, not the stub: on an HTTP error gh prints the
 # error body to stdout and exits non-zero, and that body must not become the
