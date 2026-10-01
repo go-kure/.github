@@ -1939,8 +1939,11 @@ fi
 if [ "$PRT_MODE" = enforce ]; then
   # go-kure/.github#153: every lookup below also lists live clean-verdict or
   # partial-review comments another login posted; reported after the block.
+  # A lookup that fails leaves that list short, so each failure branch sets
+  # FOREIGN_COMMENTS_UNREAD and the report says the count is incomplete.
   FOREIGN_COMMENTS_FILE="$WORKDIR/foreign_marked_comments"
   : > "$FOREIGN_COMMENTS_FILE"
+  FOREIGN_COMMENTS_UNREAD=false
   total_findings_this_run="$(jq 'length' <<< "$ALL_FINDINGS")"
   review_parse_failed_this_run=false
   prt_degraded_reasons | grep -q 'review-parse-failed' && review_parse_failed_this_run=true
@@ -1960,6 +1963,7 @@ if [ "$PRT_MODE" = enforce ]; then
           prt_handle_freshness_rc "$?" "clean-verdict comment upsert"
         fi
       else
+        FOREIGN_COMMENTS_UNREAD=true
         prt_mark_incomplete "failed to list issue comments while looking for a prior clean-verdict comment"
       fi
     else
@@ -2007,6 +2011,7 @@ if [ "$PRT_MODE" = enforce ]; then
           fi
         fi
       else
+        FOREIGN_COMMENTS_UNREAD=true
         echo "WARNING: could not list issue comments — any prior clean-verdict comment is left as it stands." >&2
       fi
     else
@@ -2030,6 +2035,7 @@ if [ "$PRT_MODE" = enforce ]; then
           fi
         fi
       else
+        FOREIGN_COMMENTS_UNREAD=true
         echo "WARNING: could not list issue comments — any prior clean-verdict comment is left as it stands." >&2
       fi
     else
@@ -2067,6 +2073,7 @@ if [ "$PRT_MODE" = enforce ]; then
           prt_handle_informational_freshness_rc "$?" "partial-review comment upsert"
         fi
       else
+        FOREIGN_COMMENTS_UNREAD=true
         prt_mark_degraded "failed to list issue comments while looking for a prior partial-review comment; no partial-review comment posted, the unreviewed chunk(s) are listed in this run's review-parse-failed reason(s)"
       fi
     else
@@ -2089,6 +2096,7 @@ if [ "$PRT_MODE" = enforce ]; then
           fi
         fi
       else
+        FOREIGN_COMMENTS_UNREAD=true
         echo "WARNING: could not list issue comments — any prior partial-review comment is left as it stands." >&2
       fi
     else
@@ -2100,7 +2108,12 @@ if [ "$PRT_MODE" = enforce ]; then
   # incomplete: this run's own comment was written (or posted new) either
   # way, and only another login can edit the stale one.
   foreign_comment_count="$(cut -f1 "$FOREIGN_COMMENTS_FILE" | sort -u | grep -c . || true)"
-  prt_log "marked comments by another login (live): ${foreign_comment_count:-0}"
+  if [ "$FOREIGN_COMMENTS_UNREAD" = true ]; then
+    prt_log "marked comments by another login (live): ${foreign_comment_count:-0} or more (a listing failed)"
+    prt_mark_degraded "foreign-marked-comments-unread: a listing of this PR's comments failed, so a live clean-verdict or partial-review comment posted by another login may be missing from this run's count and go unreported (go-kure/.github#153)"
+  else
+    prt_log "marked comments by another login (live): ${foreign_comment_count:-0}"
+  fi
   if [ "${foreign_comment_count:-0}" -gt 0 ]; then
     foreign_comment_logins=""
     while IFS= read -r foreign_login; do
