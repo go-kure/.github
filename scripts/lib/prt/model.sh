@@ -480,24 +480,52 @@ _prt_call_proxy() {
   prt_strip_thinking <<< "$content"
 }
 
+# prt_chunk_scope INDEX COUNT ALL_FILES CHUNK_FILES — the scope block both
+# prompts of a chunked review carry (go-kure/.github#173). A chunk's reviewer
+# sees only its own slice, and "not in this chunk" reads the same as "not in
+# the diff" from inside it; this names the chunk and every file of the whole
+# diff, so a missing helper can be recognised as merely out of view. Empty
+# when COUNT is 1 or less: a single chunk is the whole diff. INDEX is
+# 0-based; the text numbers chunks from 1. ALL_FILES and CHUNK_FILES are
+# newline-separated (prt_diff_files).
+prt_chunk_scope() {
+  local idx="$1" count="$2" all="$3" mine="$4"
+  [ "$count" -gt 1 ] 2>/dev/null || return 0
+  printf 'CHUNK SCOPE: this diff is split into %s chunks; this is chunk %s of %s.\n' "$count" "$((idx + 1))" "$count"
+  printf 'Files in the whole diff:\n'
+  printf '%s\n' "$all" | sed '/^$/d; s/^/- /'
+  printf 'Files in this chunk:\n'
+  printf '%s\n' "$mine" | sed '/^$/d; s/^/- /'
+  printf '%s\n' "Code in the other chunks exists but is not shown here: not seeing something in this chunk says nothing about the rest of the diff."
+}
+
 # prt_model_review PROXY_URL MODEL MAX_TOKENS CHUNK_DIFF PR_TITLE PR_DESC \
-#                   PROJECT_CONTEXT PROJECT_AGENTS PROJECT_CLAUDE_MD PROJECT_STANDARDS
+#                   PROJECT_CONTEXT PROJECT_AGENTS PROJECT_CLAUDE_MD PROJECT_STANDARDS \
+#                   [CHUNK_SCOPE]
+# CHUNK_SCOPE (prt_chunk_scope, go-kure/.github#173) is empty for a
+# single-chunk diff; otherwise it goes ahead of the diff with the rule that
+# a claim depending on code outside the chunk is omitted, never reported.
 prt_model_review() {
   local proxy_url="$1" model="$2" max_tokens="$3" chunk_diff="$4" \
         pr_title="$5" pr_desc="$6" project_context="$7" project_agents="$8" \
-        project_claude_md="$9" project_standards="${10}"
-  local system user
+        project_claude_md="$9" project_standards="${10}" chunk_scope="${11:-}"
+  local system user scope_block=""
   system="$(_prt_review_system_prompt)"
   [ -n "$project_context" ] && system="${system}"$'\n\nADDITIONAL PROJECT CONTEXT:\n'"${project_context}"
   [ -n "$project_agents" ] && system="${system}"$'\n\nPROJECT DOCUMENTATION (AGENTS.md):\n'"${project_agents}"
   [ -n "$project_claude_md" ] && system="${system}"$'\n\nPROJECT NOTES (.claude/CLAUDE.md):\n'"${project_claude_md}"
   [ -n "$project_standards" ] && system="${system}"$'\n\nPROJECT STANDARDS:\n'"${project_standards}"
+  [ -n "$chunk_scope" ] && scope_block="${chunk_scope}
+Do not report a finding whose claim depends on code that is not shown in this chunk (for example a
+helper defined in another file of the diff): omit it. Report only what this chunk itself shows.
+
+"
   user="Review this diff chunk.
 
 Title: ${pr_title}
 Description: ${pr_desc}
 
-Diff chunk:
+${scope_block}Diff chunk:
 \`\`\`
 ${chunk_diff}
 \`\`\`"
@@ -505,12 +533,15 @@ ${chunk_diff}
 }
 
 # prt_model_assess PROXY_URL MODEL MAX_TOKENS CHUNK_DIFF FINDINGS_WITH_FP_JSON \
-#                   PR_TITLE PROJECT_CONTEXT PROJECT_AGENTS PROJECT_CLAUDE_MD PROJECT_STANDARDS
+#                   PR_TITLE PROJECT_CONTEXT PROJECT_AGENTS PROJECT_CLAUDE_MD PROJECT_STANDARDS \
+#                   [CHUNK_SCOPE]
+# CHUNK_SCOPE as for prt_model_review: a finding whose claim rests on code
+# outside the chunk broke the reviewer's rule and cannot be checked here.
 prt_model_assess() {
   local proxy_url="$1" model="$2" max_tokens="$3" chunk_diff="$4" findings_json="$5" \
         pr_title="$6" project_context="$7" project_agents="$8" project_claude_md="$9" \
-        project_standards="${10}"
-  local system user
+        project_standards="${10}" chunk_scope="${11:-}"
+  local system user scope_block=""
   system="$(_prt_assess_system_prompt)"
   [ -n "$project_context" ] && system="${system}"$'\n\nPROJECT CONTEXT:\n'"${project_context}"
   [ -n "$project_agents" ] && system="${system}"$'\n\nPROJECT CONTEXT:\n'"${project_agents}"
@@ -522,11 +553,16 @@ prt_model_assess() {
   # every standards-violation finding failed that check unconditionally and
   # was always marked FALSE_POSITIVE. See docs/pr-review-threads.md.
   [ -n "$project_standards" ] && system="${system}"$'\n\nPROJECT STANDARDS:\n'"${project_standards}"
+  [ -n "$chunk_scope" ] && scope_block="${chunk_scope}
+A finding whose claim depends on code that is not shown in this chunk cannot be verified from it:
+classify it FALSE_POSITIVE, with reasoning that starts \"depends on code outside this chunk\".
+
+"
   user="Assess these findings against the actual diff chunk and project context.
 
 PR Title: ${pr_title}
 
---- FINDINGS (JSON) ---
+${scope_block}--- FINDINGS (JSON) ---
 ${findings_json}
 
 --- DIFF CHUNK ---

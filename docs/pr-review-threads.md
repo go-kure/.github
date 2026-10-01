@@ -79,10 +79,11 @@ go-kure/.github#153 nothing said so. The ownership loop now counts threads whose
 parses as a marker but whose author is another login. When that count is above zero the run records
 a `REVIEW_DEGRADED` reason, `foreign-marked-threads: N thread(s) … opened by <logins>, not the
 configured bot login <login>`, which becomes a `::warning` on the check (exit 0). The job log's
-`threads listed: <n>, owned=<n>, foreign_marked=<n>` line carries the count on every `enforce` run.
+`threads listed (pre-existing): <n>, owned=<n>, foreign_marked=<n>` line carries the count on every `enforce` run.
 This is a detector only: accepting both identities as owners is left to go-kure/.github#153 as a
 separate design decision.
-A low `owned` count on its own is normal: `threads listed` counts every review thread on the PR,
+A low `owned` count on its own is normal: `threads listed` counts every review thread on the PR
+before this run writes anything,
 including those opened by humans and by other review bots, and only this action's own marked
 threads are owned. Only `foreign_marked` above zero points at an identity change.
 

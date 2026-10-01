@@ -208,3 +208,34 @@ prt_build_line_index() {
     | from_entries
   '
 }
+
+# prt_diff_files DIFF_FILE — prints each file a unified diff touches, one per
+# line, in diff order, once each (go-kure/.github#173: the file lists a
+# chunked review is told about). The path is the new side (`+++ b/`), or the
+# old side (`--- a/`) for a deleted file; a record with no `---`/`+++` pair
+# (a binary or mode-only change) falls back to the last field of its
+# `diff --git` line. Header lines are position-gated as in
+# prt_build_line_index: a body line that reads `+++ x` inside a hunk is
+# never a header.
+prt_diff_files() {
+  awk '
+    function emit(p) { if (p != "" && !(p in seen)) { seen[p] = 1; print p } done = 1 }
+    function flush() { if (have && !done) emit(fallback) }
+    /^diff --git / {
+      flush()
+      have = 1; done = 0; in_hunk = 0; minus = ""
+      fallback = $NF; sub(/^b\//, "", fallback)
+      next
+    }
+    in_hunk { next }
+    /^--- / { minus = substr($0, 5); sub(/^a\//, "", minus); next }
+    /^\+\+\+ / {
+      p = substr($0, 5)
+      if (p == "/dev/null") p = minus; else sub(/^b\//, "", p)
+      if (p != "/dev/null") emit(p)
+      next
+    }
+    /^@@ / { in_hunk = 1; next }
+    END { flush() }
+  ' "$1"
+}

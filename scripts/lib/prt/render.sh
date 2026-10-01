@@ -9,18 +9,31 @@
 
 set -uo pipefail
 
-# prt_render_finding_body FINDING_JSON MARKER_LINE — FINDING_JSON has file,
+# prt_chunk_label FINDING_JSON CHUNK_COUNT — "chunk i/N" for a finding from a
+# chunked review, empty for a single-chunk one or a finding with no chunk
+# index (go-kure/.github#173). Stamped on the posted thread so a reader can
+# tell at once that the reviewer saw only that slice of the diff.
+prt_chunk_label() {
+  local idx
+  [ "$2" -gt 1 ] 2>/dev/null || return 0
+  idx="$(jq -r '._chunk // empty' <<< "$1" 2>/dev/null)"
+  [[ "$idx" =~ ^[0-9]+$ ]] || return 0
+  printf 'chunk %s/%s' "$((idx + 1))" "$2"
+}
+
+# prt_render_finding_body FINDING_JSON MARKER_LINE [CHUNK_LABEL] — FINDING_JSON has file,
 # category, line, severity, issue, fix, fp. Marker is the FIRST line
 # (parsers key off "first line of the first comment").
 prt_render_finding_body() {
-  local finding="$1" marker="$2"
-  local severity category issue fix
+  local finding="$1" marker="$2" chunk_label="${3:-}"
+  local severity category issue fix source="Automated review finding"
   severity="$(jq -r '.severity' <<< "$finding")"
   category="$(jq -r '.category' <<< "$finding")"
   issue="$(jq -r '.issue' <<< "$finding")"
   fix="$(jq -r '.fix' <<< "$finding")"
   issue="$(prt_marker_neutralize "$issue")"
   fix="$(prt_marker_neutralize "$fix")"
+  [ -n "$chunk_label" ] && source="Automated review finding from ${chunk_label} of the diff (the reviewer saw only that chunk)"
   cat <<EOF
 $marker
 **${severity} · ${category}**
@@ -30,7 +43,7 @@ ${issue}
 **Suggested fix:** ${fix}
 
 ---
-*Automated review finding — reply to discuss, or resolve this thread once addressed.*
+*${source} — reply to discuss, or resolve this thread once addressed.*
 EOF
 }
 

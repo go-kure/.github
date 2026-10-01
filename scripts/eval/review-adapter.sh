@@ -188,14 +188,17 @@ chunk_idx=0
 n_chunk_ok=0
 n_chunk_failed=0
 
+# go-kure/.github#173: the same chunk scope production gives each prompt.
+all_diff_files=$(prt_diff_files "$diff_file")
 for chunk_file in "$chunk_dir"/chunk-*.diff; do
     [ -f "$chunk_file" ] || continue
     chunk_diff=$(cat "$chunk_file")
+    chunk_scope=$(prt_chunk_scope "$chunk_idx" "$chunk_count" "$all_diff_files" "$(prt_diff_files "$chunk_file")")
 
     review_rc=0
     raw=$(prt_model_review "$PRT_PROXY_URL" "$PRT_MODEL" "$PRT_MAX_TOKENS" "$chunk_diff" \
         "$pr_title" "$pr_desc" "$project_context" "$project_agents" "$project_claude_md" \
-        "$project_standards") || review_rc=$?
+        "$project_standards" "$chunk_scope") || review_rc=$?
     if [ "$review_rc" -ne 0 ]; then
         failure=$(cat "$PRT_LAST_MODEL_FAILURE_FILE" 2>/dev/null || true)
         log "chunk $chunk_idx: review call failed (exit $review_rc) [${failure:-unknown}]"
@@ -236,7 +239,7 @@ for chunk_file in "$chunk_dir"/chunk-*.diff; do
         assess_raw=$(prt_model_assess "$PRT_PROXY_URL" "$PRT_ASSESS_MODEL" \
             "$PRT_ASSESS_MAX_TOKENS" "$chunk_diff" "$chunk_findings" "$pr_title" \
             "$project_context" "$project_agents" "$project_claude_md" \
-            "$project_standards") || assess_rc=$?
+            "$project_standards" "$chunk_scope") || assess_rc=$?
         if [ "$assess_rc" -ne 0 ]; then
             log "chunk $chunk_idx: assess call failed (exit $assess_rc); findings stay unverdicted"
             prt_mark_degraded "chunk $chunk_idx: assess transport failure"
@@ -260,7 +263,7 @@ for chunk_file in "$chunk_dir"/chunk-*.diff; do
                 assess_raw=$(prt_model_assess "$PRT_PROXY_URL" "$PRT_ASSESS_MODEL" \
                     "$PRT_ASSESS_MAX_TOKENS" "$chunk_diff" "$chunk_findings" "$pr_title" \
                     "$project_context" "$project_agents" "$project_claude_md" \
-                    "$project_standards") || assess_rc=$?
+                    "$project_standards" "$chunk_scope") || assess_rc=$?
                 if [ "$assess_rc" -ne 0 ]; then
                     # A transport fault on the retry is a distinct outcome from a second
                     # unparseable body; production reports them separately and collapsing them

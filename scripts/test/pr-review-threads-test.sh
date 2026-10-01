@@ -517,6 +517,42 @@ assert_eq "prt_split_diff: write-failure hardening — prints no stdout at all, 
 chmod 755 "$wf_chunk_dir"
 rm -rf "$wf_chunk_dir" "$nonempty_diff"
 
+# ============================================================ go-kure/.github#173: chunk scope
+# prt_diff_files: one line per touched file, in diff order. A deleted file is
+# named by its old side, a new file by its new side, a binary record with no
+# ---/+++ pair by its diff --git line, and a hunk body line that reads like a
+# +++ header names nothing.
+scope_diff="$(mktemp)"
+printf '%s\n' 'diff --git a/a.go b/a.go' 'index 1111111..2222222 100644' '--- a/a.go' '+++ b/a.go' \
+  '@@ -1,1 +1,2 @@' ' old' '+++ b/evil.go' \
+  'diff --git a/d.go b/d.go' 'deleted file mode 100644' 'index 3333333..0000000' '--- a/d.go' '+++ /dev/null' \
+  '@@ -1,1 +0,0 @@' '-gone' \
+  'diff --git a/n.go b/n.go' 'new file mode 100644' 'index 0000000..4444444' '--- /dev/null' '+++ b/n.go' \
+  '@@ -0,0 +1,1 @@' '+fresh' \
+  'diff --git a/bin.png b/bin.png' 'index 5555555..6666666 100644' 'Binary files a/bin.png and b/bin.png differ' \
+  > "$scope_diff"
+assert_eq "diff_files: modified, deleted, new and binary files once each; a body +++ line is not a header" \
+  "$(printf '%s\n' a.go d.go n.go bin.png)" "$(prt_diff_files "$scope_diff")"
+rm -f "$scope_diff"
+
+assert_eq "chunk_scope: a single-chunk diff gets no scope block" \
+  "" "$(source "$LIB/model.sh"; prt_chunk_scope 0 1 "x.go" "x.go")"
+assert_eq "chunk_scope: chunk 1 of 2 names itself, the whole diff's files and its own" \
+  "$(printf '%s\n' 'CHUNK SCOPE: this diff is split into 2 chunks; this is chunk 1 of 2.' \
+      'Files in the whole diff:' '- x.go' '- y.go' 'Files in this chunk:' '- x.go' \
+      'Code in the other chunks exists but is not shown here: not seeing something in this chunk says nothing about the rest of the diff.')" \
+  "$(source "$LIB/model.sh"; prt_chunk_scope 0 2 "$(printf '%s\n' x.go y.go)" "x.go")"
+
+assert_eq "chunk_label: 0-based _chunk 1 of 3 -> chunk 2/3" "chunk 2/3" "$(prt_chunk_label '{"_chunk":1}' 3)"
+assert_eq "chunk_label: single-chunk review -> empty" "" "$(prt_chunk_label '{"_chunk":0}' 1)"
+assert_eq "chunk_label: no _chunk index -> empty" "" "$(prt_chunk_label '{}' 2)"
+
+label_finding='{"severity":"High","category":"bug","issue":"i","fix":"f","file":"x.go","line":1}'
+assert_eq "finding_body: a chunk label names the chunk in the footer" \
+  "true" "$(prt_render_finding_body "$label_finding" "<!-- m -->" "chunk 2/3" | grep -qF 'Automated review finding from chunk 2/3 of the diff (the reviewer saw only that chunk)' && echo true || echo false)"
+assert_eq "finding_body: no label keeps the plain footer" \
+  "true" "$(prt_render_finding_body "$label_finding" "<!-- m -->" | grep -qF '*Automated review finding — reply to discuss' && echo true || echo false)"
+
 # ============================================================ reconcile: prt_decide_finding
 # go-kure/.github#155: row 1 used to return NONE, indistinguishable from
 # every other do-nothing row — a colliding finding with no thread yet was
@@ -2038,6 +2074,9 @@ fake_curl_orchestrator() {
       case "$data" in
         @*) req_body="$(cat "${data#@}" 2>/dev/null || true)" ;;
       esac
+      # go-kure/.github#173: PRT_TEST_MODEL_REQUEST_LOG captures each call's user message.
+      [ -n "${PRT_TEST_MODEL_REQUEST_LOG:-}" ] && \
+        jq -r '.messages[] | select(.role == "user") | .content' <<< "$req_body" >> "$PRT_TEST_MODEL_REQUEST_LOG"
       case "$req_body" in
         *'FINDINGS (JSON)'*)
           # PRT_TEST_ASSESS_* (go-kure/.github assess-resilience workstream):
@@ -2165,6 +2204,17 @@ fake_curl_orchestrator() {
           case "${PRT_TEST_MODEL_RESPONSE_MODE:-clean}" in
             clean_with_finding)
               printf '%s' '{"choices":[{"message":{"content":"{\"findings\":[{\"file\":\"x.go\",\"line\":1,\"category\":\"other\",\"severity\":\"Medium\",\"issue\":\"i\",\"fix\":\"f\"}]}"}}]}' > "$out"
+              ;;
+            per_chunk_findings)
+              # go-kure/.github#173: a different finding per chunk (x.go on
+              # the first review call, y.go on every later one), so a
+              # two-chunk run creates a thread per chunk instead of
+              # colliding two copies of one finding.
+              if [ "$mc" -le 1 ]; then
+                printf '%s' '{"choices":[{"message":{"content":"{\"findings\":[{\"file\":\"x.go\",\"line\":1,\"category\":\"logic-error\",\"severity\":\"Medium\",\"issue\":\"chunk-one-issue\",\"fix\":\"g\"}]}"}}]}' > "$out"
+              else
+                printf '%s' '{"choices":[{"message":{"content":"{\"findings\":[{\"file\":\"y.go\",\"line\":1,\"category\":\"logic-error\",\"severity\":\"Medium\",\"issue\":\"chunk-two-issue\",\"fix\":\"h\"}]}"}}]}' > "$out"
+              fi
               ;;
             new_then_owned)
               # go-kure/.github#148: a new finding (x.go/logic-error, no
@@ -2504,7 +2554,12 @@ fake_curl_orchestrator() {
                 [ -n "${PRT_TEST_REPLY_BODY_LOG:-}" ] && \
                   jq -r '.body' <<< "$data" >> "$PRT_TEST_REPLY_BODY_LOG"
                 ;;
-              *commit_id*) _prt_test_bump "${PRT_TEST_CREATE_COUNTFILE:?}" >/dev/null ;;
+              *commit_id*)
+                _prt_test_bump "${PRT_TEST_CREATE_COUNTFILE:?}" >/dev/null
+                # go-kure/.github#173: PRT_TEST_CREATE_BODY_LOG captures each new thread's body.
+                [ -n "${PRT_TEST_CREATE_BODY_LOG:-}" ] && \
+                  jq -r '.body' <<< "$data" >> "$PRT_TEST_CREATE_BODY_LOG"
+                ;;
             esac
             ;;
         esac
@@ -2639,6 +2694,8 @@ run_orchestrator() {
     PRT_TEST_THREAD1_REPLIES="${PRT_TEST_THREAD1_REPLIES:-[]}" \
     PRT_TEST_THREAD1_LAST_EDITED="${PRT_TEST_THREAD1_LAST_EDITED:-}" \
     PRT_TEST_REPLY_BODY_LOG="${PRT_TEST_REPLY_BODY_LOG:-}" \
+    PRT_TEST_CREATE_BODY_LOG="${PRT_TEST_CREATE_BODY_LOG:-}" \
+    PRT_TEST_MODEL_REQUEST_LOG="${PRT_TEST_MODEL_REQUEST_LOG:-}" \
     PRT_TEST_REPLY_FAIL="${PRT_TEST_REPLY_FAIL:-0}" \
     PRT_TEST_MODEL_RESPONSE_MODE="${PRT_TEST_MODEL_RESPONSE_MODE:-clean}" \
     PRT_TEST_ASSESS_RESPONSE_MODE="${PRT_TEST_ASSESS_RESPONSE_MODE:-clean}" \
@@ -3460,6 +3517,39 @@ rc="$(run_orchestrator advisory 0 1 0)"
 assert_eq "orchestrator: PR-metadata GET retry — one mocked 502 then success still exits 0" "0" "$rc"
 assert_eq "orchestrator: PR-metadata GET retry actually fired (mock hit more than once)" \
   "true" "$([ "$(cat "$PRT_TEST_META_COUNTFILE")" -ge 2 ] && echo true || echo false)"
+
+# ---- go-kure/.github#173: a chunked review names its chunk ----
+# Every review and assess prompt of a two-chunk run carries "chunk i of 2"
+# and the files of the whole diff, and the thread a chunk's finding opens is
+# stamped with its chunk. A single-chunk run carries no scope block.
+PRT_TEST_MODEL_REQUEST_LOG="$(mktemp)"
+PRT_TEST_CREATE_BODY_LOG="$(mktemp)"
+PRT_TEST_MODEL_RESPONSE_MODE=per_chunk_findings
+PRT_TEST_TWO_FILE_DIFF=1
+rc="$(run_orchestrator enforce 0 0 0 150)"
+PRT_TEST_TWO_FILE_DIFF=0
+assert_eq "chunk scope: two-chunk enforce run exits 0" "0" "$rc"
+assert_eq "chunk scope: prompts name chunk 1 of 2 and chunk 2 of 2" \
+  "true true" "$(grep -qF 'this is chunk 1 of 2.' "$PRT_TEST_MODEL_REQUEST_LOG" && echo true || echo false) $(grep -qF 'this is chunk 2 of 2.' "$PRT_TEST_MODEL_REQUEST_LOG" && echo true || echo false)"
+assert_eq "chunk scope: review and assess prompts both carry it (4 calls, one block each)" \
+  "4" "$(grep -cF 'CHUNK SCOPE:' "$PRT_TEST_MODEL_REQUEST_LOG")"
+assert_eq "chunk scope: the whole diff's file list names both files" \
+  "true" "$(grep -A2 -F 'Files in the whole diff:' "$PRT_TEST_MODEL_REQUEST_LOG" | head -3 | tr '\n' ' ' | grep -qF 'Files in the whole diff: - x.go - y.go' && echo true || echo false)"
+assert_eq "chunk scope: each created thread is stamped with its own chunk" \
+  "true true" "$(grep -qF 'Automated review finding from chunk 1/2 of the diff' "$PRT_TEST_CREATE_BODY_LOG" && echo true || echo false) $(grep -qF 'Automated review finding from chunk 2/2 of the diff' "$PRT_TEST_CREATE_BODY_LOG" && echo true || echo false)"
+PRT_TEST_MODEL_RESPONSE_MODE=clean_with_finding
+: > "$PRT_TEST_MODEL_REQUEST_LOG"
+: > "$PRT_TEST_CREATE_BODY_LOG"
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "chunk scope: single-chunk enforce run exits 0" "0" "$rc"
+assert_eq "chunk scope: a single-chunk run's prompts carry no scope block" \
+  "0" "$(grep -cF 'CHUNK SCOPE:' "$PRT_TEST_MODEL_REQUEST_LOG")"
+assert_eq "chunk scope: a single-chunk run's thread keeps the plain footer" \
+  "true" "$(grep -qF '*Automated review finding — reply to discuss' "$PRT_TEST_CREATE_BODY_LOG" && echo true || echo false)"
+PRT_TEST_MODEL_RESPONSE_MODE=clean
+rm -f "$PRT_TEST_MODEL_REQUEST_LOG" "$PRT_TEST_CREATE_BODY_LOG"
+PRT_TEST_MODEL_REQUEST_LOG=""
+PRT_TEST_CREATE_BODY_LOG=""
 
 # ---- Cases 7-9: empty net diff (dot-github#60) ----
 # enforce + empty diff + owned open thread + no first_absent_sha yet ->
@@ -4394,14 +4484,14 @@ PRT_TEST_EMPTY_DIFF=1
 rc="$(run_orchestrator enforce 0 0 0)"
 assert_eq "orchestrator: 50/50/20 thread inventory exits 0" "0" "$rc"
 assert_eq "orchestrator: 50/50/20 thread inventory retains and logs all 120 threads" \
-  "true" "$(grep -q 'threads listed: 120, owned=0' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+  "true" "$(grep -q 'threads listed (pre-existing): 120, owned=0' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 assert_eq "orchestrator: 50/50/20 thread inventory never hits argv E2BIG" \
   "false" "$(grep -q 'Argument list too long' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 # The 120 threads are human threads with no marker: none may count as a
 # foreign-marked bot thread (go-kure/.github#153's detector keys on the marker,
 # not on the author alone).
 assert_eq "orchestrator: 120 unmarked human threads -> foreign_marked=0" \
-  "true" "$(grep -qF 'threads listed: 120, owned=0, foreign_marked=0' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+  "true" "$(grep -qF 'threads listed (pre-existing): 120, owned=0, foreign_marked=0' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 assert_eq "orchestrator: 120 unmarked human threads -> no foreign-marked-threads reason" \
   "false" "$(grep -qF 'foreign-marked-threads' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 
@@ -4413,7 +4503,7 @@ PRT_TEST_FIRST_ABSENT_SHA=2222222222222222222222222222222222222222
 rc="$(run_orchestrator enforce 0 0 0)"
 assert_eq "orchestrator: oversized paginated comments exit 0" "0" "$rc"
 assert_eq "orchestrator: oversized paginated comments retain the owned thread" \
-  "true" "$(grep -q 'threads listed: 1, owned=1' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+  "true" "$(grep -q 'threads listed (pre-existing): 1, owned=1' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 assert_eq "orchestrator: late human reply prevents incorrect auto-resolution" \
   "0" "$(cat "$PRT_TEST_RESOLVE_COUNTFILE")"
 assert_eq "orchestrator: oversized paginated comments never hit argv E2BIG" \
@@ -4465,7 +4555,7 @@ assert_eq "orchestrator: foreign-marked thread -> REVIEW_DEGRADED names the coun
 assert_eq "orchestrator: foreign-marked thread -> ::warning on stdout, no ::error" \
   "true false" "$(grep -q '::warning title=PR review threads degraded::foreign-marked-threads' "$PRT_TEST_STDOUT_FILE" && echo true || echo false) $(grep -q '::error title=' "$PRT_TEST_STDOUT_FILE" && echo true || echo false)"
 assert_eq "orchestrator: foreign-marked thread -> threads-listed line counts it, and it is not owned" \
-  "true" "$(grep -qF 'threads listed: 1, owned=0, foreign_marked=1' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+  "true" "$(grep -qF 'threads listed (pre-existing): 1, owned=0, foreign_marked=1' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 assert_eq "orchestrator: foreign-marked thread -> never reconciled (no PATCH/resolve/unresolve/reply)" \
   "0 0 0 0" "$(cat "$PRT_TEST_PATCH_COUNTFILE") $(cat "$PRT_TEST_RESOLVE_COUNTFILE") $(cat "$PRT_TEST_UNRESOLVE_COUNTFILE") $(cat "$PRT_TEST_REPLY_COUNTFILE")"
 assert_eq "orchestrator: foreign-marked thread -> the clean verdict is still posted (the reason is not a parse failure)" \
@@ -4473,7 +4563,7 @@ assert_eq "orchestrator: foreign-marked thread -> the clean verdict is still pos
 PRT_TEST_OWNED_AUTHOR=test-bot
 rc="$(run_orchestrator enforce 0 0 0)"
 assert_eq "orchestrator: normal run -> threads-listed line reports foreign_marked=0" \
-  "true" "$(grep -qF 'threads listed: 1, owned=1, foreign_marked=0' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+  "true" "$(grep -qF 'threads listed (pre-existing): 1, owned=1, foreign_marked=0' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 assert_eq "orchestrator: normal run -> no foreign-marked-threads reason" \
   "false" "$(grep -qF 'foreign-marked-threads' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 rm -f "$PRT_TEST_ISSUE_COMMENT_BODY_FILE"
