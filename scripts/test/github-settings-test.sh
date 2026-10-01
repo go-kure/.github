@@ -1134,6 +1134,39 @@ assert_eq "print_summary (--apply) returns 0 when every write went through" "0" 
 audit_fail_ignored_rc=$( (APPLY_FAILURES=("kure: create label x"); JSON_OUTPUT=false print_summary false) >/dev/null 2>&1; echo $?)
 assert_eq "print_summary (audit) ignores APPLY_FAILURES (audit mode never writes)" "0" "$audit_fail_ignored_rc"
 
+# Audit exit policy (go-kure/.github#178). --report-only (push runs) lists
+# the drift, warns and exits 0. --warn-label-drift (the daily run) turns
+# label colour/description drift into a warning; every other class still
+# fails, EXTRA labels included.
+report_rc=$( (REPORT_ONLY=true RULESET_MISSING=2 LABELS_EXTRA=1 JSON_OUTPUT=false print_summary false) >/dev/null 2>&1; echo $?)
+assert_eq "--report-only exits 0 on drift" "0" "$report_rc"
+report_out=$( (REPORT_ONLY=true RULESET_MISSING=2 LABELS_EXTRA=1 JSON_OUTPUT=false print_summary false) 2>&1)
+assert_contains "--report-only still prints the drift" "$report_out" "2 wrong"
+assert_contains "--report-only warns with the failing count" "$report_out" "::warning::3 issue(s) an apply would change; not failing (--report-only)"
+plain_ruleset_rc=$( (RULESET_MISSING=2 JSON_OUTPUT=false print_summary false) >/dev/null 2>&1; echo $?)
+assert_eq "a plain audit still exits 1 on ruleset drift" "1" "$plain_ruleset_rc"
+
+drift_only_rc=$( (WARN_LABEL_DRIFT=true LABELS_DRIFT=3 JSON_OUTPUT=false print_summary false) >/dev/null 2>&1; echo $?)
+assert_eq "--warn-label-drift exits 0 on label metadata drift alone" "0" "$drift_only_rc"
+drift_only_out=$( (WARN_LABEL_DRIFT=true LABELS_DRIFT=3 JSON_OUTPUT=false print_summary false) 2>&1)
+assert_contains "--warn-label-drift warns with the drift count" "$drift_only_out" "::warning::3 label(s) with colour/description drift (warning only, --warn-label-drift)"
+assert_contains "--warn-label-drift still prints the drift" "$drift_only_out" "3 metadata drift"
+for cls in LABELS_EXTRA LABELS_MISSING LABELS_RENAMED LABELS_DUPLICATE SETTINGS_MISSING SETTINGS_BLOCKED RULESET_MISSING; do
+    cls_rc=$( (printf -v "$cls" 1; WARN_LABEL_DRIFT=true LABELS_DRIFT=1 JSON_OUTPUT=false print_summary false) >/dev/null 2>&1; echo $?)
+    assert_eq "--warn-label-drift still exits 1 on $cls" "1" "$cls_rc"
+done
+plain_drift_rc=$( (LABELS_DRIFT=1 JSON_OUTPUT=false print_summary false) >/dev/null 2>&1; echo $?)
+assert_eq "a plain audit still exits 1 on label metadata drift" "1" "$plain_drift_rc"
+both_rc=$( (REPORT_ONLY=true WARN_LABEL_DRIFT=true LABELS_DRIFT=1 SETTINGS_MISSING=1 JSON_OUTPUT=false print_summary false) >/dev/null 2>&1; echo $?)
+assert_eq "both flags: exits 0" "0" "$both_rc"
+both_out=$( (REPORT_ONLY=true WARN_LABEL_DRIFT=true LABELS_DRIFT=1 SETTINGS_MISSING=1 JSON_OUTPUT=false print_summary false) 2>&1)
+assert_contains "both flags: the report-only count excludes label metadata drift" "$both_out" "::warning::1 issue(s) an apply would change"
+apply_flag_rc=$( (APPLY_FAILURES=("kure: update label x"); WARN_LABEL_DRIFT=true LABELS_DRIFT=1 JSON_OUTPUT=false print_summary true) >/dev/null 2>&1; echo $?)
+assert_eq "--warn-label-drift leaves the apply-failure exit alone" "1" "$apply_flag_rc"
+apply_flag_out=$( (WARN_LABEL_DRIFT=true LABELS_DRIFT=1 JSON_OUTPUT=false print_summary true) 2>&1)
+apply_flag_warned=$(grep -c 'warning only, --warn-label-drift' <<< "$apply_flag_out")
+assert_eq "--warn-label-drift prints no drift warning in apply mode (apply already patched it)" "0" "$apply_flag_warned"
+
 # The CLI itself: `--all --apply` keeps going past a repo whose write failed
 # (audit_repo runs under `|| true` there) and still exits 1 at the end. The
 # audit is stubbed; the flag parsing, the loop and the print_summary call are
@@ -1155,6 +1188,32 @@ assert_eq "--all --apply exits 1 when a write failed" "1" "$main_rc"
 assert_eq "--all --apply audits every repo after a failed write" "audited first
 audited second" "$(cat "$main_log")"
 rm -f "$main_log"
+
+# The CLI flags reach print_summary, and --report-only refuses --apply
+# before anything is audited.
+for case in "RULESET_MISSING 1" "RULESET_MISSING 0 --report-only" "RULESET_MISSING 1 --warn-label-drift" \
+    "LABELS_DRIFT 1" "LABELS_DRIFT 0 --warn-label-drift"; do
+    read -r cls want flag <<< "$case"
+    flag_rc=$( (
+        setup_colors() { :; }
+        check_requirements() { :; }
+        audit_repo() { printf -v "$cls" 1; }
+        # shellcheck disable=SC2086 # $flag is empty or one flag
+        GITHUB_REPOS="first" JSON_OUTPUT=false main --all $flag
+    ) >/dev/null 2>&1; echo $?)
+    assert_eq "main --all ${flag:-(no flag)} exits $want on $cls" "$want" "$flag_rc"
+done
+refused_log="$(mktemp)"
+refused_out=$( (
+    setup_colors() { :; }
+    check_requirements() { :; }
+    audit_repo() { echo "audited $1" >> "$refused_log"; }
+    GITHUB_REPOS="first" JSON_OUTPUT=false main --all --report-only --apply
+) 2>&1; echo "rc=$?")
+assert_contains "--report-only --apply is refused" "$refused_out" "--report-only and --apply are mutually exclusive"
+assert_contains "--report-only --apply exits 1" "$refused_out" "rc=1"
+assert_eq "--report-only --apply audits nothing" "" "$(cat "$refused_log")"
+rm -f "$refused_log"
 
 rm -rf "$drift_fixture_dir"
 trap - EXIT

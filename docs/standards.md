@@ -672,10 +672,9 @@ not something the initial `github_org:` block did.
 
 ## PR CI Health
 
-A second, independent job in `settings.yml` (`pr-ci-health`, `scripts/pr-ci-health.sh`) — separate
-from the settings audit above, because settings drift and PR/CI health are different failure
-classes and either one should be visible without needing the other to also be red. It runs on the
-same daily schedule and `workflow_dispatch`, queries every repo in `GITHUB_REPOS` for open,
+Its own workflow, `pr-ci-health.yml` (`scripts/pr-ci-health.sh`), separate from the settings
+audit above: settings drift and PR/CI health are different failure classes, and a red run of one
+must not read as the other. It runs daily at 06:00 UTC and on `workflow_dispatch`, queries every repo in `GITHUB_REPOS` for open,
 non-draft PRs via GraphQL, and fails (posting a table to the step summary) if any PR's combined
 `statusCheckRollup` is `FAILURE` or `ERROR` — a red run here is meant to be the notification itself,
 there is no separate alerting path. It only reads; it never comments, labels, or otherwise touches

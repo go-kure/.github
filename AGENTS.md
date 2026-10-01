@@ -99,7 +99,15 @@ permissions, collaborators, ...).
 Or via mise, which forwards every argument after `--` (`mise run settings -- --all --ci --json`).
 
 The `settings.yml` workflow runs this automatically in audit mode on push to main (when
-`governance/` or `standards/` files change) and daily at 06:00 UTC.
+`governance/` or `standards/` files change) and daily at 06:00 UTC. The two triggers fail on
+different things:
+
+- **Push** runs `--report-only`: a preview of what an apply would change, with a warning, and
+  exit 0. The pushed policy change is exactly what nothing has applied yet, so failing on it
+  would make every policy merge red.
+- **Schedule** runs `--warn-label-drift`: it fails on any drift except label colour/description
+  drift, which warns. An `EXTRA` label (one created live, not yet in `labels.json`) still fails.
+- A manual audit (`workflow_dispatch`, `mode: audit`) passes neither flag and fails on any drift.
 
 ### Applying settings changes
 
@@ -109,7 +117,9 @@ The `settings.yml` workflow runs this automatically in audit mode on push to mai
 4. After merge, trigger `settings.yml` manually via `workflow_dispatch` with `mode: apply`
    (`repo` defaults to `all`)
 
-Exit status: audit mode exits 1 when it finds any drift. `--apply` exits 1 when any write it
+Exit status: audit mode exits 1 when it finds any drift (`--warn-label-drift` leaves label
+colour/description drift out of that; `--report-only` exits 0 and warns instead). `--apply`
+exits 1 when any write it
 attempted failed — a ruleset create/update, the classic-protection delete, a label
 create/rename/update/delete, or a repository, security or organization settings write — and
 lists each failed write in the summary. The run continues past a failed write, so one refusal
@@ -274,14 +284,15 @@ uses: go-kure/.github/.github/workflows/<name>.yml@main
 secrets: inherit
 ```
 
-`ci.yml`, `settings.yml` and `pr-review-digest.yml` are **not** reusable — `ci.yml` is this repo's
-own self-CI (`pull_request` + `workflow_dispatch`), `settings.yml` carries two independent jobs on
-the same push-to-`governance`/`standards` + daily schedule + `workflow_dispatch` triggers: this
-repo's own org-settings audit/apply job (see above) and `pr-ci-health`, an unrelated org-wide open-PR
-CI-health check (see `docs/standards.md` § "PR CI Health") — bolted onto the same workflow file for
-schedule/trigger reuse, not because the two are related. `pr-review-digest.yml` is this repo's own daily org-wide scan for fail-closed
-`pr-review-threads` events (schedule + `workflow_dispatch`; see
-`docs/pr-review-threads.md` § Fail-closed alerting). None of the three is consumed by
+`ci.yml`, `settings.yml`, `pr-ci-health.yml` and `pr-review-digest.yml` are **not** reusable —
+`ci.yml` is this repo's own self-CI (`pull_request` + `workflow_dispatch`), `settings.yml` is this
+repo's own org-settings audit/apply (push to `governance`/`standards`, daily schedule and
+`workflow_dispatch`; see above), and `pr-ci-health.yml` is an unrelated org-wide open-PR CI-health
+check (daily schedule and `workflow_dispatch`; see `docs/standards.md` § "PR CI Health"). The last
+two used to share one workflow, so a red run of either looked like one problem; they are separate
+so the Org Settings status means settings only. `pr-review-digest.yml` is this repo's own daily
+org-wide scan for fail-closed `pr-review-threads` events (schedule + `workflow_dispatch`; see
+`docs/pr-review-threads.md` § Fail-closed alerting). None of the four is consumed by
 kure/launcher.
 
 ### When updating a reusable workflow
