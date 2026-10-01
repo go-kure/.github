@@ -152,16 +152,17 @@ overrides the workflow's own default) is one of three values. An unrecognized va
   the stamp (loop 1 rewrites the marker; a thread with no stamp costs no extra API call), so a
   finding that flickers in and out of the model's output restarts the count instead of resolving
   on its next single absence (go-kure/.github#252). If that rewrite fails, the run is
-  `REVIEW_INCOMPLETE` and the next run that sees the finding retries it. A failed clear, in loop 1
-  or in loop 2's `CLEAR_MARKER`, also posts a `**MAINT_FAILURE:**` reply whose state line
+  `REVIEW_INCOMPLETE` and the next run that sees the finding retries it. A clear that does not
+  land, in loop 1 or in loop 2's `CLEAR_MARKER` (a failed PATCH, a stale head, a failed read of
+  the comment or of the thread's resolved state; not a lift refused because the thread is
+  resolved), also posts a `**MAINT_FAILURE:**` reply whose state line
   `<!-- gokure-pr-review:v1-maint-failure first_absent_sha=<sha> -->`, directly after the note
   marker, records the stamp it left; a clear that fails again on a later run posts no second
   reply for the same stamp. While the thread still carries that stamp, row 11 does not read it as
   the first of two absences: an absence at a new head re-stamps the thread at that head instead,
   and the next absence on another head resolves it. A reply posted before the state line existed
   records no stamp and is not counted. A human reply, as on any thread, stops every absence
-  action. If the reply itself also
-  fails, nothing durable records the stale stamp: the run is `REVIEW_INCOMPLETE` naming it, and
+  action. If the reply itself also fails, nothing durable records the stale stamp: the run is `REVIEW_INCOMPLETE` naming it, and
   the next absence at a new head can resolve the thread on one absence (go-kure/.github#261).
 
   **The clean-verdict comment.** A zero-finding `enforce` run posts one plain issue comment,

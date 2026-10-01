@@ -1084,22 +1084,30 @@ prt_post_maint_failure() {
 # auto-resolve on one absence, not two. Returns 0 only when the PATCH
 # succeeded. Returns 1 otherwise: every failure has already been recorded
 # (prt_handle_freshness_rc / prt_mark_incomplete), and a lift refused because
-# the thread is now resolved is logged, not a failure. A failed PATCH on a
-# stamped thread also posts the MAINT_FAILURE reply (go-kure/.github#261).
+# the thread is now resolved is logged, not a failure.
+# go-kure/.github#261: every rewrite here also clears the absence stamp, so
+# any rewrite that does not land (a stale head, a failed GET, an unreadable
+# thread, a failed PATCH) leaves it stale. On a stamped thread each of those
+# also posts the MAINT_FAILURE reply, so the next absence at a new head is
+# re-stamped by row 11 instead of resolving on one absence. A lift refused
+# because the thread is resolved posts none: absence is moot there.
 prt_persist_owned_collision() {
   local row="$1" fp="$2" flag="$3" context="$4"
-  local db_id cur_resp cur_body cfp marker_flag="" new_marker new_body rc
+  local db_id cur_resp cur_body cfp marker_flag="" new_marker new_body rc stale_fas
+  db_id="$(jq -r '.first_comment_db_id' <<< "$row")"
+  stale_fas="$(jq -r '.first_absent_sha // empty' <<< "$row")"
   prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"
   rc=$?
   if [ "$rc" -ne 0 ]; then
     prt_handle_freshness_rc "$rc" "$context"
+    [ -n "$stale_fas" ] && prt_post_maint_failure "$row" "$stale_fas" "$db_id" "$context"
     return 1
   fi
-  db_id="$(jq -r '.first_comment_db_id' <<< "$row")"
   cur_resp="$(prt_gh_rest GET "/repos/${PRT_REPO}/pulls/comments/${db_id}")"
   cur_body="$(jq -r '.body // empty' <<< "${cur_resp:-}" 2>/dev/null || true)"
   if [ -z "$cur_body" ]; then
     prt_mark_incomplete "${context}: GET before the marker rewrite failed or returned an empty body, skipped"
+    [ -n "$stale_fas" ] && prt_post_maint_failure "$row" "$stale_fas" "$db_id" "$context"
     return 1
   fi
   cfp="$(jq -r '.content_fp' <<< "$row")"
@@ -1128,16 +1136,11 @@ prt_persist_owned_collision() {
   fi
   if [ "$rc" -eq 5 ]; then
     prt_mark_incomplete "${context}: could not re-read the thread's resolved state before the lift, skipped"
+    [ -n "$stale_fas" ] && prt_post_maint_failure "$row" "$stale_fas" "$db_id" "$context"
     return 1
   fi
   if [ "$rc" -ne 0 ]; then
     prt_handle_freshness_rc "$rc" "${context} (after up to 3 retries)"
-    # go-kure/.github#261: every rewrite here also clears the absence stamp,
-    # so a failed one leaves it stale. Record that the same way loop 2's
-    # CLEAR_MARKER does, so the next absence at a new head is re-stamped by
-    # row 11 instead of resolving on one absence.
-    local stale_fas
-    stale_fas="$(jq -r '.first_absent_sha // empty' <<< "$row")"
     [ -n "$stale_fas" ] && prt_post_maint_failure "$row" "$stale_fas" "$db_id" "$context"
     return 1
   fi
@@ -1631,12 +1634,21 @@ if [ "$PRT_MODE" = enforce ]; then
         [ "$retry_rc" -eq 0 ] || prt_handle_freshness_rc "$retry_rc" "fp=$fp: setting first_absent_sha (after up to 3 retries)"
         ;;
       CLEAR_MARKER)
-        prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA" || { prt_handle_freshness_rc "$?" "fp=$fp: marker clear"; continue; }
+        # go-kure/.github#261: a clear that does not land, for any reason,
+        # leaves the stamp stale, so each skip below records it as well.
+        prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"
+        retry_rc=$?
+        if [ "$retry_rc" -ne 0 ]; then
+          prt_handle_freshness_rc "$retry_rc" "fp=$fp: marker clear"
+          prt_post_maint_failure "$th" "$first_absent_sha" "$first_comment_db_id" "fp=$fp: marker clear"
+          continue
+        fi
         new_marker="$(prt_marker_build "$fp" "$collision" "" "$content_fp")"
         cur_resp="$(prt_gh_rest GET "/repos/${PRT_REPO}/pulls/comments/${first_comment_db_id}")"
         cur_body="$(jq -r '.body // empty' <<< "${cur_resp:-}" 2>/dev/null || true)"
         if [ -z "$cur_body" ]; then
           prt_mark_incomplete "fp=$fp: GET before clearing marker failed or returned empty body, skipped"
+          prt_post_maint_failure "$th" "$first_absent_sha" "$first_comment_db_id" "fp=$fp: marker clear"
           continue
         fi
         new_body="$(prt_marker_replace "$cur_body" "$new_marker")"
