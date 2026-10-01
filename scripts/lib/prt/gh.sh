@@ -374,8 +374,10 @@ prt_retry() {
 # unstripped (contrast the PRT_BOT_LOGIN_GQL variant used against GraphQL
 # thread authors elsewhere in this script). Prints the comment's numeric id
 # on stdout if found, prints nothing (exit 0) if none — that is "no comment
-# yet," not a failure. Returns 1 only when a paginated GET itself fails, so
-# callers can tell "no comment yet" from "could not check."
+# yet," not a failure. Returns 1, printing nothing, when a paginated GET
+# fails, a page cannot be read, or a foreign row cannot be written to
+# FOREIGN_OUT_FILE (below), so callers can tell "no comment yet" from "could
+# not check." Rows already appended before such a failure stay in the file.
 #
 # Only BOT_LOGIN's own comment is ever returned, so the caller only ever
 # edits its own: a comment with MARKER posted by another login (the bot
@@ -392,11 +394,15 @@ prt_find_marked_comment() {
   local superseded="${PRT_MARKER_STATE_SUPERSEDED:-<!-- gokure-pr-review:state=superseded -->}"
   while :; do
     body="$(prt_gh_rest GET "/repos/${repo}/issues/${pr_number}/comments?per_page=100&page=${page}")" || return 1
-    count="$(jq 'length' <<< "$body" 2>/dev/null || echo 0)"
+    # A page that cannot be read, or a foreign row that cannot be recorded,
+    # is "could not check" too: returning 0 there would hand the caller an id
+    # and a foreign list that silently miss whatever that page held.
+    count="$(jq 'length' <<< "$body" 2>/dev/null)" || return 1
+    [[ "$count" =~ ^[0-9]+$ ]] || return 1
     [ "$count" -eq 0 ] && break
     id="$(jq -r --arg m "$marker" --arg bot "$bot_login" '
       [.[] | select(.user.login == $bot) | select((.body // "") | contains($m))] | .[0].id // empty
-    ' <<< "$body" 2>/dev/null || true)"
+    ' <<< "$body" 2>/dev/null)" || return 1
     [ -z "$found" ] && [ -n "$id" ] && found="$id"
     if [ -n "$foreign_out" ]; then
       jq -r --arg m "$marker" --arg bot "$bot_login" --arg s "$superseded" '
@@ -404,7 +410,7 @@ prt_find_marked_comment() {
             | select((.body // "") | contains($m))
             | select((.body // "") | contains($s) | not)
             | "\(.id)\t\(.user.login // "(unknown author)")"
-      ' <<< "$body" >> "$foreign_out" 2>/dev/null || true
+      ' <<< "$body" >> "$foreign_out" 2>/dev/null || return 1
     elif [ -n "$found" ]; then
       break
     fi

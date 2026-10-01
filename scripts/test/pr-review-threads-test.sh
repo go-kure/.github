@@ -1301,6 +1301,50 @@ found_id="$(PRT_CURL=fake_curl_find_marked_foreign_pages PRT_GH_TOKEN=x \
   prt_find_marked_comment owner/repo 9 '<!-- gokure-pr-review:v1-clean -->' 'gokure-pr-review[bot]' "$find_foreign_out")"
 assert_eq "prt_find_marked_comment #153: own match on page 1 is returned, the live foreign one on page 2 is listed, the superseded one is not" \
   "5 $(printf '700\tkure-bot')" "$found_id $(cat "$find_foreign_out")"
+
+# R3-P2: a foreign row that cannot be enumerated or recorded is "could not
+# check", never success with the own id and a short list. Own comment 88 and
+# live foreign comment 99 on one page; the failure is injected into the
+# foreign filter (jq shim), then into the write (the out path a directory),
+# then into the page itself (not JSON).
+fake_curl_find_marked_own_and_foreign() {
+  local out=""
+  local args=("$@")
+  for ((ai = 0; ai < ${#args[@]}; ai++)); do
+    [ "${args[$ai]}" = "-o" ] && out="${args[$((ai + 1))]}"
+  done
+  if [ -n "${PRT_TEST_FIND_PAGE_GARBAGE:-}" ]; then
+    printf 'not json' > "$out"
+  else
+    printf '%s' '[{"id":88,"user":{"login":"gokure-pr-review[bot]"},"body":"<!-- gokure-pr-review:v1-clean -->"},{"id":99,"user":{"login":"kure-bot"},"body":"<!-- gokure-pr-review:v1-clean -->"}]' > "$out"
+  fi
+  echo 200
+}
+find_marked_rc() ( # FOREIGN_OUT -> "rc id"
+  local id rc
+  id="$(PRT_CURL=fake_curl_find_marked_own_and_foreign PRT_GH_TOKEN=x \
+    prt_find_marked_comment owner/repo 9 '<!-- gokure-pr-review:v1-clean -->' 'gokure-pr-review[bot]' "$1" 2>/dev/null)"
+  rc=$?
+  echo "$rc $id"
+)
+: > "$find_foreign_out"
+assert_eq "prt_find_marked_comment #153 (R3-P2 control): own 88 returned, foreign 99 listed" \
+  "0 88 $(printf '99\tkure-bot')" "$(find_marked_rc "$find_foreign_out") $(cat "$find_foreign_out")"
+: > "$find_foreign_out"
+assert_eq "prt_find_marked_comment #153 (R3-P2): the foreign filter fails -> returns 1, no id" \
+  "1 " "$(
+    # Invoked by find_marked_rc; the $s is the literal jq filter text.
+    # shellcheck disable=SC2329,SC2016
+    jq() { case "$*" in *'contains($s) | not'*) return 5 ;; esac; command jq "$@"; }
+    find_marked_rc "$find_foreign_out"
+  )"
+find_foreign_dir="$(mktemp -d)"
+assert_eq "prt_find_marked_comment #153 (R3-P2): the foreign row cannot be written -> returns 1, no id" \
+  "1 " "$(find_marked_rc "$find_foreign_dir")"
+rmdir "$find_foreign_dir"
+assert_eq "prt_find_marked_comment (R3-P2): a page that is not JSON -> returns 1, not \"no comment yet\"" \
+  "1 " "$(PRT_TEST_FIND_PAGE_GARBAGE=1 find_marked_rc "$find_foreign_out")"
+unset find_foreign_dir
 rm -f "$find_foreign_out"
 
 fake_curl_find_marked_none() {
@@ -2618,6 +2662,14 @@ fake_curl_orchestrator() {
         jq -r '.body' <<< "$data" > "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" 2>/dev/null || true
       fi
       printf '%s' '{"id":1}' > "$out"
+      echo 200
+      ;;
+    */issues/*/comments[?]*)
+      # The comment listing GET when PRT_TEST_ISSUE_COMMENT_LOG is unset: an
+      # empty list. It used to fall through to the PR metadata arm below,
+      # whose object prt_find_marked_comment only read as "no comment" while
+      # it swallowed its own jq failures (go-kure/.github#153 R3-P2).
+      printf '%s' "${PRT_TEST_ISSUE_COMMENTS_LIST:-[]}" > "$out"
       echo 200
       ;;
     */graphql)
@@ -5140,6 +5192,23 @@ PRT_TEST_ISSUE_COMMENTS_LIST='[{"id":99,"user":{"login":"github-actions[bot]"},"
 rc="$(run_orchestrator enforce 0 0 0)"
 assert_eq "orchestrator #153: own and foreign clean comments -> PATCHes only the own one, POSTs nothing, counts the foreign one" \
   "0 1 0 0 true" "$rc $(grep -c '^PATCH comments/88$' "$PRT_TEST_ISSUE_COMMENT_LOG") $(grep -c '^PATCH comments/99$' "$PRT_TEST_ISSUE_COMMENT_LOG") $(grep -c '^POST ' "$PRT_TEST_ISSUE_COMMENT_LOG") $(grep -qF 'foreign-marked-comments: 1 comment(s)' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+# R3-P2: the same two comments, but enumerating the foreign one fails (jq
+# shim on the foreign filter only). The lookup must not succeed with 88
+# alone: the clean-verdict lookup reports the listing failure as
+# REVIEW_INCOMPLETE (no write), and the foreign count is reported as
+# incomplete instead of reading as zero.
+: > "$PRT_TEST_ISSUE_COMMENT_LOG"
+rc="$(
+  # Invoked indirectly by the orchestrator; the $s is the literal jq filter text.
+  # shellcheck disable=SC2329,SC2016
+  jq() { case "$*" in *'contains($s) | not'*) return 5 ;; esac; command jq "$@"; }
+  export -f jq
+  run_orchestrator enforce 0 0 0
+)"
+assert_eq "orchestrator #153 (R3-P2): foreign comment enumeration fails -> exits 1, REVIEW_INCOMPLETE names the listing, no comment written" \
+  "1 true 0 0" "$rc $(grep -qF 'REVIEW_INCOMPLETE: failed to list issue comments while looking for a prior clean-verdict comment' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(grep -c '^PATCH ' "$PRT_TEST_ISSUE_COMMENT_LOG") $(grep -c '^POST ' "$PRT_TEST_ISSUE_COMMENT_LOG")"
+assert_eq "orchestrator #153 (R3-P2): the foreign count is reported as incomplete, not as zero" \
+  "true true false" "$(grep -qF 'marked comments by another login (live): 0 or more (a listing failed)' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(grep -qF 'REVIEW_DEGRADED: foreign-marked-comments-unread:' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(grep -qxF 'prt: marked comments by another login (live): 0' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 
 # A foreign comment already superseded reads as stale by its own text: not
 # counted, no reason.

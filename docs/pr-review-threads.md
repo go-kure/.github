@@ -171,6 +171,12 @@ another login that is not superseded (no `state=superseded` line). The job log c
 `marked comments by another login (live): <n>`. Above zero the run records the `REVIEW_DEGRADED`
 reason `foreign-marked-comments: N comment(s) … posted by <logins>, not the configured bot login
 <login>; this run does not edit them, so a verdict there may be stale`, again a `::warning`.
+A lookup that cannot read a page or record a row fails as a whole, like a failed GET: it returns
+no id, and each caller handles it as it handles a listing failure (the clean-verdict lookup on a
+zero-finding run marks `REVIEW_INCOMPLETE`; the supersede and partial-review lookups warn or
+degrade). The count is then a lower bound: the log line reads `<n> or more (a listing failed)`
+and the run records the `REVIEW_DEGRADED` reason `foreign-marked-comments-unread`, so a missed
+foreign comment is never reported as none.
 
 **Gotcha, if this secret ever needs regenerating:** a fine-grained PAT's "Repository access: All
 repositories" is scoped to repos the token's **resource owner** account owns, not to org repos
