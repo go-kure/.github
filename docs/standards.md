@@ -543,8 +543,10 @@ rule, in its place. Values are typed, and enums hold wherever `--apply` would ac
 as `disabled`, which for `dependabot_security_updates` is a live DELETE. The labels file must
 hold a non-empty `labels` list whose entries carry a name, a description and a `#RRGGBB`
 colour. What a schema cannot express is checked alongside: `github_repos` keys and every
-`repos:` scope name governed repos, label names are unique, and every governed repo keeps at
-least one applicable label. An empty labels file, or one scoped entirely away from a repo, is
+`repos:` scope name governed repos, label names are unique, every governed repo keeps at
+least one applicable label, and each bypass actor is one the rulesets API accepts (an
+`actor_id` for `Integration`, `RepositoryRole`, `Team` and `User`; `pull_request` mode never
+for a `DeployKey` and only on a branch ruleset). An empty labels file, or one scoped entirely away from a repo, is
 refused rather than read as "delete every live label there". A field that needs validating is
 added to the schema, whose key sets the test suite pins to the script's own registries.
 
