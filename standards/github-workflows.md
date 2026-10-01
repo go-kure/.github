@@ -208,7 +208,7 @@ script of the same name from `go-kure/.github` at the pinned commit.
 | `check-forbidden-terms` | No tracked file in scope references the downstream platform (the No Downstream References standard); always scans the whole tree, on every event |
 | `govulncheck-gate` | A govulncheck JSON report has no reachable advisory outside the allowlist |
 | `check-doc-sync` | `docs-map.yaml` matches the tree: every public package mapped, every mapped path present, mount targets unique, generated tables current |
-| `check-doc-gate` | When a mapped package's own non-test `.go` files change, other than changes marked trivial, its mapped docs change in the same pull request. Separately, when a changed file matches a `review_mappings` entry's `change` glob, at least one of that entry's `docs` changes too; this covers non-Go files such as workflows and configuration |
+| `check-doc-gate` | When a mapped package's own non-test `.go` files change, other than trivial lines (marked `// doc-gate:trivial`, or a generated table row whose only change is its `ModuleVersion` value), its mapped docs change in the same pull request. Separately, when a changed file matches a `review_mappings` entry's `change` glob, at least one of that entry's `docs` changes too; this covers non-Go files such as workflows and configuration |
 | `check-links` | Every internal link in the built site points at an existing page (external links and `#fragment` anchors are not checked) |
 
 ### govulncheck gate
