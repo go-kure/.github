@@ -54,18 +54,29 @@ jobs:
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
-      # release-state.sh needs jq, and the policy command below fetches with
-      # curl; the runner image is not guaranteed to carry either.
+      # release-state.sh needs gh and jq, and the policy command below fetches
+      # with curl. curl and jq are installed when missing; gh is a runner
+      # prerequisite, as for release.yml. Each command stands alone so a failed
+      # apt-get fails the step, and every tool is checked before the state runs.
       - name: Setup tools
         run: |
+          missing=()
           for cmd in curl jq; do
-            if ! command -v "$cmd" &>/dev/null; then
-              if command -v sudo &>/dev/null; then
-                sudo apt-get update -qq && sudo apt-get install -y -qq curl jq
-              else
-                apt-get update -qq && apt-get install -y -qq curl jq
-              fi
-              break
+            command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            if command -v sudo >/dev/null 2>&1; then
+              sudo apt-get update -qq
+              sudo apt-get install -y -qq "${missing[@]}"
+            else
+              apt-get update -qq
+              apt-get install -y -qq "${missing[@]}"
+            fi
+          fi
+          for cmd in curl jq gh; do
+            if ! command -v "$cmd" >/dev/null 2>&1; then
+              echo "::error::$cmd is not available on this runner, so the release state cannot be decided."
+              exit 1
             fi
           done
 
