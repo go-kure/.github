@@ -4028,6 +4028,21 @@ PRT_TEST_LIVE_RESOLVED=unreadable
 rc="$(run_orchestrator enforce 0 0 0)"
 assert_eq "orchestrator #148: live resolved state unreadable -> exits 1, no PATCH, no lift, quarantined=1" \
   "1 0 false true" "$rc $(cat "$PRT_TEST_PATCH_COUNTFILE") $(grep -qF 'collision lifted' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(grep -qE 'done:.*quarantined=1' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+# go-kure/.github#261: the skipped lift would also have cleared an absence
+# stamp, so on a stamped thread it records the stale stamp. A lift refused
+# because the thread is resolved records none (control).
+PRT_TEST_REPLY_BODY_LOG="$(mktemp)"
+PRT_TEST_FIRST_ABSENT_SHA="2222222222222222222222222222222222222222"
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #261: unreadable lift on a stamped thread -> one MAINT_FAILURE reply recording the stamp" \
+  "1 1 $PRT_TEST_FIRST_ABSENT_SHA" "$rc $(cat "$PRT_TEST_REPLY_COUNTFILE") $(prt_marker_maint_failure_sha "$(cat "$PRT_TEST_REPLY_BODY_LOG")")"
+PRT_TEST_LIVE_RESOLVED=true
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #261: lift refused on a resolved stamped thread -> no MAINT_FAILURE reply (control)" \
+  "0 0" "$rc $(cat "$PRT_TEST_REPLY_COUNTFILE")"
+PRT_TEST_FIRST_ABSENT_SHA=""
+rm -f "$PRT_TEST_REPLY_BODY_LOG"
+unset PRT_TEST_REPLY_BODY_LOG
 PRT_TEST_LIVE_RESOLVED=false
 
 # go-kure/.github#256: the re-read runs before every PATCH attempt, not once
@@ -4205,6 +4220,44 @@ assert_eq "orchestrator #261: loop-2 CLEAR_MARKER and its reply both fail -> nam
   "0 true" "$(cat "$PRT_TEST_REPLY_COUNTFILE") $(grep -qF "reply recording stale stamp $mf_stamp failed" "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 PRT_TEST_REPLY_FAIL=0
 PRT_TEST_PATCH_FAIL=0
+# (b4) A clear skipped before its PATCH (the comment GET fails) leaves the
+# stamp stale too: loop 2 records it, as does loop 1 below.
+PRT_TEST_COMMENT_GET_EMPTY=1
+: > "$PRT_TEST_REPLY_BODY_LOG"
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #261: loop-2 CLEAR_MARKER skipped on a failed GET -> one MAINT_FAILURE reply recording the stamp" \
+  "1 $mf_stamp" "$(cat "$PRT_TEST_REPLY_COUNTFILE") $(prt_marker_maint_failure_sha "$(cat "$PRT_TEST_REPLY_BODY_LOG")")"
+PRT_TEST_OWNED_FP="$(prt_fp_base x.go other)"
+PRT_TEST_MODEL_RESPONSE_MODE=clean_with_finding
+: > "$PRT_TEST_REPLY_BODY_LOG"
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #261: loop-1 stamp clear skipped on a failed GET -> exits 1, one MAINT_FAILURE reply recording the stamp" \
+  "1 1 $mf_stamp" "$rc $(cat "$PRT_TEST_REPLY_COUNTFILE") $(prt_marker_maint_failure_sha "$(cat "$PRT_TEST_REPLY_BODY_LOG")")"
+PRT_TEST_COMMENT_GET_EMPTY=0
+# (b5) A clear skipped on a stale head (its own freshness check) also records
+# the stamp. The read count before that check differs per path, so each case
+# walks every offset and takes the one whose degraded reason names it.
+mf_stale_case() { # MODE OWNED_FP REASON_TEXT -> "<replies> <recorded stamp>" at that offset, or "none"
+  local k total
+  PRT_TEST_MODEL_RESPONSE_MODE="$1"; PRT_TEST_OWNED_FP="$2"
+  rc="$(run_orchestrator enforce 0 0 0)"
+  total="$(cat "$PRT_TEST_META_COUNTFILE")"
+  for ((k = 1; k < total; k++)); do
+    : > "$PRT_TEST_REPLY_BODY_LOG"
+    PRT_TEST_STALE_AFTER_CALL=$k
+    rc="$(run_orchestrator enforce 0 0 0)"
+    PRT_TEST_STALE_AFTER_CALL=0
+    if grep -qF "REVIEW_DEGRADED: $3: stale head SHA" "$PRT_TEST_STDERR_FILE"; then
+      echo "$(cat "$PRT_TEST_REPLY_COUNTFILE") $(prt_marker_maint_failure_sha "$(cat "$PRT_TEST_REPLY_BODY_LOG")")"
+      return 0
+    fi
+  done
+  echo none
+}
+assert_eq "orchestrator #261: loop-1 stamp clear skipped on a stale head -> one MAINT_FAILURE reply recording the stamp" \
+  "1 $mf_stamp" "$(mf_stale_case clean_with_finding "$(prt_fp_base x.go other)" "fp=$(prt_fp_base x.go other): clearing a stale absence stamp ($mf_stamp)")"
+assert_eq "orchestrator #261: loop-2 CLEAR_MARKER skipped on a stale head -> one MAINT_FAILURE reply recording the stamp" \
+  "1 $mf_stamp" "$(mf_stale_case partial_drop 0000000000000000 "fp=0000000000000000: marker clear")"
 PRT_TEST_OWNED_FP="$(prt_fp_base x.go other)"
 # (c) The next complete run is an absence at a new head, over the same stamp.
 PRT_TEST_MODEL_RESPONSE_MODE=clean
