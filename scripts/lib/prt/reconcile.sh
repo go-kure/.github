@@ -163,6 +163,101 @@ prt_effective_collision() {
   echo none
 }
 
+# prt_foreign_action FOREIGN_JSON FINDING_JSON -> "ACTION<TAB>AUTHOR"
+# go-kure/.github#153: the one decision for a finding that has no own thread
+# but whose fp appears on foreign rows (marker, opened by another login).
+# Loop 1 and the cap walk (prt_cap_foreign_rows) both call this, so they
+# always act on the same selected row.
+#
+# A foreign marker is untrusted input: whatever is read from it may only
+# make this run gate more (keep a thread gating, open a new one), never less
+# (quarantine, withhold, leave alone). So:
+# - the marker's collision flag is never read. A collision for a
+#   foreign-matched finding comes only from this run's own findings (the
+#   finding's own .collision, finding.sh's in-run fingerprint groups);
+# - the marker's content_fp is read only to say "this thread is not this
+#   finding": a row whose content_fp is present and differs from the
+#   finding's is not a match, so the finding takes the no-thread path;
+# - among the rows that do match, precedence is fixed:
+#   1. any OPEN row: the existing thread, read-only and gating     EXISTING
+#   2. else any row resolved by someone other than the login that
+#      opened it: a human resolution, honoured as for an own thread
+#      (prt_decide_finding row 6, or row 1 on a this-run collision) NONE |
+#                                                                  QUARANTINE
+#   3. else (every match resolved by its own author, the foreign
+#      identity's auto-resolve, the counterpart of resolved_by_bot):
+#      what an own bot-resolved thread would get. Row 7's reopen
+#      becomes a new own thread instead                             NEW |
+#      (row 1 on a this-run collision, the resolved FALSE_POSITIVE  QUARANTINE |
+#      branch otherwise)                                            NONE
+#   No matching row at all                                         NOMATCH
+# NEW and NOMATCH mean the finding takes the normal no-thread path
+# (CREATE within the cap, OVERFLOW beyond it). AUTHOR is the login of the
+# row that decided (for NOMATCH, of a content-mismatched row with the same
+# fp, or empty when no foreign row has the fp at all).
+prt_foreign_action() {
+  local foreign="$1" finding="$2" fp verdict collision this_cfp sel cls author action
+  fp="$(jq -r '.fp' <<< "$finding" 2>/dev/null)" || return 1
+  if [ "$(jq --arg fp "$fp" 'any(.[]; .fp == $fp)' <<< "$foreign" 2>/dev/null)" != true ]; then
+    printf 'NOMATCH\t\n'
+    return 0
+  fi
+  verdict="$(jq -r '.verdict // "NONE"' <<< "$finding" 2>/dev/null)" || return 1
+  collision="$(jq -r '.collision // false' <<< "$finding" 2>/dev/null)" || return 1
+  this_cfp="$(prt_content_fp "$(jq -r '.issue' <<< "$finding")" "$(jq -r '.fix' <<< "$finding")")"
+  sel="$(jq -r --arg fp "$fp" --arg cfp "$this_cfp" '
+    [.[] | select(.fp == $fp)] as $all
+    | [$all[] | select((.content_fp // "") == "" or .content_fp == $cfp)] as $m
+    | if ($m | length) == 0 then "nomatch\t\($all[0].author)"
+      elif any($m[]; .resolved != true) then
+        "open\t\([$m[] | select(.resolved != true)][0].author)"
+      elif any($m[]; .resolved_by_author != true) then
+        "honour\t\([$m[] | select(.resolved_by_author != true)][0].author)"
+      else "author\t\($m[0].author)" end
+  ' <<< "$foreign" 2>/dev/null)" || return 1
+  cls="${sel%%$'\t'*}"
+  author="${sel#*$'\t'}"
+  case "$cls" in
+    nomatch) action=NOMATCH ;;
+    open) action=EXISTING ;;
+    honour) action="$(prt_decide_finding "$collision" "$verdict" true true false false false)" ;;
+    author)      action="$(prt_decide_finding "$collision" "$verdict" true true true false false)"
+      [ "$action" = REPLY_UNRESOLVE ] && action=NEW
+      ;;
+    *) return 1 ;;
+  esac
+  printf '%s\t%s\n' "$action" "$author"
+}
+
+# prt_cap_foreign_rows FOREIGN_JSON FINDINGS_JSON -> JSON array
+# The foreign rows the cap walk sees: all of them, so every open one still
+# reserves its slot in prt_reserved_count (it blocks merge, matched or not).
+# For each finding whose prt_foreign_action is NEW or NOMATCH, the rows
+# carrying its fp are tagged excludes:false, so prt_gating_eligible keeps
+# that finding as a CREATE candidate competing for a rank slot, exactly as
+# loop 1 will treat it. Rows for EXISTING, NONE and QUARANTINE findings keep
+# excluding their finding (no thread is created for it).
+prt_cap_foreign_rows() {
+  local foreign="$1" findings="$2" release='[]' f fp action rows
+  if [ "$(jq 'length' <<< "$foreign" 2>/dev/null)" = 0 ]; then
+    echo "$foreign"
+    return 0
+  fi
+  rows="$(jq -c '.[]' <<< "$findings" 2>/dev/null)" || return 1
+  while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    fp="$(jq -r '.fp' <<< "$f" 2>/dev/null)" || return 1
+    [ "$(jq --arg fp "$fp" 'any(.[]; .fp == $fp)' <<< "$foreign" 2>/dev/null)" = true ] || continue
+    action="$(prt_foreign_action "$foreign" "$f")" || return 1
+    case "${action%%$'\t'*}" in
+      NEW|NOMATCH) release="$(jq -c --arg fp "$fp" '. + [$fp]' <<< "$release" 2>/dev/null)" || return 1 ;;
+    esac
+  done <<< "$rows"
+  jq -c --argjson rel "$release" \
+    'map(. as $r | if any($rel[]; . == $r.fp) then . + {excludes: false} else . end)' \
+    <<< "$foreign" 2>/dev/null
+}
+
 # prt_decide_absent COLLISION HAS_HUMAN_REPLY THREAD_RESOLVED \
 #                    FIRST_ABSENT_SHA CURRENT_SHA REVIEW_INCOMPLETE \
 #                    STAMP_KNOWN_STALE
@@ -284,6 +379,13 @@ prt_decide_absent() {
 #   currently open (non-collision, non-FALSE_POSITIVE)  -> row 5: gating
 #   currently resolved, resolved_by_bot                 -> row 7: gating (reopens)
 #   currently resolved, not by bot                       -> row 6: never gating
+#   foreign row (go-kure/.github#153: marker, but opened by another login;
+#     the orchestrator passes these after OWNED, tagged foreign:true)
+#                                                       -> gating iff open,
+#     matched or absent: no row of the decision table ever acts on it. Rows
+#     whose finding loop 1 sends down the no-thread path (prt_foreign_action
+#     NEW or NOMATCH) are tagged excludes:false by prt_cap_foreign_rows, so
+#     that finding is a rank candidate below while an open row still reserves
 # Only genuinely NEW findings (no OWNED match at all) ever need a rank slot —
 # they're the only candidates row 4 can CREATE — so prt_gating_eligible is
 # restricted to exactly that set, and remaining = max(0, CAP -
@@ -337,11 +439,19 @@ prt_reserved_count() {
 
   while IFS= read -r row; do
     [ -z "$row" ] && continue
-    local fp match gating=false
+    local fp match foreign gating=false
     fp="$(jq -er '.fp | select(type == "string")' <<< "$row" 2>/dev/null)" || return 1
     match="$(jq -c --arg fp "$fp" '[.[] | select(.fp == $fp)] | .[0] // null' <<< "$findings" 2>/dev/null)" || return 1
+    foreign="$(jq -r '.foreign // false' <<< "$row" 2>/dev/null)" || return 1
 
-    if [ "$match" = null ]; then
+    if [ "$foreign" = true ]; then
+      # go-kure/.github#153: a thread another login opened. This run never
+      # resolves or reopens it, matched or absent, so it gates exactly while
+      # it is open. Anything but a literal true counts as open.
+      local f_resolved
+      f_resolved="$(jq -r '.resolved' <<< "$row" 2>/dev/null)" || return 1
+      [ "$f_resolved" != true ] && gating=true
+    elif [ "$match" = null ]; then
       # Absent this run (loop-2 territory) — counted directly, mirroring the
       # original inline jq's `$f == null` branch exactly. Does NOT call
       # prt_decide_finding; see the rationale block above.
@@ -412,6 +522,10 @@ prt_reserved_count() {
 
 # prt_gating_eligible FINDINGS_JSON OWNED_JSON SEV_RANK_JSON -> sorted JSON array
 # Only genuinely new findings (no OWNED match at all) ever need a rank slot.
+# A foreign row in OWNED_JSON (go-kure/.github#153) excludes its finding the
+# same way: loop 1 opens no thread for it. The exception is a row tagged
+# excludes:false (prt_cap_foreign_rows): its finding does take the no-thread
+# path, so it stays a candidate. Owned rows never carry the tag.
 prt_gating_eligible() {
   local findings="$1" owned="$2" sev_rank="$3"
   # Lowercase keys: the rank lookup below normalizes .severity through
@@ -427,7 +541,7 @@ prt_gating_eligible() {
             | select((.verdict == "VALID" or .verdict == "PARTIALLY_VALID" or .verdict == null)
                      and (.collision != true))
             | . as $f
-            | select(($owned | map(select(.fp == $f.fp)) | length) == 0)
+            | select(($owned | map(select(.fp == $f.fp and .excludes != false)) | length) == 0)
           ]
         | sort_by($rank[.severity | ascii_downcase] // 99)
       else

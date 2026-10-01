@@ -376,9 +376,20 @@ prt_retry() {
 # on stdout if found, prints nothing (exit 0) if none — that is "no comment
 # yet," not a failure. Returns 1 only when a paginated GET itself fails, so
 # callers can tell "no comment yet" from "could not check."
+#
+# Only BOT_LOGIN's own comment is ever returned, so the caller only ever
+# edits its own: a comment with MARKER posted by another login (the bot
+# identity changed, go-kure/.github#153) is never edited, and when it is the
+# only one the caller posts a new comment of its own. With FOREIGN_OUT_FILE
+# (optional 5th argument) every page is read, not just up to the first own
+# match, and each such foreign comment that is not superseded (its body has
+# no PRT_MARKER_STATE_SUPERSEDED line, so it still reads as live) is appended
+# to the file as "id<TAB>login", one per line. A superseded one is stale by
+# its own text and is not listed. The caller reports the list.
 prt_find_marked_comment() {
-  local repo="$1" pr_number="$2" marker="$3" bot_login="$4"
-  local page=1 body count id
+  local repo="$1" pr_number="$2" marker="$3" bot_login="$4" foreign_out="${5:-}"
+  local page=1 body count id found=""
+  local superseded="${PRT_MARKER_STATE_SUPERSEDED:-<!-- gokure-pr-review:state=superseded -->}"
   while :; do
     body="$(prt_gh_rest GET "/repos/${repo}/issues/${pr_number}/comments?per_page=100&page=${page}")" || return 1
     count="$(jq 'length' <<< "$body" 2>/dev/null || echo 0)"
@@ -386,10 +397,21 @@ prt_find_marked_comment() {
     id="$(jq -r --arg m "$marker" --arg bot "$bot_login" '
       [.[] | select(.user.login == $bot) | select((.body // "") | contains($m))] | .[0].id // empty
     ' <<< "$body" 2>/dev/null || true)"
-    [ -n "$id" ] && { printf '%s' "$id"; return 0; }
+    [ -z "$found" ] && [ -n "$id" ] && found="$id"
+    if [ -n "$foreign_out" ]; then
+      jq -r --arg m "$marker" --arg bot "$bot_login" --arg s "$superseded" '
+        .[] | select((.user.login // "") != $bot)
+            | select((.body // "") | contains($m))
+            | select((.body // "") | contains($s) | not)
+            | "\(.id)\t\(.user.login // "(unknown author)")"
+      ' <<< "$body" >> "$foreign_out" 2>/dev/null || true
+    elif [ -n "$found" ]; then
+      break
+    fi
     [ "$count" -lt 100 ] && break
     page=$((page + 1))
   done
+  printf '%s' "$found"
   return 0
 }
 

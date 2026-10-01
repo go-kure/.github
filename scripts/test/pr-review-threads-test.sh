@@ -712,6 +712,78 @@ assert_eq "reserved_count: row5 open VALID -> reserves" \
   "1" "$(prt_reserved_count \
     '[{"fp":"r1","collision":false,"resolved":false,"resolved_by_bot":false}]' \
     '[{"fp":"r1","collision":false,"verdict":"VALID"}]')"
+# go-kure/.github#153: a foreign row is never acted on, so it reserves
+# exactly while open, whatever the verdict and whether matched or absent.
+assert_eq "reserved_count #153: foreign open, matched by a FALSE_POSITIVE -> reserves (it is never resolved)" \
+  "1" "$(prt_reserved_count \
+    '[{"fp":"r1","foreign":true,"author":"kure-bot","resolved":false}]' \
+    '[{"fp":"r1","collision":false,"verdict":"FALSE_POSITIVE"}]')"
+assert_eq "reserved_count #153: foreign resolved, matched by a VALID -> does not reserve (never reopened; a new own thread competes as a CREATE)" \
+  "0" "$(prt_reserved_count \
+    '[{"fp":"r1","foreign":true,"author":"kure-bot","resolved":true}]' \
+    '[{"fp":"r1","collision":false,"verdict":"VALID"}]')"
+assert_eq "reserved_count #153: foreign open, absent -> reserves" \
+  "1" "$(prt_reserved_count \
+    '[{"fp":"r1","foreign":true,"author":"kure-bot","resolved":false}]' '[]')"
+assert_eq "gating_eligible #153: a finding matching a foreign row is not a CREATE candidate" \
+  "[]" "$(prt_gating_eligible '[{"fp":"r1","collision":false,"verdict":"VALID","severity":"High"}]' \
+    '[{"fp":"r1","foreign":true,"author":"kure-bot","resolved":true}]' '{"critical":0,"high":1,"medium":2}')"
+# go-kure/.github#153: prt_foreign_action, the one per-finding decision for
+# foreign rows, shared by loop 1 and the cap walk. A foreign marker is
+# untrusted: what is read from it may only make the run gate more.
+prt_t153_row() { # STATE(open|author|human) CONTENT_FP [AUTHOR] [MARKER_COLLISION]
+  jq -nc --arg s "$1" --arg cfp "$2" --arg a "${3:-kure-bot}" --argjson c "${4:-false}" \
+    '{fp:"r1",foreign:true,author:$a,resolved:($s != "open"),resolved_by_author:($s == "author"),collision:$c,content_fp:$cfp}'
+}
+prt_t153_finding() { # VERDICT COLLISION
+  jq -nc --arg v "$1" --argjson c "$2" '{fp:"r1",collision:$c,verdict:$v,severity:"High",issue:"i153",fix:"f153"}'
+}
+prt_t153_act() { prt_foreign_action "$1" "$2" | cut -f1; }
+t153_cfp="$(prt_content_fp i153 f153)"
+t153_other_cfp="0123456789abcdef"
+assert_eq "foreign_action #153: resolved by its author, VALID recurs -> NEW (row 7's reopen becomes a new own thread)" \
+  "NEW" "$(prt_t153_act "[$(prt_t153_row author "")]" "$(prt_t153_finding VALID false)")"
+assert_eq "foreign_action #153: resolved by its author, PARTIALLY_VALID recurs, equal content_fp -> NEW" \
+  "NEW" "$(prt_t153_act "[$(prt_t153_row author "$t153_cfp")]" "$(prt_t153_finding PARTIALLY_VALID false)")"
+assert_eq "foreign_action #153: resolved by someone else, VALID recurs -> NONE (row 6, human resolution honoured)" \
+  "NONE" "$(prt_t153_act "[$(prt_t153_row human "")]" "$(prt_t153_finding VALID false)")"
+assert_eq "foreign_action #153: resolved by its author, FALSE_POSITIVE -> NONE (resolved false positive)" \
+  "NONE" "$(prt_t153_act "[$(prt_t153_row author "")]" "$(prt_t153_finding FALSE_POSITIVE false)")"
+assert_eq "foreign_action #153 (R1-P1): planted collision=true on an author-resolved marker -> NEW, the flag is never read" \
+  "NEW" "$(prt_t153_act "[$(prt_t153_row author "$t153_cfp" kure-bot true)]" "$(prt_t153_finding VALID false)")"
+assert_eq "foreign_action #153 (R1-P1): author-resolved marker with another finding's content_fp -> NOMATCH (no-thread path), never QUARANTINE" \
+  "NOMATCH" "$(prt_t153_act "[$(prt_t153_row author "$t153_other_cfp")]" "$(prt_t153_finding VALID false)")"
+assert_eq "foreign_action #153: this run's own collision on an author-resolved match -> QUARANTINE (row 1)" \
+  "QUARANTINE" "$(prt_t153_act "[$(prt_t153_row author "")]" "$(prt_t153_finding VALID true)")"
+assert_eq "foreign_action #153 (R1-P2b): open thread with a different content_fp -> NOMATCH, the author still reported" \
+  "NOMATCH"$'\t'"kure-bot" "$(prt_foreign_action "[$(prt_t153_row open "$t153_other_cfp")]" "$(prt_t153_finding VALID false)")"
+assert_eq "foreign_action #153 (R1-P2b): open thread with an equal or absent content_fp -> EXISTING" \
+  "EXISTING EXISTING" "$(prt_t153_act "[$(prt_t153_row open "$t153_cfp")]" "$(prt_t153_finding VALID false)") $(prt_t153_act "[$(prt_t153_row open "")]" "$(prt_t153_finding VALID false)")"
+assert_eq "foreign_action #153: no foreign row with the fp -> NOMATCH, no author" \
+  "NOMATCH"$'\t' "$(prt_foreign_action "[$(jq -c '.fp="r9"' <<< "$(prt_t153_row open "")")]" "$(prt_t153_finding VALID false)")"
+assert_eq "foreign_action #153 (R1-P2a): open beats human-resolved beats author-resolved, in any row order" \
+  "EXISTING EXISTING" "$(prt_t153_act "[$(prt_t153_row author "" a1), $(prt_t153_row human "" h1), $(prt_t153_row open "" o1)]" "$(prt_t153_finding VALID false)") $(prt_t153_act "[$(prt_t153_row open "" o1), $(prt_t153_row author "" a1)]" "$(prt_t153_finding VALID false)")"
+assert_eq "foreign_action #153 (R1-P2a): author-resolved first, human-resolved second -> NONE, deciding row the human-resolved one" \
+  "NONE"$'\t'"h1" "$(prt_foreign_action "[$(prt_t153_row author "" a1), $(prt_t153_row human "" h1)]" "$(prt_t153_finding VALID false)")"
+assert_eq "foreign_action #153 (R1-P2a): a content-mismatched open row does not outrank a matching author-resolved one" \
+  "NEW"$'\t'"a1" "$(prt_foreign_action "[$(prt_t153_row open "$t153_other_cfp" o1), $(prt_t153_row author "" a1)]" "$(prt_t153_finding VALID false)")"
+# The cap walk sees every row (an open one still reserves) and releases the
+# finding to the CREATE candidates exactly when loop 1 takes the no-thread path.
+t153_eligible() { # FOREIGN FINDING
+  prt_gating_eligible "[$2]" "$(prt_cap_foreign_rows "$1" "[$2]")" '{"critical":0,"high":1,"medium":2}' | jq -r '.[0].fp // "none"'
+}
+assert_eq "cap_foreign_rows #153: every row is kept" \
+  "3" "$(prt_cap_foreign_rows "[$(prt_t153_row human ""), $(prt_t153_row open "$t153_other_cfp"), $(jq -c '.fp="r3"' <<< "$(prt_t153_row author "")")]" "[$(prt_t153_finding VALID false)]" | jq length)"
+assert_eq "cap_foreign_rows #153: author-resolved match -> the finding is a CREATE candidate" \
+  "r1" "$(t153_eligible "[$(prt_t153_row author "")]" "$(prt_t153_finding VALID false)")"
+assert_eq "cap_foreign_rows #153 (R1-P2a): author-resolved + human-resolved pair -> not a candidate (NONE), in either order" \
+  "none none" "$(t153_eligible "[$(prt_t153_row author "" a1), $(prt_t153_row human "" h1)]" "$(prt_t153_finding VALID false)") $(t153_eligible "[$(prt_t153_row human "" h1), $(prt_t153_row author "" a1)]" "$(prt_t153_finding VALID false)")"
+assert_eq "cap_foreign_rows #153 (R1-P2a): two author-resolved rows -> one candidate" \
+  "r1" "$(t153_eligible "[$(prt_t153_row author "" a1), $(prt_t153_row author "" a2)]" "$(prt_t153_finding VALID false)")"
+assert_eq "cap_foreign_rows #153 (R1-P2b): open row with a different content_fp -> the finding is a candidate AND the row still reserves" \
+  "r1 1" "$(t153_eligible "[$(prt_t153_row open "$t153_other_cfp")]" "$(prt_t153_finding VALID false)") $(prt_reserved_count "$(prt_cap_foreign_rows "[$(prt_t153_row open "$t153_other_cfp")]" "[$(prt_t153_finding VALID false)]")" "[$(prt_t153_finding VALID false)]")"
+assert_eq "cap_foreign_rows #153: open row with an equal content_fp -> not a candidate" \
+  "none" "$(t153_eligible "[$(prt_t153_row open "$t153_cfp")]" "$(prt_t153_finding VALID false)")"
 assert_eq "reserved_count: row6 resolved by a human -> does not reserve" \
   "0" "$(prt_reserved_count \
     '[{"fp":"r1","collision":false,"resolved":true,"resolved_by_bot":false}]' \
@@ -1146,6 +1218,49 @@ found_id="$(PRT_CURL=fake_curl_find_marked_single_page PRT_GH_TOKEN=x \
   prt_find_marked_comment owner/repo 9 '<!-- gokure-pr-review:v1-clean -->' 'gokure-pr-review[bot]')"
 assert_eq "prt_find_marked_comment: matches on marker AND bot login, skipping a same-marker comment from a different login" \
   "333" "$found_id"
+
+# go-kure/.github#153: with a FOREIGN_OUT_FILE the same lookup still returns
+# only the own comment, and lists the other login's marked comment.
+find_foreign_out="$(mktemp)"
+found_id="$(PRT_CURL=fake_curl_find_marked_single_page PRT_GH_TOKEN=x \
+  prt_find_marked_comment owner/repo 9 '<!-- gokure-pr-review:v1-clean -->' 'gokure-pr-review[bot]' "$find_foreign_out")"
+assert_eq "prt_find_marked_comment #153: with a foreign-out file -> still returns only the own comment's id" \
+  "333" "$found_id"
+assert_eq "prt_find_marked_comment #153: the other login's marked comment is listed as id<TAB>login, the unmarked one is not" \
+  "$(printf '111\tother-bot')" "$(cat "$find_foreign_out")"
+
+# Every page is read once a foreign-out file is given: the own match on page 1
+# must not hide a foreign one on page 2. A superseded foreign comment is not
+# listed; an unmarked one never is.
+fake_curl_find_marked_foreign_pages() {
+  local out="" url=""
+  local args=("$@")
+  for ((ai = 0; ai < ${#args[@]}; ai++)); do
+    case "${args[$ai]}" in
+      -o) out="${args[$((ai + 1))]}" ;;
+      http://*|https://*) url="${args[$ai]}" ;;
+    esac
+  done
+  if [[ "$url" == *'&page=1'* ]]; then
+    { printf '[{"id":5,"user":{"login":"gokure-pr-review[bot]"},"body":"<!-- gokure-pr-review:v1-clean -->"}'
+      for ((pi = 100; pi < 199; pi++)); do
+        printf ',{"id":%d,"user":{"login":"someone"},"body":"no marker here"}' "$pi"
+      done
+      printf ']'
+    } > "$out"
+  elif [[ "$url" == *'&page=2'* ]]; then
+    printf '%s' '[{"id":700,"user":{"login":"kure-bot"},"body":"old\n<!-- gokure-pr-review:v1-clean -->"},{"id":701,"user":{"login":"kure-bot"},"body":"~~old~~\n<!-- gokure-pr-review:state=superseded -->\n<!-- gokure-pr-review:v1-clean -->"}]' > "$out"
+  else
+    printf '[]' > "$out"
+  fi
+  echo 200
+}
+: > "$find_foreign_out"
+found_id="$(PRT_CURL=fake_curl_find_marked_foreign_pages PRT_GH_TOKEN=x \
+  prt_find_marked_comment owner/repo 9 '<!-- gokure-pr-review:v1-clean -->' 'gokure-pr-review[bot]' "$find_foreign_out")"
+assert_eq "prt_find_marked_comment #153: own match on page 1 is returned, the live foreign one on page 2 is listed, the superseded one is not" \
+  "5 $(printf '700\tkure-bot')" "$found_id $(cat "$find_foreign_out")"
+rm -f "$find_foreign_out"
 
 fake_curl_find_marked_none() {
   local out=""
@@ -2182,6 +2297,12 @@ fake_curl_orchestrator() {
               printf '%s' "$(jq -n --arg fp "$(prt_fp_base x.go other)" \
                 '{choices:[{message:{content:({assessments:[{fp:$fp,verdict:"FALSE_POSITIVE",reasoning:"not a real issue"}]} | tojson)}}]}')" > "$out"
               ;;
+            valid_survivor)
+              # go-kure/.github#153: the same real fp as false_positive_survivor,
+              # verdicted VALID.
+              printf '%s' "$(jq -n --arg fp "$(prt_fp_base x.go other)" \
+                '{choices:[{message:{content:({assessments:[{fp:$fp,verdict:"VALID",reasoning:"real"}]} | tojson)}}]}')" > "$out"
+              ;;
             garbage_then_clean)
               if [ "$mc" -le 1 ]; then
                 printf '%s' '{"choices":[{"message":{"content":"not json at all, sorry"}}]}' > "$out"
@@ -2495,20 +2616,36 @@ fake_curl_orchestrator() {
               # PRT_TEST_THREAD1_REPLIES (go-kure/.github#261): a JSON array of
               # reply comment nodes appended after C1. C1 was created on
               # 2026-01-01; PRT_TEST_THREAD1_LAST_EDITED sets its lastEditedAt
-              # (default: never edited).
+              # (default: never edited). PRT_TEST_THREAD1_RESOLVED=1
+              # (go-kure/.github#153) reports THREAD1 resolved, by
+              # PRT_TEST_THREAD1_RESOLVED_BY (default "a-human").
+              # PRT_TEST_THREAD2_RESOLVED_BY (go-kure/.github#153 R1-P2a):
+              # when set, a second thread THREAD2 with the same marker body
+              # and author, resolved by that login.
               resp="$(jq -n --arg body "$(_prt_test_owned_thread_body)" --arg author "${PRT_TEST_OWNED_AUTHOR:-test-bot}" \
                 --argjson replies "${PRT_TEST_THREAD1_REPLIES:-[]}" \
-                --arg edited "${PRT_TEST_THREAD1_LAST_EDITED:-}" '
+                --arg edited "${PRT_TEST_THREAD1_LAST_EDITED:-}" \
+                --arg resolved "${PRT_TEST_THREAD1_RESOLVED:-0}" \
+                --arg resolved_by "${PRT_TEST_THREAD1_RESOLVED_BY:-a-human}" \
+                --arg t2_resolved_by "${PRT_TEST_THREAD2_RESOLVED_BY:-}" '
                 {data:{repository:{pullRequest:{reviewThreads:{
                   pageInfo:{hasNextPage:false,endCursor:null},
-                  nodes:[{
-                    id:"THREAD1", isResolved:false, isOutdated:false,
-                    resolvedBy:null, viewerCanResolve:true, viewerCanUnresolve:true,
+                  nodes:([{
+                    id:"THREAD1", isResolved:($resolved == "1"), isOutdated:false,
+                    resolvedBy:(if $resolved == "1" then {login:$resolved_by} else null end),
+                    viewerCanResolve:true, viewerCanUnresolve:true,
                     comments:{pageInfo:{hasNextPage:false,endCursor:null},
                       nodes:([{id:"C1", databaseId:1, body:$body, author:{login:$author},
                         createdAt:"2026-01-01T00:00:00Z",
                         lastEditedAt:(if $edited == "" then null else $edited end)}] + $replies)}
-                  }]
+                  }] + (if $t2_resolved_by == "" then [] else [{
+                    id:"THREAD2", isResolved:true, isOutdated:false,
+                    resolvedBy:{login:$t2_resolved_by},
+                    viewerCanResolve:true, viewerCanUnresolve:true,
+                    comments:{pageInfo:{hasNextPage:false,endCursor:null},
+                      nodes:[{id:"C2", databaseId:2, body:$body, author:{login:$author},
+                        createdAt:"2026-01-01T00:00:00Z", lastEditedAt:null}]}
+                  }] end))
                 }}}}}')"
             fi
             printf '%s' "$resp" > "$out"
@@ -2766,6 +2903,9 @@ run_orchestrator() {
     PRT_TEST_PATCH_ATTEMPT_COUNTFILE="$scratch/patch-attempt-count" \
     PRT_TEST_THREAD1_REPLIES="${PRT_TEST_THREAD1_REPLIES:-[]}" \
     PRT_TEST_THREAD1_LAST_EDITED="${PRT_TEST_THREAD1_LAST_EDITED:-}" \
+    PRT_TEST_THREAD1_RESOLVED="${PRT_TEST_THREAD1_RESOLVED:-0}" \
+    PRT_TEST_THREAD1_RESOLVED_BY="${PRT_TEST_THREAD1_RESOLVED_BY:-a-human}" \
+    PRT_TEST_THREAD2_RESOLVED_BY="${PRT_TEST_THREAD2_RESOLVED_BY:-}" \
     PRT_TEST_REPLY_BODY_LOG="${PRT_TEST_REPLY_BODY_LOG:-}" \
     PRT_TEST_CREATE_BODY_LOG="${PRT_TEST_CREATE_BODY_LOG:-}" \
     PRT_TEST_MODEL_REQUEST_LOG="${PRT_TEST_MODEL_REQUEST_LOG:-}" \
@@ -3966,9 +4106,10 @@ unset PRT_TEST_ISSUE_COMMENT_BODY_FILE
 # Seven distinct VALID findings against the default cap of 5: three High and
 # two Medium gate as threads, and the two Low ones (listed first by the
 # model) land in the advisory overflow comment, by content. The harness's
-# THREAD1 is made foreign-authored so no owned open thread reserves a slot.
+# THREAD1 is resolved by a human, so no open thread reserves a slot (a
+# foreign-authored open one would since go-kure/.github#153, see below).
 PRT_TEST_ISSUE_COMMENT_BODY_FILE="$(mktemp)"
-PRT_TEST_OWNED_AUTHOR=someone-else
+PRT_TEST_THREAD1_RESOLVED=1
 PRT_TEST_MODEL_RESPONSE_MODE=seven_findings
 PRT_TEST_ASSESS_RESPONSE_MODE=seven_valid
 rc="$(run_orchestrator enforce 0 0 0)"
@@ -3982,6 +4123,35 @@ assert_eq "orchestrator #192: no gating finding is in the overflow comment" \
   "0" "$(grep -cE 'overflow-case (race|sql-injection|resource-leak|logic-error|standards-violation) issue' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE")"
 assert_eq "orchestrator #192: every finding accounted for (no accounting-mismatch degrade)" \
   "false" "$(grep -qF 'accounting mismatch' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+# go-kure/.github#153: an OPEN thread another login opened (no finding this
+# run matches it) still blocks merge, so it reserves a slot: four new threads,
+# not five, and three findings overflow. Resolved, it reserves none.
+PRT_TEST_THREAD1_RESOLVED=0
+PRT_TEST_OWNED_AUTHOR=github-actions
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #153: an open foreign thread reserves a cap slot -> exits 0, four threads created, gating=4" \
+  "0 4 true" "$rc $(cat "$PRT_TEST_CREATE_COUNTFILE") $(grep -qE 'done: findings=7 gating=4 ' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_THREAD1_RESOLVED=1
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #153: a resolved foreign thread reserves no slot -> five threads created" \
+  "0 5" "$rc $(cat "$PRT_TEST_CREATE_COUNTFILE")"
+# The resolved foreign thread now matches the High "race" finding and was
+# resolved by the login that opened it, where an own thread would be
+# reopened: the finding gets a new own thread, ranked like any CREATE. It
+# takes one of the five slots (High), so both Low findings still overflow
+# and it is not in the overflow comment.
+PRT_TEST_OWNED_FP="$(prt_fp_base x.go race)"
+PRT_TEST_THREAD1_RESOLVED_BY=github-actions
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #153: resolved foreign thread re-matched by a recurring High finding -> its new own thread competes in the cap: five created, gating=5, no write to the foreign one" \
+  "0 5 0 0 0 0 true" "$rc $(cat "$PRT_TEST_CREATE_COUNTFILE") $(cat "$PRT_TEST_PATCH_COUNTFILE") $(cat "$PRT_TEST_RESOLVE_COUNTFILE") $(cat "$PRT_TEST_UNRESOLVE_COUNTFILE") $(cat "$PRT_TEST_REPLY_COUNTFILE") $(grep -qE 'done: findings=7 gating=5 ' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator #153: that finding got a thread, not an overflow row; both Low findings overflow" \
+  "false true" "$(grep -qF 'overflow-case race issue' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && echo true || echo false) $(grep -qF 'overflow-case nil-deref issue' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && grep -qF 'overflow-case unchecked-err issue' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && echo true || echo false)"
+assert_eq "orchestrator #153: re-matched resolved foreign thread -> accounted for (no accounting-mismatch degrade)" \
+  "false" "$(grep -qF 'accounting mismatch' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_OWNED_FP="deadbeefcafebabe"
+PRT_TEST_THREAD1_RESOLVED_BY="a-human"
+PRT_TEST_THREAD1_RESOLVED=0
 PRT_TEST_OWNED_AUTHOR=test-bot
 PRT_TEST_MODEL_RESPONSE_MODE=clean
 PRT_TEST_ASSESS_RESPONSE_MODE=clean
@@ -4642,13 +4812,13 @@ PRT_TEST_INVENTORY_MODE=single
 PRT_TEST_EMPTY_DIFF=0
 PRT_TEST_FIRST_ABSENT_SHA=''
 
-# go-kure/.github#153 (interim detector): a thread whose first comment
-# carries a valid marker but was opened by another login is not owned —
-# correctly, this run may not edit another account's comment — but after a
-# bot-identity change every thread is orphaned that way, silently. It must
-# now surface as a REVIEW_DEGRADED foreign-marked-threads reason (exit 0, a
-# ::warning) and a foreign_marked= count on the threads-listed line, without
-# the thread being reconciled or the clean verdict being withheld.
+# go-kure/.github#153: a thread whose first comment carries a valid marker
+# but was opened by another login is not owned (this run may not edit another
+# account's comment) and is read-only. After a bot-identity change every
+# thread is foreign that way, so it surfaces as a REVIEW_DEGRADED
+# foreign-marked-threads reason (exit 0, a ::warning) and a foreign_marked=
+# count on the threads-listed line. With no finding matching it, the thread is
+# not reconciled and the clean verdict is not withheld.
 PRT_TEST_OWNED_AUTHOR=github-actions
 PRT_TEST_ISSUE_COMMENT_BODY_FILE="$(mktemp)"
 rc="$(run_orchestrator enforce 0 0 0)"
@@ -4671,6 +4841,189 @@ assert_eq "orchestrator: normal run -> no foreign-marked-threads reason" \
   "false" "$(grep -qF 'foreign-marked-threads' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 rm -f "$PRT_TEST_ISSUE_COMMENT_BODY_FILE"
 unset PRT_TEST_ISSUE_COMMENT_BODY_FILE PRT_TEST_OWNED_AUTHOR
+
+# ---- go-kure/.github#153: foreign threads and comments are read-only ----
+prt_foreign_writes() {
+  echo "$(cat "$PRT_TEST_CREATE_COUNTFILE") $(cat "$PRT_TEST_PATCH_COUNTFILE") $(cat "$PRT_TEST_RESOLVE_COUNTFILE") $(cat "$PRT_TEST_UNRESOLVE_COUNTFILE") $(cat "$PRT_TEST_REPLY_COUNTFILE")"
+}
+PRT_TEST_ISSUE_COMMENT_LOG="$(mktemp)"
+
+# A VALID finding recurs, and its only thread was opened by another login: no
+# duplicate thread, no write of any kind to the foreign one, and the run is
+# not clean (no clean verdict). The thread is open, so it keeps blocking merge.
+PRT_TEST_OWNED_AUTHOR=github-actions
+PRT_TEST_OWNED_FP="$(prt_fp_base x.go other)"
+PRT_TEST_MODEL_RESPONSE_MODE=clean_with_finding
+PRT_TEST_ASSESS_RESPONSE_MODE=valid_survivor
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #153: recurring VALID finding, only a foreign open thread -> exits 0, no CREATE/PATCH/resolve/unresolve/reply" \
+  "0 0 0 0 0 0" "$rc $(prt_foreign_writes)"
+assert_eq "orchestrator #153: recurring finding on a foreign thread -> logged as FOREIGN, read-only" \
+  "true" "$(grep -qF -- "-> FOREIGN (thread opened by github-actions, read-only)" "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator #153: recurring finding on a foreign thread -> no clean verdict posted, the finding still counts" \
+  "false true" "$(grep -qF 'Reviewed, no findings' "$PRT_TEST_ISSUE_COMMENT_LOG" && echo true || echo false) $(grep -qE 'done: findings=1 ' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+# The foreign thread already carries it: not re-posted to the overflow
+# comment either (the cap leaves it out of the CREATE candidates, which
+# without loop 1's foreign skip would route it to OVERFLOW).
+assert_eq "orchestrator #153: recurring finding on a foreign thread -> no issue comment posted (no overflow copy)" \
+  "0" "$(grep -c '^POST ' "$PRT_TEST_ISSUE_COMMENT_LOG")"
+assert_eq "orchestrator #153: recurring finding on a foreign thread -> accounted for (no accounting-mismatch degrade)" \
+  "false" "$(grep -qF 'accounting mismatch' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator #153: the foreign-marked-threads reason says the threads are read-only and block merge while open" \
+  "true" "$(grep -qF 'they are read-only to this run: none of them is resolved, reopened, replied to or re-stamped; while one is open, a matching finding gets no new thread' "$PRT_TEST_STDERR_FILE" && grep -qF 'blocks merge until a human resolves it' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+
+# Whatever the verdict: a FALSE_POSITIVE on a foreign thread is not resolved
+# and gets no reply (an owned thread would be auto-resolved).
+: > "$PRT_TEST_ISSUE_COMMENT_LOG"
+PRT_TEST_ASSESS_RESPONSE_MODE=false_positive_survivor
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #153: FALSE_POSITIVE on a foreign open thread -> no resolve, no reply, no write at all" \
+  "0 0 0 0 0 0" "$rc $(prt_foreign_writes)"
+
+# Resolved foreign thread: the finding is treated as an own thread in the
+# same state would be (prt_decide_finding rows 1, 6, 7), but the foreign
+# thread itself is never written to.
+#
+# Resolved by a human, VALID finding recurs: an own thread would stay
+# resolved (row 6, a human resolution is honoured), so nothing happens.
+: > "$PRT_TEST_ISSUE_COMMENT_LOG"
+PRT_TEST_ASSESS_RESPONSE_MODE=valid_survivor
+PRT_TEST_THREAD1_RESOLVED=1
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #153: VALID finding recurs on a foreign thread a human resolved -> not reopened, no CREATE, logged as such" \
+  "0 0 0 0 0 0 true" "$rc $(prt_foreign_writes) $(grep -qF 'read-only; resolved, not reopened' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+# Resolved by the login that opened it (its own auto-resolve), VALID finding
+# recurs: an own thread would be reopened (row 7), so a new own thread is
+# created instead, and the foreign one is left as it is. This also closes the
+# route where a participant opens and resolves a marker-bearing thread to stop
+# a recurring finding from gating.
+: > "$PRT_TEST_ISSUE_COMMENT_LOG"
+PRT_TEST_THREAD1_RESOLVED_BY=github-actions
+PRT_TEST_CREATE_BODY_LOG="$(mktemp)"
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #153: VALID finding recurs on a foreign thread its author resolved -> exactly one new own thread, no PATCH/resolve/unresolve/reply" \
+  "0 1 0 0 0 0" "$rc $(prt_foreign_writes)"
+assert_eq "orchestrator #153: the new thread carries this run's own marker for the finding's fp" \
+  "true" "$(grep -qF "$(prt_fp_base x.go other)" "$PRT_TEST_CREATE_BODY_LOG" && echo true || echo false)"
+assert_eq "orchestrator #153: logged as a new own thread instead of a reopen, then CREATE" \
+  "true true" "$(grep -qF 'resolved by its author and the finding recurs: new own thread instead of a reopen' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(grep -qE -- "fp=$(prt_fp_base x.go other) -> CREATE" "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator #153: new own thread for a resolved foreign match -> accounted for, no overflow copy" \
+  "false 0" "$(grep -qF 'accounting mismatch' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(grep -c '^POST ' "$PRT_TEST_ISSUE_COMMENT_LOG")"
+assert_eq "orchestrator #153: the foreign-marked-threads reason says a recurring finding then gets a new thread" \
+  "true" "$(grep -qF 'once its own author resolved it, a recurring finding gets a new thread from this login' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+rm -f "$PRT_TEST_CREATE_BODY_LOG"
+unset PRT_TEST_CREATE_BODY_LOG
+# Resolved by its author, but the finding is now a FALSE_POSITIVE: an own
+# thread would stay resolved (resolved + FALSE_POSITIVE -> NONE), so nothing.
+: > "$PRT_TEST_ISSUE_COMMENT_LOG"
+PRT_TEST_ASSESS_RESPONSE_MODE=false_positive_survivor
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #153: FALSE_POSITIVE on a foreign thread its author resolved -> no CREATE, no write at all" \
+  "0 0 0 0 0 0 true" "$rc $(prt_foreign_writes) $(grep -qF 'read-only; resolved, not reopened' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+# R1-P1: a foreign marker is untrusted. A participant plants a matching
+# marker with collision=true and resolves it under the same login: the flag
+# is never read, so the recurring VALID finding gets a new own thread, not a
+# non-gating QUARANTINE.
+: > "$PRT_TEST_ISSUE_COMMENT_LOG"
+PRT_TEST_ASSESS_RESPONSE_MODE=valid_survivor
+PRT_TEST_OWNED_COLLISION=true
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #153 (R1-P1): planted collision=true marker resolved by its author -> CREATE, not QUARANTINE, no write to it" \
+  "0 1 0 0 0 0 false" "$rc $(prt_foreign_writes) $(grep -qE -- "fp=$(prt_fp_base x.go other) -> QUARANTINE" "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+# Same with another finding's content_fp on the planted marker: not this
+# finding, so the no-thread path, never quarantine.
+PRT_TEST_OWNED_COLLISION=""
+PRT_TEST_OWNED_CONTENT_FP="0123456789abcdef"
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #153 (R1-P1): planted marker with another finding's content_fp, resolved by its author -> CREATE, not QUARANTINE" \
+  "0 1 0 0 0 0 false" "$rc $(prt_foreign_writes) $(grep -qE -- "fp=$(prt_fp_base x.go other) -> QUARANTINE" "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_OWNED_CONTENT_FP=""
+# R1-P2a: two resolved foreign threads for the same fp. Author-resolved
+# first, human-resolved second: one decision (the human resolution is
+# honoured, NONE), and the cap walk agrees (no overflow copy, no CREATE).
+: > "$PRT_TEST_ISSUE_COMMENT_LOG"
+PRT_TEST_THREAD2_RESOLVED_BY="a-human"
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #153 (R1-P2a): author-resolved + human-resolved pair -> NONE: no CREATE, no overflow copy, no write" \
+  "0 0 0 0 0 0 0 true" "$rc $(prt_foreign_writes) $(grep -c '^POST ' "$PRT_TEST_ISSUE_COMMENT_LOG") $(grep -qF 'read-only; resolved, not reopened' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator #153 (R1-P2a): the pair is decided once and accounted for" \
+  "1 false" "$(grep -c -- "fp=$(prt_fp_base x.go other) -> FOREIGN" "$PRT_TEST_STDERR_FILE") $(grep -qF 'accounting mismatch' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+# Both author-resolved: one replacement own thread, with a slot (CREATE, not
+# OVERFLOW).
+: > "$PRT_TEST_ISSUE_COMMENT_LOG"
+PRT_TEST_THREAD2_RESOLVED_BY=github-actions
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #153 (R1-P2a): two author-resolved threads -> exactly one replacement own thread within the cap, no overflow, no write" \
+  "0 1 0 0 0 0 0" "$rc $(prt_foreign_writes) $(grep -c '^POST ' "$PRT_TEST_ISSUE_COMMENT_LOG")"
+PRT_TEST_THREAD2_RESOLVED_BY=""
+PRT_TEST_THREAD1_RESOLVED_BY="a-human"
+PRT_TEST_THREAD1_RESOLVED=0
+# R1-P2b: an OPEN foreign thread whose marker content_fp differs is not this
+# finding: the finding takes the no-thread path (CREATE), never quarantine,
+# and the foreign thread is still not written to.
+: > "$PRT_TEST_ISSUE_COMMENT_LOG"
+PRT_TEST_OWNED_CONTENT_FP="0123456789abcdef"
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #153 (R1-P2b): open foreign thread with a different content_fp -> CREATE, no QUARANTINE, no write to it" \
+  "0 1 0 0 0 0 false true" "$rc $(prt_foreign_writes) $(grep -qE -- "fp=$(prt_fp_base x.go other) -> QUARANTINE" "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(grep -qF 'has a different content fingerprint: not this finding' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+# Equal content_fp: the existing thread, as before.
+PRT_TEST_OWNED_CONTENT_FP="$(prt_content_fp i f)"
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #153 (R1-P2b): open foreign thread with an equal content_fp -> no CREATE, read-only" \
+  "0 0 0 0 0 0 true" "$rc $(prt_foreign_writes) $(grep -qF -- "-> FOREIGN (thread opened by github-actions, read-only)" "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_OWNED_CONTENT_FP=""
+
+# The finding is gone and the foreign thread carries an absence stamp from an
+# earlier head: an owned thread would be resolved here (second absence). A
+# foreign one gets no resolve, no reply and no marker rewrite.
+: > "$PRT_TEST_ISSUE_COMMENT_LOG"
+PRT_TEST_MODEL_RESPONSE_MODE=clean
+PRT_TEST_ASSESS_RESPONSE_MODE=clean
+PRT_TEST_FIRST_ABSENT_SHA=2222222222222222222222222222222222222222
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #153: foreign thread whose finding is absent, stamped at an earlier head -> no resolve, reply or PATCH" \
+  "0 0 0 0 0 0" "$rc $(prt_foreign_writes)"
+assert_eq "orchestrator #153: absence handling never looks at a foreign thread" \
+  "false" "$(grep -qF 'absent ->' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+# Unstamped: no SET_FIRST_ABSENT stamp is written either.
+PRT_TEST_FIRST_ABSENT_SHA=''
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #153: foreign thread whose finding is absent, unstamped -> not stamped (no PATCH)" \
+  "0 0 0 0 0 0" "$rc $(prt_foreign_writes)"
+PRT_TEST_OWNED_FP="deadbeefcafebabe"
+PRT_TEST_OWNED_AUTHOR=test-bot
+
+# Clean-verdict lookup finds only another login's clean comment: it is left
+# untouched, a new own comment is posted, and it is counted and reported.
+: > "$PRT_TEST_ISSUE_COMMENT_LOG"
+PRT_TEST_ISSUE_COMMENTS_LIST='[{"id":99,"user":{"login":"github-actions[bot]"},"body":"old clean\n<!-- gokure-pr-review:v1-clean -->"}]'
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #153: only a foreign clean comment -> exits 0, POSTs one new own clean comment, never PATCHes the foreign one" \
+  "0 1 0 true" "$rc $(grep -c '^POST ' "$PRT_TEST_ISSUE_COMMENT_LOG") $(grep -c '^PATCH ' "$PRT_TEST_ISSUE_COMMENT_LOG") $(grep -qF 'Reviewed, no findings' "$PRT_TEST_ISSUE_COMMENT_LOG" && echo true || echo false)"
+assert_eq "orchestrator #153: only a foreign clean comment -> counted in the log and as a foreign-marked-comments reason naming its login" \
+  "true true" "$(grep -qF 'marked comments by another login (live): 1' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(grep -qF 'REVIEW_DEGRADED: foreign-marked-comments: 1 comment(s) carry this action'"'"'s clean-verdict or partial-review marker but were posted by github-actions[bot], not the configured bot login test-bot[bot];' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator #153: foreign-marked-comments is a ::warning, no ::error" \
+  "true false" "$(grep -q '::warning title=PR review threads degraded::foreign-marked-comments' "$PRT_TEST_STDOUT_FILE" && echo true || echo false) $(grep -q '::error title=' "$PRT_TEST_STDOUT_FILE" && echo true || echo false)"
+
+# Own and foreign clean comments both present: the own one is edited in place,
+# the foreign one is still only counted.
+: > "$PRT_TEST_ISSUE_COMMENT_LOG"
+PRT_TEST_ISSUE_COMMENTS_LIST='[{"id":99,"user":{"login":"github-actions[bot]"},"body":"old clean\n<!-- gokure-pr-review:v1-clean -->"},{"id":88,"user":{"login":"test-bot[bot]"},"body":"own clean\n<!-- gokure-pr-review:v1-clean -->"}]'
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #153: own and foreign clean comments -> PATCHes only the own one, POSTs nothing, counts the foreign one" \
+  "0 1 0 0 true" "$rc $(grep -c '^PATCH comments/88$' "$PRT_TEST_ISSUE_COMMENT_LOG") $(grep -c '^PATCH comments/99$' "$PRT_TEST_ISSUE_COMMENT_LOG") $(grep -c '^POST ' "$PRT_TEST_ISSUE_COMMENT_LOG") $(grep -qF 'foreign-marked-comments: 1 comment(s)' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+
+# A foreign comment already superseded reads as stale by its own text: not
+# counted, no reason.
+: > "$PRT_TEST_ISSUE_COMMENT_LOG"
+PRT_TEST_ISSUE_COMMENTS_LIST='[{"id":99,"user":{"login":"github-actions[bot]"},"body":"~~old~~\n<!-- gokure-pr-review:state=superseded -->\n<!-- gokure-pr-review:v1-clean -->"}]'
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #153: only a superseded foreign clean comment -> not counted, no reason, own comment still POSTed" \
+  "0 true false 1" "$rc $(grep -qF 'marked comments by another login (live): 0' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(grep -qF 'foreign-marked-comments' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(grep -c '^POST ' "$PRT_TEST_ISSUE_COMMENT_LOG")"
+
+rm -f "$PRT_TEST_ISSUE_COMMENT_LOG"
+unset PRT_TEST_ISSUE_COMMENT_LOG PRT_TEST_ISSUE_COMMENTS_LIST
+unset -f prt_foreign_writes
 
 # ---- go-kure/.github#156: where the standards document is read from ----
 # The run's working directory stands in for the caller's checkout; the

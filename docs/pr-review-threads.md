@@ -106,21 +106,70 @@ It reaches `pr-review.yml` via `pr-review-caller.yml`'s `secrets: inherit`; any 
 secret isn't set falls back to `github.token`/`github-actions[bot]`, i.e. today's create-but-never-
 resolve behavior — this is a degrade, not a hard failure.
 
-**Changing the bot identity orphans existing threads.** A thread is owned only when its first
-comment carries this action's marker *and* was authored by `bot-login`. Setting or removing
-`KURE_BOT_PAT` flips `bot-login` between `kure-bot` and `github-actions[bot]`, and every thread the
-old identity opened stops being owned: no later run resolves, reopens or caps it, and until
-go-kure/.github#153 nothing said so. The ownership loop now counts threads whose first comment
-parses as a marker but whose author is another login. When that count is above zero the run records
-a `REVIEW_DEGRADED` reason, `foreign-marked-threads: N thread(s) … opened by <logins>, not the
-configured bot login <login>`, which becomes a `::warning` on the check (exit 0). The job log's
-`threads listed (pre-existing): <n>, owned=<n>, foreign_marked=<n>` line carries the count on every `enforce` run.
-This is a detector only: accepting both identities as owners is left to go-kure/.github#153 as a
-separate design decision.
+**Changing the bot identity leaves the old threads read-only (go-kure/.github#153).** A thread is
+owned only when its first comment carries this action's marker *and* was authored by `bot-login`.
+Setting or removing `KURE_BOT_PAT`, or a caller adding its own `BOT_PAT` and `bot-login`, changes
+`bot-login`, and every thread the old identity opened becomes *foreign*: it carries the marker but
+another login opened it. This run may not be able to edit or resolve another account's comment, so
+a foreign thread is read-only, and a finding that has no own thread but whose fingerprint appears
+on foreign threads gets one decision, `prt_foreign_action` (`reconcile.sh`), shared by loop 1 and
+the cap walk:
+
+- **A foreign marker is untrusted input.** Anyone who can comment can post one, so what is read
+  from it may only make the run gate more (keep a thread gating, open a new one), never less
+  (quarantine, withhold, leave alone). The marker's collision flag is never read: a collision for
+  a foreign-matched finding comes only from this run's own findings. The marker's content
+  fingerprint is read only to tell that a thread is *not* this finding: a foreign thread whose
+  content fingerprint is present and differs from the finding's is ignored for it, open or
+  resolved, and the finding takes the no-thread path (CREATE within the cap, OVERFLOW beyond),
+  never quarantine. The log reads `…has a different content fingerprint: not this finding`.
+- A foreign thread is never edited, resolved, reopened, replied to or stamped, whatever the
+  verdict: a `FALSE_POSITIVE` does not resolve it, and absence handling (loop 2) walks owned
+  threads only, so a fixed finding does not resolve it either. An open one counts toward the
+  PR-wide cap (`prt_reserved_count`), matched or not, because it still blocks merge until a human
+  resolves it; a resolved one takes no slot.
+- Among the foreign threads that match, precedence is fixed, whatever their order:
+  1. **Any open one:** the existing thread for the finding. No new thread and no overflow copy;
+     the log reads `fp=<fp> -> FOREIGN (thread opened by <login>, read-only)`. The finding still
+     counts toward the run's total, so the run posts no clean verdict.
+  2. **Else any resolved by someone other than the login that opened it:** a human resolution,
+     honoured as on an own thread (row 6). Nothing happens and no thread is created; the log reads
+     `…; resolved, not reopened`.
+  3. **Else (every match resolved by its own opener, the counterpart of an own thread resolved by
+     the bot):** what an own bot-resolved thread would get. Where it would be **reopened** (row 7:
+     the finding recurs, not a false positive), the finding gets a **new own thread** instead,
+     on the normal CREATE path with this login's marker and competing for a cap slot like any new
+     finding, or an overflow row beyond the cap. The log reads `…; resolved by its author and the
+     finding recurs: new own thread instead of a reopen`. A `FALSE_POSITIVE` leaves it alone.
+
+  In cases 2 and 3 a collision among this run's own findings quarantines the finding (row 1), as on
+  an own resolved thread. `prt_cap_foreign_rows` runs the same decision for the cap walk and keeps
+  every finding that takes the no-thread path among the CREATE candidates.
+- This closes the planted-marker route: a participant who opens a thread carrying this action's
+  marker (with any collision flag or content fingerprint) and resolves it under the same login can
+  no longer keep a recurring finding from gating. That resolution counts as the bot's own
+  auto-resolve, which a recurring finding undoes. A resolution by a *different* login is honoured,
+  as a human resolving an own thread is: that is the same power anyone with resolve rights already
+  has over the bot's own threads.
+
+When the count is above zero the run records a `REVIEW_DEGRADED` reason,
+`foreign-marked-threads: N thread(s) … opened by <logins>, not the configured bot login <login>;
+they are read-only to this run …`, which becomes a `::warning` on the check (exit 0). The job log's
+`threads listed (pre-existing): <n>, owned=<n>, foreign_marked=<n>` line carries the count on every
+`enforce` run.
 A low `owned` count on its own is normal: `threads listed` counts every review thread on the PR
 before this run writes anything,
 including those opened by humans and by other review bots, and only this action's own marked
 threads are owned. Only `foreign_marked` above zero points at an identity change.
+
+The clean-verdict and partial-review comments (below) follow the same rule. Their lookup
+(`prt_find_marked_comment`, `gh.sh`) returns only a comment posted by `bot-login`, so only that one
+is edited; when only another login's comment exists, the run posts a new comment of its own and
+leaves the other one alone. The lookup also lists each comment with either marker posted by
+another login that is not superseded (no `state=superseded` line). The job log carries
+`marked comments by another login (live): <n>`. Above zero the run records the `REVIEW_DEGRADED`
+reason `foreign-marked-comments: N comment(s) … posted by <logins>, not the configured bot login
+<login>; this run does not edit them, so a verdict there may be stale`, again a `::warning`.
 
 **Gotcha, if this secret ever needs regenerating:** a fine-grained PAT's "Repository access: All
 repositories" is scoped to repos the token's **resource owner** account owns, not to org repos
@@ -214,8 +263,9 @@ overrides the workflow's own default) is one of three values. An unrecognized va
   (`prt_render_clean_comment`, `render.sh`). Its last line is the identity marker
   `<!-- gokure-pr-review:v1-clean -->` (`PRT_MARKER_CLEAN`, `marker.sh`); every later run finds the
   comment by that marker (a `contains` match on comments authored by the bot login) and edits it in
-  place rather than posting another. When a later run on the same PR finds something, the comment is
-  rewritten, never deleted, to a struck-through "superseded" body
+  place rather than posting another. A comment with the marker from another login is never edited
+  (see "Token and bot identity", go-kure/.github#153). When a later run on the same PR finds
+  something, the comment is rewritten, never deleted, to a struck-through "superseded" body
   (`prt_render_clean_comment_superseded`), because the older SHA really was reviewed clean. A
   superseded body carries a second line directly before the identity marker:
   `<!-- gokure-pr-review:state=superseded -->` (`PRT_MARKER_STATE_SUPERSEDED`, go-kure/.github#150).

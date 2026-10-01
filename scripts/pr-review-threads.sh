@@ -721,6 +721,9 @@ fi # EMPTY_DIFF != 1
 # (dot-github#50 gmr finding R3: this used to run unconditionally and abort
 # the whole job on any listing hiccup, in the mode that ships wired live). ---
 OWNED='[]'
+# FOREIGN: threads carrying this action's marker but opened by another login
+# (go-kure/.github#153). Read-only: see the ownership loop below.
+FOREIGN='[]'
 if [ "$PRT_MODE" = enforce ]; then
 # shellcheck disable=SC2016  # $owner/$repo/$pr/$cursor are GraphQL variable
 # references, resolved server-side from the `variables` JSON object built
@@ -908,15 +911,17 @@ fi
 PRT_BOT_LOGIN_GQL="${PRT_BOT_LOGIN%\[bot\]}"
 
 # Threads whose first comment carries this action's marker but was authored
-# by a login other than PRT_BOT_LOGIN_GQL (go-kure/.github#153, interim
-# detector only). The ownership check below skips them, correctly: this run
-# may not be able to edit or resolve another account's comment. But when
-# the bot identity changes (KURE_BOT_PAT set or removed flips bot-login
-# between kure-bot and github-actions[bot]) every existing thread is
-# orphaned that way, silently: never resolved, never reopened, not counted
-# toward the cap. Counted here and reported as REVIEW_DEGRADED below so the
-# orphaning is visible; accepting both identities as owners needs a design
-# decision and is not done here.
+# by a login other than PRT_BOT_LOGIN_GQL (go-kure/.github#153). This run may
+# not be able to edit or resolve another account's comment, so such a thread
+# is never owned. It is still the existing thread for its finding: it goes
+# into FOREIGN, read-only. Loop 1 opens no duplicate thread for a finding
+# that matches one, and never edits, resolves, reopens, replies to or
+# re-stamps it; loop 2 walks OWNED only, so no absence handling touches it;
+# the cap walk counts an open one as gating. Every bot-identity change
+# (KURE_BOT_PAT set or removed flips bot-login between kure-bot and
+# github-actions[bot]; a caller's BOT_PAT, go-kure/.github#156) turns the old
+# identity's threads into foreign ones, so the count is also reported as
+# REVIEW_DEGRADED below.
 FOREIGN_MARKED_COUNT=0
 FOREIGN_MARKED_LOGINS=""
 
@@ -941,12 +946,36 @@ for ((ti = 0; ti < n_threads; ti++)); do
     break
   fi
   if [ "$first_author" != "$PRT_BOT_LOGIN_GQL" ]; then
-    if prt_marker_parse "$first_body" >/dev/null; then
+    if foreign_parsed="$(prt_marker_parse "$first_body")"; then
       FOREIGN_MARKED_COUNT=$((FOREIGN_MARKED_COUNT + 1))
       foreign_login="${first_author:-(unknown author)}"
       if ! grep -qxF -- "$foreign_login" <<< "$FOREIGN_MARKED_LOGINS"; then
         FOREIGN_MARKED_LOGINS="${FOREIGN_MARKED_LOGINS}${foreign_login}"$'\n'
       fi
+      # Only what loop 1 and the cap walk read (prt_foreign_action): the
+      # fingerprint, who opened it, whether it is open, whether the login
+      # that opened it also resolved it (the foreign counterpart of an own
+      # row's resolved_by_bot; a missing resolver counts as someone else,
+      # as there), and the marker's content_fp, used only to tell that the
+      # thread is NOT a given finding. The marker's collision flag is not
+      # carried: a foreign marker is untrusted, and a collision flag could
+      # only ever withhold a finding. No ids a write would need.
+      if ! foreign_row="$(jq -ce --arg fp "$(cut -f1 <<< "$foreign_parsed")" \
+        --arg author "$foreign_login" --arg author_gql "$first_author" \
+        --arg cfp "$(cut -f4 <<< "$foreign_parsed")" '
+          {fp:$fp, foreign:true, author:$author, resolved:(.isResolved == true),
+           resolved_by_author:(.isResolved == true and $author_gql != ""
+             and ((.resolvedBy.login // "") == $author_gql)),
+           content_fp:$cfp}
+        ' <<< "$th" 2>/dev/null)"; then
+        prt_inventory_fail "foreign-row construction at thread index $ti"
+        break
+      fi
+      if ! merged_foreign="$(prt_json_concat_arrays "$FOREIGN" "[$foreign_row]")"; then
+        prt_inventory_fail "foreign-row concatenation at thread index $ti"
+        break
+      fi
+      FOREIGN="$merged_foreign"
     fi
     continue
   fi
@@ -1052,7 +1081,7 @@ if [ "$FOREIGN_MARKED_COUNT" -gt 0 ]; then
     [ -n "$foreign_login" ] || continue
     foreign_logins_list="${foreign_logins_list:+${foreign_logins_list}, }${foreign_login}"
   done <<< "$FOREIGN_MARKED_LOGINS"
-  prt_mark_degraded "foreign-marked-threads: ${FOREIGN_MARKED_COUNT} thread(s) carry this action's marker but were opened by ${foreign_logins_list}, not the configured bot login ${PRT_BOT_LOGIN_GQL}; this run does not resolve, reopen or cap them — the bot identity likely changed (go-kure/.github#153)"
+  prt_mark_degraded "foreign-marked-threads: ${FOREIGN_MARKED_COUNT} thread(s) carry this action's marker but were opened by ${foreign_logins_list}, not the configured bot login ${PRT_BOT_LOGIN_GQL}; they are read-only to this run: none of them is resolved, reopened, replied to or re-stamped; while one is open, a matching finding gets no new thread and the open thread counts toward the cap and blocks merge until a human resolves it; once its own author resolved it, a recurring finding gets a new thread from this login, where an own thread would have been reopened — the bot identity likely changed (go-kure/.github#153)"
 fi
 # "(pre-existing)": the count before this run writes anything, so a first
 # review reads "threads listed (pre-existing): 0" next to its CREATE lines
@@ -1079,7 +1108,15 @@ PRT_LIFT_EVIDENCE_COMPLETE=true
 prt_is_incomplete && PRT_LIFT_EVIDENCE_COMPLETE=false
 prt_degraded_reasons | grep -q 'partial-drop' && PRT_LIFT_EVIDENCE_COMPLETE=false
 prt_degraded_reasons | grep -q 'review-parse-failed' && PRT_LIFT_EVIDENCE_COMPLETE=false
-if ! capped_findings="$(prt_apply_cap "$PRT_MAX_FINDINGS_TOTAL" "$OWNED" "$ALL_FINDINGS" 2>/dev/null)"; then
+# go-kure/.github#153: foreign rows go into the walk too. prt_reserved_count
+# counts an open one as gating, and prt_gating_eligible then leaves a finding
+# that matches one out of the CREATE candidates, as for an owned match.
+# prt_cap_foreign_rows makes the same per-finding decision loop 1 makes
+# (prt_foreign_action) and releases the finding when loop 1 will send it
+# down the no-thread path, so it competes for a slot like any other CREATE.
+if ! cap_foreign="$(prt_cap_foreign_rows "$FOREIGN" "$ALL_FINDINGS")" ||
+  ! cap_threads="$(prt_json_concat_arrays "$OWNED" "$cap_foreign")" ||
+  ! capped_findings="$(prt_apply_cap "$PRT_MAX_FINDINGS_TOTAL" "$cap_threads" "$ALL_FINDINGS" 2>/dev/null)"; then
   echo "ERROR: review inventory cap evaluation failed; aborting before any write." >&2
   prt_mark_incomplete "review inventory cap evaluation failed"
   {
@@ -1241,6 +1278,61 @@ else
     content_fp="$(prt_content_fp "$(jq -r '.issue' <<< "$f")" "$(jq -r '.fix' <<< "$f")")"
 
     owned_match="$(jq -c --arg fp "$fp" 'map(select(.fp == $fp)) | .[0] // empty' <<< "$OWNED")"
+    # go-kure/.github#153: no own thread, but the fp appears on threads
+    # another login opened. prt_foreign_action (reconcile.sh) picks ONE
+    # decision for the finding, the same one the cap walk used: a foreign
+    # marker is untrusted, so it may only make this run gate more. Nothing is
+    # ever written to a foreign thread (no collision persist, lift, stamp
+    # clear, reply, resolve or reopen), and it is not added to MATCHED_FPS:
+    # loop 2 walks OWNED only and never sees it.
+    #   EXISTING   an open thread for this finding: no duplicate CREATE,
+    #              whatever the verdict. It keeps blocking merge (the cap walk
+    #              reserved its slot) and the finding still counts toward this
+    #              run's total, so no clean verdict is posted.
+    #   NONE       a human resolution (someone other than the opener resolved
+    #              it), honoured as for an own thread, or a resolved false
+    #              positive: left alone, no thread.
+    #   QUARANTINE this run's own findings collide on the fp (never the
+    #              marker's flag): row 1, as for an own resolved thread.
+    #   NEW        every match was resolved by its own opener and the finding
+    #              recurs: where an own thread would be reopened (row 7), it
+    #              takes the no-thread path instead (a new own thread).
+    #   NOMATCH    no foreign thread for this finding, or only ones whose
+    #              marker content_fp shows a different defect: no-thread path.
+    # A failed decision falls to NOMATCH, the more-gating side.
+    foreign_override=""
+    if [ -z "$owned_match" ] && [ "$FOREIGN" != '[]' ]; then
+      if ! foreign_decision="$(prt_foreign_action "$FOREIGN" "$f")"; then
+        prt_log "fp=$fp: foreign-thread decision failed; treating the finding as having no thread"
+        foreign_decision=NOMATCH$'\t'
+      fi
+      foreign_action="${foreign_decision%%$'\t'*}"
+      foreign_author="${foreign_decision#*$'\t'}"
+      case "$foreign_action" in
+        EXISTING)
+          prt_log "fp=$fp -> FOREIGN (thread opened by $foreign_author, read-only)"
+          NONE_ANCHORED_COUNT=$((NONE_ANCHORED_COUNT + 1))
+          continue
+          ;;
+        NEW)
+          prt_log "fp=$fp -> FOREIGN (thread opened by $foreign_author, read-only; resolved by its author and the finding recurs: new own thread instead of a reopen)"
+          ;;
+        QUARANTINE)
+          foreign_override=QUARANTINE
+          prt_log "fp=$fp -> FOREIGN (thread opened by $foreign_author, read-only; resolved, collision this run: quarantined, not reopened)"
+          ;;
+        NOMATCH)
+          if [ -n "$foreign_author" ]; then
+            prt_log "fp=$fp -> FOREIGN (thread opened by $foreign_author has a different content fingerprint: not this finding)"
+          fi
+          ;;
+        *)
+          prt_log "fp=$fp -> FOREIGN (thread opened by $foreign_author, read-only; resolved, not reopened)"
+          NONE_ANCHORED_COUNT=$((NONE_ANCHORED_COUNT + 1))
+          continue
+          ;;
+      esac
+    fi
     thread_exists=false; thread_resolved=false; resolved_by_bot=false; has_human_reply=false
     marker_rewrite_tried=false
     if [ -n "$owned_match" ]; then
@@ -1349,6 +1441,14 @@ else
     fi
 
     action="$(prt_decide_finding "$effective_collision" "$verdict" "$thread_exists" "$thread_resolved" "$resolved_by_bot" "$within_cap" "$has_human_reply")"
+    # go-kure/.github#153: a resolved foreign match on a finding that
+    # collides this run gets row 1's QUARANTINE, as an own resolved thread
+    # would, whatever this no-thread evaluation said (it would SUPPRESS a
+    # false positive). The collision is this run's own (collision_source is
+    # already this_run above); a foreign marker's flag is never read.
+    if [ "$foreign_override" = QUARANTINE ]; then
+      action=QUARANTINE
+    fi
     prt_log "fp=$fp -> $action"
 
     case "$action" in
@@ -1829,12 +1929,16 @@ fi
 # stale-head run, state.sh:182) is unrelated to whether findings are trustworthy and
 # stays eligible for the clean comment.
 if [ "$PRT_MODE" = enforce ]; then
+  # go-kure/.github#153: every lookup below also lists live clean-verdict or
+  # partial-review comments another login posted; reported after the block.
+  FOREIGN_COMMENTS_FILE="$WORKDIR/foreign_marked_comments"
+  : > "$FOREIGN_COMMENTS_FILE"
   total_findings_this_run="$(jq 'length' <<< "$ALL_FINDINGS")"
   review_parse_failed_this_run=false
   prt_degraded_reasons | grep -q 'review-parse-failed' && review_parse_failed_this_run=true
   if [ "$total_findings_this_run" -eq 0 ] && ! prt_is_incomplete && ! "$review_parse_failed_this_run"; then
     if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
-      if clean_id="$(prt_find_marked_comment "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_MARKER_CLEAN" "$PRT_BOT_LOGIN")"; then
+      if clean_id="$(prt_find_marked_comment "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_MARKER_CLEAN" "$PRT_BOT_LOGIN" "$FOREIGN_COMMENTS_FILE")"; then
         # Re-check immediately before the write, not just before the
         # (possibly multi-page) lookup above — matching prt_gh_rest_fresh's
         # own rationale (scripts/lib/prt/gh.sh:167-174): the run's real
@@ -1864,7 +1968,7 @@ if [ "$PRT_MODE" = enforce ]; then
       # PAST run's comment, not this run's primary output. Worst case a
       # stale clean note lingers next to this run's own (correctly posted)
       # open threads, which is a lesser, self-evident harm.
-      if clean_id="$(prt_find_marked_comment "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_MARKER_CLEAN" "$PRT_BOT_LOGIN")"; then
+      if clean_id="$(prt_find_marked_comment "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_MARKER_CLEAN" "$PRT_BOT_LOGIN" "$FOREIGN_COMMENTS_FILE")"; then
         if [ -n "$clean_id" ]; then
           # Re-check immediately before the write — see the identical
           # rationale on the zero-findings branch above.
@@ -1908,7 +2012,7 @@ if [ "$PRT_MODE" = enforce ]; then
     # itself: this run is already degraded, and tidying a past run's comment
     # must not turn it red.
     if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
-      if clean_id="$(prt_find_marked_comment "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_MARKER_CLEAN" "$PRT_BOT_LOGIN")"; then
+      if clean_id="$(prt_find_marked_comment "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_MARKER_CLEAN" "$PRT_BOT_LOGIN" "$FOREIGN_COMMENTS_FILE")"; then
         if [ -n "$clean_id" ]; then
           if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
             prt_upsert_issue_comment "$PRT_REPO" "$PRT_PR_NUMBER" "$(prt_render_clean_comment_superseded_by_partial "$PRT_HEAD_SHA")" "$clean_id" || \
@@ -1944,7 +2048,7 @@ if [ "$PRT_MODE" = enforce ]; then
   # freshness GET must not fail an otherwise successful review.
   if "$review_parse_failed_this_run"; then
     if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
-      if partial_id="$(prt_find_marked_comment "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_MARKER_PARTIAL" "$PRT_BOT_LOGIN")"; then
+      if partial_id="$(prt_find_marked_comment "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_MARKER_PARTIAL" "$PRT_BOT_LOGIN" "$FOREIGN_COMMENTS_FILE")"; then
         # Re-check immediately before the write — same rationale as the
         # clean-verdict upsert above.
         if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
@@ -1967,7 +2071,7 @@ if [ "$PRT_MODE" = enforce ]; then
     # run's comment: a listing failure only warns. Skipped on an incomplete
     # run, which cannot vouch for every chunk.
     if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
-      if partial_id="$(prt_find_marked_comment "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_MARKER_PARTIAL" "$PRT_BOT_LOGIN")"; then
+      if partial_id="$(prt_find_marked_comment "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_MARKER_PARTIAL" "$PRT_BOT_LOGIN" "$FOREIGN_COMMENTS_FILE")"; then
         if [ -n "$partial_id" ]; then
           if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
             prt_upsert_issue_comment "$PRT_REPO" "$PRT_PR_NUMBER" "$(prt_render_partial_comment_superseded "$PRT_HEAD_SHA")" "$partial_id" || \
@@ -1982,6 +2086,20 @@ if [ "$PRT_MODE" = enforce ]; then
     else
       prt_handle_informational_freshness_rc "$?" "partial-review supersede check"
     fi
+  fi
+
+  # Two lookups can list the same comment; count each id once. Degraded, not
+  # incomplete: this run's own comment was written (or posted new) either
+  # way, and only another login can edit the stale one.
+  foreign_comment_count="$(cut -f1 "$FOREIGN_COMMENTS_FILE" | sort -u | grep -c . || true)"
+  prt_log "marked comments by another login (live): ${foreign_comment_count:-0}"
+  if [ "${foreign_comment_count:-0}" -gt 0 ]; then
+    foreign_comment_logins=""
+    while IFS= read -r foreign_login; do
+      [ -n "$foreign_login" ] || continue
+      foreign_comment_logins="${foreign_comment_logins:+${foreign_comment_logins}, }${foreign_login}"
+    done < <(cut -f2 "$FOREIGN_COMMENTS_FILE" | sort -u)
+    prt_mark_degraded "foreign-marked-comments: ${foreign_comment_count} comment(s) carry this action's clean-verdict or partial-review marker but were posted by ${foreign_comment_logins}, not the configured bot login ${PRT_BOT_LOGIN}; this run does not edit them, so a verdict there may be stale — the bot identity likely changed (go-kure/.github#153)"
   fi
 fi
 
