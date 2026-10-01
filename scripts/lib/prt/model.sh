@@ -488,12 +488,19 @@ _prt_call_proxy() {
 # when COUNT is 1 or less: a single chunk is the whole diff. INDEX is
 # 0-based; the text numbers chunks from 1. ALL_FILES and CHUNK_FILES are
 # newline-separated (prt_diff_files).
+# The whole-diff list goes into every chunk's two prompts, so it is capped at
+# a tenth of PRT_MAX_DIFF_CHARS; the files past the cap are counted, not
+# named. The chunk's own list needs no cap: its paths are in the chunk.
 prt_chunk_scope() {
   local idx="$1" count="$2" all="$3" mine="$4"
   [ "$count" -gt 1 ] 2>/dev/null || return 0
   printf 'CHUNK SCOPE: this diff is split into %s chunks; this is chunk %s of %s.\n' "$count" "$((idx + 1))" "$count"
   printf 'Files in the whole diff:\n'
-  printf '%s\n' "$all" | sed '/^$/d; s/^/- /'
+  printf '%s\n' "$all" | awk -v max="$(( ${PRT_MAX_DIFF_CHARS:-50000} / 10 ))" '
+    $0 == "" { next }
+    !omitted && used + length($0) + 3 <= max { print "- " $0; used += length($0) + 3; next }
+    { omitted++ }
+    END { if (omitted) printf "- (%d more file(s), not listed)\n", omitted }'
   printf 'Files in this chunk:\n'
   printf '%s\n' "$mine" | sed '/^$/d; s/^/- /'
   printf '%s\n' "Code in the other chunks exists but is not shown here: not seeing something in this chunk says nothing about the rest of the diff."
