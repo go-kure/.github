@@ -2056,6 +2056,17 @@ fake_curl_orchestrator() {
                 printf '%s' '{"choices":[{"message":{"content":"{\"assessments\":[{\"fp\":\"deadbeefcafebabe\",\"verdict\":\"VALID\",\"reasoning\":\"ok\"}]}"}}]}' > "$out"
               fi
               ;;
+            seven_valid)
+              # go-kure/.github#192: VALID for the real fp of every finding
+              # PRT_TEST_MODEL_RESPONSE_MODE=seven_findings returns (x.go and
+              # one category each), computed like false_positive_survivor.
+              local sv_cat sv_fps='[]'
+              for sv_cat in nil-deref unchecked-err race sql-injection resource-leak logic-error standards-violation; do
+                sv_fps="$(jq -c --arg fp "$(prt_fp_base x.go "$sv_cat")" '. + [$fp]' <<< "$sv_fps")"
+              done
+              printf '%s' "$(jq -n --argjson fps "$sv_fps" \
+                '{choices:[{message:{content:({assessments:[$fps[] | {fp:., verdict:"VALID", reasoning:"real"}]} | tojson)}}]}')" > "$out"
+              ;;
             garbage_then_fail)
               # Mixed failure mode: parse failure on the original attempt,
               # transport failure on the retry — codex round-1 finding on
@@ -2237,6 +2248,18 @@ fake_curl_orchestrator() {
               # caller can assert all three bodies survive into the
               # withheld/advisory comment, not just a count.
               printf '%s' '{"choices":[{"message":{"content":"{\"findings\":[{\"file\":\"dup.go\",\"line\":1,\"category\":\"other\",\"severity\":\"High\",\"issue\":\"collision issue one\",\"fix\":\"fix one\"},{\"file\":\"dup.go\",\"line\":2,\"category\":\"other\",\"severity\":\"Medium\",\"issue\":\"collision issue two\",\"fix\":\"fix two\"},{\"file\":\"dup.go\",\"line\":3,\"category\":\"other\",\"severity\":\"Low\",\"issue\":\"collision issue three\",\"fix\":\"fix three\"}]}"}}]}' > "$out"
+              ;;
+            seven_findings)
+              # go-kure/.github#192: seven distinct findings (x.go, one
+              # category each, so no fp_base collides). The two Low ones come
+              # first, so only the severity sort, not response order, keeps
+              # them out of the cap of 5.
+              printf '%s' "$(jq -nc '
+                [["nil-deref","Low"],["unchecked-err","Low"],["race","High"],["sql-injection","High"],
+                 ["resource-leak","Medium"],["logic-error","High"],["standards-violation","Medium"]]
+                | {findings: map({file:"x.go", line:1, category:.[0], severity:.[1],
+                                  issue:("overflow-case " + .[0] + " issue"), fix:("fix " + .[0])})}
+                | {choices:[{message:{content:tojson}}]}')" > "$out"
               ;;
             prose)
               printf '%s' '{"choices":[{"message":{"content":"Here you go:\n{\"findings\":[]}\nHope that helps!"}}]}' > "$out"
@@ -3711,6 +3734,32 @@ assert_eq "orchestrator: fingerprint-collided run -> no accounting-mismatch REVI
 assert_eq "orchestrator: fingerprint-collided run (THIS-run multiplicity, no owned thread) -> Collision cell reads 'this run', not 'persisted'" \
   "true" "$(grep -qF '| this run |' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && ! grep -qF '| persisted (earlier run) |' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && echo true || echo false)"
 PRT_TEST_MODEL_RESPONSE_MODE=clean
+rm -f "$PRT_TEST_ISSUE_COMMENT_BODY_FILE"
+unset PRT_TEST_ISSUE_COMMENT_BODY_FILE
+
+# ---- go-kure/.github#192: the OVERFLOW path end to end ----
+# Seven distinct VALID findings against the default cap of 5: three High and
+# two Medium gate as threads, and the two Low ones (listed first by the
+# model) land in the advisory overflow comment, by content. The harness's
+# THREAD1 is made foreign-authored so no owned open thread reserves a slot.
+PRT_TEST_ISSUE_COMMENT_BODY_FILE="$(mktemp)"
+PRT_TEST_OWNED_AUTHOR=someone-else
+PRT_TEST_MODEL_RESPONSE_MODE=seven_findings
+PRT_TEST_ASSESS_RESPONSE_MODE=seven_valid
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #192: seven VALID findings, cap 5 -> exits 0, five threads created, done line reports findings=7 gating=5" \
+  "0 5 true" "$rc $(cat "$PRT_TEST_CREATE_COUNTFILE") $(grep -qE 'done: findings=7 gating=5 ' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator #192: the overflow comment is posted under its header" \
+  "true" "$(grep -qF 'Additional AI Review Findings' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && echo true || echo false)"
+assert_eq "orchestrator #192: both Low findings reach the overflow comment by issue text" \
+  "true" "$(grep -qF 'overflow-case nil-deref issue' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && grep -qF 'overflow-case unchecked-err issue' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && echo true || echo false)"
+assert_eq "orchestrator #192: no gating finding is in the overflow comment" \
+  "0" "$(grep -cE 'overflow-case (race|sql-injection|resource-leak|logic-error|standards-violation) issue' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE")"
+assert_eq "orchestrator #192: every finding accounted for (no accounting-mismatch degrade)" \
+  "false" "$(grep -qF 'accounting mismatch' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_OWNED_AUTHOR=test-bot
+PRT_TEST_MODEL_RESPONSE_MODE=clean
+PRT_TEST_ASSESS_RESPONSE_MODE=clean
 rm -f "$PRT_TEST_ISSUE_COMMENT_BODY_FILE"
 unset PRT_TEST_ISSUE_COMMENT_BODY_FILE
 
