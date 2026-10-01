@@ -5228,6 +5228,38 @@ rc="$(run_orchestrator off 0 0 0)"
 assert_eq "orchestrator #156: off mode still exits 0 with an unknown standards source" "0" "$rc"
 
 rm -f "$PRT_TEST_MODEL_SYSTEM_LOG"
+
+# go-kure/.github#156: the cases above set PRT_STANDARDS_* directly, so they
+# cannot see the wiring in front of the script. Each input must be declared
+# by pr-review.yml (workflow_call, with today's default), bound to the job
+# env, passed to the action, declared by the action, and bound to the PRT_
+# variable the script reads. Exact lines at their indentation, so a line in
+# another block cannot stand in for the one checked.
+prt_wf="$ROOT/.github/workflows/pr-review.yml"
+prt_act="$ROOT/.github/actions/pr-review-threads/action.yml"
+prt_has_line() { grep -qxF -- "$2" "$1" && echo true || echo false; }
+prt_input_default() { # FILE INDENT NAME -> the input block's default: value
+  awk -v hdr="$2$3:" -v ind="${#2}" '
+    $0 == hdr { inb = 1; next }
+    inb && match($0, /^ */) && RLENGTH <= ind { exit }
+    inb && $1 == "default:" { sub(/^ *default: */, ""); print; exit }
+  ' "$1"
+}
+prt_wiring() { # INPUT JOB_ENV PRT_VAR
+  # \${{ }} is literal workflow text, not a shell expansion.
+  printf '%s %s %s %s %s' \
+    "$(prt_input_default "$prt_wf" '      ' "$1")" \
+    "$(prt_has_line "$prt_wf" "      $2: \${{ inputs.$1 }}")" \
+    "$(prt_has_line "$prt_wf" "          $1: \${{ env.$2 }}")" \
+    "$(prt_input_default "$prt_act" '  ' "$1")" \
+    "$(prt_has_line "$prt_act" "        $3: \${{ inputs.$1 }}")"
+}
+assert_eq "wiring #156: standards-file declared by pr-review.yml, bound to its env, passed to the action, declared there and bound to PRT_STANDARDS_FILE" \
+  "'docs/standards.md' true true \"docs/standards.md\" true" "$(prt_wiring standards-file PR_REVIEW_STANDARDS_FILE PRT_STANDARDS_FILE)"
+assert_eq "wiring #156: standards-source declared by pr-review.yml (default action), bound to its env, passed to the action, declared there and bound to PRT_STANDARDS_SOURCE" \
+  "'action' true true \"action\" true" "$(prt_wiring standards-source PR_REVIEW_STANDARDS_SOURCE PRT_STANDARDS_SOURCE)"
+unset prt_wf prt_act
+unset -f prt_has_line prt_input_default prt_wiring
 unset PRT_TEST_MODEL_SYSTEM_LOG PRT_TEST_STANDARDS_SOURCE PRT_TEST_STANDARDS_FILE PRT_TEST_CALLER_FILE PRT_TEST_CALLER_FILE_CONTENT
 unset -f prt_std_has
 
