@@ -15,7 +15,9 @@
 #     before the root is written, from freshly fetched tags, with the rule
 #     Publish uses: publish-policy.sh `latest <label>`, the copy next to this
 #     script. The re-check only narrows: a deploy that did not ask for the root
-#     never writes it. A policy error fails the deploy.
+#     never writes it. A policy error fails the deploy, and so does a `true`
+#     decision for a label that is not an existing tag at the source's HEAD:
+#     the root is only ever built from the tag it names.
 #   - The push can be rejected because another slot's deploy landed first. Each
 #     attempt therefore starts from the pages branch's current tip, writes this
 #     deploy's content on it (another slot's content stays as that tip has it),
@@ -38,7 +40,8 @@
 #                   segment, e.g. `kure`)
 #   --slot          <site-subdir>/<slot>/ is replaced (one path segment: `dev`
 #                   or starting with `v`, the names a root write keeps)
-#   --label         the version label; a release tag when the root is requested
+#   --label         the version label; when the root is requested, an existing
+#                   release tag at the source's HEAD
 #   --set-latest    `true` asks for the root; `false` never writes it
 #   --slot-site     the build for the slot
 #   --root-site     the build for the root (required with --set-latest true)
@@ -173,6 +176,18 @@ for ((attempt = 1; attempt <= max_attempts; attempt++)); do
         decision="$(<"$decision_file")"
         case "$decision" in
             true)
+                # The policy ranks the label against the tags; it does not
+                # check that the label is one, or that this checkout is it.
+                # The root must be built from the tag itself: a dispatch from
+                # another ref with a well-formed label would otherwise put
+                # that ref's docs at the root. Checked on every attempt,
+                # against the tags this attempt just fetched.
+                tag_commit="$(git -C "$src" rev-parse --verify --quiet "refs/tags/${label}^{commit}")" \
+                    || die "label '${label}' is not a tag in $src; not writing the /${site}/ root"
+                head_commit="$(git -C "$src" rev-parse --verify "HEAD^{commit}")" \
+                    || die "cannot read HEAD of $src; not writing the /${site}/ root"
+                [[ "$tag_commit" == "$head_commit" ]] \
+                    || die "$src HEAD ${head_commit} is not tag ${label}'s commit ${tag_commit}; not writing the /${site}/ root (dispatch with --ref ${label})"
                 echo "Deploying to /${site}/ (latest stable)..."
                 find "$site_dir" -mindepth 1 -maxdepth 1 -not -name 'dev' -not -name 'v*' -exec rm -rf {} +
                 cp -R "$root_site/." "$site_dir/"
