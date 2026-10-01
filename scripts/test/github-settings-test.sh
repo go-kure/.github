@@ -659,10 +659,11 @@ else
     failures=$((failures + 1))
 fi
 
-# ---- ruleset_covers_main: audit_rulesets migrates classic branch protection
-# away only when an applicable branch ruleset reaches main (go-kure/.github#154
-# review finding: a consumer policy with no such ruleset must not lose
-# unmanaged classic protection on --apply with nothing replacing it). ----
+# ---- ruleset_covers_branch: audit_rulesets migrates classic branch
+# protection away only when an applicable branch ruleset reaches the branch
+# (go-kure/.github#154 review finding: a consumer policy with no such ruleset
+# must not lose unmanaged classic protection on --apply with nothing replacing
+# it). Most cases below judge main with main as the default branch. ----
 
 covers_json=$(jq '.github_repos.kure.rulesets = {
     "Main Literal": {target: "branch", conditions: {ref_name: {include: ["refs/heads/main"]}}, rules: {deletion: true}},
@@ -691,12 +692,22 @@ covers_json=$(jq '.github_repos.kure.rulesets = {
 
 # Stubbed like get_github_labels below: the live default branch is whatever
 # COVERS_DEFAULT_BRANCH says (main unless a test sets it; empty = unreadable).
-# shellcheck disable=SC2317 # invoked indirectly via ruleset_covers_main
+# shellcheck disable=SC2317 # invoked indirectly via audit_rulesets
 repo_default_branch() { printf '%s' "${COVERS_DEFAULT_BRANCH-main}"; }
 
-# Echoes ruleset_covers_main's exit code for kure over the named rulesets.
+# Echoes ruleset_covers_branch's exit code for kure's main branch over the
+# named rulesets, with the default branch the stub above reports.
 covers_rc() {
-    (POLICY_JSON="$covers_json" ruleset_covers_main "kure" "$@") >/dev/null 2>&1
+    (POLICY_JSON="$covers_json" ruleset_covers_branch "kure" main "$(repo_default_branch kure)" "$@") >/dev/null 2>&1
+    echo $?
+}
+
+# The same for an explicit branch and default branch (go-kure/.github#160:
+# the protected branch is the repo's default branch, not always main).
+covers_branch_rc() { # BRANCH DEFAULT_BRANCH NAME...
+    local branch="$1" def="$2"
+    shift 2
+    (POLICY_JSON="$covers_json" ruleset_covers_branch "kure" "$branch" "$def" "$@") >/dev/null 2>&1
     echo $?
 }
 
@@ -750,6 +761,11 @@ assert_eq "~ALL minus ~DEFAULT_BRANCH covers main when the default branch is mas
 assert_eq "an unreadable default branch resolves ~DEFAULT_BRANCH to not-main (fail closed)" "1" "$(COVERS_DEFAULT_BRANCH='' covers_rc "Default Branch")"
 assert_eq "an unreadable default branch with ~DEFAULT_BRANCH excluded from ~ALL does not cover main (round-5: the exclude is undecidable too)" "1" "$(COVERS_DEFAULT_BRANCH='' covers_rc "All But Default")"
 assert_eq "an unreadable default branch leaves a literal refs/heads/main ruleset covering main" "0" "$(COVERS_DEFAULT_BRANCH='' covers_rc "Main Literal")"
+# The predicate judges whichever branch it is given (go-kure/.github#160).
+assert_eq "~DEFAULT_BRANCH covers master when master is the default branch" "0" "$(covers_branch_rc master master "Default Branch")"
+assert_eq "a literal refs/heads/main include does not cover master" "1" "$(covers_branch_rc master master "Main Literal")"
+assert_eq "~ALL minus ~DEFAULT_BRANCH does not cover master when master is the default branch" "1" "$(covers_branch_rc master master "All But Default")"
+assert_eq "a glob include (refs/heads/ma*) covers master too" "0" "$(covers_branch_rc master master "Glob Include")"
 unset -f repo_default_branch
 
 # ---- print_summary: blocked (audit-only) org settings drift must be
@@ -1048,8 +1064,120 @@ assert_eq "a failed ruleset POST is recorded" "kure: create ruleset 'main-protec
 ruleset_update_out="$( (fail_writes_gh; STUB_RULESETS='[{"name":"main-protection","id":7}]'; APPLY_FAILURES=(); apply_ruleset kure main-protection >/dev/null 2>&1; apply_failures_of) )"
 assert_eq "a failed ruleset PUT is recorded" "kure: update ruleset 'main-protection'" "$ruleset_update_out"
 
-classic_out="$( (fail_writes_gh; APPLY_FAILURES=(); remove_classic_branch_protection kure >/dev/null 2>&1; apply_failures_of) )"
+classic_out="$( (fail_writes_gh; APPLY_FAILURES=(); remove_classic_branch_protection kure main >/dev/null 2>&1; apply_failures_of) )"
 assert_eq "a failed classic-protection DELETE is recorded" "kure: remove classic branch protection on main" "$classic_out"
+
+# ---------------------------------------------------------------------------
+# Classic protection is deleted only after the replacement ruleset is live
+# (go-kure/.github#160). audit_rulesets used to DELETE classic protection
+# before POSTing the ruleset, on the policy's word alone: a failed POST left
+# the branch with no protection at all, and even a good one left a window.
+# classic_order_gh is a stateful stub over files in $CO_DIR:
+#   classic  — classic protection on $CO_BRANCH exists while this file does;
+#   listing  — what the rulesets list returns ([] until a POST succeeds);
+#   log      — every write, in order ("POST", "DELETE <branch>").
+# $CO_LIVE is the full ruleset the live re-read returns once it exists.
+# STUB_POST_FAIL=1 refuses the POST; CO_LIST_FAIL=1 fails every list read.
+# ---------------------------------------------------------------------------
+
+classic_order_gh() {
+    # shellcheck disable=SC2317,SC2329 # invoked indirectly by the functions under test
+    gh() {
+        local path="$2" method=GET a prev=""
+        for a in "$@"; do
+            [ "$prev" = "--method" ] && method="$a"
+            prev="$a"
+        done
+        case "$method $path" in
+            "GET "*"/branches/$CO_BRANCH/protection") [ -e "$CO_DIR/classic" ] ;;
+            "DELETE "*"/branches/$CO_BRANCH/protection") echo "DELETE $CO_BRANCH" >>"$CO_DIR/log"; rm -f "$CO_DIR/classic" ;;
+            "GET "*"/branches/"*"/protection") return 1 ;;
+            "GET "*"/rulesets?includes_parents=false")
+                [ "${CO_LIST_FAIL:-0}" = 1 ] && { echo "HTTP 500" ; return 1; }
+                cat "$CO_DIR/listing" ;;
+            "POST "*"/rulesets")
+                cat >/dev/null
+                [ "${STUB_POST_FAIL:-0}" = 1 ] && { echo "HTTP 422: stub POST refused" >&2; return 1; }
+                echo POST >>"$CO_DIR/log"
+                jq -c '[{name: .name, id: 7}]' <<<"$CO_LIVE" >"$CO_DIR/listing" ;;
+            "GET "*"/rulesets/7") printf '%s\n' "$CO_LIVE" ;;
+            *) echo '{}' ;;
+        esac
+    }
+}
+
+co_policy_main=$(jq '.github_defaults.rulesets = {} | .github_repos = {kure: {rulesets: {
+    "Main Literal": {target: "branch", conditions: {ref_name: {include: ["refs/heads/main"]}}, rules: {deletion: true}}}}}' <<<"$POLICY_JSON")
+co_policy_default=$(jq '.github_defaults.rulesets = {} | .github_repos = {kure: {rulesets: {
+    "Default Branch": {target: "branch", conditions: {ref_name: {include: ["~DEFAULT_BRANCH"]}}, rules: {deletion: true}}}}}' <<<"$POLICY_JSON")
+co_live_main='{"id":7,"name":"Main Literal","target":"branch","enforcement":"active","conditions":{"ref_name":{"include":["refs/heads/main"],"exclude":[]}},"rules":[{"type":"deletion"}]}'
+
+# Runs audit_rulesets kure with APPLY ($1) in a fresh state dir and prints
+# three tab-separated fields: the write log (comma-joined), whether classic
+# protection still exists, and the recorded apply failures (|-joined).
+# Inputs via env: CO_POLICY, CO_LIVE, CO_BRANCH, CO_DEFAULT (the default
+# branch the stub reports; empty = unreadable), STUB_POST_FAIL, CO_LIST_FAIL.
+# The audit's own output goes to $CO_OUT for assert_contains.
+CO_OUT="$(mktemp)"
+run_classic_order() {
+    (
+        CO_DIR="$(mktemp -d)"
+        echo '[]' >"$CO_DIR/listing"
+        : >"$CO_DIR/log"
+        : >"$CO_DIR/classic"
+        classic_order_gh
+        # shellcheck disable=SC2317,SC2329 # invoked indirectly via audit_rulesets
+        repo_default_branch() { printf '%s' "${CO_DEFAULT-main}"; }
+        POLICY_JSON="$CO_POLICY"
+        APPLY_FAILURES=()
+        RULESET_MISSING=0
+        audit_rulesets kure "$1" >"$CO_OUT" 2>&1
+        printf '%s\t%s\t%s\n' \
+            "$(paste -sd, "$CO_DIR/log")" \
+            "$([ -e "$CO_DIR/classic" ] && echo kept || echo gone)" \
+            "$(IFS='|'; echo "${APPLY_FAILURES[*]}")"
+        rm -rf "$CO_DIR"
+    )
+}
+
+co="$(CO_POLICY="$co_policy_main" CO_LIVE="$co_live_main" CO_BRANCH=main run_classic_order true)"
+assert_eq "#160: on --apply the ruleset is POSTed first, then classic protection is deleted" \
+    "POST,DELETE main	gone	" "$co"
+
+co="$(CO_POLICY="$co_policy_main" CO_LIVE="$co_live_main" CO_BRANCH=main STUB_POST_FAIL=1 run_classic_order true)"
+assert_eq "#160: a failed ruleset POST keeps classic protection and fails the apply run" \
+    "	kept	kure: create ruleset 'Main Literal'|kure: classic branch protection on main kept, replacement ruleset not live" "$co"
+assert_contains "#160: and says why it was kept" "$(cat "$CO_OUT")" "replacement ruleset not live"
+
+co="$(CO_POLICY="$co_policy_main" CO_LIVE="${co_live_main/\"active\"/\"disabled\"}" CO_BRANCH=main run_classic_order true)"
+assert_eq "#160: a POSTed ruleset that is not live-active (disabled) does not replace classic protection" \
+    "POST	kept	kure: classic branch protection on main kept, replacement ruleset not live" "$co"
+
+co="$(CO_POLICY="$co_policy_main" CO_LIVE="${co_live_main/\"deletion\"/\"copilot_code_review\"}" CO_BRANCH=main run_classic_order true)"
+assert_eq "#160: a live ruleset with no protective rule does not replace classic protection" \
+    "POST	kept	kure: classic branch protection on main kept, replacement ruleset not live" "$co"
+
+co="$(CO_POLICY="$co_policy_main" CO_LIVE="$co_live_main" CO_BRANCH=main CO_LIST_FAIL=1 run_classic_order true)"
+assert_eq "#160: an unreadable rulesets list keeps classic protection on --apply" \
+    "	kept	kure: classic branch protection on main kept, replacement ruleset not live" "$co"
+assert_contains "#160: and still reports it" "$(cat "$CO_OUT")" "LEGACY"
+
+co="$(CO_POLICY="$co_policy_main" CO_LIVE="$co_live_main" CO_BRANCH=main run_classic_order false)"
+assert_eq "#160: audit mode writes nothing" "	kept	" "$co"
+assert_contains "#160: audit mode reports the leftover classic protection" "$(cat "$CO_OUT")" "LEGACY: Classic branch protection on main still exists"
+
+# The default branch is resolved once and drives the probe, the coverage
+# checks and the delete (go-kure/.github#160 follow-up from #154 round 11).
+co_live_default="${co_live_main//Main Literal/Default Branch}"
+co_live_default="${co_live_default//refs\/heads\/main/~DEFAULT_BRANCH}"
+co="$(CO_POLICY="$co_policy_default" CO_LIVE="$co_live_default" CO_BRANCH=master CO_DEFAULT=master run_classic_order true)"
+assert_eq "#160: classic protection on a non-main default branch is migrated on that branch" \
+    "POST,DELETE master	gone	" "$co"
+co="$(CO_POLICY="$co_policy_main" CO_LIVE="$co_live_main" CO_BRANCH=master CO_DEFAULT=master run_classic_order true)"
+assert_eq "#160: a main-only ruleset never replaces classic protection on a master default branch" \
+    "POST	kept	" "$co"
+assert_contains "#160: that case is reported as kept, not as drift" "$(cat "$CO_OUT")" "no policy ruleset targets master"
+rm -f "$CO_OUT"
 
 # One labels file drives all four label writes: test/foo drifts (PATCH),
 # type/bug is renamed from a live `bug` (PATCH new_name), test/new is missing

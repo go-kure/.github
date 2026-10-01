@@ -600,6 +600,13 @@ release branch before it merges. They are not enforced when a branch is created
 (`do_not_enforce_on_create`), so a maintainer can create a release branch by hand from a stable tag,
 whose commit never carries the pull-request checks.
 
+**Migrating from classic branch protection.** Classic protection left on a repo's default branch is
+reported `LEGACY` when a policy ruleset covers that branch, and kept with a `SKIP` when none does.
+`--apply` deletes it only after the rulesets are reconciled, and only when a re-read of the live
+rulesets shows an active one covering the branch with a protective rule. If the ruleset write
+failed, or the re-read fails, classic protection is kept and the apply run exits 1, so the branch
+is never left with neither.
+
 ## Organization Settings
 
 Organization-level settings (`orgs/go-kure`) are managed separately from the per-repo settings
