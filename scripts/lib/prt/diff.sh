@@ -255,11 +255,15 @@ prt_diff_files() {
       }
       if (i > n) return tok
       raw = substr(tok, 1, i); REST = substr(tok, i + 1)
-      if (ctrl) {
+      if (pfx != "" && substr(out, 1, length(pfx)) == pfx) out = substr(out, length(pfx) + 1)
+      # A control character keeps the quoted form git wrote. So does a decoded
+      # path that itself starts with `"`, or it could read the same as a kept
+      # form ("new\nline.go") and be dropped as a duplicate; git always quotes
+      # `"`, so every path starting with `"` is then the unique git quoting.
+      if (ctrl || substr(out, 1, 1) == "\"") {
         if (pfx != "" && substr(raw, 2, length(pfx)) == pfx) raw = "\"" substr(raw, length(pfx) + 2)
         return raw
       }
-      if (pfx != "" && substr(out, 1, length(pfx)) == pfx) out = substr(out, length(pfx) + 1)
       return out
     }
     # gitline(rest): the new-side path of a `diff --git` line.
