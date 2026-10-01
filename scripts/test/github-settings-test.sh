@@ -294,6 +294,15 @@ schema_reject "a github_org.actions key left out (would be PUT as null)" 'del(.g
 schema_reject "a misspelled security key under .github" '.github_repos[".github"].security.secret_scaning = "enabled"' \
     'github_repos[".github"].security.secret_scaning: unknown key'
 
+# Every actor type the rulesets API accepts passes, User included, and the
+# payload carries it unchanged.
+user_actor_json=$(jq '.github_repos.kure.rulesets["release-protection"].bypass_actors = [{actor_id: 123, actor_type: "User", bypass_mode: "always"}]' <<<"$POLICY_JSON")
+user_actor_out=$( (POLICY_JSON="$user_actor_json" validate_policy) 2>&1 )
+assert_eq "validate_policy accepts a User bypass actor" "0" "$?"
+assert_eq "with no schema error" "0" "$(grep -c 'actor_type' <<<"$user_actor_out")"
+assert_eq "the payload carries the User bypass actor unchanged" '[{"actor_id":123,"actor_type":"User","bypass_mode":"always"}]' \
+    "$(POLICY_JSON="$user_actor_json" build_ruleset_payload kure release-protection | jq -Sc '.bypass_actors')"
+
 # A file of the wrong shape skips the semantic checks instead of crashing
 # them: a string repos: scope would otherwise reach `.repos[]`.
 scope_string_json=$(jq '.github_defaults.rulesets["main-protection"].repos = "kure"' <<<"$POLICY_JSON")
