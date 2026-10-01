@@ -838,7 +838,9 @@ extra conditions cover where identical text is not enough:
   The inventory's resolved state can be minutes old, so the lift re-reads the thread's live
   `isResolved` as its last step before the write. A thread resolved since then is not lifted
   (logged, not a failure). If the read fails, the thread is not lifted and the run is
-  `REVIEW_INCOMPLETE`.
+  `REVIEW_INCOMPLETE`. The re-read runs before every PATCH attempt, not once before the retry
+  loop, so a thread resolved while a failed attempt waits for its retry is not lifted either; the
+  retries stop there (go-kure/.github#256).
 - **No lift on incomplete evidence.** A run that dropped a malformed row (`partial-drop`), left
   a chunk unparsed (`review-parse-failed`), or is `REVIEW_INCOMPLETE` may be missing the other
   colliding finding, so a lone survivor is not trusted as a singleton. This is the same evidence

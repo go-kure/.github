@@ -2330,9 +2330,22 @@ fake_curl_orchestrator() {
           # prt_thread_is_resolved's live re-read before a collision lift
           # (go-kure/.github#148). PRT_TEST_LIVE_RESOLVED: false (default,
           # the thread is still open), true (a human resolved it after the
-          # inventory snapshot), unreadable (node:null).
+          # inventory snapshot), unreadable (node:null), false_then_true (open
+          # on the first read, resolved on the second: a human resolved it
+          # between two lift attempts, go-kure/.github#256; any third read is
+          # unreadable, so a retry that does not stop at "resolved" shows up
+          # as an incomplete run).
           case "${PRT_TEST_LIVE_RESOLVED:-false}" in
             unreadable) printf '%s' '{"data":{"node":null}}' > "$out" ;;
+            false_then_true)
+              local live_n
+              live_n="$(_prt_test_bump "${PRT_TEST_LIVE_RESOLVED_COUNTFILE:?}")"
+              case "$live_n" in
+                1) printf '%s' '{"data":{"node":{"isResolved":false}}}' > "$out" ;;
+                2) printf '%s' '{"data":{"node":{"isResolved":true}}}' > "$out" ;;
+                *) printf '%s' '{"data":{"node":null}}' > "$out" ;;
+              esac
+              ;;
             *) jq -n --argjson r "${PRT_TEST_LIVE_RESOLVED:-false}" '{data:{node:{isResolved:$r}}}' > "$out" ;;
           esac
           echo 200
@@ -2370,10 +2383,15 @@ fake_curl_orchestrator() {
         PATCH)
           # go-kure/.github#148: PRT_TEST_PATCH_BODY_LOG captures each
           # thread-marker rewrite's body; PRT_TEST_PATCH_FAIL=1 answers 500
-          # without counting it as a PATCH.
+          # without counting it as a PATCH; PRT_TEST_PATCH_FAIL=first answers
+          # 500 to the first attempt only (go-kure/.github#256).
           [ -n "${PRT_TEST_PATCH_BODY_LOG:-}" ] && \
             jq -r '.body' <<< "$data" >> "$PRT_TEST_PATCH_BODY_LOG"
           if [ "${PRT_TEST_PATCH_FAIL:-0}" = 1 ]; then
+            : > "$out"; echo 500; return 0
+          fi
+          if [ "${PRT_TEST_PATCH_FAIL:-0}" = first ] && \
+             [ "$(_prt_test_bump "${PRT_TEST_PATCH_ATTEMPT_COUNTFILE:?}")" -eq 1 ]; then
             : > "$out"; echo 500; return 0
           fi
           _prt_test_bump "${PRT_TEST_PATCH_COUNTFILE:?}" >/dev/null
@@ -2528,6 +2546,8 @@ run_orchestrator() {
     PRT_TEST_OWNED_RESOLVED_BY_BOT="${PRT_TEST_OWNED_RESOLVED_BY_BOT:-0}" \
     PRT_TEST_RECHECK_MODE="${PRT_TEST_RECHECK_MODE:-}" \
     PRT_TEST_LIVE_RESOLVED="${PRT_TEST_LIVE_RESOLVED:-false}" \
+    PRT_TEST_LIVE_RESOLVED_COUNTFILE="$scratch/live-resolved-count" \
+    PRT_TEST_PATCH_ATTEMPT_COUNTFILE="$scratch/patch-attempt-count" \
     PRT_TEST_MODEL_RESPONSE_MODE="${PRT_TEST_MODEL_RESPONSE_MODE:-clean}" \
     PRT_TEST_ASSESS_RESPONSE_MODE="${PRT_TEST_ASSESS_RESPONSE_MODE:-clean}" \
     PRT_TEST_ASSESS_ALWAYS_FAIL="${PRT_TEST_ASSESS_ALWAYS_FAIL:-0}" \
@@ -3911,6 +3931,24 @@ rc="$(run_orchestrator enforce 0 0 0)"
 assert_eq "orchestrator #148: live resolved state unreadable -> exits 1, no PATCH, no lift, quarantined=1" \
   "1 0 false true" "$rc $(cat "$PRT_TEST_PATCH_COUNTFILE") $(grep -qF 'collision lifted' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(grep -qE 'done:.*quarantined=1' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 PRT_TEST_LIVE_RESOLVED=false
+
+# go-kure/.github#256: the re-read runs before every PATCH attempt, not once
+# before the retry loop. The control fails the first attempt with the thread
+# still open, to show the retry does reach a second PATCH that lifts.
+: > "$PRT_TEST_PATCH_BODY_LOG"
+PRT_TEST_PATCH_FAIL=first
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #256: first lift PATCH fails, thread still open (control) -> exits 0, the retry lifts" \
+  "0 1 true" "$rc $(cat "$PRT_TEST_PATCH_COUNTFILE") $(grep -qF 'collision lifted' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+: > "$PRT_TEST_PATCH_BODY_LOG"
+PRT_TEST_LIVE_RESOLVED=false_then_true
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #256: first lift PATCH fails, then the thread is resolved -> exits 0, no PATCH lands, no lift, quarantined=1" \
+  "0 0 false true" "$rc $(cat "$PRT_TEST_PATCH_COUNTFILE") $(grep -qF 'collision lifted' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(grep -qE 'done:.*quarantined=1' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator #256: resolved between attempts -> logged as resolved after the snapshot" \
+  "true" "$(grep -qF 'resolved after the inventory snapshot, not lifted' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_LIVE_RESOLVED=false
+PRT_TEST_PATCH_FAIL=0
 
 # An earlier write in loop 1 that fails makes the run incomplete, and no
 # lift may follow on it. The control runs the same two findings with no

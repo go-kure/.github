@@ -281,6 +281,23 @@ prt_gh_rest_fresh() {
   prt_gh_rest "$method" "$path" "$data" || return 3
 }
 
+# prt_gh_rest_fresh_open THREAD_ID METHOD REPO PR_NUMBER EXPECTED_SHA PATH
+#                        [DATA_JSON] — prt_gh_rest_fresh that first confirms
+# THREAD_ID is still open, for prt_retry, so every attempt re-reads it. A
+# collision lift (go-kure/.github#148) must never land on a resolved thread,
+# and prt_retry's backoff between attempts can last up to ~60s, long enough
+# for a human to resolve it (go-kure/.github#256). Exit status extends
+# prt_gh_rest_fresh's 0-3 with:
+#   4 — the thread is resolved: nothing written. Terminal: prt_retry stops.
+#   5 — the thread's resolved state could not be read: nothing written.
+prt_gh_rest_fresh_open() {
+  local thread_id="$1" live_resolved
+  shift
+  live_resolved="$(prt_thread_is_resolved "$thread_id")" || return 5
+  [ "$live_resolved" = false ] || return 4
+  prt_gh_rest_fresh "$@"
+}
+
 # prt_retry N CMD... — retries CMD up to N times. Between attempts, honors
 # GitHub's own back-off signal if the last prt_gh_rest call set one
 # (Retry-After, or x-ratelimit-remaining: 0 — the documented HTTP-200-with-
@@ -289,6 +306,9 @@ prt_gh_rest_fresh() {
 # hammering an active rate limit. No default backoff otherwise — on the
 # self-hosted in-cluster runner, failures with no rate-limit signal are
 # almost always a transient 5xx, not a network partition worth waiting out.
+# Status 4 is terminal: the wrapped call reports that retrying cannot change
+# the outcome (prt_gh_rest_fresh_open: the thread is resolved), so prt_retry
+# returns it at once.
 prt_retry() {
   local n="$1"; shift
   # rc defaults to 1 so `return "$rc"` never reads unset under `set -u` if
@@ -304,6 +324,7 @@ prt_retry() {
     "$@"
     rc=$?
     [ "$rc" -eq 0 ] && return 0
+    [ "$rc" -eq 4 ] && return 4
     if [ "$i" -lt "$n" ]; then
       local wait="${PRT_LAST_RETRY_AFTER:-}"
       if [ -z "$wait" ] && [ "${PRT_LAST_RATELIMIT_REMAINING:-}" = "0" ]; then
