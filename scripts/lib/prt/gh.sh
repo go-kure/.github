@@ -224,6 +224,30 @@ prt_thread_has_human_reply() {
   echo false
 }
 
+# prt_thread_is_resolved THREAD_ID — re-fetches THREAD_ID's live isResolved.
+# The collision lift (go-kure/.github#148) must never apply to a resolved
+# thread, and the inventory snapshot it would otherwise trust can be minutes
+# old: a human resolving the thread never moves PRT_HEAD_SHA, so
+# prt_freshness_check cannot see it. Same reason, and same contract, as
+# prt_thread_has_human_reply above: prints "true"/"false" on success; rc=1
+# (nothing printed) when the thread could not be read or came back
+# malformed, which the caller must treat as "could not confirm", never as
+# "false".
+prt_thread_is_resolved() {
+  local thread_id="$1"
+  # shellcheck disable=SC2016  # $id is a GraphQL variable reference, resolved
+  # server-side from the `variables` JSON object below — never shell-expanded.
+  local query='query($id:ID!){node(id:$id){... on PullRequestReviewThread{isResolved}}}'
+  local vars data resolved
+  vars="$(jq -n --arg id "$thread_id" '{id:$id}' 2>/dev/null)" || return 1
+  data="$(prt_gh_graphql "$query" "$vars" 2>/dev/null)" || return 1
+  resolved="$(jq -r '.node.isResolved | if type == "boolean" then tostring else empty end' <<< "$data" 2>/dev/null)" || return 1
+  case "$resolved" in
+    true|false) echo "$resolved" ;;
+    *) return 1 ;;
+  esac
+}
+
 # prt_gh_rest_fresh METHOD REPO PR_NUMBER EXPECTED_SHA PATH [DATA_JSON] —
 # freshness-gated prt_gh_rest, meant to be passed to prt_retry so EVERY
 # retry attempt rechecks freshness immediately before its write, not just

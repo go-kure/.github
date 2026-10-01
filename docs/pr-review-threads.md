@@ -827,11 +827,17 @@ extra conditions cover where identical text is not enough:
   On an open thread the twin still gates merge through it. On a resolved thread it would reach
   row 6 (human) and surface nowhere, where quarantine keeps it in the withheld table. A resolved
   thread gains nothing from a lift anyway: the lift exists so loop 2 can auto-resolve an open one.
+  The inventory's resolved state can be minutes old, so the lift re-reads the thread's live
+  `isResolved` as its last step before the write. A thread resolved since then is not lifted
+  (logged, not a failure). If the read fails, the thread is not lifted and the run is
+  `REVIEW_INCOMPLETE`.
 - **No lift on incomplete evidence.** A run that dropped a malformed row (`partial-drop`), left
   a chunk unparsed (`review-parse-failed`), or is `REVIEW_INCOMPLETE` may be missing the other
   colliding finding, so a lone survivor is not trusted as a singleton. This is the same evidence
-  loop 2 refuses to act on. It is decided once, before the cap walk, so the walk and loop 1
-  agree.
+  loop 2 refuses to act on. It is decided once, before the cap walk, which uses that value.
+  Loop 1 also refuses a lift once an earlier write in the same loop has failed and made the run
+  `REVIEW_INCOMPLETE`. Both re-checks only narrow the walk's prediction: the walk reserves a slot
+  for every open thread it predicts lifted, so a refused lift never needs more than was reserved.
 
 When all three hold, loop 1 writes `collision=false` onto the marker (the
 same rewrite C5 uses, `content_fp` carried unchanged; a `first_absent_sha` stamp from before the
@@ -847,7 +853,8 @@ moved before the write (a newer run supersedes this one).
 
 One decision function, `prt_effective_collision` (`reconcile.sh`), names the collision source
 (`this_run`, `content_mismatch`, `persisted`, `lift` or `none`) for both loop 1 and the upfront cap
-walk, so the walk's prediction cannot drift from loop 1's decision. The walk treats a lift as no
+walk, so the two differ only where loop 1's live re-checks above refuse a lift the walk predicted.
+The walk treats a lift as no
 collision. It also keeps reserving a slot for an open lifted thread, because a failed write leaves
 that thread quarantined and gating: an open thread whose finding is now `FALSE_POSITIVE` would
 otherwise be predicted to resolve and free a slot it still holds.

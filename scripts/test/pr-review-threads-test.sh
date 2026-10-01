@@ -2107,6 +2107,14 @@ fake_curl_orchestrator() {
             clean_with_finding)
               printf '%s' '{"choices":[{"message":{"content":"{\"findings\":[{\"file\":\"x.go\",\"line\":1,\"category\":\"other\",\"severity\":\"Medium\",\"issue\":\"i\",\"fix\":\"f\"}]}"}}]}' > "$out"
               ;;
+            new_then_owned)
+              # go-kure/.github#148: a new finding (x.go/logic-error, no
+              # thread yet, so loop 1 creates one) ahead of
+              # clean_with_finding's x.go/other finding, which matches the
+              # owned thread. Lets a test fail the first write and watch
+              # what the second finding does.
+              printf '%s' '{"choices":[{"message":{"content":"{\"findings\":[{\"file\":\"x.go\",\"line\":1,\"category\":\"logic-error\",\"severity\":\"Medium\",\"issue\":\"new-issue-text\",\"fix\":\"g\"},{\"file\":\"x.go\",\"line\":1,\"category\":\"other\",\"severity\":\"Medium\",\"issue\":\"i\",\"fix\":\"f\"}]}"}}]}' > "$out"
+              ;;
             fail_first_chunk_review)
               # go-kure/.github#176 codex review (Critical): a two-chunk run
               # where chunk 0's REVIEW call itself fails outright (transport
@@ -2318,6 +2326,17 @@ fake_curl_orchestrator() {
           esac
           echo 200
           ;;
+        *isResolved*)
+          # prt_thread_is_resolved's live re-read before a collision lift
+          # (go-kure/.github#148). PRT_TEST_LIVE_RESOLVED: false (default,
+          # the thread is still open), true (a human resolved it after the
+          # inventory snapshot), unreadable (node:null).
+          case "${PRT_TEST_LIVE_RESOLVED:-false}" in
+            unreadable) printf '%s' '{"data":{"node":null}}' > "$out" ;;
+            *) jq -n --argjson r "${PRT_TEST_LIVE_RESOLVED:-false}" '{data:{node:{isResolved:$r}}}' > "$out" ;;
+          esac
+          echo 200
+          ;;
         *PullRequestReviewThread*)
           if [ "${PRT_TEST_INVENTORY_MODE:-single}" = paginated_comments ]; then
             _prt_test_paginated_comments_response "$out" "$data" || return 1
@@ -2508,6 +2527,7 @@ run_orchestrator() {
     PRT_TEST_COMMENT_GET_EMPTY="${PRT_TEST_COMMENT_GET_EMPTY:-0}" \
     PRT_TEST_OWNED_RESOLVED_BY_BOT="${PRT_TEST_OWNED_RESOLVED_BY_BOT:-0}" \
     PRT_TEST_RECHECK_MODE="${PRT_TEST_RECHECK_MODE:-}" \
+    PRT_TEST_LIVE_RESOLVED="${PRT_TEST_LIVE_RESOLVED:-false}" \
     PRT_TEST_MODEL_RESPONSE_MODE="${PRT_TEST_MODEL_RESPONSE_MODE:-clean}" \
     PRT_TEST_ASSESS_RESPONSE_MODE="${PRT_TEST_ASSESS_RESPONSE_MODE:-clean}" \
     PRT_TEST_ASSESS_ALWAYS_FAIL="${PRT_TEST_ASSESS_ALWAYS_FAIL:-0}" \
@@ -3844,6 +3864,46 @@ assert_eq "orchestrator #148: partial-drop run, exact content match -> no PATCH,
   "0 false true" "$(cat "$PRT_TEST_PATCH_COUNTFILE") $(grep -qF 'collision lifted' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(grep -qE 'done:.*quarantined=1' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 assert_eq "orchestrator #148: partial-drop run -> the run is degraded for the drop (control: the fixture really dropped a row)" \
   "true" "$(grep -qF 'partial-drop' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_MODEL_RESPONSE_MODE=clean_with_finding
+
+# A human can resolve the thread after the inventory snapshot. The lift
+# re-reads the live state as its last step before the write: resolved now
+# means no PATCH and no lift, and nothing failed; unreadable means no PATCH,
+# no lift, and the run is incomplete.
+: > "$PRT_TEST_PATCH_BODY_LOG"
+PRT_TEST_LIVE_RESOLVED=true
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #148: thread resolved after the inventory -> exits 0, no PATCH, no lift, quarantined=1" \
+  "0 0 false true" "$rc $(cat "$PRT_TEST_PATCH_COUNTFILE") $(grep -qF 'collision lifted' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(grep -qE 'done:.*quarantined=1' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator #148: thread resolved after the inventory -> logged" \
+  "true" "$(grep -qF 'resolved after the inventory snapshot, not lifted' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+: > "$PRT_TEST_PATCH_BODY_LOG"
+PRT_TEST_LIVE_RESOLVED=unreadable
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #148: live resolved state unreadable -> exits 1, no PATCH, no lift, quarantined=1" \
+  "1 0 false true" "$rc $(cat "$PRT_TEST_PATCH_COUNTFILE") $(grep -qF 'collision lifted' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(grep -qE 'done:.*quarantined=1' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_LIVE_RESOLVED=false
+
+# An earlier write in loop 1 that fails makes the run incomplete, and no
+# lift may follow on it. The control runs the same two findings with no
+# failure, to show the second finding does lift there.
+: > "$PRT_TEST_PATCH_BODY_LOG"
+PRT_TEST_MODEL_RESPONSE_MODE=new_then_owned
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #148: new finding then owned match, no failure (control) -> exits 0, the owned thread lifts" \
+  "0 1 true" "$rc $(cat "$PRT_TEST_PATCH_COUNTFILE") $(grep -qF 'collision lifted' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+: > "$PRT_TEST_PATCH_BODY_LOG"
+# The body-match write failure is wired inside the issue-comment log arm.
+PRT_TEST_ISSUE_COMMENT_LOG="$(mktemp)"
+PRT_TEST_WRITE_FAIL_BODY_MATCH='new-issue-text'
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #148: the first finding's create fails -> exits 1, no PATCH, no lift for the second" \
+  "1 0 false" "$rc $(cat "$PRT_TEST_PATCH_COUNTFILE") $(grep -qF 'collision lifted' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator #148: the first finding's create fails (control: the create really was refused)" \
+  "true" "$(grep -qF 'FAILED POST' "$PRT_TEST_ISSUE_COMMENT_LOG" && echo true || echo false)"
+rm -f "$PRT_TEST_ISSUE_COMMENT_LOG"
+PRT_TEST_ISSUE_COMMENT_LOG=''
+PRT_TEST_WRITE_FAIL_BODY_MATCH=''
 PRT_TEST_MODEL_RESPONSE_MODE=clean_with_finding
 
 # This-run multiplicity beats a matching text: the group's fp_base thread

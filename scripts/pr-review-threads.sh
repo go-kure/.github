@@ -1002,7 +1002,9 @@ fi # PRT_MODE = enforce
 # the whole set for an fp_base. A dropped malformed row or an unparsed chunk
 # can hide the other colliding finding and fake a singleton, so no lift is
 # allowed on such a run — the same incomplete evidence loop 2 refuses to act
-# on. Decided once, before the cap walk, so the walk and loop 1 agree.
+# on. Decided once, before the cap walk, which uses it as is. Loop 1 also
+# refuses a lift once the run has become incomplete mid-loop; that only
+# narrows the walk's prediction.
 PRT_LIFT_EVIDENCE_COMPLETE=true
 prt_is_incomplete && PRT_LIFT_EVIDENCE_COMPLETE=false
 prt_degraded_reasons | grep -q 'partial-drop' && PRT_LIFT_EVIDENCE_COMPLETE=false
@@ -1044,8 +1046,9 @@ NONE_ANCHORED_COUNT=0
 # cleared when lifting: a lift happens because the finding is present this
 # run, so an absence stamp from before the collision is stale, and keeping
 # it would let the next absence auto-resolve on one absence, not two. Returns
-# 0 only when the PATCH succeeded; every failure has already been recorded
-# (prt_handle_freshness_rc / prt_mark_incomplete) when it returns 1.
+# 0 only when the PATCH succeeded. Returns 1 otherwise: every failure has
+# already been recorded (prt_handle_freshness_rc / prt_mark_incomplete), and
+# a lift refused because the thread is now resolved is logged, not a failure.
 prt_persist_owned_collision() {
   local row="$1" fp="$2" flag="$3" context="$4"
   local db_id cur_resp cur_body fas cfp marker_flag="" new_marker new_body rc
@@ -1070,6 +1073,21 @@ prt_persist_owned_collision() {
   [ "$flag" = true ] && marker_flag=true
   new_marker="$(prt_marker_build "$fp" "$marker_flag" "$fas" "$cfp")"
   new_body="$(prt_marker_replace "$cur_body" "$new_marker")"
+  # A lift must never land on a resolved thread (prt_effective_collision),
+  # and the row's resolved state is the inventory snapshot. Re-read it as
+  # the last step before the write. Resolved now: no lift, nothing failed.
+  # Unreadable: no lift, recorded like the human-reply re-read.
+  if [ "$flag" = false ]; then
+    local live_resolved
+    if ! live_resolved="$(prt_thread_is_resolved "$(jq -r '.thread_id' <<< "$row")")"; then
+      prt_mark_incomplete "${context}: could not re-read the thread's resolved state before the lift, skipped"
+      return 1
+    fi
+    if [ "$live_resolved" != false ]; then
+      prt_log "${context}: thread was resolved after the inventory snapshot, not lifted"
+      return 1
+    fi
+  fi
   prt_retry 3 prt_gh_rest_fresh PATCH "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA" \
     "/repos/${PRT_REPO}/pulls/comments/${db_id}" \
     "$(jq -n --arg b "$new_body" '{body:$b}')" >/dev/null
@@ -1182,7 +1200,14 @@ else
       owned_collision_eff="$(jq -r '.collision' <<< "$owned_match")"
       owned_content_fp="$(jq -r '.content_fp' <<< "$owned_match")"
       [ "$owned_content_fp" = null ] && owned_content_fp=""
-      collision_source="$(prt_effective_collision "$owned_collision_eff" "$collision" "$owned_content_fp" "$content_fp" "$thread_resolved" "$PRT_LIFT_EVIDENCE_COMPLETE")"
+      # The frozen flag plus the live incomplete state: an earlier write in
+      # this loop can fail and mark the run incomplete, and a lift must not
+      # follow on such a run. This only narrows what the cap walk predicted:
+      # the walk reserves a slot for every open thread it predicts lifted,
+      # so a refused lift never needs more than was reserved.
+      lift_evidence="$PRT_LIFT_EVIDENCE_COMPLETE"
+      prt_is_incomplete && lift_evidence=false
+      collision_source="$(prt_effective_collision "$owned_collision_eff" "$collision" "$owned_content_fp" "$content_fp" "$thread_resolved" "$lift_evidence")"
       if [ "$collision_source" = lift ]; then
         if prt_persist_owned_collision "$owned_match" "$fp" false "fp=$fp: lifting the persisted collision flag (content match)"; then
           prt_log "fp=$fp collision lifted (content match)"
