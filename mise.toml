@@ -16,7 +16,7 @@ run = "actionlint"
 
 [tasks."lint:shell"]
 description = "shellcheck the scripts this repo ships"
-run = "shellcheck scripts/check-doc-sync.sh scripts/check-doc-gate.sh scripts/check-links.sh scripts/exact-array-member.sh scripts/check-workflow-refs.sh scripts/github-settings.sh scripts/check-settings-doc.sh scripts/check-action-pins.sh scripts/check-label-docs.sh scripts/govulncheck-gate.sh scripts/check-forbidden-terms.sh scripts/test/check-forbidden-terms-test.sh scripts/check-pin-bump.sh scripts/pr-review-threads.sh scripts/lib/prt/state.sh scripts/lib/prt/json.sh scripts/lib/prt/marker.sh scripts/lib/prt/finding.sh scripts/lib/prt/gh.sh scripts/lib/prt/diff.sh scripts/lib/prt/render.sh scripts/lib/prt/model.sh scripts/lib/prt/reconcile.sh scripts/pr-review-fail-closed-digest.sh scripts/lib/api.sh scripts/pr-ci-health.sh scripts/test/pr-ci-health-test.sh scripts/eval/build-gold.sh scripts/eval/check-gold.sh scripts/eval/review-adapter.sh scripts/eval/judge.sh scripts/eval/run.sh scripts/eval/compare.sh scripts/eval/parse-reviews.sh scripts/test/review-adapter-test.sh scripts/test/build-gold-test.sh scripts/test/judge-test.sh scripts/test/compare-test.sh scripts/release-state.sh scripts/test/release-state-test.sh scripts/release/release.sh scripts/release/publish-policy.sh scripts/release/install-git-cliff.sh scripts/test/release-test.sh scripts/test/install-git-cliff-test.sh scripts/release/deploy-docs-push.sh scripts/test/deploy-docs-push-test.sh"
+run = "shellcheck scripts/check-doc-sync.sh scripts/check-doc-gate.sh scripts/check-links.sh scripts/exact-array-member.sh scripts/check-workflow-refs.sh scripts/github-settings.sh scripts/check-settings-doc.sh scripts/check-action-pins.sh scripts/check-label-docs.sh scripts/govulncheck-gate.sh scripts/check-forbidden-terms.sh scripts/test/check-forbidden-terms-test.sh scripts/check-pin-bump.sh scripts/pr-review-threads.sh scripts/lib/prt/state.sh scripts/lib/prt/json.sh scripts/lib/prt/marker.sh scripts/lib/prt/finding.sh scripts/lib/prt/gh.sh scripts/lib/prt/diff.sh scripts/lib/prt/render.sh scripts/lib/prt/model.sh scripts/lib/prt/reconcile.sh scripts/pr-review-fail-closed-digest.sh scripts/lib/api.sh scripts/pr-ci-health.sh scripts/test/pr-ci-health-test.sh scripts/eval/build-gold.sh scripts/eval/check-gold.sh scripts/eval/review-adapter.sh scripts/eval/judge.sh scripts/eval/run.sh scripts/eval/compare.sh scripts/eval/parse-reviews.sh scripts/test/review-adapter-test.sh scripts/test/build-gold-test.sh scripts/test/judge-test.sh scripts/test/compare-test.sh scripts/release-state.sh scripts/test/release-state-test.sh scripts/release/release.sh scripts/release/publish-policy.sh scripts/release/install-git-cliff.sh scripts/test/release-test.sh scripts/test/install-git-cliff-test.sh scripts/release/deploy-docs-push.sh scripts/test/deploy-docs-push-test.sh scripts/check-mise-ci-parity.sh scripts/test/check-mise-ci-parity-test.sh"
 
 [tasks."check:links"]
 description = "Check every internal markdown link resolves"
@@ -54,9 +54,13 @@ run = "bash scripts/check-label-docs.sh ."
 description = "Guard that a PR touching the pr-review-threads action also bumps its pinned SHA"
 run = "bash scripts/check-pin-bump.sh origin/main ."
 
+[tasks."check:mise-ci-parity"]
+description = "Guard that lint:shell and test check the same scripts as ci.yml"
+run = "bash scripts/check-mise-ci-parity.sh ."
+
 [tasks.check]
 description = "Run all repo checks (matches the scripts-smoke-test CI job)"
-depends = ["lint:shell", "check:doc-sync", "check:doc-gate", "check:workflow-refs", "check:action-pins", "check:settings-doc", "check:label-docs", "check:pin-bump"]
+depends = ["lint:shell", "check:doc-sync", "check:doc-gate", "check:workflow-refs", "check:action-pins", "check:settings-doc", "check:label-docs", "check:pin-bump", "check:mise-ci-parity"]
 
 [tasks.test]
 description = "Run this repo's own script test suites"
@@ -79,6 +83,7 @@ bash scripts/test/pr-ci-health-test.sh .
 bash scripts/test/release-test.sh .
 bash scripts/test/install-git-cliff-test.sh .
 bash scripts/test/deploy-docs-push-test.sh .
+bash scripts/test/check-mise-ci-parity-test.sh .
 RENOVATE_VERSION="$(cat scripts/test/renovate-version)"
 npm install --no-save --prefix .renovate-lane-test "renovate@${RENOVATE_VERSION}"
 npx --prefix .renovate-lane-test renovate-config-validator --no-global renovate/shared.json
