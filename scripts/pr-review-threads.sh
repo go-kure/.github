@@ -1944,14 +1944,18 @@ if [ "$PRT_MODE" = enforce ]; then
   # partial-review comments another login posted; reported after the block.
   # A lookup that fails leaves that list short, so each failure branch sets
   # FOREIGN_COMMENTS_UNREAD and the report says the count is incomplete.
+  # Each lookup also sets FOREIGN_COMMENTS_SCANNED first: when none runs (an
+  # incomplete run, or a freshness skip), there is no count to report.
   FOREIGN_COMMENTS_FILE="$WORKDIR/foreign_marked_comments"
   : > "$FOREIGN_COMMENTS_FILE"
   FOREIGN_COMMENTS_UNREAD=false
+  FOREIGN_COMMENTS_SCANNED=false
   total_findings_this_run="$(jq 'length' <<< "$ALL_FINDINGS")"
   review_parse_failed_this_run=false
   prt_degraded_reasons | grep -q 'review-parse-failed' && review_parse_failed_this_run=true
   if [ "$total_findings_this_run" -eq 0 ] && ! prt_is_incomplete && ! "$review_parse_failed_this_run"; then
     if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
+      FOREIGN_COMMENTS_SCANNED=true
       if clean_id="$(prt_find_marked_comment "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_MARKER_CLEAN" "$PRT_BOT_LOGIN" "$FOREIGN_COMMENTS_FILE")"; then
         # Re-check immediately before the write, not just before the
         # (possibly multi-page) lookup above — matching prt_gh_rest_fresh's
@@ -1983,6 +1987,7 @@ if [ "$PRT_MODE" = enforce ]; then
       # PAST run's comment, not this run's primary output. Worst case a
       # stale clean note lingers next to this run's own (correctly posted)
       # open threads, which is a lesser, self-evident harm.
+      FOREIGN_COMMENTS_SCANNED=true
       if clean_id="$(prt_find_marked_comment "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_MARKER_CLEAN" "$PRT_BOT_LOGIN" "$FOREIGN_COMMENTS_FILE")"; then
         if [ -n "$clean_id" ]; then
           # Re-check immediately before the write — see the identical
@@ -2028,6 +2033,7 @@ if [ "$PRT_MODE" = enforce ]; then
     # itself: this run is already degraded, and tidying a past run's comment
     # must not turn it red.
     if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
+      FOREIGN_COMMENTS_SCANNED=true
       if clean_id="$(prt_find_marked_comment "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_MARKER_CLEAN" "$PRT_BOT_LOGIN" "$FOREIGN_COMMENTS_FILE")"; then
         if [ -n "$clean_id" ]; then
           if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
@@ -2065,6 +2071,7 @@ if [ "$PRT_MODE" = enforce ]; then
   # freshness GET must not fail an otherwise successful review.
   if "$review_parse_failed_this_run"; then
     if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
+      FOREIGN_COMMENTS_SCANNED=true
       if partial_id="$(prt_find_marked_comment "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_MARKER_PARTIAL" "$PRT_BOT_LOGIN" "$FOREIGN_COMMENTS_FILE")"; then
         # Re-check immediately before the write — same rationale as the
         # clean-verdict upsert above.
@@ -2089,6 +2096,7 @@ if [ "$PRT_MODE" = enforce ]; then
     # run's comment: a listing failure only warns. Skipped on an incomplete
     # run, which cannot vouch for every chunk.
     if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
+      FOREIGN_COMMENTS_SCANNED=true
       if partial_id="$(prt_find_marked_comment "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_MARKER_PARTIAL" "$PRT_BOT_LOGIN" "$FOREIGN_COMMENTS_FILE")"; then
         if [ -n "$partial_id" ]; then
           if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
@@ -2115,7 +2123,9 @@ if [ "$PRT_MODE" = enforce ]; then
     FOREIGN_COMMENTS_UNREAD=true
     foreign_comment_count=0
   fi
-  if [ "$FOREIGN_COMMENTS_UNREAD" = true ]; then
+  if [ "$FOREIGN_COMMENTS_SCANNED" != true ]; then
+    prt_log "marked comments by another login (live): not counted (no comment lookup ran this run)"
+  elif [ "$FOREIGN_COMMENTS_UNREAD" = true ]; then
     prt_log "marked comments by another login (live): ${foreign_comment_count:-0} or more (a listing failed)"
     prt_mark_degraded "foreign-marked-comments-unread: a listing of this PR's comments, or counting them, failed, so a live clean-verdict or partial-review comment posted by another login may be missing from this run's count and go unreported (go-kure/.github#153)"
   else

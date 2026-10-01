@@ -176,7 +176,8 @@ no id, and each caller handles it as it handles a listing failure (the clean-ver
 zero-finding run marks `REVIEW_INCOMPLETE`; the supersede and partial-review lookups warn or
 degrade). The count is then a lower bound: the log line reads `<n> or more (a listing failed)`
 (also when counting the listed comments fails) and the run records the `REVIEW_DEGRADED` reason `foreign-marked-comments-unread`, so a missed
-foreign comment is never reported as none.
+foreign comment is never reported as none. When no lookup runs at all (an incomplete run, or the
+head moved before the lookup), the log line reads `not counted (no comment lookup ran this run)`.
 
 **Gotcha, if this secret ever needs regenerating:** a fine-grained PAT's "Repository access: All
 repositories" is scoped to repos the token's **resource owner** account owns, not to org repos
