@@ -1302,10 +1302,15 @@ else
     #              never suppresses a finding; a human resolves the new one.
     #   NOMATCH    no foreign thread for this finding, or only ones whose
     #              marker content_fp shows a different defect: no-thread path.
-    # A failed decision falls to NOMATCH, the more-gating side.
+    # A failed decision marks the run REVIEW_INCOMPLETE and falls to
+    # NOMATCH, the more-gating side. The cap walk may already have left the
+    # finding out of the CREATE candidates (it decided EXISTING or NONE
+    # there), so NOMATCH alone could route it to a non-gating OVERFLOW; the
+    # incomplete mark keeps the run from passing on a guessed decision.
     foreign_override=""
     if [ -z "$owned_match" ] && [ "$FOREIGN" != '[]' ]; then
       if ! foreign_decision="$(prt_foreign_action "$FOREIGN" "$f")"; then
+        prt_mark_incomplete "foreign-thread decision failed for fp=$fp"
         prt_log "fp=$fp: foreign-thread decision failed; treating the finding as having no thread"
         foreign_decision=NOMATCH$'\t'
       fi
