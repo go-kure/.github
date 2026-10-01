@@ -873,26 +873,34 @@ repo_default_branch() {
 ruleset_json_covers_branch() {
     local branch="$1" default_branch="$2" protective_json
     protective_json=$(printf '%s\n' "${PROTECTIVE_RULE_TYPES[@]}" | jq -R . | jq -sc .)
-    # Ref-name conditions are fnmatch patterns, so an entry matches the branch
-    # when its glob does (`refs/heads/ma*`), not only when it is the literal
-    # ref. Every translation errs towards "not covered": on the include side a
-    # single `*`/`?` stops at `/` (so `refs/*` is not trusted to reach
-    # `refs/heads/main`; only `**` crosses separators), on the exclude side
-    # they match anything (so `refs/*` counts as possibly removing the
-    # branch), and a bracket expression (`[!x]`, `[a-z]`) is never trusted on
+    # Ref-name conditions are fnmatch patterns, matched by GitHub as Ruby's
+    # File.fnmatch with FNM_PATHNAME: `*` and `?` stay inside one path
+    # segment, `**/` at the start of a segment matches zero or more whole
+    # directories (`refs/heads/**/main` matches `refs/heads/main`), and any
+    # other `**` is a plain `*` (`refs/**` does NOT reach `refs/heads/main`).
+    # The include side translates exactly that. The exclude side
+    # over-approximates it — `*`, `?` and `**` match across `/`, and `**/`
+    # anywhere may match nothing — so an exclude can only seem to remove more
+    # than it does. A bracket expression (`[!x]`, `[a-z]`) is never trusted on
     # either side. An unmodelled or ambiguous pattern can therefore only keep
     # classic protection, never drop it.
     jq -e --arg branch "$branch" --arg def "$default_branch" --argjson prot "$protective_json" '
         def uses_sentinel: index("~DEFAULT_BRANCH") != null;
         def has_bracket: test("[\\[\\]]");
-        def glob_re(star; qmark): gsub("(?<c>[.+^${}()|\\[\\]\\\\])"; "\\\(.c)")
-            | gsub("\\*\\*"; "\u0001") | gsub("\\*"; star) | gsub("\\?"; qmark) | gsub("\u0001"; ".*");
-        def matches_branch(star; qmark): . as $p |
+        def glob_re(mode): gsub("(?<c>[.+^${}()|\\[\\]\\\\])"; "\\\(.c)")
+            | if mode == "include" then
+                gsub("(?:^|(?<=/))\\*\\*/"; "\u0002") | gsub("\\*\\*"; "\u0001") | gsub("\\*"; "\u0001")
+                | gsub("\\?"; "[^/]") | gsub("\u0002"; "([^/]*/)*") | gsub("\u0001"; "[^/]*")
+              else
+                gsub("\\*\\*/"; "\u0002") | gsub("\\*\\*"; "\u0001") | gsub("\\*"; "\u0001")
+                | gsub("\\?"; ".") | gsub("\u0002"; "(.*/)?") | gsub("\u0001"; ".*")
+              end;
+        def matches_branch(mode): . as $p |
             $p == "~ALL"
             or ($def == $branch and $p == "~DEFAULT_BRANCH")
-            or (($p | startswith("~") | not) and (("refs/heads/" + $branch) | test("^" + ($p | glob_re(star; qmark)) + "$")));
-        def include_reaches: (. // []) | any((has_bracket | not) and matches_branch("[^/]*"; "[^/]"));
-        def exclude_may_remove: (. // []) | any(has_bracket or matches_branch(".*"; "."));
+            or (($p | startswith("~") | not) and (("refs/heads/" + $branch) | test("^" + ($p | glob_re(mode)) + "$")));
+        def include_reaches: (. // []) | any((has_bracket | not) and matches_branch("include"));
+        def exclude_may_remove: (. // []) | any(has_bracket or matches_branch("exclude"));
         .target == "branch"
         and .enforcement == "active"
         and ((.rule_types // []) | any(. as $t | $prot | index($t) != null))
@@ -1128,9 +1136,12 @@ remove_classic_branch_protection() {
     fi
 }
 
-# Leftover classic branch protection on the repo's default branch (BRANCH;
-# DEFAULT_BRANCH is the raw read, empty when unreadable, and BRANCH falls back
-# to main then). Migrated away only when both hold:
+# Leftover classic branch protection on the repo's default branch (BRANCH,
+# the raw read, empty when unreadable). An unreadable default branch is a
+# failure in both modes, never a guess: probing `main` on a repo whose default
+# is `master` would report no protection, no drift and no failure, and on
+# --apply could delete protection on a branch the rulesets do not cover.
+# Migrated away only when both hold:
 #   1. the policy installs a branch ruleset covering BRANCH on this repo
 #      (ruleset_covers_branch). A policy that leaves the branch without one
 #      (empty map, tag rulesets only, branch not included) would otherwise
@@ -1144,8 +1155,16 @@ remove_classic_branch_protection() {
 #      between DELETE and POST even when it succeeded (go-kure/.github#160).
 #      When it does not, protection is kept and the apply run fails.
 audit_classic_protection() {
-    local repo="$1" apply="$2" branch="$3" default_branch="$4"
-    shift 4
+    local repo="$1" apply="$2" branch="$3"
+    shift 3
+
+    if [ -z "$branch" ]; then
+        RULESET_MISSING=$((RULESET_MISSING + 1))
+        echo -e "  ${RED}FAILED${NC}: Could not read the default branch of $GITHUB_ORG/$repo — classic branch protection not checked"
+        [ "$apply" = "true" ] && record_apply_failure "$repo: default branch unreadable, classic branch protection not checked"
+        return 0
+    fi
+    local default_branch="$branch"
 
     gh api "repos/$GITHUB_ORG/$repo/branches/$branch/protection" --silent 2>/dev/null || return 0
 
@@ -1772,9 +1791,10 @@ audit_rulesets() {
     # The default branch is resolved once and used for the classic-protection
     # probe, the coverage checks and the delete alike (go-kure/.github#160).
     # Classic protection is handled after the rulesets are reconciled below.
-    local default_branch protected_branch
+    # Empty when unreadable: audit_classic_protection then fails rather than
+    # guessing a branch.
+    local default_branch
     default_branch=$(repo_default_branch "$repo")
-    protected_branch="${default_branch:-main}"
 
     # Get existing rulesets. includes_parents=false excludes org-level rulesets that
     # apply here by inheritance — those are managed at the org level, not this repo's,
@@ -1799,7 +1819,7 @@ audit_rulesets() {
         fi
         # Still reported; on --apply the live re-read fails the same way, so
         # classic protection is kept.
-        audit_classic_protection "$repo" "$apply" "$protected_branch" "$default_branch" "${applicable_names[@]}"
+        audit_classic_protection "$repo" "$apply" "$default_branch" "${applicable_names[@]}"
         return
     fi
 
@@ -1876,7 +1896,7 @@ audit_rulesets() {
         echo -e "  ${RED}UNMANAGED${NC}: Ruleset(s) not in policy (created out-of-band): $unmanaged_rulesets"
     fi
 
-    audit_classic_protection "$repo" "$apply" "$protected_branch" "$default_branch" "${applicable_names[@]}"
+    audit_classic_protection "$repo" "$apply" "$default_branch" "${applicable_names[@]}"
 }
 
 # Does this known (policy-declared) ruleset's live config match what policy

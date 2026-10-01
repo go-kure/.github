@@ -602,10 +602,14 @@ whose commit never carries the pull-request checks.
 
 **Migrating from classic branch protection.** Classic protection left on a repo's default branch is
 reported `LEGACY` when a policy ruleset covers that branch, and kept with a `SKIP` when none does.
-`--apply` deletes it only after the rulesets are reconciled, and only when a re-read of the live
-rulesets shows an active one covering the branch with a protective rule. If the ruleset write
-failed, or the re-read fails, classic protection is kept and the apply run exits 1, so the branch
-is never left with neither.
+`--apply` deletes it only when a live, active branch ruleset with a protective rule covers the
+default branch, read after the rulesets are reconciled. The deciding fact is that coverage, not
+the outcome of any one write: a failed update can leave an older ruleset that still covers the
+branch, and then classic protection is still deleted. When no live ruleset covers it (a create
+failed, the ruleset is disabled, or the re-read fails), classic protection is kept and the apply
+run exits 1, so the branch is never left with neither. A default branch that cannot be read is a
+failure in both modes: nothing is probed or deleted on a guessed branch, and audit and apply both
+exit 1.
 
 ## Organization Settings
 
