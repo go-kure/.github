@@ -1050,6 +1050,28 @@ MATCHED_FPS='[]'
 THREADS_WRITTEN=0
 NONE_ANCHORED_COUNT=0
 
+# prt_post_maint_failure OWNED_ROW STALE_SHA FIRST_COMMENT_DB_ID CONTEXT —
+# called after a clear of STALE_SHA failed (go-kure/.github#261). Posts the
+# MAINT_FAILURE reply recording it, unless one of the thread's replies
+# already records that stamp: a clear that keeps failing on later runs adds
+# no further reply. No freshness gate: the reply documents a failure that
+# already happened and is independent of the marker, so it posts even if the
+# head moved meanwhile. The reply is the only durable record of the stale
+# stamp; if it fails too, the run is marked incomplete, because the next
+# absence at a new head can then resolve on one absence.
+prt_post_maint_failure() {
+  local row="$1" stale="$2" db_id="$3" context="$4" reply
+  if [ "$(jq -r --arg s "$stale" '(.maint_failure_shas // []) | index($s) != null' <<< "$row" 2>/dev/null)" = true ]; then
+    prt_log "${context}: a MAINT_FAILURE reply already records stamp ${stale}, not posting another"
+    return 0
+  fi
+  reply="$(prt_render_reply_maint_failure "clearing the absence marker failed after 3 retries (or went stale mid-retry)" "$stale")"
+  if ! prt_gh_rest POST "/repos/${PRT_REPO}/pulls/${PRT_PR_NUMBER}/comments" \
+    "$(jq -n --arg b "$reply" --argjson r "$db_id" '{body:$b, in_reply_to:$r}')" >/dev/null; then
+    prt_mark_incomplete "${context}: the MAINT_FAILURE reply recording stale stamp ${stale} failed; the next absence at a new head may resolve this thread on one absence"
+  fi
+}
+
 # prt_persist_owned_collision OWNED_ROW FP true|false|keep CONTEXT — rewrites
 # the owned thread's first-comment marker with collision set to the given
 # value, or to the row's current value for keep. Used for persisting a
@@ -1116,12 +1138,7 @@ prt_persist_owned_collision() {
     # row 11 instead of resolving on one absence.
     local stale_fas
     stale_fas="$(jq -r '.first_absent_sha // empty' <<< "$row")"
-    if [ -n "$stale_fas" ]; then
-      local reply
-      reply="$(prt_render_reply_maint_failure "clearing the absence marker failed after 3 retries (or went stale mid-retry)" "$stale_fas")"
-      prt_gh_rest POST "/repos/${PRT_REPO}/pulls/${PRT_PR_NUMBER}/comments" \
-        "$(jq -n --arg b "$reply" --argjson r "$db_id" '{body:$b, in_reply_to:$r}')" >/dev/null || true
-    fi
+    [ -n "$stale_fas" ] && prt_post_maint_failure "$row" "$stale_fas" "$db_id" "$context"
     return 1
   fi
   return 0
@@ -1630,13 +1647,7 @@ if [ "$PRT_MODE" = enforce ]; then
         retry_rc=$?
         if [ "$retry_rc" -ne 0 ]; then
           prt_handle_freshness_rc "$retry_rc" "fp=$fp: clearing the absence marker (after up to 3 retries)"
-          # No freshness gate on this reply itself: it documents a failure
-          # that already happened and is structurally independent of the
-          # marker (render.sh's prt_render_reply_maint_failure docstring) —
-          # deliberately allowed to post even if the head moved meanwhile.
-          reply="$(prt_render_reply_maint_failure "clearing the absence marker failed after 3 retries (or went stale mid-retry)" "$first_absent_sha")"
-          prt_gh_rest POST "/repos/${PRT_REPO}/pulls/${PRT_PR_NUMBER}/comments" \
-            "$(jq -n --arg b "$reply" --argjson r "$first_comment_db_id" '{body:$b, in_reply_to:$r}')" >/dev/null || true
+          prt_post_maint_failure "$th" "$first_absent_sha" "$first_comment_db_id" "fp=$fp: marker clear"
         fi
         ;;
       REPLY_RESOLVE)

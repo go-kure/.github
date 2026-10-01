@@ -117,16 +117,24 @@ prt_marker_build_maint_failure() {
 # stamp it recorded and returns 0. A reply posted before the state line
 # existed carries only the `**MAINT_FAILURE:**` line and prints "" (the stamp
 # is unknown). Returns 1 for any other reply.
+# Only the line directly after the note marker is read: both forms put their
+# line there, and a reply that carries model prose (the false-positive
+# reasoning) has its own fixed text there, so prose quoting either line
+# further down can neither forge nor suppress one.
 prt_marker_maint_failure_sha() {
-  local body="$1" line legacy=1
+  local body="$1" line after_note=0
   while IFS= read -r line; do
-    if [[ "$line" =~ $PRT_MARKER_MAINT_FAILURE_RE ]]; then
-      printf '%s' "${BASH_REMATCH[2]:-}"
-      return 0
+    if [ "$after_note" = 1 ]; then
+      if [[ "$line" =~ $PRT_MARKER_MAINT_FAILURE_RE ]]; then
+        printf '%s' "${BASH_REMATCH[2]:-}"
+        return 0
+      fi
+      [[ "$line" == '**MAINT_FAILURE:** '* ]] && return 0
+      return 1
     fi
-    [[ "$line" == '**MAINT_FAILURE:** '* ]] && legacy=0
+    [ "$line" = "$PRT_MARKER_NOTE" ] && after_note=1
   done <<< "$body"
-  return "$legacy"
+  return 1
 }
 
 # prt_marker_replace BODY NEW_MARKER_LINE — re-finds the OLD marker's exact
