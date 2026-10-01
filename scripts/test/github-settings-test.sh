@@ -1142,7 +1142,7 @@ report_rc=$( (REPORT_ONLY=true RULESET_MISSING=2 LABELS_EXTRA=1 JSON_OUTPUT=fals
 assert_eq "--report-only exits 0 on drift" "0" "$report_rc"
 report_out=$( (REPORT_ONLY=true RULESET_MISSING=2 LABELS_EXTRA=1 JSON_OUTPUT=false print_summary false) 2>&1)
 assert_contains "--report-only still prints the drift" "$report_out" "2 wrong"
-assert_contains "--report-only warns with the failing count" "$report_out" "::warning::3 issue(s) an apply would change; not failing (--report-only)"
+assert_contains "--report-only warns with the failing count" "$report_out" "::warning::3 drift issue(s) found; not failing (--report-only)"
 plain_ruleset_rc=$( (RULESET_MISSING=2 JSON_OUTPUT=false print_summary false) >/dev/null 2>&1; echo $?)
 assert_eq "a plain audit still exits 1 on ruleset drift" "1" "$plain_ruleset_rc"
 
@@ -1160,7 +1160,7 @@ assert_eq "a plain audit still exits 1 on label metadata drift" "1" "$plain_drif
 both_rc=$( (REPORT_ONLY=true WARN_LABEL_DRIFT=true LABELS_DRIFT=1 SETTINGS_MISSING=1 JSON_OUTPUT=false print_summary false) >/dev/null 2>&1; echo $?)
 assert_eq "both flags: exits 0" "0" "$both_rc"
 both_out=$( (REPORT_ONLY=true WARN_LABEL_DRIFT=true LABELS_DRIFT=1 SETTINGS_MISSING=1 JSON_OUTPUT=false print_summary false) 2>&1)
-assert_contains "both flags: the report-only count excludes label metadata drift" "$both_out" "::warning::1 issue(s) an apply would change"
+assert_contains "both flags: the report-only count excludes label metadata drift" "$both_out" "::warning::1 drift issue(s) found"
 apply_flag_rc=$( (APPLY_FAILURES=("kure: update label x"); WARN_LABEL_DRIFT=true LABELS_DRIFT=1 JSON_OUTPUT=false print_summary true) >/dev/null 2>&1; echo $?)
 assert_eq "--warn-label-drift leaves the apply-failure exit alone" "1" "$apply_flag_rc"
 apply_flag_out=$( (WARN_LABEL_DRIFT=true LABELS_DRIFT=1 JSON_OUTPUT=false print_summary true) 2>&1)

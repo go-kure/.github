@@ -2217,7 +2217,7 @@ print_summary() {
         echo ""
         echo "Run with --apply to fix issues"
         if [ "$REPORT_ONLY" = "true" ]; then
-            ci_warning "$failing_issues issue(s) an apply would change; not failing (--report-only)"
+            ci_warning "$failing_issues drift issue(s) found; not failing (--report-only)"
             return 0
         fi
         return 1
