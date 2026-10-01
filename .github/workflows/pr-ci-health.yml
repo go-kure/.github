@@ -1,0 +1,103 @@
+name: PR CI Health
+
+# Its own workflow, not a job in settings.yml (go-kure/.github#178): a red
+# run of either used to show as one red "Org Settings" run, so settings
+# drift and failing PRs read as one problem. A red run here is the
+# notification itself. See docs/standards.md, "PR CI Health" for what this
+# does and does not cover.
+on:
+  schedule:
+    - cron: '0 6 * * *'  # Daily 6am UTC
+  workflow_dispatch:
+
+jobs:
+  pr-ci-health:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Check open-PR CI health across org repos
+        env:
+          GH_TOKEN: ${{ secrets.SETTINGS_PAT }}
+        run: |
+          set -o pipefail
+          bash scripts/pr-ci-health.sh --ci --json 2>&1 | tee pr-ci-health-output.txt
+
+      - name: Post summary
+        if: always()
+        run: |
+          {
+            echo "## PR CI Health"
+            echo ""
+            # Scoped to just this block (not an early `exit 0` for the whole step,
+            # go-kure/.github#141 follow-up review finding): if the script aborted
+            # before writing the report — a job timeout, or an unhandled failure
+            # inside the loop — the Warnings / Errors section below must still run,
+            # since pr-ci-health-output.txt can hold real ERROR lines even when the
+            # JSON was never written. Silently exiting the whole step on a missing
+            # report would produce an empty summary despite captured errors.
+            if [ -f pr-ci-health-report.json ]; then
+            python3 - <<'EOF'
+          import json
+          with open("pr-ci-health-report.json") as f:
+              data = json.load(f)
+          failing = data["failing"]
+          no_checks = data["no_checks"]
+          query_errors = data["query_errors"]
+          if not failing and not query_errors and not no_checks:
+              print("All open, non-draft PRs green (or none open).")
+          else:
+              # Coverage-incomplete is stated up front and unconditionally whenever
+              # query_errors is non-empty — never folded into an "all green" claim
+              # just because the findings array happens to be empty (go-kure/.github#141
+              # follow-up review finding: a query outage must not read as "no problems").
+              if query_errors:
+                  repos = ", ".join(f"`{r}`" for r in query_errors)
+                  print(f"**Coverage incomplete: {len(query_errors)} repo(s) could not be queried** — {repos}")
+                  print()
+              if failing:
+                  print(f"**{len(failing)} open PR(s) with failing/erroring checks:**")
+                  print()
+                  print("| Repo | PR | State | Title |")
+                  print("|------|----|-------|-------|")
+                  for p in failing:
+                      # PR titles are attacker-controllable (any external contributor sets one) and
+                      # land verbatim in a table cell — an unescaped `|` splits into extra columns
+                      # and corrupts the rendered table (go-kure/.github#141 review finding).
+                      title = p['title'].replace('|', '\\|')
+                      print(f"| `{p['repo']}` | [#{p['number']}]({p['url']}) | {p['state']} | {title} |")
+              elif query_errors:
+                  print("No failing PRs found among the repos that were queried.")
+              else:
+                  print("No open, non-draft PR has failing checks.")
+              # A PR with no checks at all never makes the job red (a PR opened
+              # seconds ago has none yet), but it must not read as green either:
+              # a workflow that never triggered looks exactly like this
+              # (go-kure/.github#175).
+              if no_checks:
+                  print()
+                  print(f"**{len(no_checks)} open PR(s) with no checks reported on the head commit (warning, not counted as failing):**")
+                  print()
+                  print("| Repo | PR | Title |")
+                  print("|------|----|-------|")
+                  for p in no_checks:
+                      title = p['title'].replace('|', '\\|')
+                      print(f"| `{p['repo']}` | [#{p['number']}]({p['url']}) | {title} |")
+          EOF
+            else
+              echo "_Report file missing — the health-check script likely aborted before finishing;_"
+              echo "_see Warnings / Errors below (if any) and the job log._"
+            fi
+            if [ -f pr-ci-health-output.txt ] && grep -qE 'WARNING:|ERROR:' pr-ci-health-output.txt 2>/dev/null; then
+              echo ""
+              echo "## Warnings / Errors"
+              echo '```'
+              grep -E 'WARNING:|ERROR:' pr-ci-health-output.txt
+              echo '```'
+            fi
+            echo ""
+            echo "_Generated: $(date -u '+%Y-%m-%d %H:%M UTC')_"
+          } >> $GITHUB_STEP_SUMMARY

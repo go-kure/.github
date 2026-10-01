@@ -43,6 +43,11 @@ LABELS_FILE="${LABELS_FILE:-$REPO_ROOT/standards/labels.json}"
 POLICY_FILE="${POLICY_FILE:-$REPO_ROOT/governance/repository-settings-policy.yaml}"
 CI_MODE=false
 JSON_OUTPUT=false
+# Audit-mode exit policy (go-kure/.github#178). --report-only prints the
+# drift and exits 0; --warn-label-drift reports label colour/description
+# drift without failing on it. Neither changes what is audited or applied.
+REPORT_ONLY=false
+WARN_LABEL_DRIFT=false
 
 # Whole policy file, loaded once as JSON in check_requirements(). All lookup
 # helpers read this instead of re-invoking yq per key — yq's dot-path parser
@@ -296,15 +301,25 @@ record_apply_failure() {
     APPLY_FAILURES+=("$1")
 }
 
+# ci_warning MESSAGE — a warning that does not fail the run: a GitHub
+# Actions annotation in CI mode, a coloured line otherwise.
+ci_warning() {
+    if [ "$CI_MODE" = "true" ]; then
+        echo "::warning::$1"
+    else
+        echo -e "${YELLOW}WARNING${NC}: $1"
+    fi
+}
+
 # JSON results
 json_results="[]"
 json_org_result="null"
 
 usage() {
-    echo "Usage: $0 <repo> [--apply] [--ci] [--json]"
-    echo "       $0 --all [--apply] [--ci] [--json]"
+    echo "Usage: $0 <repo> [--apply] [--report-only] [--warn-label-drift] [--ci] [--json]"
+    echo "       $0 --all [--apply] [--report-only] [--warn-label-drift] [--ci] [--json]"
     echo "       $0 <repo>|--all --import"
-    echo "       $0 --org [--apply] [--ci] [--json]"
+    echo "       $0 --org [--apply] [--report-only] [--warn-label-drift] [--ci] [--json]"
     echo "       $0 --org --import"
     echo ""
     echo "Options:"
@@ -318,6 +333,12 @@ usage() {
     echo "             (never writes; diff the output against"
     echo "             governance/repository-settings-policy.yaml by hand). Mutually"
     echo "             exclusive with --apply."
+    echo "  --report-only"
+    echo "             Audit as a preview: report the drift, emit a warning, exit 0."
+    echo "             Mutually exclusive with --apply."
+    echo "  --warn-label-drift"
+    echo "             In audit mode, report label colour/description drift as a"
+    echo "             warning instead of failing on it. Every other drift still fails."
     echo "  --ci       Disable ANSI colors for clean CI log output"
     echo "  --json     Output machine-readable JSON summary"
     echo ""
@@ -338,6 +359,8 @@ usage() {
     echo "  $0 --all --apply           # Apply settings to all repos"
     echo "  $0 --all --ci              # CI-friendly audit (no ANSI colors)"
     echo "  $0 --all --json            # Output JSON summary"
+    echo "  $0 --all --report-only     # Preview drift without failing (push runs)"
+    echo "  $0 --all --warn-label-drift  # Fail on drift except label metadata (daily run)"
     echo "  $0 kure --import           # Dump kure's live settings as policy-shaped YAML"
     echo "  $0 --all --import > /tmp/live.yaml   # Dump all repos, then diff by hand"
     echo "  $0 --org                   # Audit organization-level settings"
@@ -2180,9 +2203,23 @@ print_summary() {
         echo "JSON report: github-settings-report.json"
     fi
 
-    if [ "$total_issues" -gt 0 ] && [ "$apply" != "true" ]; then
+    # Audit mode only: --apply has already patched label metadata drift
+    # (audit_labels), and its exit status is decided by the write failures
+    # below.
+    local failing_issues=$total_issues
+    if [ "$apply" != "true" ] && [ "$WARN_LABEL_DRIFT" = "true" ] && [ "$LABELS_DRIFT" -gt 0 ]; then
+        failing_issues=$((total_issues - LABELS_DRIFT))
+        echo ""
+        ci_warning "$LABELS_DRIFT label(s) with colour/description drift (warning only, --warn-label-drift)"
+    fi
+
+    if [ "$failing_issues" -gt 0 ] && [ "$apply" != "true" ]; then
         echo ""
         echo "Run with --apply to fix issues"
+        if [ "$REPORT_ONLY" = "true" ]; then
+            ci_warning "$failing_issues issue(s) an apply would change; not failing (--report-only)"
+            return 0
+        fi
         return 1
     fi
 
@@ -2229,6 +2266,14 @@ main() {
                 import_mode=true
                 shift
                 ;;
+            --report-only)
+                REPORT_ONLY=true
+                shift
+                ;;
+            --warn-label-drift)
+                WARN_LABEL_DRIFT=true
+                shift
+                ;;
             --ci)
                 CI_MODE=true
                 shift
@@ -2267,6 +2312,11 @@ main() {
         exit 1
     fi
 
+    if [ "$REPORT_ONLY" = "true" ] && [ "$apply" = "true" ]; then
+        echo "ERROR: --report-only and --apply are mutually exclusive (--report-only is an audit preview)"
+        exit 1
+    fi
+
     setup_colors
     check_requirements
 
@@ -2291,6 +2341,9 @@ main() {
         echo -e "${YELLOW}Running in APPLY mode - changes will be made${NC}"
     else
         echo -e "${BLUE}Running in AUDIT mode (dry-run) - no changes will be made${NC}"
+        if [ "$REPORT_ONLY" = "true" ]; then
+            echo -e "${BLUE}Report only - drift is listed but does not fail this run${NC}"
+        fi
     fi
 
     # Run audits
