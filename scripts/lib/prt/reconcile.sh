@@ -219,9 +219,10 @@ prt_decide_absent() {
   # absence — the marker must not be treated as if two pushes confirmed it.
   [ "$first_absent_sha" = "$current_sha" ] && { echo NONE; return 0; }
 
-  # Row 11: a maintenance-failure reply is still unanswered (a marker-clear
-  # retried 3x and still failed last run) — exclude this thread from
-  # auto-resolve until a human replies to it.
+  # Row 11: a marker clear failed after 3 retries and its MAINT_FAILURE reply
+  # recorded the stamp the thread still carries (go-kure/.github#261) — that
+  # stamp is stale, so it is not the first of two absences. Held until a
+  # later run clears it; a human reply already stopped this at row 13.
   [ "$unanswered_maint_failure" = true ] && { echo NONE; return 0; }
 
   # Row 10: two consecutive absences on different SHAs, nothing blocking it.
