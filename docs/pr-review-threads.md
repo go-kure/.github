@@ -145,9 +145,10 @@ overrides the workflow's own default) is one of three values. An unrecognized va
   cheap `exit 0` on an empty diff, since neither ever creates or reconciles a thread. Auto-resolve
   from absence still takes **two** separate runs at two different head SHAs, not one: the first
   empty-diff run stamps a `first_absent_sha` marker; only a later run — empty diff or not — whose
-  head has moved past that SHA replies and resolves. This mirrors the existing two-push behavior
-  for a finding the model itself calls a false positive; an empty diff does not shortcut it to one
-  push. The two absences must be consecutive: a run where the finding is present again clears
+  head has moved past that SHA replies and resolves. An empty diff follows the same absence rules
+  as any other run; it does not shortcut them to one push. (A finding the model calls a false
+  positive is different: its open thread resolves in that one run, unless a human has replied.)
+  The two absences must be consecutive: a run where the finding is present again clears
   the stamp (loop 1 rewrites the marker; a thread with no stamp costs no extra API call), so a
   finding that flickers in and out of the model's output restarts the count instead of resolving
   on its next single absence (go-kure/.github#252). If that rewrite fails, the run is
