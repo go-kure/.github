@@ -772,6 +772,20 @@ t153_jq_fail_any() (
 )
 assert_eq "foreign_action #153 (R2-P2): jq failure on the fp-presence check -> returns 1, not NOMATCH" \
   "1" "$(t153_jq_fail_any prt_foreign_action "[$(prt_t153_row human "")]" "$(prt_t153_finding VALID false)")"
+# R3-P1: the finding's own content_fp. A failed issue/fix read, or a hash
+# that is not one, would read an equal-content_fp open row as NOMATCH.
+t153_fail_cfp() ( # issue|fix|hash FOREIGN FINDING
+  local what="$1"; shift
+  # Invoked by the prt_foreign_action call below.
+  # shellcheck disable=SC2329
+  jq() { case "$what $*" in "issue -r .issue"|"fix -r .fix") return 5 ;; esac; command jq "$@"; }
+  # shellcheck disable=SC2329
+  [ "$what" = hash ] && prt_content_fp() { echo not-a-hash; }
+  prt_foreign_action "$@" >/dev/null 2>&1
+  echo "$?"
+)
+assert_eq "foreign_action #153 (R3-P1): failed issue read, failed fix read, malformed hash -> returns 1 each, not NOMATCH" \
+  "1 1 1" "$(t153_fail_cfp issue "[$(prt_t153_row open "$t153_cfp")]" "$(prt_t153_finding VALID false)") $(t153_fail_cfp fix "[$(prt_t153_row open "$t153_cfp")]" "$(prt_t153_finding VALID false)") $(t153_fail_cfp hash "[$(prt_t153_row open "$t153_cfp")]" "$(prt_t153_finding VALID false)")"
 assert_eq "foreign_action #153 (R1-P1): planted collision=true on an author-resolved marker -> NEW, the flag is never read" \
   "NEW" "$(prt_t153_act "[$(prt_t153_row author "$t153_cfp" kure-bot true)]" "$(prt_t153_finding VALID false)")"
 assert_eq "foreign_action #153 (R1-P1): author-resolved marker with another finding's content_fp -> NOMATCH (no-thread path), never QUARANTINE" \
@@ -2432,6 +2446,13 @@ fake_curl_orchestrator() {
               # owned thread. Lets a test fail the first write and watch
               # what the second finding does.
               printf '%s' '{"choices":[{"message":{"content":"{\"findings\":[{\"file\":\"x.go\",\"line\":1,\"category\":\"logic-error\",\"severity\":\"Medium\",\"issue\":\"new-issue-text\",\"fix\":\"g\"},{\"file\":\"x.go\",\"line\":1,\"category\":\"other\",\"severity\":\"Medium\",\"issue\":\"i\",\"fix\":\"f\"}]}"}}]}' > "$out"
+              ;;
+            high_owned_then_new)
+              # go-kure/.github#153: clean_with_finding's x.go/other finding
+              # raised to High, then a Medium x.go/logic-error finding with no
+              # thread. The High one outranks the new one in the cap walk, so
+              # a wrongly released match takes the slot the new one needed.
+              printf '%s' '{"choices":[{"message":{"content":"{\"findings\":[{\"file\":\"x.go\",\"line\":1,\"category\":\"other\",\"severity\":\"High\",\"issue\":\"i\",\"fix\":\"f\"},{\"file\":\"x.go\",\"line\":1,\"category\":\"logic-error\",\"severity\":\"Medium\",\"issue\":\"new-issue-text\",\"fix\":\"g\"}]}"}}]}' > "$out"
               ;;
             fail_first_chunk_review)
               # go-kure/.github#176 codex review (Critical): a two-chunk run
@@ -5037,6 +5058,48 @@ assert_eq "orchestrator #153 (R2-P3): the cap walk's call succeeded (no cap abor
   "false 2" "$(grep -qF 'review inventory cap evaluation failed' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(cat "$t153_jq_sel_countfile")"
 rm -f "$t153_jq_sel_countfile"
 unset t153_jq_sel_countfile
+
+# R3-P1: the cap walk's own read of the finding's issue text fails. Cap 2; a
+# High finding matches the open foreign thread (equal content_fp), a Medium
+# one needs a thread. Control first: the open thread reserves one slot, the
+# High finding stays on it, the Medium one gets the other.
+PRT_TEST_MODEL_RESPONSE_MODE=high_owned_then_new
+PRT_TEST_OWNED_CONTENT_FP="$(prt_content_fp i f)"
+: > "$PRT_TEST_ISSUE_COMMENT_LOG"
+rc="$(PRT_MAX_FINDINGS_TOTAL=2 run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #153 (R3-P1 control): cap 2, High finding on an open foreign thread, Medium new one -> one CREATE, no overflow copy" \
+  "0 1 0 0 0 0 0" "$rc $(prt_foreign_writes) $(grep -c '^POST ' "$PRT_TEST_ISSUE_COMMENT_LOG")"
+# Injected: an empty issue text hashes to another content_fp, the cap walk
+# reads the High finding as NOMATCH and gives it the free slot, and loop 1
+# (which reads it fine) keeps it on the foreign thread while the Medium one
+# overflows. The failed read must abort the walk instead. Seam: the first
+# `jq -r .issue` of the run is the cap walk's (no owned row carries a
+# content_fp, and loop 1 runs after it).
+: > "$PRT_TEST_ISSUE_COMMENT_LOG"
+t153_jq_issue_countfile="$(mktemp)"
+echo 0 > "$t153_jq_issue_countfile"
+rc="$(
+  # Invoked indirectly by the orchestrator.
+  # shellcheck disable=SC2329
+  jq() {
+    case "$*" in
+      '-r .issue')
+        [ "$(_prt_test_bump "$PRT_TEST_JQ_ISSUE_COUNTFILE")" -eq 1 ] && return 5 ;;
+    esac
+    command jq "$@"
+  }
+  export -f jq
+  export PRT_TEST_JQ_ISSUE_COUNTFILE="$t153_jq_issue_countfile"
+  PRT_MAX_FINDINGS_TOTAL=2 run_orchestrator enforce 0 0 0
+)"
+assert_eq "orchestrator #153 (R3-P1): issue read fails in the cap walk -> exits 1, cap evaluation aborted as REVIEW_INCOMPLETE, no write" \
+  "1 true 0 0 0 0 0 0" "$rc $(grep -qF 'REVIEW_INCOMPLETE: review inventory cap evaluation failed' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(prt_foreign_writes) $(grep -c '^POST ' "$PRT_TEST_ISSUE_COMMENT_LOG")"
+assert_eq "orchestrator #153 (R3-P1): the injected failure was the cap walk's only issue read" \
+  "1" "$(cat "$t153_jq_issue_countfile")"
+rm -f "$t153_jq_issue_countfile"
+unset t153_jq_issue_countfile
+PRT_TEST_OWNED_CONTENT_FP=""
+PRT_TEST_MODEL_RESPONSE_MODE=clean_with_finding
 
 # The finding is gone and the foreign thread carries an absence stamp from an
 # earlier head: an owned thread would be resolved here (second absence). A
