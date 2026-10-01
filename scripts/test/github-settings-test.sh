@@ -283,6 +283,11 @@ schema_reject "a misspelled ref_name condition" '.github_defaults.rulesets["main
     "conditions.ref_name.inculde: unknown key"
 schema_reject "a lower-case merge queue method" '.github_repos.kure.rulesets["main-protection"].rules.merge_queue.merge_method = "rebase"' \
     "merge_queue.merge_method: \"rebase\" is not one of"
+# Merge queue sizes and minutes carry the rulesets API's own bounds.
+schema_reject "a merge queue build size above the API's 100" '.github_repos.kure.rulesets["main-protection"].rules.merge_queue.max_entries_to_build = 101' \
+    "merge_queue.max_entries_to_build: 101 is above the maximum 100"
+schema_reject "a merge queue check timeout above the API's 360 minutes" '.github_repos.kure.rulesets["main-protection"].rules.merge_queue.check_response_timeout_minutes = 361' \
+    "merge_queue.check_response_timeout_minutes: 361 is above the maximum 360"
 schema_reject "an invalid ruleset enforcement" '.github_defaults.rulesets["main-protection"].enforcement = "on"' \
     "main-protection.enforcement: \"on\" is not one of"
 schema_reject "an invalid squash commit title" '.github_defaults.squash_merge_commit_title = "PR_TITEL"' \

@@ -107,14 +107,14 @@ def _pattern_unsupported:
   # quantifier: ECMA-262 refuses a**, a+?+ and a*{2}, where Oniguruma reads
   # possessive or stacked repetition. Any other brace, as in "{name}" or "a}",
   # is a literal atom in both. skip: the index past a {n,m} quantifier.
-  | reduce range(0; $cs | length) as $i ({esc: false, cls: false, cstart: -1, q: 0, skip: 0, bad: null};
+  | reduce range(0; $cs | length) as $i ({esc: false, cls: false, cstart: -1, neg: false, q: 0, skip: 0, bad: null};
       $cs[$i] as $c
       | if .bad != null or $i < .skip then .
         elif .esc then (if ($c | test("^[A-Za-z0-9]$")) then .bad = "\\" + $c else . end) | .esc = false | .q = 0
         elif $c == "\\" then .esc = true
         elif .cls then
           if $c == "]" then (if $i == .cstart then .bad = "[]" else .cls = false end)
-          elif $c == "^" and $i == .cstart then .cstart = $i + 1
+          elif $c == "^" and $i == .cstart and (.neg | not) then .cstart = $i + 1 | .neg = true
           elif $c == "[" or $c == "&" then .bad = $c + " in a character class"
           else . end
         elif $c == "{" then
@@ -126,7 +126,7 @@ def _pattern_unsupported:
         elif $c == "?" and .q == 2 then .bad = "a quantifier on a quantifier"
         elif $c == "?" then .q += 1
         elif $c == "*" or $c == "+" then .q = 1
-        elif $c == "[" then .cls = true | .cstart = $i + 1 | .q = 0
+        elif $c == "[" then .cls = true | .cstart = $i + 1 | .neg = false | .q = 0
         elif $c == "." then .bad = "."
         elif $c == "(" and ($cs[$i + 1] // "") == "?" and ($cs[$i + 2] // "") != ":" then .bad = "(?"
         else .q = 0 end)
