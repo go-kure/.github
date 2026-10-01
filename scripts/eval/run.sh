@@ -19,7 +19,7 @@
 #
 # usage
 #   run.sh --gold '<glob>' --engine chat --runs 3 --max-spread <f> --out <file>
-#          --checkout <repo-name>=<path> [--readme <file>] [--no-assess]
+#          --checkout <repo-name>=<path> [--readme <file>] [--no-assess] [--score-quarantined]
 #
 # Per-run stdout is one line:
 #   run=N R=<recall> matched=<n>/<denom> uncredited=<n> excluded=<n>/<docs> docs=<n>/<rows> rows
@@ -54,6 +54,7 @@ usage() {
     cat <<'EOF'
 usage: run.sh --gold '<glob>' --engine <chat> --runs <n> --out <file>
               --checkout <repo-name>=<path> [--max-spread <f>] [--readme <file>] [--no-assess]
+              [--score-quarantined]
 
   --gold        glob matching the gold documents (quote it; this script expands it)
   --engine      chat (the shipped diff-only reviewer). service arrives with Phase 2b.
@@ -75,6 +76,10 @@ usage: run.sh --gold '<glob>' --engine <chat> --runs <n> --out <file>
   --no-assess   skip the reviewer's assessment pass. Measures the review call alone, which is
                 NOT the shipped product; the result records assess:false and compare.sh
                 refuses to compare it against an assessed one
+  --score-quarantined  also judge collision-quarantined findings, which production publishes in
+                the "Withheld AI Review Findings" comment. Off by default so new results stay
+                comparable with every recorded baseline; the result records score_quarantined
+                and compare.sh refuses to compare a run scored one way against the other
 
 exit status
   0  measured      1  a run failed      2  usage error      3  spread too wide
@@ -106,6 +111,9 @@ standards_override=
 # shipped pipeline.
 assess=true
 assess_flag=(--assess)
+# Off by default for baseline continuity only, not because it is the faithful choice: see the
+# judge-input filter in do_run (go-kure/.github#182).
+score_quarantined=false
 # Keyed by repo, exactly like `checkouts`, because the value IS per repository: each consumer
 # passes its own `pr_review_context` to the reusable workflow, and the three live ones differ
 # (a Go library, a CLI package manager, this workflows repo). A corpus spanning two of them
@@ -127,6 +135,7 @@ while [ $# -gt 0 ]; do
         --readme) readme_file=${2-}; shift 2 || die "--readme needs a value" ;;
         --standards) standards_override=${2-}; shift 2 || die "--standards needs a value" ;;
         --no-assess) assess=false; assess_flag=(); shift ;;
+        --score-quarantined) score_quarantined=true; shift ;;
         --context)
             case "${2-}" in
                 *=*) contexts["${2%%=*}"]="${2#*=}" ;;
@@ -714,25 +723,20 @@ do_run() {
         # category (finding.sh, `collision: ($glen > 1)`), and reconcile.sh's row 1 still refuses
         # to create a review THREAD for each of them before any other rule is consulted.
         #
-        # STALE RATIONALE, deliberately not acted on here (go-kure/.github#180, implementing
-        # go-kure/.github#155): this filter's original justification was that "nothing publishes
-        # them" and they are "defects no human is ever shown". That is no longer true. Row 1 now
-        # returns QUARANTINE rather than NONE, and a quarantined finding's body IS published --
-        # rendered into the "Withheld AI Review Findings" table of the durable PR-level advisory
-        # comment (render.sh, prt_render_overflow_comment), and counted in `quarantined=N` on the
-        # done: line. A human IS now shown them; they are withheld from the thread lifecycle, not
-        # from the reader.
+        # Quarantined findings ARE published now (go-kure/.github#180, implementing
+        # go-kure/.github#155): row 1 returns QUARANTINE, and the finding's body is rendered into
+        # the "Withheld AI Review Findings" table of the durable PR-level advisory comment
+        # (render.sh, prt_render_overflow_comment) and counted in `quarantined=N`. They are withheld
+        # from the thread lifecycle, not from the reader, so dropping them under-scores an engine
+        # that emits several findings per file and category.
         #
-        # The filter is left in place regardless, because changing it changes what every recorded
-        # baseline measured and so cannot ride along in the change that falsified its comment.
-        # The consequence is now a real scoring bug rather than a faithful reflection of the
-        # product: an engine emitting several findings per file and category scores lower for
-        # findings the delivered system does publish. Revisiting it needs a flag and a README
-        # paragraph rather than a silent removal, plus a baseline re-run -- tracked separately,
-        # not in go-kure/.github#180.
+        # The drop is still the default because every recorded baseline was measured with it, and
+        # changing what a default measures silently breaks comparability. --score-quarantined keeps
+        # them; the result records which, and compare.sh refuses a mixed pair
+        # (go-kure/.github#182). Flip the default only after re-measuring the baselines with it.
         judge_input="$workdir/run$run_idx-$(basename "$g" .json).judged.json"
-        jq '.findings |= map(select(
-                ((.verdict // "") != "FALSE_POSITIVE") and (.collision != true)))' \
+        jq --argjson sq "$score_quarantined" '.findings |= map(select(
+                ((.verdict // "") != "FALSE_POSITIVE") and ($sq or (.collision != true))))' \
             "$findings_file" >"$judge_input" \
             || { log "cannot filter assessed findings for $g"; return 1; }
 
@@ -895,6 +899,7 @@ out_json=$(jq -n \
     --arg standards_source "$standards_source" \
     --arg context_sha "$context_sha" \
     --argjson assess "$assess" \
+    --argjson score_quarantined "$score_quarantined" \
     --argjson runs "$runs" \
     --argjson mean_r "$mean_r" \
     --argjson spread "$spread" \
@@ -909,7 +914,8 @@ out_json=$(jq -n \
     --argjson per_run "$(printf '%s\n' "${recalls[@]}" | jq -sc '.')" \
     '{engine: $engine, gold_sha: $gold_sha, gold_tree: $gold_tree, gold_total: $gold_total,
       standards_sha: $standards_sha, standards_source: $standards_source,
-      context_sha: $context_sha, assess: $assess, gold_docs: $gold_docs,
+      context_sha: $context_sha, assess: $assess, score_quarantined: $score_quarantined,
+      gold_docs: $gold_docs,
       excluded_docs_max: $excluded_docs_max, excluded_rows_max: $excluded_rows_max,
       excluded_docs: $excluded_docs, excluded_per_run: $excluded_per_run,
       denominator_stable: $denominator_stable,
