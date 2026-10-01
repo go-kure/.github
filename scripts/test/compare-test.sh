@@ -151,5 +151,18 @@ out="$(bash "$COMPARE" "$WORK/baseline.json" "$WORK/candidate.json" 2>&1)"
 rc=$?
 assert_eq "absent score_quarantined vs true: exit 2" "2" "$rc"
 
+# --- score_quarantined must be a JSON boolean: the string "true" is not proof of a scoring mode ---
+write_result "$WORK/baseline.json" chat 0.50 0.02 '.score_quarantined = true'
+write_result "$WORK/candidate.json" service 0.60 0.02 '.score_quarantined = "true"'
+out="$(bash "$COMPARE" "$WORK/baseline.json" "$WORK/candidate.json" 2>&1)"
+rc=$?
+assert_eq "string score_quarantined: exit 2" "2" "$rc"
+assert_match "string score_quarantined: names the reason" "score_quarantined is present but not a boolean" "$out"
+write_result "$WORK/baseline.json" chat 0.50 0.02 '.score_quarantined = "false"'
+write_result "$WORK/candidate.json" service 0.60 0.02
+out="$(bash "$COMPARE" "$WORK/baseline.json" "$WORK/candidate.json" 2>&1)"
+rc=$?
+assert_eq "string false vs absent: exit 2" "2" "$rc"
+
 echo "passed: $pass_count, failed: $failures"
 [ "$failures" -eq 0 ]

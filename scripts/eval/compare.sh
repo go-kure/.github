@@ -98,8 +98,13 @@ fi
 # collision drop (9111a9e) predates both context_sha (bd23c46) and assess (9dc3357), which the
 # gates above require. So any result they accept was written by a run.sh that dropped quarantined
 # findings unconditionally: score_quarantined=false. Older results never reach this line.
-b_sq=$(jq -r 'if has("score_quarantined") then (.score_quarantined | tostring) else "false" end' "$baseline")
-c_sq=$(jq -r 'if has("score_quarantined") then (.score_quarantined | tostring) else "false" end' "$candidate")
+# A present value must be a JSON boolean: `tostring` would make the string "true" read as true,
+# so a hand-edited or drifted result could pass as a scoring mode it never proved.
+sq_filter='if has("score_quarantined") then (if (.score_quarantined | type) == "boolean" then (.score_quarantined | tostring) else "invalid" end) else "false" end'
+b_sq=$(jq -r "$sq_filter" "$baseline")
+c_sq=$(jq -r "$sq_filter" "$candidate")
+[ "$b_sq" != "invalid" ] && [ "$c_sq" != "invalid" ] \
+    || die "score_quarantined is present but not a boolean in at least one result; these results are not comparable"
 if [ "$b_sq" != "$c_sq" ]; then
     die "one result scored quarantined findings and the other did not (score_quarantined=$b_sq vs $c_sq); these results are not comparable"
 fi

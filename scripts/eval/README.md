@@ -348,7 +348,8 @@ per file and category scores lower here than the delivered system warrants.
 
 The drop stays the default only because every recorded baseline was measured with it. A result
 records `score_quarantined`, and `compare.sh` refuses to compare a result scored one way against
-one scored the other. A result without the field predates the flag and reads as `false`: every
+one scored the other, or a result whose field is present but not a JSON boolean. A result
+without the field predates the flag and reads as `false`: every
 result `compare.sh` accepts was written after the collision drop was added. To make
 `--score-quarantined` the default, re-measure the baselines with it first, then flip it in the
 same change (go-kure/.github#182).
