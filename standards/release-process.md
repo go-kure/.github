@@ -244,12 +244,13 @@ checkout and no token of your own, because it runs under that repository's token
 
 ```bash
 gh workflow run release-state.yml --repo go-kure/<repo> -f tag=v0.2.0-beta.11
-gh run watch --repo go-kure/<repo> \
-  "$(gh run list --repo go-kure/<repo> --workflow release-state.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
+gh run watch --repo go-kure/<repo> <run ID from the URL the previous command printed>
 ```
 
-Or, in the repository, open Actions, then **Release / State**, then **Run workflow** with the tag. The
-verdict is in the run's job summary. A red run means no state was determined (below): do not
+Watch the run that command created, by the ID at the end of the URL it prints. Do not pick the
+newest run from the list: another dispatch, possibly for another tag, can be newer. Or, in the
+repository, open Actions, then **Release / State**, then **Run workflow** with the tag; each run's
+title names its tag. The verdict is in the run's job summary. A red run means no state was determined (below): do not
 branch on it. From a checkout of `go-kure/.github`, with a token that can read the repository's
 runs and releases, the script runs directly as well:
 
