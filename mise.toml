@@ -35,7 +35,7 @@ description = "Check mapped docs changed alongside mapped code (vs. the previous
 run = 'bash scripts/check-doc-gate.sh "$(git rev-parse HEAD~1)" .'
 
 [tasks."check:workflow-refs"]
-description = "Guard against AGENTS.md / docs/standards.md naming a workflow file that doesn't exist"
+description = "Guard against AGENTS.md / docs/standards.md / standards/github-workflows.md naming a workflow file that doesn't exist"
 run = "bash scripts/check-workflow-refs.sh ."
 
 [tasks."check:action-pins"]
