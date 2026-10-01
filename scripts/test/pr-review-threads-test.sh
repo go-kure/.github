@@ -323,8 +323,8 @@ assert_eq "maint_failure: a rendered reply round-trips its stamp" \
   "0 $mf_sha_a" "$(s="$(prt_marker_maint_failure_sha "$(prt_render_reply_maint_failure "x" "$mf_sha_a")")"; echo "$? $s")"
 assert_eq "maint_failure: a reply rendered with no stamp records none" \
   "0 " "$(s="$(prt_marker_maint_failure_sha "$(prt_render_reply_maint_failure "x")")"; echo "$? $s")"
-assert_eq "maint_failure: a legacy reply (no state line) is one, stamp unknown" \
-  "0 " "$(s="$(prt_marker_maint_failure_sha "$PRT_MARKER_NOTE"$'\n**MAINT_FAILURE:** x')"; echo "$? $s")"
+assert_eq "maint_failure: a legacy reply (no state line) is not counted" \
+  "1" "$(prt_marker_maint_failure_sha "$PRT_MARKER_NOTE"$'\n**MAINT_FAILURE:** x' >/dev/null; echo "$?")"
 assert_eq "maint_failure: another bot reply is not one" \
   "1" "$(prt_marker_maint_failure_sha "$(prt_render_reply_absent_resolved)" >/dev/null; echo "$?")"
 assert_eq "maint_failure: a state line quoted in the reason is neutralized; the real stamp wins" \
@@ -593,8 +593,8 @@ assert_eq "decide_absent: first sighting -> set first_absent_sha" \
   "SET_FIRST_ABSENT" "$(prt_decide_absent false false false "" abc false false)"
 assert_eq "decide_absent: same-commit retry is not a second absence" \
   "NONE" "$(prt_decide_absent false false false abc abc false false)"
-assert_eq "decide_absent: unanswered maint failure blocks auto-resolve" \
-  "NONE" "$(prt_decide_absent false false false abc def false true)"
+assert_eq "decide_absent: a recorded stale stamp is re-stamped, not resolved" \
+  "SET_FIRST_ABSENT" "$(prt_decide_absent false false false abc def false true)"
 assert_eq "decide_absent: two absences on different SHAs -> reply+resolve" \
   "REPLY_RESOLVE" "$(prt_decide_absent false false false abc def false false)"
 
@@ -905,6 +905,23 @@ fake_curl_ratelimited() {
 }
 PRT_CURL=fake_curl_ratelimited PRT_GH_TOKEN=x prt_gh_graphql 'query{viewer{login}}' '{}' >/dev/null 2>&1
 assert_eq "gh.sh: HTTP 200 with errors[] is classified as failure, not success" "1" "$?"
+
+# go-kure/.github#256: a rate-limited isResolved re-read inside a lift's
+# prt_retry must leave its Retry-After where prt_retry reads it.
+fake_curl_graphql_429() {
+  local out="" hdrs=""
+  local args=("$@")
+  for ((ai = 0; ai < ${#args[@]}; ai++)); do
+    if [ "${args[$ai]}" = "-o" ]; then out="${args[$((ai + 1))]}"; fi
+    if [ "${args[$ai]}" = "-D" ]; then hdrs="${args[$((ai + 1))]}"; fi
+  done
+  printf 'retry-after: 17\r\n' > "$hdrs"
+  printf '{"message":"secondary rate limit"}' > "$out"
+  echo 429
+}
+assert_eq "gh.sh: a rate-limited resolved-state re-read returns 5 and keeps its Retry-After" \
+  "5 17" "$(PRT_LAST_RETRY_AFTER=""; PRT_CURL=fake_curl_graphql_429 PRT_GH_TOKEN=x \
+    prt_gh_rest_fresh_open T1 PATCH o/r 1 sha /x '{}' 2>/dev/null; echo "$? $PRT_LAST_RETRY_AFTER")"
 
 # ============================================================ gh.sh: prt_freshness_check names which failure happened (C4, dot-github#61 Step 2)
 fake_curl_freshness_moved() {
@@ -4194,19 +4211,19 @@ PRT_TEST_MODEL_RESPONSE_MODE=clean
 PRT_TEST_RECHECK_MODE=false
 PRT_TEST_THREAD1_REPLIES="$(mf_reply_node "$(prt_render_reply_maint_failure "clear failed" "$mf_stamp")")"
 rc="$(run_orchestrator enforce 0 0 0)"
-assert_eq "orchestrator #261: absence over the stamp a MAINT_FAILURE reply recorded -> exits 0, no resolve, NONE" \
-  "0 0 true" "$rc $(cat "$PRT_TEST_RESOLVE_COUNTFILE") $(grep -qE 'absent -> NONE' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator #261: absence over the stamp a MAINT_FAILURE reply recorded -> exits 0, no resolve, re-stamped" \
+  "0 0 1 true" "$rc $(cat "$PRT_TEST_RESOLVE_COUNTFILE") $(cat "$PRT_TEST_PATCH_COUNTFILE") $(grep -qE 'absent -> SET_FIRST_ABSENT' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 # (d) A later run cleared that stamp and a later absence stamped another head:
 # the reply recorded a different stamp, so it no longer blocks.
 PRT_TEST_THREAD1_REPLIES="$(mf_reply_node "$(prt_render_reply_maint_failure "clear failed" 3333333333333333333333333333333333333333)")"
 rc="$(run_orchestrator enforce 0 0 0)"
 assert_eq "orchestrator #261: the reply recorded an older stamp -> resolves" \
   "0 1" "$rc $(cat "$PRT_TEST_RESOLVE_COUNTFILE")"
-# (e) A reply from before the state line has no recorded stamp: it blocks.
+# (e) A reply from before the state line records no stamp: not counted.
 PRT_TEST_THREAD1_REPLIES="$(mf_reply_node "$(printf '%s\n**MAINT_FAILURE:** clear failed\n' "$PRT_MARKER_NOTE")")"
 rc="$(run_orchestrator enforce 0 0 0)"
-assert_eq "orchestrator #261: legacy MAINT_FAILURE reply, no recorded stamp -> no resolve" \
-  "0 0" "$rc $(cat "$PRT_TEST_RESOLVE_COUNTFILE")"
+assert_eq "orchestrator #261: legacy MAINT_FAILURE reply, no recorded stamp -> resolves" \
+  "0 1" "$rc $(cat "$PRT_TEST_RESOLVE_COUNTFILE")"
 # (f) A bot reply that is not a MAINT_FAILURE does not block (control).
 PRT_TEST_THREAD1_REPLIES="$(mf_reply_node "$(prt_render_reply_absent_resolved)")"
 rc="$(run_orchestrator enforce 0 0 0)"

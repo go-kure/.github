@@ -923,8 +923,8 @@ for ((ti = 0; ti < n_threads; ti++)); do
 
   has_human_reply=false
   # go-kure/.github#261: the stamps recorded by this thread's MAINT_FAILURE
-  # replies ("" for a reply that predates the state line). Loop 2's row 11
-  # reads it; any human reply already protects the thread via row 13.
+  # replies. Loop 2's row 11 reads it; any human reply already protects the
+  # thread via row 13.
   maint_failure_shas='[]'
   if ! n_comments="$(jq -r '.comments.nodes | length' <<< "$th" 2>/dev/null)"; then
     prt_inventory_fail "comment count at thread index $ti"
@@ -1134,7 +1134,7 @@ prt_persist_owned_collision() {
     prt_handle_freshness_rc "$rc" "${context} (after up to 3 retries)"
     # go-kure/.github#261: every rewrite here also clears the absence stamp,
     # so a failed one leaves it stale. Record that the same way loop 2's
-    # CLEAR_MARKER does, so the next absence at a new head is held back by
+    # CLEAR_MARKER does, so the next absence at a new head is re-stamped by
     # row 11 instead of resolving on one absence.
     local stale_fas
     stale_fas="$(jq -r '.first_absent_sha // empty' <<< "$row")"
@@ -1589,17 +1589,16 @@ if [ "$PRT_MODE" = enforce ]; then
 
     # Row 11 (go-kure/.github#261): a failed marker clear left a stale
     # stamp, and a MAINT_FAILURE reply recorded it. While the thread still
-    # carries that stamp, the next absence at a new head must not read it as
-    # the first of two. Any human reply already stops every absence action
-    # (row 13), so "unanswered" needs no ordering scan here. A reply with no
-    # recorded stamp predates the state line and blocks on any stamp. An
-    # unreadable value holds the resolve back rather than allowing it.
-    unanswered_maint_failure="$(jq -r --arg fas "$first_absent_sha" \
-      '($fas != "") and ((.maint_failure_shas // []) | any(. == $fas or . == ""))' <<< "$th" 2>/dev/null)"
-    [ "$unanswered_maint_failure" = false ] || unanswered_maint_failure=true
+    # carries that stamp, an absence at a new head must not read it as the
+    # first of two; row 11 re-stamps instead. Any human reply already stops
+    # every absence action (row 13). An unreadable value re-stamps rather
+    # than resolving.
+    stamp_known_stale="$(jq -r --arg fas "$first_absent_sha" \
+      '($fas != "") and ((.maint_failure_shas // []) | index($fas) != null)' <<< "$th" 2>/dev/null)"
+    [ "$stamp_known_stale" = false ] || stamp_known_stale=true
 
     action="$(prt_decide_absent "$collision" "$has_human_reply" "$thread_resolved" \
-      "$first_absent_sha" "$PRT_HEAD_SHA" "$incomplete_now" "$unanswered_maint_failure")"
+      "$first_absent_sha" "$PRT_HEAD_SHA" "$incomplete_now" "$stamp_known_stale")"
     prt_log "fp=$fp absent -> $action"
 
     viewer_can_resolve="$(jq -r '.viewer_can_resolve' <<< "$th")"
