@@ -103,4 +103,8 @@ Before adding a label to `labels.json`:
 3. **Follow color conventions** — match existing labels in the same category for visual grouping
 4. **If in doubt, relabel issues** — it is better to relabel issues to use existing labels than to expand the standard for a one-off
 
+A label carries only `name`, `color` (`#RRGGBB`), `description` (at most 100 characters) and,
+optionally, `repos`; [`labels.schema.json`](labels.schema.json) refuses anything else, in CI
+(`check-label-docs.sh`) and before every settings run.
+
 Changes to `labels.json` take effect across all repos only after the `settings.yml` workflow is triggered manually with `mode=apply`.

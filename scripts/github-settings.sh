@@ -24,6 +24,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 # shellcheck source=scripts/exact-array-member.sh
 source "$SCRIPT_DIR/exact-array-member.sh"
+# shellcheck source=scripts/lib/json-schema.sh
+source "$SCRIPT_DIR/lib/json-schema.sh"
 
 # Default organization and repos (override via environment variables).
 # GITHUB_REPOS_DEFAULT stays fixed even when GITHUB_REPOS is narrowed to a
@@ -41,6 +43,10 @@ GITHUB_REPOS="${GITHUB_REPOS:-$GITHUB_REPOS_DEFAULT}"
 
 LABELS_FILE="${LABELS_FILE:-$REPO_ROOT/standards/labels.json}"
 POLICY_FILE="${POLICY_FILE:-$REPO_ROOT/governance/repository-settings-policy.yaml}"
+# The schemas describe what this script models, so they are not overridable:
+# a consumer's files are checked against the same shape as this repo's own.
+POLICY_SCHEMA_FILE="$REPO_ROOT/governance/repository-settings-policy.schema.json"
+LABELS_SCHEMA_FILE="$REPO_ROOT/standards/labels.schema.json"
 CI_MODE=false
 JSON_OUTPUT=false
 # Audit-mode exit policy (go-kure/.github#178). --report-only prints the
@@ -87,6 +93,8 @@ declare -A LABEL_RENAME_MAP=(
 # stay first so audit-output diffs from adding new ones stay readable.
 # Deliberately excluded: archived, private/visibility, disabled — flipping
 # any of those is a different class of operation than a settings sync.
+# Mirrored in the policy schema (github_defaults, required; repo overrides,
+# optional) — the test suite fails when the two lists differ.
 SETTING_KEYS=(
     "allow_rebase_merge"
     "allow_squash_merge"
@@ -114,7 +122,8 @@ SETTING_KEYS=(
 # admin:org. Deliberately excludes identity/billing fields (name,
 # description, company, blog, location, email, twitter_username,
 # billing_email) — those are content, not governance, and would make every
-# audit noisy. Key names are verbatim from `gh api orgs/{org}`.
+# audit noisy. Key names are verbatim from `gh api orgs/{org}`. Mirrored, with
+# ORG_READONLY_KEYS, in the policy schema's github_org (all required).
 ORG_SETTING_KEYS=(
     "default_repository_permission"
     "members_can_create_repositories"
@@ -177,9 +186,11 @@ ORG_ACTIONS_WORKFLOW_KEYS=(
 # ruleset_diff (audit + drift detection) and build_ruleset_import_jq
 # (--import) all derive their expected rule list from RULE_TYPE_ORDER /
 # RULE_KIND, so they cannot silently diverge from each other. A policy rule
-# type missing from RULE_KIND is a validate_policy() startup error, not a
-# silently-dropped field — GitHub's ruleset PUT is a full replace, so a
-# dropped field on apply means a deleted rule, not a no-op.
+# type missing from RULE_KIND is a validate_policy() startup error (the
+# policy schema's rules object is closed and pinned to RULE_TYPE_ORDER by the
+# test suite), not a silently-dropped field — GitHub's ruleset PUT is a full
+# replace, so a dropped field on apply means a deleted rule, not a no-op. A
+# new rule type is added here, to RULE_KIND, and to the schema's rules.
 RULE_TYPE_ORDER=(
     deletion
     non_fast_forward
@@ -432,90 +443,71 @@ require_org_scope() {
     fi
 }
 
-# Sanity-check the policy file against what this script actually knows how
-# to manage. Run once at startup so a bad policy fails loudly here instead
-# of silently mis-auditing or (worse) deleting a rule on --apply.
+# Sanity-check the policy and labels files before anything reads them for an
+# audit or a mutation, so a bad file fails loudly here instead of silently
+# mis-auditing or (worse) deleting a rule or a label on --apply.
+#
+# Shape is one closed schema per file (go-kure/.github#161): every object
+# refuses a key this script does not read, because the exact lookups would
+# miss it and apply the default (or an incomplete rule) in its place. The
+# schemas' key sets are pinned to SETTING_KEYS, ORG_SETTING_KEYS,
+# ORG_READONLY_KEYS, ORG_ACTIONS_*_KEYS and RULE_TYPE_ORDER by
+# scripts/test/github-settings-test.sh, so an unmodeled rule type or a key
+# outside the registries is a schema violation. A further "field X is not
+# validated" finding belongs in the schema, not in a new check below.
+#
+# What a schema cannot express stays here: names checked against the
+# governed repo set, duplicate label names, and per-repo label coverage.
 validate_policy() {
-    local errors=0
+    local errors=0 out rc line
 
-    # 1. Every rule type declared anywhere in policy (defaults or any repo
-    #    override) must be a known registry type. This is the check that
-    #    prevents the silent-drop-then-delete failure this script used to
-    #    have: an unmodeled rule type used to just vanish from the payload
-    #    on the next --apply.
-    local declared_types
-    declared_types=$(jq -r '
-        [
-            (.github_defaults.rulesets // {} | to_entries[] | .value.rules // {} | keys[]),
-            ((.github_repos // {}) | to_entries[] | .value.rulesets // {} | to_entries[] | .value.rules // {} | keys[])
-        ] | unique | .[]
-    ' <<<"$POLICY_JSON")
-    local t
-    while IFS= read -r t; do
-        [ -z "$t" ] && continue
-        if [ -z "$(rule_kind "$t")" ]; then
-            echo -e "${RED}ERROR: policy declares rule type '$t' this script does not model (see RULE_KIND in $0)${NC}"
-            errors=$((errors + 1))
+    # 1. The policy file against its schema. A file of the wrong shape skips
+    #    the policy checks below: they would iterate fields of the wrong type.
+    local policy_shape_ok=1
+    rc=0
+    out=$(json_schema_violations "$POLICY_SCHEMA_FILE" <<<"$POLICY_JSON") || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        if [ "$rc" -eq 1 ]; then
+            echo -e "${RED}ERROR: $POLICY_FILE does not match governance/repository-settings-policy.schema.json:${NC}"
+        else
+            echo -e "${RED}ERROR: could not check $POLICY_FILE against governance/repository-settings-policy.schema.json:${NC}"
         fi
-    done <<<"$declared_types"
-
-    # 2. SETTING_KEYS and github_defaults' scalar keys must agree in both
-    #    directions — a key in one but not the other is either dead code or
-    #    an unmanaged live setting silently omitted from the audit.
-    local policy_scalar_keys setting_keys_sorted
-    policy_scalar_keys=$(jq -r '
-        .github_defaults
-        | to_entries
-        | map(select((.value | type) != "object" and (.value | type) != "array"))
-        | .[].key
-    ' <<<"$POLICY_JSON" | sort)
-    setting_keys_sorted=$(printf '%s\n' "${SETTING_KEYS[@]}" | sort)
-    if [ "$policy_scalar_keys" != "$setting_keys_sorted" ]; then
-        echo -e "${RED}ERROR: SETTING_KEYS and github_defaults scalar keys disagree${NC}"
-        echo "  SETTING_KEYS only:"
-        comm -23 <(echo "$setting_keys_sorted") <(echo "$policy_scalar_keys") | sed 's/^/    /'
-        echo "  github_defaults only:"
-        comm -13 <(echo "$setting_keys_sorted") <(echo "$policy_scalar_keys") | sed 's/^/    /'
+        while IFS= read -r line; do echo "    $line"; done <<<"$out"
         errors=$((errors + 1))
+        policy_shape_ok=0
     fi
 
-    # 3. Enum sanity on every declared ruleset's enforcement/target.
-    local bad_enforcement bad_target
-    bad_enforcement=$(jq -r '
-        [
-            (.github_defaults.rulesets // {} | to_entries[] | select(.value.enforcement != null and (.value.enforcement | IN("active","evaluate","disabled") | not)) | .key),
-            ((.github_repos // {}) | to_entries[] | .value.rulesets // {} | to_entries[] | select(.value.enforcement != null and (.value.enforcement | IN("active","evaluate","disabled") | not)) | .key)
-        ] | unique | .[]
-    ' <<<"$POLICY_JSON")
-    if [ -n "$bad_enforcement" ]; then
-        echo -e "${RED}ERROR: ruleset(s) with invalid enforcement (must be active/evaluate/disabled): $bad_enforcement${NC}"
+    # 2. The labels file against its schema — the same check
+    #    check-label-docs.sh applies to this repo's own file, which a
+    #    consumer's LABELS_FILE never passes through. `{"labels": []}` is
+    #    valid JSON that audit_labels turns into "every live label is EXTRA",
+    #    and --apply then deletes every label not attached to an issue
+    #    (go-kure/.github#154 round-8 finding); a label without a colour
+    #    would fail later, at the API, mid-apply.
+    local labels_shape_ok=1
+    rc=0
+    out=$(json_schema_violations "$LABELS_SCHEMA_FILE" <"$LABELS_FILE") || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        echo -e "${RED}ERROR: $LABELS_FILE is malformed (standards/labels.schema.json):${NC}"
+        while IFS= read -r line; do echo "    $line"; done <<<"$out"
         errors=$((errors + 1))
-    fi
-    bad_target=$(jq -r '
-        [
-            (.github_defaults.rulesets // {} | to_entries[] | select(.value.target != null and (.value.target | IN("branch","tag","push") | not)) | .key),
-            ((.github_repos // {}) | to_entries[] | .value.rulesets // {} | to_entries[] | select(.value.target != null and (.value.target | IN("branch","tag","push") | not)) | .key)
-        ] | unique | .[]
-    ' <<<"$POLICY_JSON")
-    if [ -n "$bad_target" ]; then
-        echo -e "${RED}ERROR: ruleset(s) with invalid target (must be branch/tag/push): $bad_target${NC}"
-        errors=$((errors + 1))
+        labels_shape_ok=0
     fi
 
-    # 4. Every repos: scope entry must be a repo this script actually knows
+    # 3. Every repos: scope entry must be a repo this script actually knows
     #    about — catches a typo that would silently disable a ruleset everywhere.
     #    Validated against GITHUB_REPOS_DEFAULT unioned with the runtime
     #    GITHUB_REPOS, not GITHUB_REPOS alone: GITHUB_REPOS is documented as
     #    selecting a subset (e.g. only .github) or a fork's repo set for a
     #    single run, and a subset run must not read policy repos it simply
     #    isn't targeting this time as unknown.
-    local bad_scope_repos repo_list_json
+    local bad_scope_repos="" repo_list_json
     # shellcheck disable=SC2086 # intentional word-splitting: these are
     # space-separated lists and unquoted expansion is what turns them into
     # one printf argument (one line) per repo name — quoting would pass each
     # as a single argument and produce one JSON array element for the whole string.
     repo_list_json=$(printf '%s\n' ${GITHUB_REPOS_DEFAULT:-} ${GITHUB_REPOS:-} | jq -R . | jq -s 'unique')
-    bad_scope_repos=$(jq -r --argjson known "$repo_list_json" '
+    [ "$policy_shape_ok" -eq 1 ] && bad_scope_repos=$(jq -r --argjson known "$repo_list_json" '
         [.github_defaults.rulesets // {} | to_entries[] | select(.value.repos != null) | .value.repos[] | select(. as $r | $known | index($r) | not)] | unique | .[]
     ' <<<"$POLICY_JSON")
     if [ -n "$bad_scope_repos" ]; then
@@ -523,35 +515,12 @@ validate_policy() {
         errors=$((errors + 1))
     fi
 
-    # 4a. Labels file shape — the same preflight check-label-docs.sh applies
-    #     to this repo's own file, which a consumer's LABELS_FILE never passes
-    #     through. `{"labels": []}` is valid JSON that audit_labels turns into
-    #     "every live label is EXTRA", and --apply then deletes every label
-    #     not attached to an issue (go-kure/.github#154 round-8 finding). A
-    #     label missing name/description or with a malformed colour would
-    #     fail later, at the API, mid-apply. The remaining label checks are
-    #     skipped when the shape is wrong: they cannot iterate a non-array.
-    local labels_shape_ok=1
-    if ! jq -e '
-        (.labels | type == "array") and (.labels | length > 0) and
-        ([.labels[] |
-            (.name | type == "string") and (.name | length > 0) and
-            (.description | type == "string") and
-            (.color | type == "string") and (.color | test("^#[0-9A-Fa-f]{6}$")) and
-            (.repos == null or ((.repos | type == "array") and ([.repos[] | type == "string"] | all)))
-        ] | all)
-    ' "$LABELS_FILE" >/dev/null 2>&1; then
-        echo -e "${RED}ERROR: $LABELS_FILE is malformed or declares no labels: .labels must be a non-empty array whose entries carry a name, a description, a #RRGGBB color and, if present, a repos list of strings${NC}"
-        errors=$((errors + 1))
-        labels_shape_ok=0
-    fi
-
-    # 4b. The same rule for the labels file's repos: scopes. A typo there is
-    #     worse than a ruleset typo: the label is silently not expected on the
-    #     repo it was meant for, and a live copy of it is then EXTRA and
-    #     deleted by the next --apply (go-kure/.github#154 review finding —
-    #     the file became consumer-supplied, so it is no longer reviewed by
-    #     the people who know the repo list).
+    # 4. The same rule for the labels file's repos: scopes. A typo there is
+    #    worse than a ruleset typo: the label is silently not expected on the
+    #    repo it was meant for, and a live copy of it is then EXTRA and
+    #    deleted by the next --apply (go-kure/.github#154 review finding —
+    #    the file became consumer-supplied, so it is no longer reviewed by
+    #    the people who know the repo list).
     local bad_label_repos=""
     [ "$labels_shape_ok" -eq 1 ] && bad_label_repos=$(jq -r --argjson known "$repo_list_json" '
         [.labels[] | select(.repos != null) | .repos[] | select(. as $r | $known | index($r) | not)] | unique | .[]
@@ -561,13 +530,13 @@ validate_policy() {
         errors=$((errors + 1))
     fi
 
-    #     Per-repo form of the empty-file rule in 4a: a file whose entries are
-    #     all scoped away from one governed repo (`repos: []`, or only other
-    #     repos) leaves that repo with no expected label, so every live label
-    #     there is EXTRA and --apply deletes each one not attached to an issue
-    #     (go-kure/.github#154 round-14 finding). Every governed repo must
-    #     have at least one applicable label; a repo meant to carry none is
-    #     not a case this tool supports, by the same reasoning as 4a.
+    #    Per-repo form of the schema's empty-file rule: a file whose entries
+    #    are all scoped away from one governed repo (`repos: []`, or only
+    #    other repos) leaves that repo with no expected label, so every live
+    #    label there is EXTRA and --apply deletes each one not attached to an
+    #    issue (go-kure/.github#154 round-14 finding). Every governed repo
+    #    must have at least one applicable label; a repo meant to carry none
+    #    is not a case this tool supports, by the same reasoning.
     local unlabelled_repos=""
     [ "$labels_shape_ok" -eq 1 ] && unlabelled_repos=$(jq -r --argjson known "$repo_list_json" '
         [$known[] as $r
@@ -579,12 +548,13 @@ validate_policy() {
         errors=$((errors + 1))
     fi
 
-    # 4c. github_repos keys too. A misspelled override key is never looked up
-    #     (the runtime lookup is exact), so the repo silently falls back to
-    #     github_defaults and --apply PATCHes the default value over the
-    #     intended override (go-kure/.github#154 review finding).
-    local bad_override_keys
-    bad_override_keys=$(jq -r --argjson known "$repo_list_json" '
+    # 5. github_repos keys too. A misspelled override key is never looked up
+    #    (the runtime lookup is exact), so the repo silently falls back to
+    #    github_defaults and --apply PATCHes the default value over the
+    #    intended override (go-kure/.github#154 review finding). The fields
+    #    inside each override are the schema's.
+    local bad_override_keys=""
+    [ "$policy_shape_ok" -eq 1 ] && bad_override_keys=$(jq -r --argjson known "$repo_list_json" '
         [(.github_repos // {}) | keys[] | select(. as $r | $known | index($r) | not)] | unique | .[]
     ' <<<"$POLICY_JSON")
     if [ -n "$bad_override_keys" ]; then
@@ -592,111 +562,15 @@ validate_policy() {
         errors=$((errors + 1))
     fi
 
-    #     And the fields inside each override: the runtime lookup is exact
-    #     there too, so `allow_merge_comit: true` under a repo is never read,
-    #     the repo falls back to github_defaults for the key that was meant,
-    #     and --apply PATCHes the default over the intended override
-    #     (go-kure/.github#154 round-14 finding). Check 2 already pins
-    #     github_defaults' keys to SETTING_KEYS plus the security and rulesets
-    #     containers, so "every override key exists in github_defaults" is the
-    #     closed set without a second list to keep in step.
-    local bad_override_fields
-    bad_override_fields=$(jq -r '
-        (.github_defaults | keys) as $known
-        | [(.github_repos // {}) | to_entries[]
-           | .key as $repo
-           | ((.value // {}) | keys[]) | select(. as $k | $known | index($k) | not)
-           | "\($repo).\(.)"]
-        | .[]
-    ' <<<"$POLICY_JSON")
-    if [ -n "$bad_override_fields" ]; then
-        echo -e "${RED}ERROR: github_repos override(s) carry field(s) github_defaults does not declare (never read; the default would be applied instead): $(echo "$bad_override_fields" | tr '\n' ' ')${NC}"
-        errors=$((errors + 1))
-    fi
-
-    # 4d. Duplicate names in the labels file. check-label-docs.sh refuses them
-    #     for this repo's own file, but a consumer's LABELS_FILE never passes
-    #     through that checker; audit_labels would create the label for the
-    #     first entry and POST it again for the second.
+    # 6. Duplicate names in the labels file. check-label-docs.sh refuses them
+    #    for this repo's own file, but a consumer's LABELS_FILE never passes
+    #    through that checker; audit_labels would create the label for the
+    #    first entry and POST it again for the second.
     local dup_label_names=""
     [ "$labels_shape_ok" -eq 1 ] && dup_label_names=$(jq -r '.labels | group_by(.name) | map(select(length > 1) | .[0].name) | join(", ")' "$LABELS_FILE")
     if [ -n "$dup_label_names" ]; then
         echo -e "${RED}ERROR: $LABELS_FILE declares duplicate label name(s): $dup_label_names${NC}"
         errors=$((errors + 1))
-    fi
-
-    # 4e. security: blocks are closed enums. audit_security_settings compares
-    #     the live status against the declared string and, on --apply, treats
-    #     anything that is not exactly "enabled" as a request to turn the
-    #     setting off — for dependabot_security_updates that is a DELETE on
-    #     the automated-security-fixes endpoint, so a typo such as `enabeld`
-    #     in a consumer-supplied POLICY_FILE would silently disable it rather
-    #     than be rejected (go-kure/.github#154 round-13 finding). A
-    #     misspelled key is never looked up at all (same class as 4c). Every
-    #     security: block, defaults and per-repo, must therefore map only the
-    #     three known keys to "enabled" or "disabled".
-    local bad_security_blocks
-    bad_security_blocks=$(jq -r '
-        [
-            {path: "github_defaults", sec: .github_defaults.security},
-            ((.github_repos // {}) | to_entries[] | {path: ("github_repos." + .key), sec: .value.security})
-        ]
-        | map(select(.sec != null))
-        | map(select(
-            (.sec | type) != "object"
-            or ([.sec | to_entries[]
-                | (.key | IN("secret_scanning", "secret_scanning_push_protection", "dependabot_security_updates"))
-                  and (.value | IN("enabled", "disabled"))
-               ] | all | not)
-          ))
-        | .[].path
-    ' <<<"$POLICY_JSON")
-    if [ -n "$bad_security_blocks" ]; then
-        echo -e "${RED}ERROR: security: block(s) must map only secret_scanning, secret_scanning_push_protection and dependabot_security_updates to \"enabled\" or \"disabled\" (any other value would be applied as disabled): $(echo "$bad_security_blocks" | tr '\n' ' ')${NC}"
-        errors=$((errors + 1))
-    fi
-
-    # 5-6 only apply once a policy declares github_org: — skipped entirely
-    # when absent, so the policy file stays valid mid-migration (before the
-    # first --org --import) and for anyone who never uses --org.
-    if jq -e '.github_org != null' <<<"$POLICY_JSON" >/dev/null; then
-        # 5. ORG_SETTING_KEYS + ORG_READONLY_KEYS and github_org's scalar keys
-        #    must agree in both directions — same reasoning as check 2, applied
-        #    to the org tier (which has no override, so there's only one set to
-        #    compare against).
-        local org_scalar_keys org_setting_keys_sorted
-        org_scalar_keys=$(jq -r '
-            .github_org
-            | to_entries
-            | map(select((.value | type) != "object" and (.value | type) != "array"))
-            | .[].key
-        ' <<<"$POLICY_JSON" | sort)
-        org_setting_keys_sorted=$(printf '%s\n' "${ORG_SETTING_KEYS[@]}" "${ORG_READONLY_KEYS[@]}" | sort)
-        if [ "$org_scalar_keys" != "$org_setting_keys_sorted" ]; then
-            echo -e "${RED}ERROR: ORG_SETTING_KEYS+ORG_READONLY_KEYS and github_org scalar keys disagree${NC}"
-            echo "  ORG_SETTING_KEYS/ORG_READONLY_KEYS only:"
-            comm -23 <(echo "$org_setting_keys_sorted") <(echo "$org_scalar_keys") | sed 's/^/    /'
-            echo "  github_org only:"
-            comm -13 <(echo "$org_setting_keys_sorted") <(echo "$org_scalar_keys") | sed 's/^/    /'
-            errors=$((errors + 1))
-        fi
-
-        # 6. Enum sanity on github_org.actions. `.[]` unwraps the array to one
-        #    line per bad key (or zero lines) — a bare `-r` on an array would
-        #    print the literal text "[]" even when empty, which is a
-        #    non-empty bash string and would always trip the check below.
-        local bad_actions_enum
-        bad_actions_enum=$(jq -r '
-            [
-                (.github_org.actions.enabled_repositories // "all" | select(IN("all","none","selected") | not) | "enabled_repositories"),
-                (.github_org.actions.allowed_actions // "all" | select(IN("all","local_only","selected") | not) | "allowed_actions"),
-                (.github_org.actions.default_workflow_permissions // "read" | select(IN("read","write") | not) | "default_workflow_permissions")
-            ] | .[]
-        ' <<<"$POLICY_JSON")
-        if [ -n "$bad_actions_enum" ]; then
-            echo -e "${RED}ERROR: github_org.actions has invalid enum value(s) for: $bad_actions_enum${NC}"
-            errors=$((errors + 1))
-        fi
     fi
 
     if [ "$errors" -gt 0 ]; then

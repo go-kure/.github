@@ -277,6 +277,27 @@ result_missing_json="$(run_fixture "" "$(base_md)")"
 assert_rc "missing labels.json is fatal" 1 "$result_missing_json"
 assert_no_fail_lines "missing-json fatal shape has no FAIL: lines" "$result_missing_json"
 
+# The shared schema reaches every field (go-kure/.github#161): an unknown key
+# on a label, a repos scope that is not a list, and an unknown top-level key
+# are each fatal, and the message names the path.
+result_label_extra_key="$(run_fixture "$(base_json | jq -c '.labels[0].colour = "#000000"')" "$(base_md)")"
+assert_rc "an unknown key on a label is fatal" 1 "$result_label_extra_key"
+assert_no_fail_lines "unknown-label-key fatal shape has no FAIL: lines" "$result_label_extra_key"
+if grep -qF 'labels[0].colour: unknown key' <<<"${result_label_extra_key#*$'\t'}"; then
+  pass_count=$((pass_count + 1))
+else
+  echo "FAIL: the unknown-label-key error names the path — got: ${result_label_extra_key#*$'\t'}" >&2
+  failures=$((failures + 1))
+fi
+
+result_repos_string="$(run_fixture "$(base_json | jq -c '.labels[0].repos = "kure"')" "$(base_md)")"
+assert_rc "a repos scope that is a string is fatal" 1 "$result_repos_string"
+assert_no_fail_lines "string-repos fatal shape has no FAIL: lines" "$result_repos_string"
+
+result_top_extra_key="$(run_fixture "$(base_json | jq -c '.label = []')" "$(base_md)")"
+assert_rc "an unknown top-level key is fatal" 1 "$result_top_extra_key"
+assert_no_fail_lines "unknown-top-level-key fatal shape has no FAIL: lines" "$result_top_extra_key"
+
 json_duplicate_name() { base_json | jq -c '.labels += [{"name":"type/bug","color":"#d73a4a","description":"a second, duplicate type/bug entry"}]'; }
 result_duplicate_name="$(run_fixture "$(json_duplicate_name)" "$(base_md)")"
 assert_rc "duplicate label name in labels.json is fatal" 1 "$result_duplicate_name"

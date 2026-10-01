@@ -132,7 +132,7 @@ empty_out=$( (LABELS_FILE="$empty_labels_fixture" validate_policy) 2>&1 )
 empty_rc=$?
 rm -f "$empty_labels_fixture"
 assert_eq "validate_policy exits non-zero on a labels file declaring no labels" "1" "$([ "$empty_rc" -ne 0 ] && echo 1 || echo 0)"
-assert_contains "validate_policy's error names the empty labels file" "$empty_out" "declares no labels"
+assert_contains "validate_policy's error names the empty labels list" "$empty_out" "labels: fewer than 1 item(s)"
 
 malformed_labels_fixture="$(mktemp)"
 printf '%s\n' '{"labels": [{"name": "area/x", "description": "d"}]}' >"$malformed_labels_fixture"
@@ -200,6 +200,127 @@ assert_contains "validate_policy's error names the repo and the unknown field" "
 field_ok_json=$(jq '.github_repos.launcher.allow_merge_commit = true' <<<"$POLICY_JSON")
 field_ok_rc=$( (POLICY_JSON="$field_ok_json" validate_policy) >/dev/null 2>&1; echo $? )
 assert_eq "validate_policy accepts an override field that github_defaults declares" "0" "$field_ok_rc"
+
+# ---- go-kure/.github#161: the policy and labels files are closed schemas.
+# The schemas' key sets must be the script's registries exactly: a key the
+# schema admits but the script does not read is the silent-fallback defect
+# the schema exists to refuse, and a registry key the schema refuses makes
+# a valid policy unloadable. ----
+
+policy_schema_json=$(cat "$POLICY_SCHEMA_FILE")
+setting_keys_json=$(bash_array_to_json "${SETTING_KEYS[@]}" | jq -c 'sort')
+assert_eq "schema: github_defaults declares exactly SETTING_KEYS plus security and rulesets" "$setting_keys_json" \
+    "$(jq -c '.definitions.defaults.properties | keys - ["security", "rulesets"] | sort' <<<"$policy_schema_json")"
+assert_eq "schema: github_defaults requires exactly SETTING_KEYS plus rulesets" "$setting_keys_json" \
+    "$(jq -c '.definitions.defaults.required - ["rulesets"] | sort' <<<"$policy_schema_json")"
+assert_eq "schema: a repo override declares exactly SETTING_KEYS plus security and rulesets" "$setting_keys_json" \
+    "$(jq -c '.definitions.repo_override.properties | keys - ["security", "rulesets"] | sort' <<<"$policy_schema_json")"
+assert_eq "schema: a repo override requires nothing" "null" \
+    "$(jq -c '.definitions.repo_override.required' <<<"$policy_schema_json")"
+assert_eq "schema: defaults and overrides type each setting the same way" "true" \
+    "$(jq -c '.definitions | (.defaults.properties | del(.rulesets)) == (.repo_override.properties | del(.rulesets))' <<<"$policy_schema_json")"
+
+org_keys_json=$(bash_array_to_json "${ORG_SETTING_KEYS[@]}" "${ORG_READONLY_KEYS[@]}" | jq -c 'sort')
+assert_eq "schema: github_org declares exactly ORG_SETTING_KEYS + ORG_READONLY_KEYS plus actions" "$org_keys_json" \
+    "$(jq -c '.definitions.org.properties | keys - ["actions"] | sort' <<<"$policy_schema_json")"
+assert_eq "schema: github_org requires every one of them plus actions" "$org_keys_json" \
+    "$(jq -c '.definitions.org.required - ["actions"] | sort' <<<"$policy_schema_json")"
+actions_keys_json=$(bash_array_to_json "${ORG_ACTIONS_PERMISSIONS_KEYS[@]}" "${ORG_ACTIONS_WORKFLOW_KEYS[@]}" | jq -c 'sort')
+assert_eq "schema: github_org.actions declares exactly the two actions key lists" "$actions_keys_json" \
+    "$(jq -c '.definitions.org.properties.actions.properties | keys | sort' <<<"$policy_schema_json")"
+assert_eq "schema: github_org.actions requires every key (both endpoints are PUT full-replace)" "$actions_keys_json" \
+    "$(jq -c '.definitions.org.properties.actions.required | sort' <<<"$policy_schema_json")"
+
+rule_types_json=$(bash_array_to_json "${RULE_TYPE_ORDER[@]}" | jq -c 'sort')
+assert_eq "schema: rules declares exactly RULE_TYPE_ORDER" "$rule_types_json" \
+    "$(jq -c '.definitions.rules.properties | keys | sort' <<<"$policy_schema_json")"
+assert_eq "RULE_KIND covers exactly RULE_TYPE_ORDER" "$rule_types_json" \
+    "$(bash_array_to_json "${!RULE_KIND[@]}" | jq -c 'sort')"
+rule_kind_shape_ok=true
+for t in "${RULE_TYPE_ORDER[@]}"; do
+    want=object
+    [ "$(rule_kind "$t")" = "flag" ] && want=boolean
+    got=$(jq -r --arg t "$t" '.definitions.rules.properties[$t].type' <<<"$policy_schema_json")
+    if [ "$got" != "$want" ]; then
+        echo "  rule $t: schema type $got, RULE_KIND wants $want"
+        rule_kind_shape_ok=false
+    fi
+done
+assert_eq "schema: a flag rule is a boolean and every other rule a parameters object" "true" "$rule_kind_shape_ok"
+assert_eq "schema: security declares exactly the three keys audit_security_settings reads" \
+    '["dependabot_security_updates","secret_scanning","secret_scanning_push_protection"]' \
+    "$(jq -c '.definitions.security.properties | keys | sort' <<<"$policy_schema_json")"
+
+# Every level the piecemeal checks never reached (the issue's list): each
+# misspelled or mistyped entry is refused, and the error names its path.
+schema_reject() {
+    local desc="$1" expr="$2" needle="$3" json out rc
+    json=$(jq "$expr" <<<"$POLICY_JSON")
+    out=$( (POLICY_JSON="$json" validate_policy) 2>&1 )
+    rc=$?
+    assert_eq "validate_policy refuses $desc" "1" "$([ "$rc" -ne 0 ] && echo 1 || echo 0)"
+    assert_contains "and names it: $desc" "$out" "$needle"
+}
+schema_reject "a top-level key outside the three tiers" '.github_defualts = {}' \
+    "github_defualts: unknown key"
+schema_reject "an unmodeled rule type" '.github_defaults.rulesets["main-protection"].rules.bogus_type = true' \
+    "github_defaults.rulesets.main-protection.rules.bogus_type: unknown key"
+schema_reject "a misspelled pull_request parameter" '.github_defaults.rulesets["main-protection"].rules.pull_request.required_approving_reviews = 1' \
+    "rules.pull_request.required_approving_reviews: unknown key"
+schema_reject "a review count given as a string" '.github_defaults.rulesets["main-protection"].rules.pull_request.required_approving_review_count = "1"' \
+    "required_approving_review_count: expected integer, got string"
+schema_reject "contexts given as a string, not a list" '.github_defaults.rulesets["main-protection"].rules.required_status_checks.contexts = "lint"' \
+    "required_status_checks.contexts: expected array, got string"
+schema_reject "a duplicated required context" '.github_defaults.rulesets["main-protection"].rules.required_status_checks.contexts += ["lint"]' \
+    "required_status_checks.contexts: items are not unique"
+schema_reject "a misspelled bypass actor field" '.github_repos.kure.rulesets["main-protection"].bypass_actors[0].bypass_mod = "always"' \
+    "github_repos.kure.rulesets.main-protection.bypass_actors[0].bypass_mod: unknown key"
+schema_reject "bypass_actors on a github_defaults ruleset (never read there)" '.github_defaults.rulesets["main-protection"].bypass_actors = []' \
+    "github_defaults.rulesets.main-protection.bypass_actors: unknown key"
+schema_reject "repos: on a github_repos ruleset (never read there)" '.github_repos.kure.rulesets["release-protection"].repos = ["kure"]' \
+    "github_repos.kure.rulesets.release-protection.repos: unknown key"
+schema_reject "a misspelled ref_name condition" '.github_defaults.rulesets["main-protection"].conditions.ref_name.inculde = ["refs/heads/x"]' \
+    "conditions.ref_name.inculde: unknown key"
+schema_reject "a lower-case merge queue method" '.github_repos.kure.rulesets["main-protection"].rules.merge_queue.merge_method = "rebase"' \
+    "merge_queue.merge_method: \"rebase\" is not one of"
+schema_reject "an invalid ruleset enforcement" '.github_defaults.rulesets["main-protection"].enforcement = "on"' \
+    "main-protection.enforcement: \"on\" is not one of"
+schema_reject "an invalid squash commit title" '.github_defaults.squash_merge_commit_title = "PR_TITEL"' \
+    "github_defaults.squash_merge_commit_title: \"PR_TITEL\" is not one of"
+schema_reject "a SETTING_KEYS entry missing from github_defaults" 'del(.github_defaults.has_wiki)' \
+    "github_defaults: missing required key \"has_wiki\""
+schema_reject "a github_org.actions key left out (would be PUT as null)" 'del(.github_org.actions.sha_pinning_required)' \
+    "github_org.actions: missing required key \"sha_pinning_required\""
+schema_reject "a misspelled security key under .github" '.github_repos[".github"].security.secret_scaning = "enabled"' \
+    'github_repos[".github"].security.secret_scaning: unknown key'
+
+# A file of the wrong shape skips the semantic checks instead of crashing
+# them: a string repos: scope would otherwise reach `.repos[]`.
+scope_string_json=$(jq '.github_defaults.rulesets["main-protection"].repos = "kure"' <<<"$POLICY_JSON")
+scope_string_out=$( (POLICY_JSON="$scope_string_json" validate_policy) 2>&1 )
+scope_string_rc=$?
+assert_eq "validate_policy refuses a string repos: scope with exit 1" "1" "$scope_string_rc"
+assert_contains "with the schema error" "$scope_string_out" "main-protection.repos: expected array, got string"
+assert_eq "and no jq error from the scope check it skipped" "0" "$(grep -c 'jq: error' <<<"$scope_string_out")"
+
+# The labels schema reaches every field too.
+label_colour_fixture="$(mktemp)"
+printf '%s\n' '{"labels": [{"name": "area/x", "colour": "#000000", "color": "#000000", "description": "d"}]}' >"$label_colour_fixture"
+label_colour_out=$( (LABELS_FILE="$label_colour_fixture" validate_policy) 2>&1 )
+label_colour_rc=$?
+rm -f "$label_colour_fixture"
+assert_eq "validate_policy refuses an unknown key on a label" "1" "$([ "$label_colour_rc" -ne 0 ] && echo 1 || echo 0)"
+assert_contains "and names it" "$label_colour_out" "labels[0].colour: unknown key"
+
+# A schema this validator cannot apply is an error, never a pass.
+bad_schema_fixture="$(mktemp)"
+printf '%s\n' '{"type": "object", "patternProperties": {"^x": true}}' >"$bad_schema_fixture"
+bad_schema_out=$( (POLICY_SCHEMA_FILE="$bad_schema_fixture" validate_policy) 2>&1 )
+bad_schema_rc=$?
+rm -f "$bad_schema_fixture"
+assert_eq "validate_policy fails when the policy schema uses an unsupported keyword" "1" "$([ "$bad_schema_rc" -ne 0 ] && echo 1 || echo 0)"
+assert_contains "and says the check could not run" "$bad_schema_out" "could not check"
+assert_contains "naming the keyword" "$bad_schema_out" "unsupported keyword(s) patternProperties"
 
 # ---- ruleset_applies scoping ----
 

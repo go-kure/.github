@@ -1,5 +1,8 @@
+# yaml-language-server: $schema=./repository-settings-policy.schema.json
 # GitHub repository settings for go-kure organization
-# Applied by scripts/github-settings.sh
+# Applied by scripts/github-settings.sh. Its shape is closed by
+# repository-settings-policy.schema.json, checked before any audit or apply:
+# a key the script does not read is refused, not silently ignored.
 
 github_defaults:
   allow_rebase_merge: true
