@@ -684,6 +684,9 @@ covers_json=$(jq '.github_repos.kure.rulesets = {
     "Bracket Include": {target: "branch", conditions: {ref_name: {include: ["refs/heads/ma[i]n"]}}, rules: {deletion: true}},
     "Star Include": {target: "branch", conditions: {ref_name: {include: ["refs/*"]}}, rules: {deletion: true}},
     "Double Star Include": {target: "branch", conditions: {ref_name: {include: ["refs/**"]}}, rules: {deletion: true}},
+    "Heads Double Star Include": {target: "branch", conditions: {ref_name: {include: ["refs/heads/**"]}}, rules: {deletion: true}},
+    "Recursive Include": {target: "branch", conditions: {ref_name: {include: ["refs/**/main"]}}, rules: {deletion: true}},
+    "All But Recursive Main": {target: "branch", conditions: {ref_name: {include: ["~ALL"], exclude: ["refs/heads/**/main"]}}, rules: {deletion: true}},
     "Question Include": {target: "branch", conditions: {ref_name: {include: ["refs/heads/mai?"]}}, rules: {deletion: true}},
     "All But Star": {target: "branch", conditions: {ref_name: {include: ["~ALL"], exclude: ["refs/*"]}}, rules: {deletion: true}},
     "Copilot Only": {target: "branch", conditions: {ref_name: {include: ["refs/heads/main"]}}, rules: {copilot_code_review: {review_on_push: true, review_draft_pull_requests: false}}},
@@ -739,11 +742,19 @@ assert_eq "a dotted near-miss (refs/heads/main.x) is literal and does not cover 
 assert_eq "~ALL with a bracket-expression exclude that matches main does not cover main" "1" "$(covers_rc "Bracket Exclude")"
 assert_eq "a bracket-expression include is not trusted to cover main" "1" "$(covers_rc "Bracket Include")"
 # A single `*` does not cross `/` in GitHub's fnmatch (round-9 finding), so
-# `refs/*` never reaches refs/heads/main as an include; only `**` does. On the
-# exclude side the same `*` is read as wide as possible, so `refs/*` counts as
-# possibly removing main. Both directions err towards "not covered".
+# `refs/*` never reaches refs/heads/main as an include. On the exclude side the
+# same `*` is read as wide as possible, so `refs/*` counts as possibly removing
+# main. Both directions err towards "not covered".
 assert_eq "a single-star include (refs/*) is not trusted to reach main" "1" "$(covers_rc "Star Include")"
-assert_eq "a double-star include (refs/**) reaches main" "0" "$(covers_rc "Double Star Include")"
+# `**` crosses `/` only as a whole `**/` segment, which matches zero or more
+# directories (File.fnmatch with FNM_PATHNAME; #160 round 1). A trailing `**`
+# is a plain `*`, so refs/** does not reach refs/heads/main but refs/heads/**
+# does. A `**/` in an exclude matches zero directories too, so
+# refs/heads/**/main removes main itself.
+assert_eq "a trailing double-star include (refs/**) stays in one segment and does not reach main" "1" "$(covers_rc "Double Star Include")"
+assert_eq "a trailing double-star include in the last segment (refs/heads/**) reaches main" "0" "$(covers_rc "Heads Double Star Include")"
+assert_eq "a recursive include (refs/**/main) reaches main" "0" "$(covers_rc "Recursive Include")"
+assert_eq "~ALL with a recursive exclude (refs/heads/**/main) does not cover main" "1" "$(covers_rc "All But Recursive Main")"
 assert_eq "a ? include matching one character of main covers main" "0" "$(covers_rc "Question Include")"
 assert_eq "~ALL with a single-star exclude (refs/*) is read as possibly removing main" "1" "$(covers_rc "All But Star")"
 # Only a rule that blocks a push or a merge counts (round-10 finding): a
@@ -1117,8 +1128,11 @@ co_live_main='{"id":7,"name":"Main Literal","target":"branch","enforcement":"act
 # protection still exists, and the recorded apply failures (|-joined).
 # Inputs via env: CO_POLICY, CO_LIVE, CO_BRANCH, CO_DEFAULT (the default
 # branch the stub reports; empty = unreadable), STUB_POST_FAIL, CO_LIST_FAIL.
-# The audit's own output goes to $CO_OUT for assert_contains.
+# The audit's own output goes to $CO_OUT for assert_contains, and
+# "<RULESET_MISSING> <print_summary exit status>" to $CO_STATS, so a test can
+# check that a kept protection really fails the run and what counts as drift.
 CO_OUT="$(mktemp)"
+CO_STATS="$(mktemp)"
 run_classic_order() {
     (
         CO_DIR="$(mktemp -d)"
@@ -1130,8 +1144,12 @@ run_classic_order() {
         repo_default_branch() { printf '%s' "${CO_DEFAULT-main}"; }
         POLICY_JSON="$CO_POLICY"
         APPLY_FAILURES=()
-        RULESET_MISSING=0
+        # shellcheck disable=SC2034 # read by print_summary via global scope
+        RULESET_MISSING=0 RULESET_OK=0 LABELS_MISSING=0 LABELS_RENAMED=0 LABELS_EXTRA=0 LABELS_DUPLICATE=0 LABELS_DRIFT=0 SETTINGS_MISSING=0 SETTINGS_BLOCKED=0
         audit_rulesets kure "$1" >"$CO_OUT" 2>&1
+        local summary_rc=0
+        JSON_OUTPUT=false REPORT_ONLY=false print_summary "$1" >/dev/null 2>&1 || summary_rc=$?
+        echo "$RULESET_MISSING $summary_rc" >"$CO_STATS"
         printf '%s\t%s\t%s\n' \
             "$(paste -sd, "$CO_DIR/log")" \
             "$([ -e "$CO_DIR/classic" ] && echo kept || echo gone)" \
@@ -1140,31 +1158,42 @@ run_classic_order() {
     )
 }
 
+co_summary_rc() { cut -d' ' -f2 "$CO_STATS"; }
+co_ruleset_issues() { cut -d' ' -f1 "$CO_STATS"; }
+
 co="$(CO_POLICY="$co_policy_main" CO_LIVE="$co_live_main" CO_BRANCH=main run_classic_order true)"
 assert_eq "#160: on --apply the ruleset is POSTed first, then classic protection is deleted" \
     "POST,DELETE main	gone	" "$co"
+assert_eq "#160: a completed migration passes the apply run" "0" "$(co_summary_rc)"
 
 co="$(CO_POLICY="$co_policy_main" CO_LIVE="$co_live_main" CO_BRANCH=main STUB_POST_FAIL=1 run_classic_order true)"
 assert_eq "#160: a failed ruleset POST keeps classic protection and fails the apply run" \
     "	kept	kure: create ruleset 'Main Literal'|kure: classic branch protection on main kept, replacement ruleset not live" "$co"
 assert_contains "#160: and says why it was kept" "$(cat "$CO_OUT")" "replacement ruleset not live"
+assert_eq "#160: the kept protection fails the apply run (print_summary exit 1)" "1" "$(co_summary_rc)"
 
 co="$(CO_POLICY="$co_policy_main" CO_LIVE="${co_live_main/\"active\"/\"disabled\"}" CO_BRANCH=main run_classic_order true)"
 assert_eq "#160: a POSTed ruleset that is not live-active (disabled) does not replace classic protection" \
     "POST	kept	kure: classic branch protection on main kept, replacement ruleset not live" "$co"
+assert_eq "#160: a POSTed but disabled replacement fails the apply run" "1" "$(co_summary_rc)"
 
 co="$(CO_POLICY="$co_policy_main" CO_LIVE="${co_live_main/\"deletion\"/\"copilot_code_review\"}" CO_BRANCH=main run_classic_order true)"
 assert_eq "#160: a live ruleset with no protective rule does not replace classic protection" \
     "POST	kept	kure: classic branch protection on main kept, replacement ruleset not live" "$co"
+assert_eq "#160: a non-protective replacement fails the apply run" "1" "$(co_summary_rc)"
 
 co="$(CO_POLICY="$co_policy_main" CO_LIVE="$co_live_main" CO_BRANCH=main CO_LIST_FAIL=1 run_classic_order true)"
 assert_eq "#160: an unreadable rulesets list keeps classic protection on --apply" \
     "	kept	kure: classic branch protection on main kept, replacement ruleset not live" "$co"
 assert_contains "#160: and still reports it" "$(cat "$CO_OUT")" "LEGACY"
+assert_eq "#160: an unreadable listing fails the apply run" "1" "$(co_summary_rc)"
 
 co="$(CO_POLICY="$co_policy_main" CO_LIVE="$co_live_main" CO_BRANCH=main run_classic_order false)"
 assert_eq "#160: audit mode writes nothing" "	kept	" "$co"
 assert_contains "#160: audit mode reports the leftover classic protection" "$(cat "$CO_OUT")" "LEGACY: Classic branch protection on main still exists"
+# Two issues: the missing ruleset and the leftover classic protection.
+assert_eq "#160: audit mode counts the leftover classic protection as drift" "2" "$(co_ruleset_issues)"
+assert_eq "#160: and the audit fails" "1" "$(co_summary_rc)"
 
 # The default branch is resolved once and drives the probe, the coverage
 # checks and the delete (go-kure/.github#160 follow-up from #154 round 11).
@@ -1177,7 +1206,26 @@ co="$(CO_POLICY="$co_policy_main" CO_LIVE="$co_live_main" CO_BRANCH=master CO_DE
 assert_eq "#160: a main-only ruleset never replaces classic protection on a master default branch" \
     "POST	kept	" "$co"
 assert_contains "#160: that case is reported as kept, not as drift" "$(cat "$CO_OUT")" "no policy ruleset targets master"
-rm -f "$CO_OUT"
+assert_eq "#160: and does not fail the apply run" "0" "$(co_summary_rc)"
+co="$(CO_POLICY="$co_policy_main" CO_LIVE="$co_live_main" CO_BRANCH=master CO_DEFAULT=master run_classic_order false)"
+# One issue only: the missing ruleset. The kept classic protection adds none.
+assert_eq "#160: in audit mode the uncovered classic protection is not counted as drift" "1" "$(co_ruleset_issues)"
+
+# An unreadable default branch is a failure, never a guess (#160 round 1): it
+# used to fall back to main, so classic protection on a master default branch
+# was never probed and both modes reported nothing.
+co="$(CO_POLICY="$co_policy_default" CO_LIVE="$co_live_default" CO_BRANCH=master CO_DEFAULT='' run_classic_order true)"
+assert_eq "#160: an unreadable default branch deletes nothing and fails the apply run" \
+    "POST	kept	kure: default branch unreadable, classic branch protection not checked" "$co"
+assert_contains "#160: and says so" "$(cat "$CO_OUT")" "Could not read the default branch of"
+assert_eq "#160: print_summary (--apply) exits 1 on the unreadable default branch" "1" "$(co_summary_rc)"
+co="$(CO_POLICY="$co_policy_main" CO_LIVE="$co_live_main" CO_BRANCH=main CO_DEFAULT='' run_classic_order true)"
+assert_eq "#160: an unreadable default branch is not guessed as main either" \
+    "POST	kept	kure: default branch unreadable, classic branch protection not checked" "$co"
+co="$(CO_POLICY="$co_policy_main" CO_LIVE="$co_live_main" CO_BRANCH=main CO_DEFAULT='' run_classic_order false)"
+assert_eq "#160: audit mode counts the unreadable default branch" "2" "$(co_ruleset_issues)"
+assert_eq "#160: and the audit fails" "1" "$(co_summary_rc)"
+rm -f "$CO_OUT" "$CO_STATS"
 
 # One labels file drives all four label writes: test/foo drifts (PATCH),
 # type/bug is renamed from a live `bug` (PATCH new_name), test/new is missing
