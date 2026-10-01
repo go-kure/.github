@@ -533,6 +533,32 @@ printf '%s\n' 'diff --git a/a.go b/a.go' 'index 1111111..2222222 100644' '--- a/
   > "$scope_diff"
 assert_eq "diff_files: modified, deleted, new and binary files once each; a body +++ line is not a header" \
   "$(printf '%s\n' a.go d.go n.go bin.png)" "$(prt_diff_files "$scope_diff")"
+
+# Paths git writes in other forms (round-1 review of the #173 change): a pure
+# rename or copy names its new path only on its `rename to`/`copy to` line
+# (here one holding " b/", which the diff --git line cannot split); a binary
+# record's path may hold spaces; git C-quotes a path holding `"`, `\` or a
+# non-ASCII byte and ends an unquoted header path holding a space with a tab.
+# A path holding a control character keeps its quoted form, so the list stays
+# one path per line.
+printf '%s\n' 'diff --git a/x.go b/dir b/z.go' 'similarity index 100%' 'rename from x.go' 'rename to dir b/z.go' \
+  'diff --git a/c.go b/c copy.go' 'similarity index 100%' 'copy from c.go' 'copy to c copy.go' \
+  'diff --git a/binary image.png b/binary image.png' 'index 5555555..6666666 100644' \
+  'Binary files a/binary image.png and b/binary image.png differ' \
+  'diff --git a/gone file.bin b/gone file.bin' 'deleted file mode 100644' 'index 7777777..0000000' \
+  'Binary files a/gone file.bin and /dev/null differ' \
+  'diff --git "a/quote\"name.go" "b/quote\"name.go"' 'index 1111111..2222222 100644' \
+  '--- "a/quote\"name.go"' '+++ "b/quote\"name.go"' '@@ -1,1 +1,1 @@' '-a' '+b' \
+  'diff --git "a/caf\303\251.go" "b/caf\303\251.go"' 'new file mode 100644' 'index 0000000..3333333' \
+  '--- /dev/null' '+++ "b/caf\303\251.go"' '@@ -0,0 +1,1 @@' '+x' \
+  'diff --git "a/new\nline.go" "b/new\nline.go"' 'index 1111111..2222222 100644' \
+  '--- "a/new\nline.go"' '+++ "b/new\nline.go"' '@@ -1,1 +1,1 @@' '-a' '+b' \
+  'diff --git a/sp ace.go b/sp ace.go' 'index 1111111..2222222 100644' \
+  $'--- a/sp ace.go\t' $'+++ b/sp ace.go\t' '@@ -1,1 +1,1 @@' '-a' '+b' \
+  > "$scope_diff"
+assert_eq "diff_files: rename/copy targets, binary paths with spaces, quoted, octal, control-char and tab-ended paths" \
+  "$(printf '%s\n' 'dir b/z.go' 'c copy.go' 'binary image.png' 'gone file.bin' 'quote"name.go' $'caf\303\251.go' '"new\nline.go"' 'sp ace.go')" \
+  "$(prt_diff_files "$scope_diff")"
 rm -f "$scope_diff"
 
 assert_eq "chunk_scope: a single-chunk diff gets no scope block" \
@@ -1379,7 +1405,8 @@ assert_eq "prt_render_summary: row with no line field renders n/a, not blank or 
 # are tested in isolation from that guarantee. This table's esc (unlike the
 # overflow/quarantine/advisory tables below) does NOT neutralize the marker
 # prefix — deliberately, since $GITHUB_STEP_SUMMARY is never scanned by
-# prt_find_marked_comment, so only the pipe-escape behavior applies here.
+# prt_find_marked_comment, so only the pipe escape (and the HTML entity
+# encoding tested below) applies here.
 summary_line_pipe_hazard="$(prt_render_summary enforce abc1234 1 '[{"fp":"deadbeef","severity":"High","category":"other","file":"y.go","line":"1 | injected","verdict":"VALID"}]' 0 '')"
 assert_eq "prt_render_summary: Line cell escapes a literal pipe, not a phantom column (go-kure/.github#191 kure-bot)" \
   "true" "$(grep -qF '1 \| injected' <<< "$summary_line_pipe_hazard" && echo true || echo false)"
@@ -1397,6 +1424,18 @@ assert_eq "prt_render_summary #183: later lines of the issue are not rendered" \
   "false" "$(grep -qF 'second line' <<< "$summary_sup" && echo true || echo false)"
 assert_eq "prt_render_summary #183: no suppressed findings -> no section" \
   "false" "$(grep -qF 'Suppressed findings' <<< "$summary_with_line" && echo true || echo false)"
+# Raw HTML in a finding-derived cell would close the table it sits in, so
+# both tables entity-encode &, < and > (#183 review).
+html_hazard='</td></tr></tbody></table><h2>x</h2> & co'
+html_json="$(jq -nc --arg h "$html_hazard" '[{fp:"feedface",severity:$h,category:$h,file:$h,line:$h,issue:$h,fix:"f",verdict:"FALSE_POSITIVE",reasoning:$h}]')"
+summary_html="$(prt_render_summary enforce abc1234 1 "$html_json" 1 '' '' "$html_json")"
+html_cell='&lt;/td&gt;&lt;/tr&gt;&lt;/tbody&gt;&lt;/table&gt;&lt;h2&gt;x&lt;/h2&gt; &amp; co'
+assert_eq "prt_render_summary #183: findings-table cells entity-encode raw HTML" \
+  "true" "$(grep -qF "| \`feedface\` | $html_cell | $html_cell | $html_cell | $html_cell | FALSE_POSITIVE |" <<< "$summary_html" && echo true || echo false)"
+assert_eq "prt_render_summary #183: suppressed-table cells entity-encode raw HTML" \
+  "true" "$(grep -qF "| \`feedface\` | $html_cell | $html_cell | $html_cell | $html_cell | $html_cell |" <<< "$summary_html" && echo true || echo false)"
+assert_eq "prt_render_summary #183: no raw closing tag survives in the summary" \
+  "false" "$(grep -qE '</(td|tr|tbody|table|h2)>' <<< "$summary_html" && echo true || echo false)"
 
 # ============================================================ render.sh: prt_render_overflow_comment quarantined section (go-kure/.github#155)
 # QUARANTINED_JSON is the second, optional argument — findings withheld by
@@ -4164,7 +4203,7 @@ rc="$(run_orchestrator enforce 0 0 0)"
 assert_eq "orchestrator #261: unreadable lift on a stamped thread -> one MAINT_FAILURE reply recording the stamp" \
   "1 1 $PRT_TEST_FIRST_ABSENT_SHA" "$rc $(cat "$PRT_TEST_REPLY_COUNTFILE") $(prt_marker_maint_failure_sha "$(cat "$PRT_TEST_REPLY_BODY_LOG")")"
 assert_eq "orchestrator #265: that reply names the unreadable resolved state, not a failed PATCH" \
-  "true" "$(grep -qF "**MAINT_FAILURE:** $(prt_maint_failure_reason resolved)" "$PRT_TEST_REPLY_BODY_LOG" && echo true || echo false)"
+  "true" "$(grep -qF "**MAINT_FAILURE:** the thread's resolved state could not be re-read before the marker write, so the absence marker was not cleared" "$PRT_TEST_REPLY_BODY_LOG" && echo true || echo false)"
 PRT_TEST_LIVE_RESOLVED=true
 rc="$(run_orchestrator enforce 0 0 0)"
 assert_eq "orchestrator #261: lift refused on a resolved stamped thread -> no MAINT_FAILURE reply (control)" \
@@ -4319,7 +4358,7 @@ rc="$(run_orchestrator enforce 0 0 0)"
 assert_eq "orchestrator #261: loop-1 stamp clear fails -> exits 1, one MAINT_FAILURE reply recording the stamp" \
   "1 1 $mf_stamp" "$rc $(cat "$PRT_TEST_REPLY_COUNTFILE") $(prt_marker_maint_failure_sha "$(cat "$PRT_TEST_REPLY_BODY_LOG")")"
 assert_eq "orchestrator #265: loop-1 failed PATCH -> the reply names the failed retries" \
-  "true" "$(grep -qF "**MAINT_FAILURE:** $(prt_maint_failure_reason write 3)" "$PRT_TEST_REPLY_BODY_LOG" && echo true || echo false)"
+  "true" "$(grep -qF "**MAINT_FAILURE:** clearing the absence marker failed after 3 retries" "$PRT_TEST_REPLY_BODY_LOG" && echo true || echo false)"
 # (a2) The clear fails again on a later run: a reply already records the stamp.
 PRT_TEST_THREAD1_REPLIES="$(mf_reply_node "$(prt_render_reply_maint_failure "clear failed" "$mf_stamp")")"
 rc="$(run_orchestrator enforce 0 0 0)"
@@ -4340,7 +4379,7 @@ rc="$(run_orchestrator enforce 0 0 0)"
 assert_eq "orchestrator #261: loop-2 CLEAR_MARKER fails -> one MAINT_FAILURE reply recording the stamp" \
   "1 $mf_stamp" "$(cat "$PRT_TEST_REPLY_COUNTFILE") $(prt_marker_maint_failure_sha "$(cat "$PRT_TEST_REPLY_BODY_LOG")")"
 assert_eq "orchestrator #265: loop-2 failed PATCH -> the reply names the failed retries" \
-  "true" "$(grep -qF "**MAINT_FAILURE:** $(prt_maint_failure_reason write 3)" "$PRT_TEST_REPLY_BODY_LOG" && echo true || echo false)"
+  "true" "$(grep -qF "**MAINT_FAILURE:** clearing the absence marker failed after 3 retries" "$PRT_TEST_REPLY_BODY_LOG" && echo true || echo false)"
 # (b2) and (b3): loop 2's dedupe and failed reply, as (a2) and (a3).
 PRT_TEST_THREAD1_REPLIES="$(mf_reply_node "$(prt_render_reply_maint_failure "clear failed" "$mf_stamp")")"
 rc="$(run_orchestrator enforce 0 0 0)"
@@ -4361,7 +4400,7 @@ rc="$(run_orchestrator enforce 0 0 0)"
 assert_eq "orchestrator #261: loop-2 CLEAR_MARKER skipped on a failed GET -> one MAINT_FAILURE reply recording the stamp" \
   "1 $mf_stamp" "$(cat "$PRT_TEST_REPLY_COUNTFILE") $(prt_marker_maint_failure_sha "$(cat "$PRT_TEST_REPLY_BODY_LOG")")"
 assert_eq "orchestrator #265: loop-2 failed GET -> the reply names the unread comment, not a failed PATCH" \
-  "true" "$(grep -qF "**MAINT_FAILURE:** $(prt_maint_failure_reason read)" "$PRT_TEST_REPLY_BODY_LOG" && echo true || echo false)"
+  "true" "$(grep -qF "**MAINT_FAILURE:** the thread's first comment could not be read before the marker write, so the absence marker was not cleared" "$PRT_TEST_REPLY_BODY_LOG" && echo true || echo false)"
 PRT_TEST_OWNED_FP="$(prt_fp_base x.go other)"
 PRT_TEST_MODEL_RESPONSE_MODE=clean_with_finding
 : > "$PRT_TEST_REPLY_BODY_LOG"
@@ -4369,7 +4408,7 @@ rc="$(run_orchestrator enforce 0 0 0)"
 assert_eq "orchestrator #261: loop-1 stamp clear skipped on a failed GET -> exits 1, one MAINT_FAILURE reply recording the stamp" \
   "1 1 $mf_stamp" "$rc $(cat "$PRT_TEST_REPLY_COUNTFILE") $(prt_marker_maint_failure_sha "$(cat "$PRT_TEST_REPLY_BODY_LOG")")"
 assert_eq "orchestrator #265: loop-1 failed GET -> the reply names the unread comment, not a failed PATCH" \
-  "true" "$(grep -qF "**MAINT_FAILURE:** $(prt_maint_failure_reason read)" "$PRT_TEST_REPLY_BODY_LOG" && echo true || echo false)"
+  "true" "$(grep -qF "**MAINT_FAILURE:** the thread's first comment could not be read before the marker write, so the absence marker was not cleared" "$PRT_TEST_REPLY_BODY_LOG" && echo true || echo false)"
 PRT_TEST_COMMENT_GET_EMPTY=0
 # (b5) A clear skipped on a stale head (its own freshness check) also records
 # the stamp. The read count before that check differs per path, so each case
@@ -4398,11 +4437,40 @@ mf_stale_case() { # MODE OWNED_FP REASON_TEXT -> "<replies> <recorded stamp>" at
 assert_eq "orchestrator #261: loop-1 stamp clear skipped on a stale head -> one MAINT_FAILURE reply recording the stamp" \
   "1 $mf_stamp" "$(mf_stale_case clean_with_finding "$(prt_fp_base x.go other)" "fp=$(prt_fp_base x.go other): clearing a stale absence stamp ($mf_stamp)")"
 assert_eq "orchestrator #265: loop-1 stale head -> the reply names the moved head, not a failed PATCH" \
-  "true" "$(grep -qF "**MAINT_FAILURE:** $(prt_maint_failure_reason freshness 1)" "$PRT_TEST_REPLY_BODY_LOG" && echo true || echo false)"
+  "true" "$(grep -qF "**MAINT_FAILURE:** the head moved before the marker write, so the absence marker was not cleared" "$PRT_TEST_REPLY_BODY_LOG" && echo true || echo false)"
 assert_eq "orchestrator #261: loop-2 CLEAR_MARKER skipped on a stale head -> one MAINT_FAILURE reply recording the stamp" \
   "1 $mf_stamp" "$(mf_stale_case partial_drop 0000000000000000 "fp=0000000000000000: marker clear")"
 assert_eq "orchestrator #265: loop-2 stale head -> the reply names the moved head, not a failed PATCH" \
-  "true" "$(grep -qF "**MAINT_FAILURE:** $(prt_maint_failure_reason freshness 1)" "$PRT_TEST_REPLY_BODY_LOG" && echo true || echo false)"
+  "true" "$(grep -qF "**MAINT_FAILURE:** the head moved before the marker write, so the absence marker was not cleared" "$PRT_TEST_REPLY_BODY_LOG" && echo true || echo false)"
+# (b6) The freshness check before the write passes, then every PR read fails,
+# so each retried write attempt fails its own freshness check and sends no
+# PATCH (write status 2). Same offset walk as (b5), matched on the retried
+# write's incomplete reason.
+mf_read_fail_case() { # MODE OWNED_FP CONTEXT -> "<replies> <recorded stamp> <PATCHes>" at that offset, or "none"
+  local k total
+  PRT_TEST_MODEL_RESPONSE_MODE="$1"; PRT_TEST_OWNED_FP="$2"
+  rc="$(run_orchestrator enforce 0 0 0)"
+  total="$(cat "$PRT_TEST_META_COUNTFILE")"
+  for ((k = total - 1; k >= 1; k--)); do
+    : > "$PRT_TEST_REPLY_BODY_LOG"
+    PRT_TEST_PR_READ_FAIL_AFTER_CALL=$k
+    rc="$(run_orchestrator enforce 0 0 0)"
+    PRT_TEST_PR_READ_FAIL_AFTER_CALL=0
+    if grep -qF "REVIEW_INCOMPLETE: $3 (after up to 3 retries): PR read failed" "$PRT_TEST_STDERR_FILE"; then
+      echo "$(cat "$PRT_TEST_REPLY_COUNTFILE") $(prt_marker_maint_failure_sha "$(cat "$PRT_TEST_REPLY_BODY_LOG")") $(cat "$PRT_TEST_PATCH_COUNTFILE")"
+      return 0
+    fi
+  done
+  echo none
+}
+assert_eq "orchestrator #261: loop-1 stamp clear, every write attempt's PR read fails -> one MAINT_FAILURE reply recording the stamp, no PATCH" \
+  "1 $mf_stamp 0" "$(mf_read_fail_case clean_with_finding "$(prt_fp_base x.go other)" "fp=$(prt_fp_base x.go other): clearing a stale absence stamp ($mf_stamp)")"
+assert_eq "orchestrator #265: loop-1 write status 2 -> the reply names the unread PR, not failed retries" \
+  "true false" "$(grep -qF "**MAINT_FAILURE:** the PR could not be read before the last of up to 3 marker write attempts, so the absence marker was not cleared" "$PRT_TEST_REPLY_BODY_LOG" && echo true || echo false) $(grep -qF 'failed after 3 retries' "$PRT_TEST_REPLY_BODY_LOG" && echo true || echo false)"
+assert_eq "orchestrator #261: loop-2 CLEAR_MARKER, every write attempt's PR read fails -> one MAINT_FAILURE reply recording the stamp, no PATCH" \
+  "1 $mf_stamp 0" "$(mf_read_fail_case partial_drop 0000000000000000 "fp=0000000000000000: clearing the absence marker")"
+assert_eq "orchestrator #265: loop-2 write status 2 -> the reply names the unread PR, not failed retries" \
+  "true false" "$(grep -qF "**MAINT_FAILURE:** the PR could not be read before the last of up to 3 marker write attempts, so the absence marker was not cleared" "$PRT_TEST_REPLY_BODY_LOG" && echo true || echo false) $(grep -qF 'failed after 3 retries' "$PRT_TEST_REPLY_BODY_LOG" && echo true || echo false)"
 PRT_TEST_OWNED_FP="$(prt_fp_base x.go other)"
 # (c) The next complete run is an absence at a new head, over the same stamp.
 PRT_TEST_MODEL_RESPONSE_MODE=clean

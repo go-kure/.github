@@ -164,7 +164,8 @@ overrides the workflow's own default) is one of three values. An unrecognized va
   `<!-- gokure-pr-review:v1-maint-failure first_absent_sha=<sha> -->`, directly after the note
   marker, records the stamp it left. The reply's reason names the step that stopped the clear
   (the head moved, the PR or the comment could not be read, the resolved state could not be
-  re-read, or the PATCH failed after its retries; go-kure/.github#265). A clear that fails again
+  re-read, the head moved or the PR could not be read during the retried write, or the PATCH
+  failed after its retries; go-kure/.github#265). A clear that fails again
   on a later run posts no second reply for the same stamp. While the thread still carries that stamp, row 11 does not read it as
   the first of two absences: an absence at a new head re-stamps the thread at that head instead,
   and the next absence on another head resolves it. A reply counts only while it is newer than
@@ -1203,7 +1204,9 @@ the render functions are unit-tested in isolation from that guarantee, and the f
 site's worth of consistency with every sibling column, so it's applied directly rather than left as
 a documented invariant to trust. `prt_render_summary`'s own `esc` has no marker-neutralization
 clause at all (deliberately — `$GITHUB_STEP_SUMMARY` is never scanned by `prt_find_marked_comment`,
-so only its pipe-escaping applies there); the other three tables' `esc` already had the marker
+so only its pipe escaping applies there, plus entity-encoding `&`, `<` and `>` so model text such
+as `</table>` cannot close its table, in both the findings and the suppressed-findings tables);
+the other three tables' `esc` already had the marker
 clause, so wrapping `.line` in it closed the same gap those tables' other columns were already
 guarded against.
 
