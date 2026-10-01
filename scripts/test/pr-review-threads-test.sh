@@ -559,6 +559,16 @@ printf '%s\n' 'diff --git a/x.go b/dir b/z.go' 'similarity index 100%' 'rename f
 assert_eq "diff_files: rename/copy targets, binary paths with spaces, quoted, octal, control-char and tab-ended paths" \
   "$(printf '%s\n' 'dir b/z.go' 'c copy.go' 'binary image.png' 'gone file.bin' 'quote"name.go' $'caf\303\251.go' '"new\nline.go"' 'sp ace.go')" \
   "$(prt_diff_files "$scope_diff")"
+
+# A file literally named `"new\nline.go"` (quotes and backslash included) must
+# not read the same as the control-character path above and be dropped as a
+# duplicate (round-2 review): it keeps git's quoting too.
+printf '%s\n' 'diff --git "a/new\nline.go" "b/new\nline.go"' 'old mode 100644' 'new mode 100755' \
+  'diff --git "a/\"new\\nline.go\"" "b/\"new\\nline.go\""' 'old mode 100644' 'new mode 100755' \
+  > "$scope_diff"
+assert_eq "diff_files: a decoded path starting with a quote does not collide with a kept quoted path" \
+  "$(printf '%s\n' '"new\nline.go"' '"\"new\\nline.go\""')" \
+  "$(prt_diff_files "$scope_diff")"
 rm -f "$scope_diff"
 
 assert_eq "chunk_scope: a single-chunk diff gets no scope block" \
