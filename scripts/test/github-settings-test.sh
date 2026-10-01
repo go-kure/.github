@@ -1202,6 +1202,7 @@ co_live_default="${co_live_default//refs\/heads\/main/~DEFAULT_BRANCH}"
 co="$(CO_POLICY="$co_policy_default" CO_LIVE="$co_live_default" CO_BRANCH=master CO_DEFAULT=master run_classic_order true)"
 assert_eq "#160: classic protection on a non-main default branch is migrated on that branch" \
     "POST,DELETE master	gone	" "$co"
+assert_eq "#160: and that apply run succeeds" "0" "$(co_summary_rc)"
 co="$(CO_POLICY="$co_policy_main" CO_LIVE="$co_live_main" CO_BRANCH=master CO_DEFAULT=master run_classic_order true)"
 assert_eq "#160: a main-only ruleset never replaces classic protection on a master default branch" \
     "POST	kept	" "$co"
@@ -1210,6 +1211,24 @@ assert_eq "#160: and does not fail the apply run" "0" "$(co_summary_rc)"
 co="$(CO_POLICY="$co_policy_main" CO_LIVE="$co_live_main" CO_BRANCH=master CO_DEFAULT=master run_classic_order false)"
 # One issue only: the missing ruleset. The kept classic protection adds none.
 assert_eq "#160: in audit mode the uncovered classic protection is not counted as drift" "1" "$(co_ruleset_issues)"
+
+# The real repo_default_branch, not the stub: on an HTTP error gh prints the
+# error body to stdout and exits non-zero, and that body must not become the
+# branch name (#160 round 2).
+rdb_out="$(
+    # shellcheck disable=SC2329 # stub for the sourced helper below
+    gh() { printf '%s\n' '{"message":"Resource not accessible by integration","status":"403"}'; return 1; }
+    source "$ROOT/scripts/github-settings.sh"
+    repo_default_branch kure
+)"
+assert_eq "#160: repo_default_branch returns nothing when gh fails, even with output" "" "$rdb_out"
+rdb_out="$(
+    # shellcheck disable=SC2329 # stub for the sourced helper below
+    gh() { printf '%s\n' 'trunk'; }
+    source "$ROOT/scripts/github-settings.sh"
+    repo_default_branch kure
+)"
+assert_eq "#160: repo_default_branch returns the branch when gh succeeds" "trunk" "$rdb_out"
 
 # An unreadable default branch is a failure, never a guess (#160 round 1): it
 # used to fall back to main, so classic protection on a master default branch
