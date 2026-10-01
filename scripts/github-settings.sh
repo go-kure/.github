@@ -2216,6 +2216,10 @@ print_summary() {
     if [ "$failing_issues" -gt 0 ] && [ "$apply" != "true" ]; then
         echo ""
         echo "Run with --apply to fix issues"
+        local manual=$((LABELS_DUPLICATE + SETTINGS_BLOCKED))
+        if [ "$manual" -gt 0 ]; then
+            echo "$manual of them (duplicate labels, audit-only settings) --apply cannot fix: reconcile those by hand"
+        fi
         if [ "$REPORT_ONLY" = "true" ]; then
             ci_warning "$failing_issues drift issue(s) found; not failing (--report-only)"
             return 0
