@@ -70,9 +70,10 @@ The default mode, `enforce`, turns each finding into a resolvable review thread:
 - a thread the review resolved is reopened if its issue comes back;
 - a thread a person resolved is never reopened.
 
-At most 5 review threads gate the pull request at once. Threads already open, or about to be
-reopened, count first; new findings, most severe first, get the remaining places. Findings past
-that limit go into one overflow comment.
+New review threads are capped at 5 across the pull request. Threads already open, or about to be
+reopened, count against the cap first and are never held back by it; new findings, most severe
+first, get whatever places remain. So more than 5 threads can be open when earlier ones return.
+New findings past the cap go into one overflow comment.
 
 The check is required on `main` and on `release/*` branches, so a failed review run blocks the
 merge. Separately, the rulesets require every review thread to be resolved before merge.
@@ -89,7 +90,7 @@ any other value means editing `pr-review.yml` in `go-kure/.github`.
 | Setting | Default | Notes |
 |---------|---------|-------|
 | `PR_REVIEW_THREADS_MODE` | `enforce` | Overridable through the `PR_REVIEW_THREADS_MODE` variable |
-| `PR_REVIEW_MAX_FINDINGS_TOTAL` | `5` | Gating threads open at once, across the pull request |
+| `PR_REVIEW_MAX_FINDINGS_TOTAL` | `5` | Cap on new threads, after open and reopened ones are counted |
 | `PR_REVIEW_MAX_DIFF_CHARS` | `50000` | Size of one diff chunk |
 | `PR_REVIEW_MAX_TOKENS` | `1500` | Review pass |
 | `PR_REVIEW_ASSESS_MAX_TOKENS` | `4096` | Assessment pass |
@@ -247,9 +248,10 @@ Each deploy writes one version slot under the repository's directory in the page
 `dev` for `main`, or `v<major>.<minor>` for a release. The slot is replaced as a whole. A slot
 name is one path segment, either `dev` or starting with `v`; anything else fails the step.
 
-A release deploy asks for the site root only when Publish decided the tag is the highest stable
-tag (`set_latest=true`); a backport deploys its slot alone. When asked, the root is written only
-if, at write time:
+A release deploy asks for the site root only when Publish decided no higher stable tag exists
+(`set_latest=true`). Prereleases do not count, so a patch on an older line asks for the root while
+the newer line has only prereleases; otherwise it deploys its slot alone. When asked, the root is
+written only if, at write time:
 
 - the label is a stable `vX.Y.Z` version and, after the tags are fetched again from the calling
   repository, no stable tag is higher (the same rule Publish uses); otherwise the slot is deployed
