@@ -14,12 +14,12 @@ job, is on its GitHub Workflows page.
 
 | Kind | Referenced as | When a change reaches the calling repository |
 |------|---------------|----------------------------------------------|
-| Reusable workflow (`pr-review.yml`, `claude.yml`, `release.yml`, `release-publish.yml`, `auto-rebase.yml`) | `go-kure/.github/.github/workflows/<name>@main` | On the next run, as soon as the change merges in `go-kure/.github` |
+| Reusable workflow (`pr-review.yml`, `claude.yml`, `release.yml`, `release-publish.yml`, `release-state.yml`, `auto-rebase.yml`) | `go-kure/.github/.github/workflows/<name>@main` | On the next run, as soon as the change merges in `go-kure/.github` |
 | Composite action (the CI checks and `deploy-docs-push`) | `go-kure/.github/.github/actions/<name>@<commit SHA>` | Only when the calling repository bumps the pinned SHA |
 
 The calling repository's CI and Deploy Docs workflows are its own files, not calls to a reusable
 workflow. They run the shared composite actions as steps, next to steps of their own. The
-release workflows are described in the Releasing guide.
+release workflows, `release-state.yml` included, are described in the Releasing guide.
 
 Renovate bumps the composite-action pins as one `go-kure/.github` update.
 
