@@ -105,21 +105,82 @@ assert_eq "path: a key with spaces is quoted" '1|["a b"]: expected string, got i
 
 # ---- what cannot be checked returns 2, never 0 ----
 assert_eq "an unsupported keyword is a schema error" "2|schema error: at (root): unsupported keyword(s) anyOf" "$(check '{"anyOf": [{"type": "string"}]}' '"x"')"
-assert_eq "an unsupported keyword deep in the schema is reached" "2|schema error: at a: unsupported keyword(s) format" \
+assert_eq "an unsupported keyword deep in the schema is reached" "2|schema error: at properties.a: unsupported keyword(s) format" \
     "$(check '{"properties": {"a": {"type": "string", "format": "email"}}}' '{"a": "x"}')"
 assert_eq "an unknown type name is a schema error" "2|schema error: at (root): unknown type(s) bool" "$(check '{"type": "bool"}' 'true')"
 assert_eq "an unresolvable \$ref is a schema error" '2|schema error: at (root): unresolvable $ref "#/definitions/nope"' "$(check '{"$ref": "#/definitions/nope"}' '1')"
-assert_eq "a \$ref outside definitions is a schema error" '2|schema error: at (root): unresolvable $ref "other.json"' "$(check '{"$ref": "other.json"}' '1')"
+assert_eq "a \$ref outside definitions is a schema error" '2|schema error: at (root): unsupported $ref "other.json": only "#/definitions/<name>" with no "/", "~" or "%" in the name' "$(check '{"$ref": "other.json"}' '1')"
 assert_eq "a \$ref with a sibling keyword is a schema error" '2|schema error: at (root): $ref "#/definitions/n" has sibling keywords' \
     "$(check '{"$ref": "#/definitions/n", "type": "string", "definitions": {"n": {}}}' '"x"')"
-assert_eq "a schema that is neither object nor boolean is a schema error" "2|schema error: at x: a schema must be an object or a boolean" \
+assert_eq "a schema that is neither object nor boolean is a schema error" "2|schema error: at properties.x: a schema must be an object or a boolean" \
     "$(check '{"properties": {"x": 1}}' '{"x": 1}')"
+
+# The whole schema is checked before the data, so an error where the data
+# never goes still fails the check.
+assert_eq "an unsupported keyword under an absent property is a schema error" "2|schema error: at properties.x: unsupported keyword(s) format" \
+    "$(check '{"properties": {"x": {"format": "email"}}}' '{}')"
+assert_eq "an unknown type under items is a schema error even for an empty list" "2|schema error: at items: unknown type(s) bool" \
+    "$(check '{"items": {"type": "bool"}}' '[]')"
+assert_eq "a broken \$ref in an unused definition is a schema error" '2|schema error: at definitions.d: unresolvable $ref "#/definitions/nope"' \
+    "$(check '{"definitions": {"d": {"$ref": "#/definitions/nope"}}}' '1')"
+assert_eq "an error under additionalProperties is reached with no other keys" "2|schema error: at additionalProperties: unsupported keyword(s) oneOf" \
+    "$(check '{"additionalProperties": {"oneOf": []}}' '{}')"
+
+# A keyword with a value of the wrong shape is a schema error, not a no-op.
+assert_eq "type: null is a schema error" "2|schema error: at (root): type must be a type name or a non-empty list of distinct type names" "$(check '{"type": null}' '10')"
+assert_eq "type: an empty list is a schema error" "2" "$(check '{"type": []}' '10' | cut -d'|' -f1)"
+assert_eq "maximum: a string is a schema error" "2|schema error: at (root): maximum must be a number" "$(check '{"maximum": "10"}' '100')"
+assert_eq "minimum: a string is a schema error" "2" "$(check '{"minimum": "10"}' '1' | cut -d'|' -f1)"
+assert_eq "enum: an object is a schema error" "2|schema error: at (root): enum must be a non-empty array" "$(check '{"enum": {"first": 1}}' '1')"
+assert_eq "enum: an empty list is a schema error" "2" "$(check '{"enum": []}' '1' | cut -d'|' -f1)"
+assert_eq "required: a string is a schema error" "2|schema error: at (root): required must be an array of distinct strings" "$(check '{"required": "a"}' '{}')"
+assert_eq "required: a non-string entry is a schema error" "2" "$(check '{"required": [1]}' '{}' | cut -d'|' -f1)"
+assert_eq "minItems: a negative bound is a schema error" "2|schema error: at (root): minItems must be a non-negative integer" "$(check '{"minItems": -1}' '[]')"
+assert_eq "minLength: a fraction is a schema error" "2" "$(check '{"minLength": 1.5}' '"x"' | cut -d'|' -f1)"
+assert_eq "maxLength: a string is a schema error" "2" "$(check '{"maxLength": "2"}' '"x"' | cut -d'|' -f1)"
+assert_eq "uniqueItems: a string is a schema error" "2|schema error: at (root): uniqueItems must be a boolean" "$(check '{"uniqueItems": "yes"}' '[]')"
+assert_eq "pattern: a non-string is a schema error" "2|schema error: at (root): pattern must be a string" "$(check '{"pattern": 1}' '"x"')"
+assert_eq "pattern: one that does not compile is a schema error" '2|schema error: at (root): pattern "(" does not compile' "$(check '{"pattern": "("}' '1')"
+assert_eq "items: a list (tuple form) is a schema error" "2|schema error: at (root): items as a list (tuple validation) is not supported" "$(check '{"items": [{}]}' '[1]')"
+assert_eq "properties: a list is a schema error" "2|schema error: at (root): properties must be an object" "$(check '{"properties": []}' '{}')"
+assert_eq "definitions: a list is a schema error" "2" "$(check '{"definitions": []}' '1' | cut -d'|' -f1)"
+assert_eq "an annotation that is not a string is a schema error" "2|schema error: at (root): title must be a string" "$(check '{"title": 1}' '1')"
+
+# \$ref names are not JSON-Pointer-decoded, so an escaped or nested name is
+# refused rather than resolved to the literal key.
+assert_eq "\$ref: a ~1 escape is refused, not read literally" '2|schema error: at (root): unsupported $ref "#/definitions/a~1b": only "#/definitions/<name>" with no "/", "~" or "%" in the name' \
+    "$(check '{"$ref": "#/definitions/a~1b", "definitions": {"a/b": false, "a~1b": true}}' '1')"
+assert_eq "\$ref: a percent-encoded name is refused" "2" "$(check '{"$ref": "#/definitions/a%25b", "definitions": {"a%25b": true}}' '1' | cut -d'|' -f1)"
+assert_eq "\$ref: a nested pointer is refused" "2" "$(check '{"$ref": "#/definitions/a/b", "definitions": {"a": {"b": true}}}' '1' | cut -d'|' -f1)"
+
+# pattern anchoring is ECMA-262's: $ is the very end, ^ the very start.
+labels_color='{"type": "string", "pattern": "^#[0-9A-Fa-f]{6}$"}'
+assert_eq "pattern: \$ does not match before a final newline" '1|(root): "#123456\n" does not match ^#[0-9A-Fa-f]{6}$' "$(check "$labels_color" '"#123456\n"')"
+assert_eq "pattern: ^ does not match after a newline" "1" "$(check "$labels_color" '"x\n#123456"' | cut -d'|' -f1)"
+assert_eq "pattern: an anchored match still passes" "0|" "$(check "$labels_color" '"#12abEF"')"
+assert_eq "pattern: an unanchored pattern matches anywhere" "0|" "$(check '{"pattern": "b"}' '"abc"')"
+assert_eq "pattern: an escaped \$ is a literal" "0|" "$(check '{"pattern": "^a\\$$"}' '"a$"')"
+assert_eq "pattern: ^ and \$ inside a class are literals" "0|" "$(check '{"pattern": "^[$^]$"}' '"$"')"
+assert_eq "pattern: ^ in the middle is a schema error" '2|schema error: at (root): pattern "a^b": "^" or "$" anywhere but its very start or end is not supported' "$(check '{"pattern": "a^b"}' '"x"')"
+assert_eq "pattern: \$ in the middle is a schema error" "2" "$(check '{"pattern": "a$|b"}' '"x"' | cut -d'|' -f1)"
+
 assert_eq "data that is not JSON cannot be checked" "2" "$(check '{}' '{not json' | cut -d'|' -f1)"
 assert_eq "empty data cannot be checked" "2" "$(check '{}' '' | cut -d'|' -f1)"
 assert_eq "two JSON documents cannot be checked" "2" "$(check '{}' '{} {}' | cut -d'|' -f1)"
+assert_eq "NaN in the data cannot be checked" "2" "$(check '{}' 'NaN' | cut -d'|' -f1)"
+assert_eq "Infinity nested in the data cannot be checked" "2" "$(check '{}' '{"x": [Infinity]}' | cut -d'|' -f1)"
+assert_eq "-Infinity in the data cannot be checked" "2" "$(check '{}' '-Infinity' | cut -d'|' -f1)"
+assert_eq "a number too large for a double cannot be checked" "2" "$(check '{}' '1e1000' | cut -d'|' -f1)"
+assert_eq "NaN in the schema cannot be checked" "2" "$(check '{"maximum": NaN}' '1' | cut -d'|' -f1)"
 printf '%s\n' '{not json' >"$work/broken.json"
 assert_eq "a schema file that is not JSON cannot be checked" "2" \
     "$(rc=0; json_schema_violations "$work/broken.json" <<<'{}' >/dev/null || rc=$?; echo "$rc")"
+printf '%s\n' '{} false' >"$work/two-schemas.json"
+assert_eq "a schema file holding two JSON documents cannot be checked" "2" \
+    "$(rc=0; json_schema_violations "$work/two-schemas.json" <<<'{}' >/dev/null || rc=$?; echo "$rc")"
+: >"$work/empty-schema.json"
+assert_eq "an empty schema file cannot be checked" "2" \
+    "$(rc=0; json_schema_violations "$work/empty-schema.json" <<<'{}' >/dev/null || rc=$?; echo "$rc")"
 
 # ---- the repo's own files conform to the repo's own schemas ----
 assert_eq "standards/labels.json conforms to standards/labels.schema.json" "0" \

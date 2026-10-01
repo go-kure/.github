@@ -530,8 +530,10 @@ sets none of them.
 Before anything is audited or applied, the script checks both files, a consumer's included,
 against closed schemas: `governance/repository-settings-policy.schema.json` and
 `standards/labels.schema.json`. They are standard draft-07 JSON Schema, checked by
-`scripts/lib/json-schema.sh` (jq, so no further tool is needed). Every object refuses a key
-the script does not read, at every tier: the top level, `github_defaults`, each `github_repos`
+`scripts/lib/json-schema.sh` (jq, so no further tool is needed). It checks the whole schema
+before any data, so a keyword outside its subset or a malformed keyword value fails the run
+even in a branch no data reaches, and it refuses NaN or Infinity in either file. Every object
+refuses a key the script does not read, at every tier: the top level, `github_defaults`, each `github_repos`
 override, `github_org`, each ruleset with its conditions and bypass actors, and each rule's
 parameters. An exact lookup would miss a misspelled key and apply the default, or an incomplete
 rule, in its place. Values are typed, and enums hold wherever `--apply` would act on a typo:

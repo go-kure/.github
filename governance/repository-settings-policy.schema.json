@@ -145,7 +145,7 @@
       "required": ["actor_id", "actor_type", "bypass_mode"],
       "properties": {
         "actor_id": { "type": ["integer", "null"] },
-        "actor_type": { "type": "string", "enum": ["Integration", "OrganizationAdmin", "RepositoryRole", "Team", "DeployKey"] },
+        "actor_type": { "type": "string", "enum": ["Integration", "OrganizationAdmin", "RepositoryRole", "Team", "DeployKey", "User"] },
         "bypass_mode": { "type": "string", "enum": ["always", "pull_request", "exempt"] }
       }
     },
