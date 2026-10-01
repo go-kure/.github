@@ -1037,21 +1037,22 @@ MATCHED_FPS='[]'
 THREADS_WRITTEN=0
 NONE_ANCHORED_COUNT=0
 
-# prt_persist_owned_collision OWNED_ROW FP true|false CONTEXT — rewrites the
-# owned thread's first-comment marker with collision set to the given value.
-# Used for both directions: persisting a this-run collision (C5) and lifting
-# one (go-kure/.github#148). content_fp is carried forward unchanged — this
-# rewrite never recomputes identity from this run's finding
-# (go-kure/.github#196). first_absent_sha is carried when persisting and
-# cleared when lifting: a lift happens because the finding is present this
-# run, so an absence stamp from before the collision is stale, and keeping
-# it would let the next absence auto-resolve on one absence, not two. Returns
-# 0 only when the PATCH succeeded. Returns 1 otherwise: every failure has
-# already been recorded (prt_handle_freshness_rc / prt_mark_incomplete), and
-# a lift refused because the thread is now resolved is logged, not a failure.
+# prt_persist_owned_collision OWNED_ROW FP true|false|keep CONTEXT — rewrites
+# the owned thread's first-comment marker with collision set to the given
+# value, or to the row's current value for keep. Used for persisting a
+# this-run collision (C5), lifting one (go-kure/.github#148), and keep, which
+# only clears the absence stamp (go-kure/.github#252). content_fp is carried
+# forward unchanged — this rewrite never recomputes identity from this run's
+# finding (go-kure/.github#196). first_absent_sha is always cleared: every
+# caller runs in loop 1, so the finding is present this run, an absence stamp
+# from an earlier head is stale, and keeping it would let the next absence
+# auto-resolve on one absence, not two. Returns 0 only when the PATCH
+# succeeded. Returns 1 otherwise: every failure has already been recorded
+# (prt_handle_freshness_rc / prt_mark_incomplete), and a lift refused because
+# the thread is now resolved is logged, not a failure.
 prt_persist_owned_collision() {
   local row="$1" fp="$2" flag="$3" context="$4"
-  local db_id cur_resp cur_body fas cfp marker_flag="" new_marker new_body rc
+  local db_id cur_resp cur_body cfp marker_flag="" new_marker new_body rc
   prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"
   rc=$?
   if [ "$rc" -ne 0 ]; then
@@ -1065,13 +1066,13 @@ prt_persist_owned_collision() {
     prt_mark_incomplete "${context}: GET before the marker rewrite failed or returned an empty body, skipped"
     return 1
   fi
-  fas="$(jq -r '.first_absent_sha' <<< "$row")"
-  [ "$fas" = null ] && fas=""
-  [ "$flag" = false ] && fas=""
   cfp="$(jq -r '.content_fp' <<< "$row")"
   [ "$cfp" = null ] && cfp=""
+  if [ "$flag" = keep ]; then
+    [ "$(jq -r '.collision' <<< "$row")" = true ] && marker_flag=true
+  fi
   [ "$flag" = true ] && marker_flag=true
-  new_marker="$(prt_marker_build "$fp" "$marker_flag" "$fas" "$cfp")"
+  new_marker="$(prt_marker_build "$fp" "$marker_flag" "" "$cfp")"
   new_body="$(prt_marker_replace "$cur_body" "$new_marker")"
   # A lift must never land on a resolved thread (prt_effective_collision),
   # and the row's resolved state is the inventory snapshot. Re-read it as
@@ -1132,6 +1133,7 @@ else
 
     owned_match="$(jq -c --arg fp "$fp" 'map(select(.fp == $fp)) | .[0] // empty' <<< "$OWNED")"
     thread_exists=false; thread_resolved=false; resolved_by_bot=false; has_human_reply=false
+    marker_rewrite_tried=false
     if [ -n "$owned_match" ]; then
       thread_exists=true
       thread_resolved="$(jq -r '.resolved' <<< "$owned_match")"
@@ -1151,6 +1153,7 @@ else
       if [ "$collision" = true ]; then
         owned_collision="$(jq -r '.collision' <<< "$owned_match")"
         if [ "$owned_collision" != true ]; then
+          marker_rewrite_tried=true
           prt_persist_owned_collision "$owned_match" "$fp" true "fp=$fp: persisting collision=true onto existing thread"
         fi
       fi
@@ -1209,6 +1212,7 @@ else
       prt_is_incomplete && lift_evidence=false
       collision_source="$(prt_effective_collision "$owned_collision_eff" "$collision" "$owned_content_fp" "$content_fp" "$thread_resolved" "$lift_evidence")"
       if [ "$collision_source" = lift ]; then
+        marker_rewrite_tried=true
         if prt_persist_owned_collision "$owned_match" "$fp" false "fp=$fp: lifting the persisted collision flag (content match)"; then
           prt_log "fp=$fp collision lifted (content match)"
           collision_source=none
@@ -1220,6 +1224,19 @@ else
         none) effective_collision=false ;;
         *) effective_collision=true ;;
       esac
+      # go-kure/.github#252: the finding is present this run, so an absence
+      # stamp from an earlier head is stale. Loop 2 skips matched threads, so
+      # without this the next absence would read the old stamp as the first
+      # of two and auto-resolve on one. The collision rewrites above already
+      # clear it; only a thread with a stamp pays this extra write. A failed
+      # write leaves the stamp and the next present run retries.
+      owned_fas="$(jq -r '.first_absent_sha' <<< "$owned_match")"
+      [ "$owned_fas" = null ] && owned_fas=""
+      if [ -n "$owned_fas" ] && [ "$marker_rewrite_tried" = false ]; then
+        if prt_persist_owned_collision "$owned_match" "$fp" keep "fp=$fp: clearing a stale absence stamp ($owned_fas)"; then
+          prt_log "fp=$fp absence stamp cleared (finding present)"
+        fi
+      fi
     fi
 
     action="$(prt_decide_finding "$effective_collision" "$verdict" "$thread_exists" "$thread_resolved" "$resolved_by_bot" "$within_cap" "$has_human_reply")"

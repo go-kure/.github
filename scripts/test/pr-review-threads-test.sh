@@ -3931,6 +3931,66 @@ rc="$(run_orchestrator enforce 0 0 0)"
 assert_eq "orchestrator #148: absent finding, marker lifted -> SET_FIRST_ABSENT PATCH" \
   "0 1" "$rc $(cat "$PRT_TEST_PATCH_COUNTFILE")"
 
+# ---- go-kure/.github#252: a finding's reappearance clears its absence stamp ----
+# Head A stamped the thread absent (2222...). The finding is back at this
+# head, so loop 1 clears the stamp; otherwise loop 2 (which skips matched
+# threads) leaves it, and the next absence resolves on one absence. Same
+# x.go/other fixture, open thread, no collision, matching content_fp.
+PRT_TEST_MODEL_RESPONSE_MODE=clean_with_finding
+PRT_TEST_OWNED_COLLISION=""
+: > "$PRT_TEST_PATCH_BODY_LOG"
+PRT_TEST_FIRST_ABSENT_SHA="2222222222222222222222222222222222222222"
+rc="$(run_orchestrator enforce 0 0 0)"
+stamp_marker="$(prt_marker_parse "$(cat "$PRT_TEST_PATCH_BODY_LOG")")"
+assert_eq "orchestrator #252: finding present on a stamped thread -> exits 0, one PATCH, no resolve" \
+  "0 1 0" "$rc $(cat "$PRT_TEST_PATCH_COUNTFILE") $(cat "$PRT_TEST_RESOLVE_COUNTFILE")"
+assert_eq "orchestrator #252: the rewritten marker drops the stamp, keeps fp, collision and content_fp" \
+  "$(prt_fp_base x.go other)|||$lift_cfp" "$(cut -f1 <<< "$stamp_marker")|$(cut -f2 <<< "$stamp_marker")|$(cut -f3 <<< "$stamp_marker")|$(cut -f4 <<< "$stamp_marker")"
+assert_eq "orchestrator #252: stamp clear -> logged" \
+  "true" "$(grep -qF 'absence stamp cleared (finding present)' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+
+# A persisted collision keeps its flag through the stamp clear (no lift: the
+# thread predates content_fp, so the lift is unverifiable).
+: > "$PRT_TEST_PATCH_BODY_LOG"
+PRT_TEST_OWNED_COLLISION=true
+PRT_TEST_OWNED_CONTENT_FP=""
+rc="$(run_orchestrator enforce 0 0 0)"
+stamp_marker="$(prt_marker_parse "$(cat "$PRT_TEST_PATCH_BODY_LOG")")"
+assert_eq "orchestrator #252: stamped thread with a persisted collision -> one PATCH, collision kept, stamp dropped, quarantined=1" \
+  "0 1 true| true" "$rc $(cat "$PRT_TEST_PATCH_COUNTFILE") $(cut -f2 <<< "$stamp_marker")|$(cut -f3 <<< "$stamp_marker") $(grep -qE 'done:.*quarantined=1' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_OWNED_COLLISION=""
+PRT_TEST_OWNED_CONTENT_FP="$lift_cfp"
+
+# A failed clear leaves the stamp and marks the run incomplete; the next
+# present run retries.
+: > "$PRT_TEST_PATCH_BODY_LOG"
+PRT_TEST_PATCH_FAIL=1
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #252: stamp clear PATCH fails -> exits 1, attempted, not logged as cleared" \
+  "1 true false" "$rc $(grep -qF 'clearing a stale absence stamp' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(grep -qF 'absence stamp cleared' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_PATCH_FAIL=0
+
+# Control: no stamp -> no extra API call on a normal run.
+PRT_TEST_FIRST_ABSENT_SHA=""
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #252: finding present, no stamp (control) -> exits 0, no PATCH" \
+  "0 0" "$rc $(cat "$PRT_TEST_PATCH_COUNTFILE")"
+
+# The next absence then reads the cleared marker: it stamps this head
+# (SET_FIRST_ABSENT) instead of resolving. Control: with the stale stamp
+# still on the marker (the pre-fix state) the same absence resolves.
+PRT_TEST_MODEL_RESPONSE_MODE=clean
+: > "$PRT_TEST_PATCH_BODY_LOG"
+rc="$(run_orchestrator enforce 0 0 0)"
+stamp_marker="$(prt_marker_parse "$(cat "$PRT_TEST_PATCH_BODY_LOG")")"
+assert_eq "orchestrator #252: absence after the clear -> stamps this head, no resolve" \
+  "0 1 0 1111111111111111111111111111111111111111" "$rc $(cat "$PRT_TEST_PATCH_COUNTFILE") $(cat "$PRT_TEST_RESOLVE_COUNTFILE") $(cut -f3 <<< "$stamp_marker")"
+PRT_TEST_FIRST_ABSENT_SHA="2222222222222222222222222222222222222222"
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #252: absence over an uncleared stale stamp (control) -> resolves" \
+  "0 1" "$rc $(cat "$PRT_TEST_RESOLVE_COUNTFILE")"
+PRT_TEST_FIRST_ABSENT_SHA=""
+
 PRT_TEST_OWNED_COLLISION=""
 PRT_TEST_OWNED_CONTENT_FP=""
 PRT_TEST_OWNED_FP="deadbeefcafebabe"

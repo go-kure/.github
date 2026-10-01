@@ -147,7 +147,11 @@ overrides the workflow's own default) is one of three values. An unrecognized va
   empty-diff run stamps a `first_absent_sha` marker; only a later run — empty diff or not — whose
   head has moved past that SHA replies and resolves. This mirrors the existing two-push behavior
   for a finding the model itself calls a false positive; an empty diff does not shortcut it to one
-  push.
+  push. The two absences must be consecutive: a run where the finding is present again clears
+  the stamp (loop 1 rewrites the marker; a thread with no stamp costs no extra API call), so a
+  finding that flickers in and out of the model's output restarts the count instead of resolving
+  on its next single absence (go-kure/.github#252). If that rewrite fails, the run is
+  `REVIEW_INCOMPLETE` and the next run that sees the finding retries it.
 
   **The clean-verdict comment.** A zero-finding `enforce` run posts one plain issue comment,
   "Reviewed, no findings", naming the reviewed head SHA, model and chunk count
@@ -840,9 +844,9 @@ extra conditions cover where identical text is not enough:
   for every open thread it predicts lifted, so a refused lift never needs more than was reserved.
 
 When all three hold, loop 1 writes `collision=false` onto the marker (the
-same rewrite C5 uses, `content_fp` carried unchanged; a `first_absent_sha` stamp from before the
-collision is cleared, since the finding is present this run and a stale stamp would let the next
-absence auto-resolve the thread on one absence instead of two), logs
+same rewrite C5 uses, `content_fp` carried unchanged; like every loop-1 marker rewrite, it clears
+a `first_absent_sha` stamp, since the finding is present this run and a stale stamp would let the
+next absence auto-resolve the thread on one absence instead of two), logs
 `collision lifted (content match)` and reconciles the finding normally. From the next run, loop 2
 can stamp and auto-resolve the thread once the finding is gone. The write is required: loop 2
 reads the marker's own flag on a run where the finding is absent, so a lift computed only in
