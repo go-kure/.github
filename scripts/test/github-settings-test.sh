@@ -704,6 +704,33 @@ imported_unmodeled=$(jq "$import_filter" <<<"$main_live_with_unmodeled")
 assert_eq "import flags an injected unmodeled rule type" '["code_scanning"]' \
     "$(jq -c '.unmapped_rule_types' <<<"$imported_unmodeled")"
 
+# #279: a live ruleset with no rules (empty or absent .rules) imports as one
+# with every flag false and no parameterized rule, keeping its other fields.
+for rules_case in empty absent; do
+    if [ "$rules_case" = empty ]; then
+        live_no_rules=$(jq '.rules = []' <<<"$main_live_match")
+    else
+        live_no_rules=$(jq 'del(.rules)' <<<"$main_live_match")
+    fi
+    imported_no_rules_rc=0
+    imported_no_rules=$(jq "$import_filter" <<<"$live_no_rules" 2>&1) || imported_no_rules_rc=$?
+    assert_eq "#279: import of a ruleset with $rules_case rules succeeds" "0" "$imported_no_rules_rc"
+    assert_eq "#279: $rules_case rules import with no parameterized rule and every flag false" "[]" \
+        "$(jq -c '[.rules | to_entries[] | select(.value != false) | .key]' <<<"$imported_no_rules" 2>&1)"
+    assert_eq "#279: $rules_case rules report no unmapped rule types" "[]" \
+        "$(jq -c '.unmapped_rule_types' <<<"$imported_no_rules" 2>&1)"
+    assert_eq "#279: $rules_case rules keep enforcement, target and bypass actors" \
+        "$(jq -c '[.enforcement, .target, (.bypass_actors // [])]' <<<"$main_live_match")" \
+        "$(jq -c '[.enforcement, .target, .bypass_actors]' <<<"$imported_no_rules" 2>&1)"
+done
+# The audit side reads the same live ruleset: an absent .rules reports every
+# expected rule MISSING, with no jq error.
+diff_no_rules=$(ruleset_diff "kure" "main-protection" "$(jq 'del(.rules)' <<<"$main_live_match")" 2>&1)
+assert_contains "#279: ruleset_diff reports an expected rule MISSING when .rules is absent" "$diff_no_rules" \
+    "$(printf 'MISSING\trules.pull_request\t-\t-')"
+assert_eq "#279: ruleset_diff prints no jq error when .rules is absent" "0" \
+    "$(grep -c 'Cannot iterate' <<<"$diff_no_rules")"
+
 # ---- org_policy_json: no override tier, straight read of .github_org ----
 
 assert_eq "org_policy_json resolves a top-level scalar" "read" \
@@ -1799,8 +1826,9 @@ assert_eq "#158: control: main --import on a readable repo exits 0" "0" "$(main_
 assert_eq "#158: main --import with unreadable settings exits 1" "1" "$(ACT_SETTINGS=FAIL main_import_rc --import kure)"
 assert_eq "#158: main --import --all with one unreadable ruleset exits 1" "1" \
     "$(ACT_RULESETS='[{"id": 7}]' ACT_RULESET=FAIL main_import_rc --import --all)"
-# A readable ruleset the import transform cannot convert (it has no rules).
-act_unconvertible='{"id": 7, "name": "unmanaged", "target": "branch", "enforcement": "active", "rules": []}'
+# A readable ruleset the import transform cannot convert (a rule that is not
+# an object). A ruleset with no rules converts since #279.
+act_unconvertible='{"id": 7, "name": "unmanaged", "target": "branch", "enforcement": "active", "rules": [1]}'
 assert_eq "#158: main --import with an unconvertible ruleset fails" "nonzero" \
     "$(rc="$(ACT_RULESETS='[{"id": 7}]' ACT_RULESET="$act_unconvertible" main_import_rc --import kure)"; [ "$rc" -ne 0 ] && echo nonzero || echo "$rc")"
 assert_eq "#158: main --import --all with an unconvertible ruleset fails" "nonzero" \

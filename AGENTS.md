@@ -176,7 +176,9 @@ partial import is never reported as a complete one. A repo whose settings cannot
 nothing else. A live
 ruleset rule type the script doesn't model yet (not in the `RULE_KIND` registry) is omitted
 from the printed YAML and flagged with an `unmapped_rule_types` warning on stderr instead of
-being silently dropped. A policy-applicable ruleset that no longer exists on the repo (deleted
+being silently dropped. A live ruleset with no rules imports with its enforcement, target,
+conditions and bypass actors, every flag rule `false` and no parameterized rule. A
+policy-applicable ruleset that no longer exists on the repo (deleted
 on GitHub) is flagged with a `# WARNING: policy ruleset(s) expected ... not found live
 (deleted?)` comment instead of reading as a clean match; if the live-rulesets list or any single
 ruleset cannot be read (permissions, rate limit, transient error), that check is skipped rather

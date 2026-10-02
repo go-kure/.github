@@ -1782,7 +1782,7 @@ ruleset_diff() {
 
     local -a expected_types actual_types
     mapfile -t expected_types < <(expected_rule_types "$repo" "$ruleset_name")
-    mapfile -t actual_types < <(jq -r '.rules[].type' <<<"$full_ruleset" | sort)
+    mapfile -t actual_types < <(jq -r '(.rules // [])[].type' <<<"$full_ruleset" | sort)
 
     local t
     for t in "${expected_types[@]}"; do
@@ -2013,7 +2013,10 @@ build_ruleset_import_jq() {
     local known_types_json
     known_types_json=$(printf '%s\n' "${RULE_TYPE_ORDER[@]}" | jq -R . | jq -c -s .)
 
-    RULESET_IMPORT_JQ_CACHE="(.rules | map({(.type): (.parameters // true)}) | add) as \$r
+    # A ruleset with no rules (an empty or absent .rules) imports with every
+    # flag false and no parameterized rule: \`add\` of an empty array is null,
+    # so it falls back to {}.
+    RULESET_IMPORT_JQ_CACHE="((.rules // []) | map({(.type): (.parameters // true)}) | add // {}) as \$r
 | {
     target: .target,
     enforcement: .enforcement,
