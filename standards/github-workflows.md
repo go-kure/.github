@@ -51,7 +51,8 @@ Draft pull requests are reviewed. Draft status blocks merge, not review.
    request is never cancelled; a newer run waits for it, and replaces any older run still waiting.
 2. It fetches the pull request's diff and splits a large diff into chunks.
 3. A first pass reviews each chunk. The prompt carries the project context, the calling
-   repository's `AGENTS.md` and `.claude/CLAUDE.md`, and the org standards from `go-kure/.github`.
+   repository's `AGENTS.md` and `.claude/CLAUDE.md`, and a standards document: by default the
+   org standards from `go-kure/.github` (see "Configuration" below).
 4. A second pass assesses the findings and drops false positives.
 5. The remaining findings are reconciled with the threads already on the pull request.
 
@@ -89,8 +90,8 @@ must also pass `bot-login`.
 ### Configuration
 
 The defaults are set in `pr-review.yml`. The mode can be changed with a variable, and the
-standards file with the `standards-file` input; changing any other value means editing
-`pr-review.yml` in `go-kure/.github`.
+standards file with the `standards-file` and `standards-source` inputs; changing any other value
+means editing `pr-review.yml` in `go-kure/.github`.
 
 | Setting | Default | Notes |
 |---------|---------|-------|
@@ -100,7 +101,8 @@ standards file with the `standards-file` input; changing any other value means e
 | `PR_REVIEW_MAX_TOKENS` | `1500` | Review pass |
 | `PR_REVIEW_ASSESS_MAX_TOKENS` | `4096` | Assessment pass |
 | `PR_REVIEW_AGENTS_FILE` | `AGENTS.md` | Read from the calling repository |
-| `PR_REVIEW_STANDARDS_FILE` | `docs/standards.md` | Set from the `standards-file` input (an empty value disables it). Read from `go-kure/.github` at the commit `pr-review.yml` pins its `pr-review-threads` action to, so a standards change reaches reviews only when that pin moves |
+| `PR_REVIEW_STANDARDS_FILE` | `docs/standards.md` | Set from the `standards-file` input (an empty value disables it). Read from the checkout `standards-source` names |
+| `PR_REVIEW_STANDARDS_SOURCE` | `action` | Set from the `standards-source` input. `action` reads the standards file from `go-kure/.github` at the commit `pr-review.yml` pins its `pr-review-threads` action to, so a standards change reaches reviews only when that pin moves; `caller` reads it from the calling repository's checkout. Any other value fails the review |
 
 The model names in `pr-review.yml` are labels only; the proxy decides which model answers.
 
