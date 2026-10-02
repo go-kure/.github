@@ -1073,6 +1073,14 @@ assert_eq "finding_body_severity #268: a body without that line, or with CRLF li
   "|Medium" "$(prt_finding_body_severity $'<!-- m -->\nplain text')|$(prt_finding_body_severity $'<!-- m -->\r\n**Medium · Bug**\r\n')"
 assert_eq "finding_body_severity #268: a one-line body, and a two-line body with no trailing newline" \
   "|Critical" "$(prt_finding_body_severity '**High · Bug**')|$(prt_finding_body_severity $'<!-- m -->\n**Critical · Bug**')"
+# A failing text tool must not turn a stated Critical into "no severity" (which
+# ranks it Medium): the read runs no subprocess at all.
+# The stubs are called only if the function under test runs one of those tools.
+# shellcheck disable=SC2329
+assert_eq "finding_body_severity #268: still Critical when every text tool fails" \
+  "Critical" "$(sed() { return 1; }; awk() { return 1; }; head() { return 1; }; tail() { return 1; }
+    cut() { return 1; }; grep() { return 1; }; tr() { return 1; }
+    prt_finding_body_severity $'<!-- m -->\n**Critical · Bug**\n')"
 
 # --- prt_gating_eligible: excludes OWNED-matched fps, collisions, and
 # FALSE_POSITIVE; keeps verdict:null; sorts mixed-case severities correctly
