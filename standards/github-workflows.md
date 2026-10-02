@@ -80,12 +80,17 @@ merge. Separately, the rulesets require every review thread to be resolved befor
 
 Threads are written with the `KURE_BOT_PAT` organization secret, as the `kure-bot` account.
 Where that secret is not set, the job falls back to `github.token`, which can open threads but
-cannot resolve them.
+cannot resolve them. A caller can supply its own identity instead: a `BOT_PAT` secret together
+with the `bot-login` input naming the account that PAT posts as. `BOT_PAT` takes precedence over
+both. The two come as a pair: a run that receives one without the other fails before the review
+starts, so a repository that has a `BOT_PAT` secret reaching the call through `secrets: inherit`
+must also pass `bot-login`.
 
 ### Configuration
 
-The defaults are set in `pr-review.yml`. Only the mode can be changed with a variable; changing
-any other value means editing `pr-review.yml` in `go-kure/.github`.
+The defaults are set in `pr-review.yml`. The mode can be changed with a variable, and the
+standards file with the `standards-file` input; changing any other value means editing
+`pr-review.yml` in `go-kure/.github`.
 
 | Setting | Default | Notes |
 |---------|---------|-------|
@@ -95,7 +100,7 @@ any other value means editing `pr-review.yml` in `go-kure/.github`.
 | `PR_REVIEW_MAX_TOKENS` | `1500` | Review pass |
 | `PR_REVIEW_ASSESS_MAX_TOKENS` | `4096` | Assessment pass |
 | `PR_REVIEW_AGENTS_FILE` | `AGENTS.md` | Read from the calling repository |
-| `PR_REVIEW_STANDARDS_FILE` | `docs/standards.md` | Read from `go-kure/.github` at the commit `pr-review.yml` pins its `pr-review-threads` action to, so a standards change reaches reviews only when that pin moves |
+| `PR_REVIEW_STANDARDS_FILE` | `docs/standards.md` | Set from the `standards-file` input (an empty value disables it). Read from `go-kure/.github` at the commit `pr-review.yml` pins its `pr-review-threads` action to, so a standards change reaches reviews only when that pin moves |
 
 The model names in `pr-review.yml` are labels only; the proxy decides which model answers.
 
