@@ -55,7 +55,11 @@ EOF
 # severity.
 prt_finding_body_severity() {
   local line rest
-  line="$(sed -n '2p' <<< "$1")"
+  # Parameter expansion only: no subprocess, so no read failure can pass for
+  # "no severity stated" and rank the thread lower than its body says.
+  rest="${1#*$'\n'}"
+  [ "$rest" = "$1" ] && return 0
+  line="${rest%%$'\n'*}"
   line="${line%$'\r'}"
   case "$line" in
     '**'*' · '*'**') ;;
