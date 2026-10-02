@@ -231,9 +231,10 @@ overrides the workflow's own default) is one of three values. An unrecognized va
   reserved. A new finding gets a thread when it ranks within the cap among the reserved threads
   and the new candidates together, by severity, ties going to the reserved thread
   (go-kure/.github#268). A reserved thread ranks by this run's matching finding, or, when absent
-  from this run, by the severity its own body states; a thread with no readable severity ranks as
-  the lowest gating severity, and a thread another login opened never outranks a new finding (its
-  body is not trusted). So five open Medium threads no longer keep a new Critical out: it gets a
+  from this run, by the severity its own body states. A thread with no readable severity, and a
+  thread another login opened (its body is not trusted), rank as the lowest gating severity
+  (Medium by default): a new finding of that severity or lower never takes a cap slot ahead of
+  it, a more severe one does. So five open Medium threads no longer keep a new Critical out: it gets a
   thread, and six gate. A run adds at most `PRT_MAX_FINDINGS_TOTAL` new threads, and only as many
   as the reserved threads ranked at or above them leave room for; the cap never forces an
   already-gating thread closed. The standing total can therefore exceed the cap, and can grow

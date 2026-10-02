@@ -1071,6 +1071,8 @@ assert_eq "finding_body_severity #268: reads back what prt_render_finding_body w
   "High" "$(prt_finding_body_severity "$(prt_render_finding_body '{"file":"a","category":"Bug · edge","line":1,"severity":"High","issue":"i","fix":"f","fp":"x"}' '<!-- marker -->')")"
 assert_eq "finding_body_severity #268: a body without that line, or with CRLF line ends" \
   "|Medium" "$(prt_finding_body_severity $'<!-- m -->\nplain text')|$(prt_finding_body_severity $'<!-- m -->\r\n**Medium · Bug**\r\n')"
+assert_eq "finding_body_severity #268: a one-line body, and a two-line body with no trailing newline" \
+  "|Critical" "$(prt_finding_body_severity '**High · Bug**')|$(prt_finding_body_severity $'<!-- m -->\n**Critical · Bug**')"
 
 # --- prt_gating_eligible: excludes OWNED-matched fps, collisions, and
 # FALSE_POSITIVE; keeps verdict:null; sorts mixed-case severities correctly
