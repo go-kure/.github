@@ -1038,15 +1038,20 @@ for ((ti = 0; ti < n_threads; ti++)); do
   # (V6, unverified until a live spike): a null resolvedBy on a resolved
   # thread is treated as human-resolved, never reopened. Costs a missed
   # reopen, never a wrong one.
-  if ! ownership_row="$(jq -ce --arg fp "$fp" --arg collision "$collision" \
+  # go-kure/.github#268: the severity the thread states, which the cap walk
+  # ranks it by while its finding is absent this run ("" when the body has
+  # none in the rendered shape: ranked as the lowest known severity).
+  if ! owned_severity="$(prt_finding_body_severity "$first_body")" \
+    || ! ownership_row="$(jq -ce --arg fp "$fp" --arg collision "$collision" \
     --arg fas "$first_absent_sha" --arg bot "$PRT_BOT_LOGIN_GQL" \
     --arg cfp "$content_fp" --argjson hhr "$has_human_reply" \
-    --argjson mfs "$maint_failure_shas" '
+    --argjson mfs "$maint_failure_shas" --arg sev "$owned_severity" '
       {
         fp:$fp,
         collision:($collision == "true"),
         first_absent_sha:$fas,
         content_fp:$cfp,
+        severity:$sev,
         resolved:.isResolved,
         resolved_by_bot:(.isResolved and ((.resolvedBy.login // "") == $bot)),
         has_human_reply:$hhr,

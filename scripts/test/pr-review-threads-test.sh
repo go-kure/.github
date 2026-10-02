@@ -927,9 +927,18 @@ r1_findings='[{"fp":"o1","collision":false,"verdict":"VALID","severity":"Low"},
               {"fp":"n7","collision":false,"verdict":"VALID","severity":"Critical"}]'
 assert_eq "reserved_count: reordered-severity scenario reserves all 5 open OWNED threads" \
   "5" "$(prt_reserved_count "$r1_owned" "$r1_findings")"
+# go-kure/.github#268: the 5 open threads still reserve (they stay gating),
+# but they no longer hold their slots against new findings that outrank them:
+# the 7 Criticals compete for the first 5 places, so exactly 5 of them get a
+# thread, never all 7 (per run, growth stays within the cap).
 r1_capped="$(prt_apply_cap 5 "$r1_owned" "$r1_findings")"
-assert_eq "apply_cap: reordered-severity scenario — zero of the 7 new findings within_cap" \
-  "0" "$(jq '[.[] | select((.fp | startswith("n")) and .within_cap == true)] | length' <<< "$r1_capped")"
+assert_eq "apply_cap #268: 5 open Low threads + 7 new Critical — exactly 5 new findings within_cap" \
+  "5" "$(jq '[.[] | select((.fp | startswith("n")) and .within_cap == true)] | length' <<< "$r1_capped")"
+assert_eq "apply_cap #268: and they are the first 5 in input order (a stable sort among equals)" \
+  "n1 n2 n3 n4 n5" "$(jq -r '[.[] | select(.within_cap == true) | .fp] | join(" ")' <<< "$r1_capped")"
+r1_same_sev="$(jq -c 'map(.severity = "Critical")' <<< "$r1_findings")"
+assert_eq "apply_cap #268: the same 5 open threads at Critical — none of the 7 new Criticals within_cap (ties go to the open threads)" \
+  "0" "$(jq '[.[] | select((.fp | startswith("n")) and .within_cap == true)] | length' <<< "$(prt_apply_cap 5 "$r1_owned" "$r1_same_sev")")"
 
 # --- Regression scenario 2: persisted open collision thread with no
 # matching finding this run, plus 5 new eligible findings, cap 5. Must
@@ -953,11 +962,11 @@ r3_owned='[{"fp":"o1","collision":false,"resolved":false,"resolved_by_bot":false
            {"fp":"o3","collision":false,"resolved":false,"resolved_by_bot":false},
            {"fp":"o4","collision":false,"resolved":false,"resolved_by_bot":false},
            {"fp":"o5","collision":false,"resolved":false,"resolved_by_bot":false}]'
-r3_findings='[{"fp":"o1","collision":false,"verdict":"VALID"},
-              {"fp":"o2","collision":false,"verdict":"VALID"},
-              {"fp":"o3","collision":false,"verdict":"VALID"},
-              {"fp":"o4","collision":false,"verdict":"VALID"},
-              {"fp":"o5","collision":false,"verdict":"FALSE_POSITIVE"},
+r3_findings='[{"fp":"o1","collision":false,"verdict":"VALID","severity":"Critical"},
+              {"fp":"o2","collision":false,"verdict":"VALID","severity":"Critical"},
+              {"fp":"o3","collision":false,"verdict":"VALID","severity":"Critical"},
+              {"fp":"o4","collision":false,"verdict":"VALID","severity":"Critical"},
+              {"fp":"o5","collision":false,"verdict":"FALSE_POSITIVE","severity":"Critical"},
               {"fp":"n1","collision":false,"verdict":"VALID","severity":"Critical"},
               {"fp":"n2","collision":false,"verdict":"VALID","severity":"High"},
               {"fp":"n3","collision":false,"verdict":"VALID","severity":"Medium"}]'
@@ -1012,12 +1021,56 @@ r5_owned='[{"fp":"o1","collision":false,"resolved":false,"resolved_by_bot":false
            {"fp":"o5","collision":false,"resolved":false,"resolved_by_bot":false},
            {"fp":"o6","collision":false,"resolved":false,"resolved_by_bot":false},
            {"fp":"o7","collision":false,"resolved":false,"resolved_by_bot":false}]'
-r5_findings='[{"fp":"n1","collision":false,"verdict":"VALID","severity":"Critical"}]'
+r5_findings='[{"fp":"n1","collision":false,"verdict":"VALID","severity":"Medium"}]'
 assert_eq "reserved_count: 7 open OWNED threads, cap 5 -> reserved is still 7 (not clamped here)" \
   "7" "$(prt_reserved_count "$r5_owned" "$r5_findings")"
 r5_capped="$(prt_apply_cap 5 "$r5_owned" "$r5_findings")"
-assert_eq "apply_cap: over-reservation clamps remaining to 0, new candidate never within_cap" \
+assert_eq "apply_cap: over-reservation, a new candidate the open threads are not below -> never within_cap" \
   "false" "$(jq -r '.[] | select(.fp == "n1") | .within_cap' <<< "$r5_capped")"
+# go-kure/.github#268: the 7 absent threads state no severity, so they rank as
+# the lowest known one (Medium); a new Critical outranks all 7.
+r5_critical="$(prt_apply_cap 5 "$r5_owned" '[{"fp":"n1","collision":false,"verdict":"VALID","severity":"Critical"}]')"
+assert_eq "apply_cap #268: over-reservation by threads of no stated severity, a new Critical -> within_cap" \
+  "true" "$(jq -r '.[] | select(.fp == "n1") | .within_cap' <<< "$r5_critical")"
+
+# --- go-kure/.github#268: a new finding that outranks the open threads holding
+# the cap gets a thread. Cap 5. ---
+t268_open() { # SEVERITY N [FIELD] -> N open owned rows; FIELD=severity puts SEVERITY on the row itself (an absent finding's thread body)
+  jq -nc --arg s "$1" --argjson n "$2" --arg field "${3:-}" \
+    '[range($n) | {fp:"o\(.)",collision:false,resolved:false,resolved_by_bot:false} + (if $field == "severity" then {severity:$s} else {} end)]'
+}
+t268_matched() { # SEVERITY N -> N findings matching t268_open's rows
+  jq -nc --arg s "$1" --argjson n "$2" '[range($n) | {fp:"o\(.)",collision:false,verdict:"VALID",severity:$s}]'
+}
+t268_within() { # CAP OWNED FINDINGS -> the within_cap fps among the new (n*) findings
+  prt_apply_cap "$1" "$2" "$3" | jq -r '[.[] | select((.fp | startswith("n")) and .within_cap == true) | .fp] | join(" ")'
+}
+t268_new_crit='{"fp":"n1","collision":false,"verdict":"VALID","severity":"Critical"}'
+t268_new_med='{"fp":"n2","collision":false,"verdict":"VALID","severity":"Medium"}'
+assert_eq "apply_cap #268: 5 open Medium threads + a new Critical -> the Critical within_cap, a new Medium not" \
+  "n1" "$(t268_within 5 "$(t268_open x 5)" "$(jq -c ". + [$t268_new_crit, $t268_new_med]" <<< "$(t268_matched Medium 5)")")"
+assert_eq "apply_cap #268: and the 5 Medium threads still reserve" \
+  "5" "$(prt_reserved_count "$(t268_open x 5)" "$(jq -c ". + [$t268_new_crit]" <<< "$(t268_matched Medium 5)")")"
+assert_eq "reserved_ranks #268: a matched thread ranks by this run's finding, an absent one by its body, unknown as the lowest known" \
+  "[2,0,2,99]" "$(prt_reserved_ranks \
+    '[{"fp":"m","collision":false,"resolved":false,"resolved_by_bot":false,"severity":"Critical"},{"fp":"a","collision":false,"resolved":false,"resolved_by_bot":false,"severity":"critical"},{"fp":"u","collision":false,"resolved":false,"resolved_by_bot":false},{"fp":"l","collision":false,"resolved":false,"resolved_by_bot":false,"severity":"Low"}]' \
+    '[{"fp":"m","collision":false,"verdict":"VALID","severity":"Medium"}]')"
+assert_eq "apply_cap #268: 5 absent threads whose bodies say Critical -> a new Critical not within_cap" \
+  "" "$(t268_within 5 "$(t268_open Critical 5 severity)" "[$t268_new_crit]")"
+assert_eq "apply_cap #268: 5 absent threads whose bodies say High -> a new Critical within_cap" \
+  "n1" "$(t268_within 5 "$(t268_open High 5 severity)" "[$t268_new_crit]")"
+t268_foreign="$(jq -nc '[range(5) | {fp:"f\(.)",foreign:true,author:"kure-bot",resolved:false,severity:"Critical"}]')"
+assert_eq "apply_cap #268: 5 open foreign threads (a stated severity is untrusted) -> a new Critical within_cap, a new Medium not" \
+  "n1" "$(t268_within 5 "$t268_foreign" "[$t268_new_crit, $t268_new_med]")"
+assert_eq "apply_cap #268: 3 open High + 1 open Critical thread, new High, Critical, Critical, Medium -> only the two Criticals (2nd and 3rd, behind the Critical thread; the High comes 6th)" \
+  "n2 n3" "$(t268_within 5 "$(jq -c '. + [{"fp":"oc","collision":false,"resolved":false,"resolved_by_bot":false}]' <<< "$(t268_open x 3)")" \
+    "$(jq -c '. + [{"fp":"oc","collision":false,"verdict":"VALID","severity":"Critical"},{"fp":"n1","collision":false,"verdict":"VALID","severity":"High"},{"fp":"n2","collision":false,"verdict":"VALID","severity":"Critical"},{"fp":"n3","collision":false,"verdict":"VALID","severity":"Critical"},{"fp":"n4","collision":false,"verdict":"VALID","severity":"Medium"}]' <<< "$(t268_matched High 3)")")"
+assert_eq "severity_rank #268: listed (any case), unlisted, and empty" \
+  "0 1 99 2" "$(prt_severity_rank Critical '{"critical":0,"high":1,"medium":2}') $(prt_severity_rank HIGH '{"critical":0,"high":1,"medium":2}') $(prt_severity_rank Low '{"critical":0,"high":1,"medium":2}') $(prt_severity_rank '' '{"critical":0,"high":1,"medium":2}')"
+assert_eq "finding_body_severity #268: reads back what prt_render_finding_body wrote" \
+  "High" "$(prt_finding_body_severity "$(prt_render_finding_body '{"file":"a","category":"Bug · edge","line":1,"severity":"High","issue":"i","fix":"f","fp":"x"}' '<!-- marker -->')")"
+assert_eq "finding_body_severity #268: a body without that line, or with CRLF line ends" \
+  "|Medium" "$(prt_finding_body_severity $'<!-- m -->\nplain text')|$(prt_finding_body_severity $'<!-- m -->\r\n**Medium · Bug**\r\n')"
 
 # --- prt_gating_eligible: excludes OWNED-matched fps, collisions, and
 # FALSE_POSITIVE; keeps verdict:null; sorts mixed-case severities correctly
@@ -2129,6 +2182,15 @@ _prt_test_owned_thread_body() {
   # go-kure/.github#148: PRT_TEST_OWNED_COLLISION=true plants a persisted
   # collision flag on the owned thread's marker.
   marker="$(prt_marker_build "${PRT_TEST_OWNED_FP:-deadbeefcafebabe}" "${PRT_TEST_OWNED_COLLISION:-}" "${PRT_TEST_FIRST_ABSENT_SHA:-}" "${PRT_TEST_OWNED_CONTENT_FP:-}")"
+  # go-kure/.github#268: PRT_TEST_OWNED_SEVERITY renders the body in
+  # prt_render_finding_body's layout (marker, then "**<severity> · <category>**"),
+  # the only shape prt_finding_body_severity reads a severity from. Unset, the
+  # legacy body below states none, so the thread ranks as the lowest gating
+  # severity.
+  if [ -n "${PRT_TEST_OWNED_SEVERITY:-}" ]; then
+    printf '%s\n**%s · other**\n\nPlanted test finding.\n' "$marker" "$PRT_TEST_OWNED_SEVERITY"
+    return 0
+  fi
   printf '**High**\n\nPlanted test finding for empty-diff absence reconciliation.\n\n%s\n' "$marker"
 }
 export -f _prt_test_owned_thread_body
@@ -2993,6 +3055,8 @@ run_orchestrator() {
     PRT_TEST_OWNED_FP="${PRT_TEST_OWNED_FP:-deadbeefcafebabe}" \
     PRT_TEST_OWNED_CONTENT_FP="${PRT_TEST_OWNED_CONTENT_FP:-}" \
     PRT_TEST_OWNED_COLLISION="${PRT_TEST_OWNED_COLLISION:-}" \
+    PRT_TEST_OWNED_SEVERITY="${PRT_TEST_OWNED_SEVERITY:-}" \
+    PRT_MAX_FINDINGS_TOTAL="${PRT_TEST_MAX_FINDINGS_TOTAL:-5}" \
     PRT_TEST_PATCH_BODY_LOG="${PRT_TEST_PATCH_BODY_LOG:-}" \
     PRT_TEST_PATCH_FAIL="${PRT_TEST_PATCH_FAIL:-0}" \
     PRT_TEST_COMMENT_GET_EMPTY="${PRT_TEST_COMMENT_GET_EMPTY:-0}" \
@@ -4257,6 +4321,28 @@ PRT_TEST_MODEL_RESPONSE_MODE=clean
 PRT_TEST_ASSESS_RESPONSE_MODE=clean
 rm -f "$PRT_TEST_ISSUE_COMMENT_BODY_FILE"
 unset PRT_TEST_ISSUE_COMMENT_BODY_FILE
+
+# ---- go-kure/.github#268: an open thread competes for the cap by its severity ----
+# Cap 3, the same seven findings (three High and two Medium gate). THREAD1 is
+# an open own thread no finding matches this run, so it stays gating and ranks
+# by the severity its body states, read through the inventory. Critical
+# outranks every new finding: two High threads fit. Medium is outranked by all
+# three High findings: three fit, where reserving a slot for every open thread
+# regardless of severity gave two.
+PRT_TEST_MODEL_RESPONSE_MODE=seven_findings
+PRT_TEST_ASSESS_RESPONSE_MODE=seven_valid
+PRT_TEST_MAX_FINDINGS_TOTAL=3
+PRT_TEST_OWNED_SEVERITY=Critical
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #268: open own Critical thread absent this run, cap 3 -> two High threads created, gating=2" \
+  "0 2 true" "$rc $(cat "$PRT_TEST_CREATE_COUNTFILE") $(grep -qE 'done: findings=7 gating=2 ' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_OWNED_SEVERITY=Medium
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator #268: open own Medium thread absent this run, cap 3 -> all three High findings get threads, gating=3" \
+  "0 3 true" "$rc $(cat "$PRT_TEST_CREATE_COUNTFILE") $(grep -qE 'done: findings=7 gating=3 ' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+unset PRT_TEST_OWNED_SEVERITY PRT_TEST_MAX_FINDINGS_TOTAL
+PRT_TEST_MODEL_RESPONSE_MODE=clean
+PRT_TEST_ASSESS_RESPONSE_MODE=clean
 
 # go-kure/.github#180 codex review: a quarantined finding whose fp_base
 # already has an OWNED, still-open thread (from a prior run, before this run
