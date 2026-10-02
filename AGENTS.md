@@ -178,6 +178,9 @@ ruleset rule type the script doesn't model yet (not in the `RULE_KIND` registry)
 from the printed YAML and flagged with an `unmapped_rule_types` warning on stderr instead of
 being silently dropped. A live ruleset with no rules imports with its enforcement, target,
 conditions and bypass actors, every flag rule `false` and no parameterized rule. A
+`github_repos` override can set a flag rule `false` but cannot remove a parameterized rule that
+`github_defaults` declares (the two are deep-merged), so a live ruleset lacking one is flagged
+with an `override cannot remove` warning on stderr instead of being offered as paste-ready. A
 policy-applicable ruleset that no longer exists on the repo (deleted
 on GitHub) is flagged with a `# WARNING: policy ruleset(s) expected ... not found live
 (deleted?)` comment instead of reading as a clean match; if the live-rulesets list or any single
