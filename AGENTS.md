@@ -179,10 +179,11 @@ from the printed YAML and flagged with an `unmapped_rule_types` warning on stder
 being silently dropped. A live ruleset with no rules imports with its enforcement, target,
 conditions and bypass actors, every flag rule `false` and no parameterized rule. A
 `github_repos` override can set a flag rule `false` but cannot remove a parameterized rule that
-an applicable `github_defaults` ruleset declares (the two are deep-merged), so a live ruleset
-lacking one is left out of the YAML with an `override cannot remove` warning on stderr, and
-`--import` exits 1; a defaults ruleset whose `repos:` scope excludes the repo is not applied
-there, so its live copy imports as is. A
+`github_defaults` declares (the two are deep-merged), so a live ruleset lacking one is left out
+of the YAML with an `override cannot remove` warning on stderr, and `--import` exits 1. The same
+applies to a live ruleset that `github_defaults` declares with a `repos:` scope excluding the
+repo: a `github_repos` entry of that name is ignored there, so it is omitted with an
+`omitted from import` warning naming the scope. A
 policy-applicable ruleset that no longer exists on the repo (deleted
 on GitHub) is flagged with a `# WARNING: policy ruleset(s) expected ... not found live
 (deleted?)` comment instead of reading as a clean match; if the live-rulesets list or any single

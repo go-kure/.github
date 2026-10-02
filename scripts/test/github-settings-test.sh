@@ -1774,17 +1774,30 @@ assert_eq "#279: control: a drifted ruleset that keeps every default parameteriz
     "$(grep -c 'override cannot remove' <<<"$imp_out")"
 assert_contains "#279: control: and is imported" "$imp_out" "required_approving_review_count: 1"
 assert_eq "#279: control: and exits 0" "0" "$imp_rc"
-# A defaults ruleset whose repos: scope excludes the repo is not applied
-# there, so a repo-only rule-less copy is expressible and imported as is.
+# A defaults ruleset whose repos: scope excludes the repo: ruleset_applies
+# ignores a github_repos entry of that name, so no paste can manage it there.
 imp_scoped=$(jq '.github_defaults.rulesets["release-protection"].repos = ["launcher"]' <<<"$POLICY_JSON")
 imp_rs_rel='{"id": 8, "name": "release-protection", "target": "branch", "enforcement": "active", "conditions": {"ref_name": {"include": ["refs/heads/release/*"], "exclude": []}}, "bypass_actors": [], "rules": []}'
-imp_out="$(ACT_RULESETS='[{"id": 8}]' ACT_RULESET="$imp_rs_rel" run_import_actions kure "$imp_scoped")"
+# Every default parameterized rule present, so only the scope makes it
+# inexpressible.
+imp_rs_rel_full=$(jq -c --argjson r "$(jq -c .rules <<<"$imp_rs_full")" '.rules = $r' <<<"$imp_rs_rel")
+imp_out="$(ACT_RULESETS='[{"id": 8}]' ACT_RULESET="$imp_rs_rel_full" run_import_actions kure "$imp_scoped")"
 imp_rc=$?
-assert_eq "#279: a rule-less ruleset on a repo outside the defaults' repos: scope draws no such warning" "0" \
-    "$(grep -c 'override cannot remove' <<<"$imp_out")"
-assert_eq "#279: and is imported" "active" \
-    "$(grep -v '^#' <<<"$imp_out" | yq -r '.kure.rulesets["release-protection"].enforcement')"
-assert_eq "#279: and exits 0" "0" "$imp_rc"
+assert_contains "#279: a live ruleset whose defaults repos: scope excludes the repo is warned about" "$imp_out" \
+    "# WARNING: ruleset 'release-protection' omitted from import: github_defaults declares it with a repos: scope that excludes kure"
+assert_eq "#279: and left out of the YAML" "null" \
+    "$(grep -v '^#' <<<"$imp_out" | yq -oj -I0 '.kure.rulesets["release-protection"]')"
+assert_eq "#279: and exits 1" "1" "$imp_rc"
+# Control: a ruleset github_defaults does not declare is repo-only, and a
+# github_repos entry of that name manages it, so it imports as is.
+imp_rs_own=$(jq -c '.name = "kure-only-guard"' <<<"$imp_rs_rel")
+imp_out="$(ACT_RULESETS='[{"id": 8}]' ACT_RULESET="$imp_rs_own" run_import_actions kure "$imp_scoped")"
+imp_rc=$?
+assert_eq "#279: control: a rule-less repo-only ruleset draws no omission warning" "0" \
+    "$(grep -c 'omitted from import' <<<"$imp_out")"
+assert_eq "#279: control: and is imported" "active" \
+    "$(grep -v '^#' <<<"$imp_out" | yq -r '.kure.rulesets["kure-only-guard"].enforcement')"
+assert_eq "#279: control: and exits 0" "0" "$imp_rc"
 imp_out="$(ACT_PERMS=FAIL ACT_WF="$ACT_LIVE_WF" run_import_actions kure "$act_policy")"
 assert_contains "#158: --import warns on an unreadable endpoint" "$imp_out" "# WARNING: could not read actions/permissions for kure — actions.sha_pinning_required drift skipped this run"
 assert_eq "#158: and does not print sha_pinning_required as captured" "null" \
