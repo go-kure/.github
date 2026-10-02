@@ -1751,6 +1751,17 @@ assert_eq "#158: --import writes the drifted live values into an actions block" 
 imp_out="$(ACT_PERMS="$ACT_LIVE_PERMS" ACT_WF="$ACT_LIVE_WF" run_import_actions kure "$POLICY_JSON")"
 assert_eq "#158: --import without an actions block reads no Actions endpoint" "0" "$(grep -c 'actions/permissions' "$ACT_LOG")"
 assert_eq "#158: and prints no actions block" "null" "$(grep -v '^#' <<<"$imp_out" | yq -oj -I0 '.kure.actions')"
+# #279: an override cannot remove a parameterized rule github_defaults
+# declares, so a live ruleset lacking one is flagged, not offered as paste-ready.
+imp_rs_live='{"id": 7, "name": "main-protection", "target": "branch", "enforcement": "active", "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}}, "bypass_actors": [], "rules": []}'
+imp_out="$(ACT_RULESETS='[{"id": 7}]' ACT_RULESET="$imp_rs_live" run_import_actions kure "$POLICY_JSON")"
+assert_contains "#279: --import warns that a rule-less ruleset cannot drop the default pull_request and required_status_checks rules" "$imp_out" \
+    "# WARNING: ruleset 'main-protection' has no live [\"pull_request\",\"required_status_checks\"] rule(s) that github_defaults declares"
+imp_rs_live=$(jq -c '.rules = [{type: "pull_request", parameters: {required_approving_review_count: 1, dismiss_stale_reviews_on_push: false, require_code_owner_review: false, require_last_push_approval: false, required_review_thread_resolution: false}}, {type: "required_status_checks", parameters: {required_status_checks: [{context: "lint"}], strict_required_status_checks_policy: true}}]' <<<"$imp_rs_live")
+imp_out="$(ACT_RULESETS='[{"id": 7}]' ACT_RULESET="$imp_rs_live" run_import_actions kure "$POLICY_JSON")"
+assert_eq "#279: control: a drifted ruleset that keeps every default parameterized rule draws no such warning" "0" \
+    "$(grep -c 'override cannot remove' <<<"$imp_out")"
+assert_contains "#279: control: and is imported" "$imp_out" "required_approving_review_count: 1"
 imp_out="$(ACT_PERMS=FAIL ACT_WF="$ACT_LIVE_WF" run_import_actions kure "$act_policy")"
 assert_contains "#158: --import warns on an unreadable endpoint" "$imp_out" "# WARNING: could not read actions/permissions for kure — actions.sha_pinning_required drift skipped this run"
 assert_eq "#158: and does not print sha_pinning_required as captured" "null" \

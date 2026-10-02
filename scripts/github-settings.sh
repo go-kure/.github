@@ -2166,6 +2166,17 @@ import_repo() {
             echo "# WARNING: ruleset '$ruleset_name' has rule type(s) this script doesn't model, omitted from import: $unmapped" >&2
         fi
         clean=$(echo "$transformed" | jq 'del(.unmapped_rule_types)')
+        # A github_repos override can set a flag rule false but cannot remove a
+        # parameterized rule github_defaults declares: ruleset_rules_json
+        # deep-merges the two, so pasting this import would restore it.
+        local unremovable
+        unremovable=$(jq -c --arg n "$ruleset_name" --argjson live "$clean" '
+            [(.github_defaults.rulesets[$n].rules // {}) | to_entries[]
+             | select((.value | type) == "object") | .key
+             | select(. as $t | $live.rules | has($t) | not)]' <<<"$POLICY_JSON")
+        if [ "$unremovable" != "[]" ]; then
+            echo "# WARNING: ruleset '$ruleset_name' has no live $unremovable rule(s) that github_defaults declares; a github_repos override cannot remove them, so pasting this import would restore them" >&2
+        fi
         rulesets_json=$(echo "$rulesets_json" | jq --arg n "$ruleset_name" --argjson v "$clean" '. + {($n): $v}')
     done
 
