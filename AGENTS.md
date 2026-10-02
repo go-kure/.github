@@ -170,7 +170,8 @@ flagged with a `could not read actions/...` warning on stderr.
 
 A repo with nothing to fold in prints
 `# <repo>: settings/security/actions/rulesets match policy — nothing to import`; a failed rulesets
-or Actions read suppresses that line. A live
+or Actions read suppresses that line and makes `--import` exit 1 (with `--all`, after every repo
+has been printed), so a partial import is never reported as a complete one. A live
 ruleset rule type the script doesn't model yet (not in the `RULE_KIND` registry) is omitted
 from the printed YAML and flagged with an `unmapped_rule_types` warning on stderr instead of
 being silently dropped. A policy-applicable ruleset that no longer exists on the repo (deleted

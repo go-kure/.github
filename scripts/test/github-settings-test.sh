@@ -1575,6 +1575,7 @@ act_gh() {
                 ;;
             *"/actions/permissions/workflow "*) body="$ACT_WF" ;;
             *"/actions/permissions "*) body="$ACT_PERMS" ;;
+            *"/rulesets?includes_parents=false "*) body="${ACT_RULESETS:-[]}" ;;
             *) body='{}' ;;
         esac
         if [ "$body" = FAIL ]; then
@@ -1736,6 +1737,20 @@ assert_eq "#158: control: --import with every section readable and matching says
     "$(ACT_PERMS='{"enabled": true, "sha_pinning_required": true}' imp_match | grep -c 'nothing to import')"
 assert_eq "#158: --import with only a failed actions read never says nothing to import" "0" \
     "$(ACT_PERMS=FAIL imp_match | grep -c 'nothing to import')"
+
+# The exit status carries the same verdict: an unread section is an
+# incomplete import (1), whether or not anything drifted; a complete one is 0.
+import_rc() { if "$@" >/dev/null 2>&1; then echo 0; else echo 1; fi; }
+assert_eq "#158: control: --import with every section readable and matching exits 0" "0" \
+    "$(ACT_PERMS='{"enabled": true, "sha_pinning_required": true}' import_rc imp_match)"
+assert_eq "#158: --import with readable drift exits 0" "0" \
+    "$(ACT_PERMS="$ACT_LIVE_PERMS" ACT_WF="$ACT_LIVE_WF" import_rc run_import_actions kure "$act_policy")"
+assert_eq "#158: --import with a failed actions read exits 1" "1" \
+    "$(ACT_PERMS=FAIL import_rc imp_match)"
+assert_eq "#158: --import with a failed actions read and drift elsewhere exits 1" "1" \
+    "$(ACT_PERMS=FAIL ACT_WF="$ACT_LIVE_WF" import_rc run_import_actions kure "$act_policy")"
+assert_eq "#158: --import with a failed rulesets read exits 1" "1" \
+    "$(ACT_PERMS='{"enabled": true, "sha_pinning_required": true}' ACT_RULESETS=FAIL import_rc imp_match)"
 
 org_out="$( (fail_writes_gh; APPLY_FAILURES=(); audit_org_settings true >/dev/null 2>&1; audit_org_actions true >/dev/null 2>&1; apply_failures_of) )"
 assert_contains "a failed organization settings PATCH is recorded" "$org_out" "org go-kure: apply organization settings ("

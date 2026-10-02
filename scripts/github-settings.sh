@@ -2183,6 +2183,14 @@ import_repo() {
 
     jq -n --arg repo "$repo" --argjson body "$body" '{($repo): $body}' | yq -p=json -o=yaml -
     echo ""
+
+    # An unread section makes the printed drift incomplete: say so in the
+    # exit status too, so a caller checking only stdout and $? cannot take a
+    # partial import for a complete one.
+    if [ "$rulesets_fetch_ok" != "true" ] || [ "$actions_fetch_ok" != "true" ]; then
+        return 1
+    fi
+    return 0
 }
 
 # Dump ONLY the parts of org-level settings that drift from policy, as a
@@ -2519,11 +2527,15 @@ main() {
         if [ "$org_mode" = "true" ]; then
             import_org
         elif [ "$all_repos" = "true" ]; then
+            local import_rc=0
             for r in ${GITHUB_REPOS:-}; do
-                import_repo "$r"
+                import_repo "$r" || import_rc=1
             done
+            return "$import_rc"
         else
-            import_repo "$repo"
+            local import_rc=0
+            import_repo "$repo" || import_rc=1
+            return "$import_rc"
         fi
         return 0
     fi
