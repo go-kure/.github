@@ -1670,8 +1670,27 @@ assert_eq "#158: a repo the override does not name reads nothing" "" "$(cat "$AC
 act_out="$(ACT_PERMS=FAIL ACT_WF="$ACT_LIVE_WF" run_repo_actions kure false "$act_policy")"
 assert_eq "#158: an unreadable endpoint counts as drift in audit mode" "OK=1 MISSING=2" "$(head -n1 <<<"$act_out")"
 assert_contains "#158: and says which endpoint and keys" "$act_out" "FAILED: Could not read repos/$GITHUB_ORG/kure/actions/permissions — actions.sha_pinning_required not audited"
-assert_eq "#158: and fails the audit" "1" \
-    "$( (SETTINGS_MISSING=1 JSON_OUTPUT=false print_summary false) >/dev/null 2>&1; echo $?)"
+# The summary's exit status comes from the counters this audit run left, in
+# the same subshell; the matching-live control shows the status can be 0.
+act_audit_rc() {
+    (
+        act_gh
+        POLICY_JSON="$act_policy"
+        ACT_PERMS="$1"
+        ACT_WF="$2"
+        LABELS_MISSING=0 LABELS_RENAMED=0 LABELS_EXTRA=0 LABELS_DUPLICATE=0 LABELS_DRIFT=0
+        SETTINGS_OK=0 SETTINGS_MISSING=0 SETTINGS_BLOCKED=0 RULESET_MISSING=0
+        APPLY_FAILURES=()
+        JSON_OUTPUT=false
+        audit_repo_actions kure false
+        print_summary false
+    ) >/dev/null 2>&1
+    echo "$?"
+}
+act_match_perms='{"enabled": true, "allowed_actions": "all", "sha_pinning_required": true}'
+act_match_wf='{"default_workflow_permissions": "read", "can_approve_pull_request_reviews": false}'
+assert_eq "#158: and fails the audit (the workflow endpoint matches)" "1" "$(act_audit_rc FAIL "$act_match_wf")"
+assert_eq "#158: control: matching live values pass the audit" "0" "$(act_audit_rc "$act_match_perms" "$act_match_wf")"
 act_out="$(ACT_PERMS=FAIL ACT_WF=FAIL run_repo_actions kure true "$act_policy")"
 assert_contains "#158: apply records an unreadable permissions endpoint" "$act_out" "FAILURE kure: actions/permissions unreadable, Actions permissions not audited"
 assert_contains "#158: apply records an unreadable workflow endpoint" "$act_out" "FAILURE kure: actions/permissions/workflow unreadable, Actions permissions not audited"
