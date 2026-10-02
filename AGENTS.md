@@ -169,16 +169,18 @@ prints the live value of each key that differs from it. An Actions endpoint it c
 flagged with a `could not read actions/...` warning on stderr.
 
 A repo with nothing to fold in prints
-`# <repo>: settings/security/actions/rulesets match policy — nothing to import`; a failed rulesets
-or Actions read suppresses that line and makes `--import` exit 1 (with `--all`, after every repo
-has been printed), so a partial import is never reported as a complete one. A live
+`# <repo>: settings/security/actions/rulesets match policy — nothing to import`; any failed read
+(the repository settings, the rulesets list, a single ruleset, or an Actions endpoint) suppresses
+that line and makes `--import` exit 1 (with `--all`, after every repo has been printed), so a
+partial import is never reported as a complete one. A repo whose settings cannot be read prints
+nothing else. A live
 ruleset rule type the script doesn't model yet (not in the `RULE_KIND` registry) is omitted
 from the printed YAML and flagged with an `unmapped_rule_types` warning on stderr instead of
 being silently dropped. A policy-applicable ruleset that no longer exists on the repo (deleted
 on GitHub) is flagged with a `# WARNING: policy ruleset(s) expected ... not found live
-(deleted?)` comment instead of reading as a clean match; if the live-rulesets fetch itself
-fails (permissions, rate limit, transient error), that check is skipped rather than reporting
-every applicable ruleset as deleted, and a `could not fetch live rulesets` warning is printed
+(deleted?)` comment instead of reading as a clean match; if the live-rulesets list or any single
+ruleset cannot be read (permissions, rate limit, transient error), that check is skipped rather
+than reporting rulesets as deleted, and a `could not fetch live rulesets` warning is printed
 instead.
 
 A ruleset can also be declared **repo-only**, under `github_repos.<repo>.rulesets` with no
