@@ -328,6 +328,28 @@ bypass_ok_json=$(jq '.github_repos.kure.rulesets["main-protection"].bypass_actor
 bypass_ok_out=$( (POLICY_JSON="$bypass_ok_json" validate_policy) 2>&1 )
 assert_eq "validate_policy accepts pull_request mode for a Team on a branch ruleset, and null actor_id for DeployKey and OrganizationAdmin" "0" "$?"
 assert_eq "with no bypass actor error" "0" "$(grep -c 'rulesets API refuses' <<<"$bypass_ok_out")"
+# go-kure/.github#274: a rule's API-required parameters are checked on the
+# merged rule each repo receives, not per layer.
+schema_reject "a required_status_checks rule left without contexts after the merge" \
+    'del(.github_defaults.rulesets["main-protection"].rules.required_status_checks.contexts)' \
+    '.github: rulesets["main-protection"].rules.required_status_checks: missing contexts'
+merged_out=$( (POLICY_JSON="$(jq 'del(.github_defaults.rulesets["main-protection"].rules.required_status_checks.contexts)' <<<"$POLICY_JSON")" validate_policy) 2>&1 )
+assert_eq "a repo override that supplies the parameter completes the rule" "0" \
+    "$(grep -c '^ *\(kure\|launcher\): rulesets\["main-protection"\].rules.required_status_checks' <<<"$merged_out")"
+schema_reject "a pull_request rule missing a required parameter in every layer" \
+    'del(.github_defaults.rulesets["main-protection"].rules.pull_request.required_review_thread_resolution)' \
+    'kure: rulesets["main-protection"].rules.pull_request: missing required_review_thread_resolution'
+schema_reject "a merge_queue rule declared only in a repo override" \
+    'del(.github_repos.launcher.rulesets["main-protection"].rules.merge_queue.grouping_strategy)' \
+    'launcher: rulesets["main-protection"].rules.merge_queue: missing grouping_strategy'
+schema_reject "every missing parameter of one rule, in one line" \
+    'del(.github_defaults.rulesets["main-protection"].rules.required_status_checks.contexts, .github_defaults.rulesets["main-protection"].rules.required_status_checks.strict)' \
+    '.github: rulesets["main-protection"].rules.required_status_checks: missing contexts, strict'
+scoped_out=$( (POLICY_JSON="$(jq 'del(.github_defaults.rulesets["release-protection"].rules.required_status_checks.contexts)' <<<"$POLICY_JSON")" validate_policy) 2>&1 )
+assert_contains "an incomplete github_defaults ruleset is reported for a repo in its scope" "$scoped_out" \
+    'kure: rulesets["release-protection"].rules.required_status_checks: missing contexts'
+assert_eq "and not for a repo outside its repos: list" "0" \
+    "$(grep -c '\.github: rulesets\["release-protection"\]' <<<"$scoped_out")"
 schema_reject "an invalid ruleset enforcement" '.github_defaults.rulesets["main-protection"].enforcement = "on"' \
     "main-protection.enforcement: \"on\" is not one of"
 schema_reject "an invalid squash commit title" '.github_defaults.squash_merge_commit_title = "PR_TITEL"' \

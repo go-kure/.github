@@ -128,7 +128,10 @@ different things:
 1. Edit `governance/repository-settings-policy.yaml`. A key the script does not model is
    refused by its schema, `governance/repository-settings-policy.schema.json`: a new setting,
    rule type or rule parameter goes into the schema (and the script's registry) in the same
-   change.
+   change. A rule's parameters that the rulesets API requires (`RULE_REQUIRED_PARAMS`) may sit in
+   either layer: they are checked on the merged rule each repo receives (`github_defaults`
+   deep-merged with its `github_repos` override), and a missing one fails validation before any
+   audit or apply, naming the repo, ruleset, rule and parameter.
 2. Run `./scripts/github-settings.sh --all` locally to preview changes (or `mise run settings -- --all`)
 3. Commit and open a PR
 4. After merge, trigger `settings.yml` manually via `workflow_dispatch` with `mode: apply`
