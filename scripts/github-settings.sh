@@ -268,6 +268,20 @@ declare -A RULE_FROM_API_JQ=(
     [pull_request]='del(.dismissal_restriction, .required_reviewers)'
 )
 
+# Parameters the rulesets API requires on each parameterized rule, by their
+# policy names (GitHub's REST description: the `required` lists of
+# repository-rule-pull-request, repository-rule-required-status-checks, whose
+# required_status_checks and strict_required_status_checks_policy are policy's
+# contexts and strict, and repository-rule-merge-queue;
+# repository-rule-copilot-code-review requires none). validate_policy checks
+# them on each governed repo's merged rule, because an override may set some
+# and inherit the rest from github_defaults.
+declare -A RULE_REQUIRED_PARAMS=(
+    [pull_request]="dismiss_stale_reviews_on_push require_code_owner_review require_last_push_approval required_approving_review_count required_review_thread_resolution"
+    [required_status_checks]="contexts strict"
+    [merge_queue]="check_response_timeout_minutes grouping_strategy max_entries_to_build max_entries_to_merge merge_method min_entries_to_merge min_entries_to_merge_wait_minutes"
+)
+
 rule_kind() {
     echo "${RULE_KIND[$1]:-}"
 }
@@ -622,6 +636,40 @@ validate_policy() {
     if [ -n "$bad_bypass" ]; then
         echo -e "${RED}ERROR: bypass actor(s) the rulesets API refuses:${NC}"
         while IFS= read -r line; do echo "    $line"; done <<<"$bad_bypass"
+        errors=$((errors + 1))
+    fi
+
+    # 8. Rule parameters the rulesets API requires (RULE_REQUIRED_PARAMS),
+    #    on the rule each governed repo actually gets: github_defaults deep-
+    #    merged with its override, as ruleset_rules_json builds it, for every
+    #    ruleset that applies to the repo (ruleset_applies). A per-layer schema
+    #    cannot require them: an override may set only `strict` and inherit
+    #    `contexts`. A missing or null field would otherwise fail mid-run, in
+    #    build_ruleset_payload or at the API (go-kure/.github#274).
+    local required_params_json="{}" rule_type
+    for rule_type in "${!RULE_REQUIRED_PARAMS[@]}"; do
+        required_params_json=$(jq -c --arg t "$rule_type" --arg f "${RULE_REQUIRED_PARAMS[$rule_type]}" \
+            '. + {($t): ($f | split(" "))}' <<<"$required_params_json")
+    done
+    local incomplete_rules=""
+    [ "$policy_shape_ok" -eq 1 ] && incomplete_rules=$(jq -r --argjson known "$repo_list_json" --argjson req "$required_params_json" '
+        (.github_defaults.rulesets // {}) as $d
+        | (.github_repos // {}) as $o
+        | $known[] as $repo
+        | ([($d | keys[]), (($o[$repo].rulesets // {}) | keys[])] | unique[]) as $name
+        | select(if $d[$name] != null
+                 then ($d[$name].repos // "ALL") as $scope | $scope == "ALL" or ($scope | index($repo) != null)
+                 else $o[$repo].rulesets[$name] != null end)
+        | (($d[$name].rules // {}) * ($o[$repo].rulesets[$name].rules // {})) as $rules
+        | $req | to_entries[] | .key as $t
+        | select($rules[$t] != null)
+        | [.value[] | select($rules[$t][.] == null)] as $missing
+        | select($missing | length > 0)
+        | "\($repo): rulesets[\"\($name)\"].rules.\($t): missing \($missing | join(", "))"
+    ' <<<"$POLICY_JSON")
+    if [ -n "$incomplete_rules" ]; then
+        echo -e "${RED}ERROR: ruleset rule(s) missing parameters the rulesets API requires, after github_defaults is merged with the repo override:${NC}"
+        while IFS= read -r line; do echo "    $line"; done <<<"$incomplete_rules"
         errors=$((errors + 1))
     fi
 
