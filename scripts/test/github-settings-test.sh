@@ -1757,8 +1757,9 @@ assert_eq "#158: --import with one unreadable ruleset exits 1" "1" \
     "$(ACT_PERMS='{"enabled": true, "sha_pinning_required": true}' ACT_RULESETS='[{"id": 7}]' ACT_RULESET=FAIL import_rc imp_match)"
 assert_eq "#158: --import with unreadable repository settings exits 1" "1" \
     "$(ACT_PERMS='{"enabled": true, "sha_pinning_required": true}' ACT_SETTINGS=FAIL import_rc imp_match)"
-# The status is collected through `||` in main, where errexit is off: run
-# both paths through main itself, not just import_repo.
+# Through main itself, called as a plain command: inside `if`/`||` bash
+# ignores errexit for everything main runs, which would hide exactly the
+# unchecked failures these cases exist to catch.
 main_import_rc() {
     (
         act_gh
@@ -1771,13 +1772,37 @@ main_import_rc() {
         # shellcheck disable=SC2317,SC2329
         ruleset_names() { :; }
         GITHUB_REPOS="kure"
-        import_rc main "$@"
-    )
+        main "$@"
+    ) >/dev/null 2>&1
+    echo "$?"
 }
 assert_eq "#158: control: main --import on a readable repo exits 0" "0" "$(main_import_rc --import kure)"
 assert_eq "#158: main --import with unreadable settings exits 1" "1" "$(ACT_SETTINGS=FAIL main_import_rc --import kure)"
 assert_eq "#158: main --import --all with one unreadable ruleset exits 1" "1" \
     "$(ACT_RULESETS='[{"id": 7}]' ACT_RULESET=FAIL main_import_rc --import --all)"
+# A readable ruleset the import transform cannot convert (it has no rules).
+act_unconvertible='{"id": 7, "name": "unmanaged", "target": "branch", "enforcement": "active", "rules": []}'
+assert_eq "#158: main --import with an unconvertible ruleset fails" "nonzero" \
+    "$(rc="$(ACT_RULESETS='[{"id": 7}]' ACT_RULESET="$act_unconvertible" main_import_rc --import kure)"; [ "$rc" -ne 0 ] && echo nonzero || echo "$rc")"
+assert_eq "#158: main --import --all with an unconvertible ruleset fails" "nonzero" \
+    "$(rc="$(ACT_RULESETS='[{"id": 7}]' ACT_RULESET="$act_unconvertible" main_import_rc --import --all)"; [ "$rc" -ne 0 ] && echo nonzero || echo "$rc")"
+# --all keeps going after a repo whose import aborted.
+assert_eq "#158: main --import --all imports the next repo after an aborted one" "2" \
+    "$(
+        (
+            act_gh
+            # shellcheck disable=SC2317,SC2329 # replaces the sourced helpers for this one call
+            check_requirements() { :; }
+            # shellcheck disable=SC2317,SC2329
+            gh_policy_json() { echo null; }
+            # shellcheck disable=SC2317,SC2329
+            gh_policy_value() { echo null; }
+            # shellcheck disable=SC2317,SC2329
+            ruleset_names() { :; }
+            GITHUB_REPOS="kure launcher"
+            ACT_RULESETS='[{"id": 7}]' ACT_RULESET="$act_unconvertible" main --import --all 2>/dev/null
+        ) | grep -c '^# ---- drift from policy'
+    )"
 
 org_out="$( (fail_writes_gh; APPLY_FAILURES=(); audit_org_settings true >/dev/null 2>&1; audit_org_actions true >/dev/null 2>&1; apply_failures_of) )"
 assert_contains "a failed organization settings PATCH is recorded" "$org_out" "org go-kure: apply organization settings ("
