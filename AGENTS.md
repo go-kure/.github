@@ -90,12 +90,15 @@ Settings are defined in `governance/repository-settings-policy.yaml` and applied
 `scripts/github-settings.sh`. The script governs: top-level repo settings (merge methods,
 wiki/issues/discussions/projects toggles, commit-title/message formats — see `SETTING_KEYS`
 in the script), the `secret_scanning` / `secret_scanning_push_protection` /
-`dependabot_security_updates` security trio, labels (`standards/labels.json`), and branch
+`dependabot_security_updates` security trio, opt-in per-repo Actions permissions (an optional
+`actions:` block: `sha_pinning_required`, `default_workflow_permissions`,
+`can_approve_pull_request_reviews` — `REPO_ACTIONS_*_KEYS` in the script; a repo with no key
+declared is never read or written), labels (`standards/labels.json`), and branch
 rulesets (rule types are a registry in the script — `RULE_TYPE_ORDER`/`RULE_KIND` — not a
 hardcoded list; adding a new rule type means adding a registry entry). See `docs/standards.md`
 § "Repository Settings" for the full governed key list, and that same script's plan file
-history for what's deliberately still out of scope (environments, webhooks, Actions
-permissions, collaborators, ...).
+history for what's deliberately still out of scope (environments, webhooks, per-repo allowed
+actions lists and runner groups, collaborators, ...).
 
 ### Auditing settings
 
@@ -135,9 +138,10 @@ Exit status: audit mode exits 1 when it finds any drift (`--warn-label-drift` le
 colour/description drift out of that; `--report-only` exits 0 and warns instead). `--apply`
 exits 1 when any write it
 attempted failed — a ruleset create/update, the classic-protection delete, a label
-create/rename/update/delete, or a repository, security or organization settings write — or kept
-classic branch protection that a policy ruleset should replace because no live ruleset does yet,
-or could not read (or encode) a repo's default branch (audit mode counts that as drift too), and
+create/rename/update/delete, or a repository, security, Actions permissions or organization
+settings write — or kept classic branch protection that a policy ruleset should replace because
+no live ruleset does yet, or could not read (or encode) a repo's default branch, or could not
+read a repo Actions permissions endpoint the policy manages (audit mode counts both as drift too), and
 lists each failed write in the summary. The run continues past a failed write, so one refusal
 does not hide the rest. Drift that `--apply` cannot fix (a label `DUPLICATE`, an audit-only
 `BLOCKED` setting) is reported but does not fail an apply run; audit mode is the gate for that.
@@ -155,13 +159,18 @@ drift nor a failure, in either mode.
 ./scripts/github-settings.sh --all --import
 ```
 
-`--import` covers repo settings, the security trio, and rulesets only — it never touches
+`--import` covers repo settings, the security trio, the Actions permissions keys the policy
+manages for the repo, and rulesets only — it never touches
 labels, since those are governed by `standards/labels.json`, not
 `governance/repository-settings-policy.yaml`. Label drift is reported by audit mode (running
-the script without `--import`) instead.
+the script without `--import`) instead. An Actions key no policy tier declares is not read, so
+`--import` cannot bootstrap an `actions:` block from nothing: declare one, and `--import` then
+prints the live value of each key that differs from it. An Actions endpoint it cannot read is
+flagged with a `could not read actions/...` warning on stderr.
 
 A repo with nothing to fold in prints
-`# <repo>: settings/security/rulesets match policy — nothing to import`. A live
+`# <repo>: settings/security/actions/rulesets match policy — nothing to import`; a failed rulesets
+or Actions read suppresses that line. A live
 ruleset rule type the script doesn't model yet (not in the `RULE_KIND` registry) is omitted
 from the printed YAML and flagged with an `unmapped_rule_types` warning on stderr instead of
 being silently dropped. A policy-applicable ruleset that no longer exists on the repo (deleted

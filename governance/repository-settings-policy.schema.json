@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://github.com/go-kure/.github/blob/main/governance/repository-settings-policy.schema.json",
   "title": "Repository settings policy",
-  "description": "The closed shape of governance/repository-settings-policy.yaml (or a consumer's POLICY_FILE), checked by scripts/github-settings.sh before any audit or --apply. Every object is closed: a key the script does not read is refused, because its exact lookups would miss it and apply the default instead. The key sets are pinned to the script's registries (SETTING_KEYS, ORG_SETTING_KEYS, ORG_READONLY_KEYS, ORG_ACTIONS_*_KEYS, RULE_TYPE_ORDER) by scripts/test/github-settings-test.sh. Only the draft-07 subset scripts/lib/json-schema.sh implements may be used here.",
+  "description": "The closed shape of governance/repository-settings-policy.yaml (or a consumer's POLICY_FILE), checked by scripts/github-settings.sh before any audit or --apply. Every object is closed: a key the script does not read is refused, because its exact lookups would miss it and apply the default instead. The key sets are pinned to the script's registries (SETTING_KEYS, ORG_SETTING_KEYS, ORG_READONLY_KEYS, ORG_ACTIONS_*_KEYS, REPO_ACTIONS_*_KEYS, RULE_TYPE_ORDER) by scripts/test/github-settings-test.sh. Only the draft-07 subset scripts/lib/json-schema.sh implements may be used here.",
   "type": "object",
   "additionalProperties": false,
   "required": ["github_defaults"],
@@ -17,7 +17,7 @@
   },
   "definitions": {
     "defaults": {
-      "description": "Org-wide repo defaults. Every SETTING_KEYS entry and every security key is required, so the audit never compares a live value against a missing default or skips a governed setting.",
+      "description": "Org-wide repo defaults. Every SETTING_KEYS entry and every security key is required, so the audit never compares a live value against a missing default or skips a governed setting. The actions block is optional: without it, and without a repo override setting a key, Actions permissions are not managed.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -47,6 +47,7 @@
         "squash_merge_commit_title": { "$ref": "#/definitions/squash_merge_commit_title" },
         "squash_merge_commit_message": { "$ref": "#/definitions/squash_merge_commit_message" },
         "security": { "$ref": "#/definitions/security_defaults" },
+        "actions": { "$ref": "#/definitions/actions_defaults" },
         "rulesets": {
           "type": "object",
           "additionalProperties": { "$ref": "#/definitions/ruleset_default" }
@@ -77,6 +78,7 @@
         "squash_merge_commit_title": { "$ref": "#/definitions/squash_merge_commit_title" },
         "squash_merge_commit_message": { "$ref": "#/definitions/squash_merge_commit_message" },
         "security": { "$ref": "#/definitions/security" },
+        "actions": { "$ref": "#/definitions/actions" },
         "rulesets": {
           "type": "object",
           "additionalProperties": { "$ref": "#/definitions/ruleset_override" }
@@ -109,6 +111,27 @@
       }
     },
     "status": { "type": "string", "enum": ["enabled", "disabled"] },
+    "actions": {
+      "description": "Repository Actions permissions (REPO_ACTIONS_PERMISSIONS_KEYS and REPO_ACTIONS_WORKFLOW_KEYS), read by audit_repo_actions. A key no tier declares is not managed: its endpoint is neither read nor written.",
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "properties": {
+        "sha_pinning_required": { "type": "boolean" },
+        "default_workflow_permissions": { "type": "string", "enum": ["read", "write"] },
+        "can_approve_pull_request_reviews": { "type": "boolean" }
+      }
+    },
+    "actions_defaults": {
+      "description": "The github_defaults actions block, optional as a whole. Declared, it must set all three keys, as the security block does: an omitted key would silently stay unmanaged on every repo that does not override it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sha_pinning_required", "default_workflow_permissions", "can_approve_pull_request_reviews"],
+      "properties": {
+        "sha_pinning_required": { "type": "boolean" },
+        "default_workflow_permissions": { "type": "string", "enum": ["read", "write"] },
+        "can_approve_pull_request_reviews": { "type": "boolean" }
+      }
+    },
     "ruleset_default": {
       "description": "A github_defaults ruleset. repos scopes it (absent: every governed repo; []: none). bypass_actors is per-repo only and is never read here.",
       "type": "object",

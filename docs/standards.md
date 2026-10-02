@@ -545,7 +545,9 @@ rule, in its place. Values are typed, and enums hold wherever `--apply` would ac
 `security:` values must be `enabled` or `disabled`, because the audit applies any other value
 as `disabled`, which for `dependabot_security_updates` is a live DELETE. `github_defaults` must
 declare every repo setting and all three `security:` keys, because the audit skips a security key
-no tier declares; a `github_repos` override may set any subset. The labels file must
+no tier declares; a `github_repos` override may set any subset. The `actions:` block is optional,
+but a `github_defaults` one must set all three of its keys, with `default_workflow_permissions`
+`read` or `write`. The labels file must
 hold a non-empty `labels` list whose entries carry a name, a description and a `#RRGGBB`
 colour. What a schema cannot express is checked alongside: `github_repos` keys and every
 `repos:` scope name governed repos, label names are unique, every governed repo keeps at
@@ -600,6 +602,36 @@ shared Renovate preset override it to `disabled`: Renovate's `vulnerabilityAlert
 (`osvVulnerabilityAlerts` + `addLabels: ["security"]`) already covers them, proven duplicate by
 go-kure/kure#742 (Dependabot) and go-kure/kure#743 (Renovate `[security]`) opening for the same
 grpc bump within hours of each other.
+
+### Actions permissions
+
+Per-repository GitHub Actions permissions are opt-in: the policy may declare an `actions:` block
+under `github_defaults`, under a `github_repos.<repo>` override, or both, resolved like
+`security:` (the override wins, key by key). This policy declares none yet, so the script reads
+and writes no repository's Actions permissions. Declaring a `github_defaults` block means adding
+a `Setting | Default` table of its keys here, like the tables around it:
+`scripts/check-settings-doc.sh` compares this section with that block in both directions. Three
+keys are modeled:
+
+- `actions.sha_pinning_required` (boolean): actions must be referenced by a full commit SHA,
+  on `repos/{owner}/{repo}/actions/permissions`.
+- `actions.default_workflow_permissions` (`read` or `write`): the default `GITHUB_TOKEN`
+  permissions, on `repos/{owner}/{repo}/actions/permissions/workflow`.
+- `actions.can_approve_pull_request_reviews` (boolean): whether workflows may approve pull
+  requests, on the same workflow endpoint.
+
+A `github_defaults` `actions:` block must set all three keys; an override may set any subset. A
+key no tier declares is not managed for that repo, and when a repo has none, neither endpoint is
+called. Audit and `--apply` compare each managed key against the live value and `--apply`
+writes only an endpoint with a drifted key. The permissions write resends the live `enabled`
+and `allowed_actions` unchanged, since that endpoint requires the first and would reset the
+second; the workflow write resends the live value of a key that did not drift. An endpoint that
+cannot be read (an error, or a response without the field that endpoint always returns) is a
+failure in both modes, never a match: audit counts it as drift and apply exits 1 without writing
+to it. `--import` prints the live value of each drifted managed key under `actions:`. The allowed
+actions list (`allowed_actions`, `selected_actions`) and runner groups are not modeled per
+repository. The organization-wide equivalents are under
+[Organization Actions permissions](#organization-actions-permissions).
 
 ### Rulesets (branch protection)
 

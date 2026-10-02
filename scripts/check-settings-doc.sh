@@ -55,6 +55,7 @@ extract_section() {
 
 documented_settings="$(extract_section 'Top-level settings')"
 documented_security="$(extract_section 'Security')"
+documented_actions="$(extract_section 'Actions permissions')"
 # sed here uses BRE (no -E): bare ( ) are literal, \( \) would mean a
 # capture group — so the heading's literal parens must NOT be escaped.
 documented_rulesets="$(extract_section 'Rulesets (branch protection)')"
@@ -69,6 +70,11 @@ policy_settings="$(jq -r '
 ' <<<"$POLICY_JSON" | sort -u)"
 
 policy_security="$(jq -r '.github_defaults.security // {} | keys[] | "security." + .' <<<"$POLICY_JSON" | sort -u)"
+
+# The repo actions block is optional (go-kure/.github#158): with none
+# declared, the section's table must list nothing, and once declared it
+# must list exactly its keys.
+policy_actions="$(jq -r '.github_defaults.actions // {} | keys[] | "actions." + .' <<<"$POLICY_JSON" | sort -u)"
 
 policy_rulesets="$(jq -r '.github_defaults.rulesets // {} | keys[]' <<<"$POLICY_JSON" | sort -u)"
 
@@ -100,6 +106,7 @@ compare() {
 
 compare "top-level settings" "$documented_settings" "$policy_settings"
 compare "security settings" "$documented_security" "$policy_security"
+compare "repository Actions permissions" "$documented_actions" "$policy_actions"
 compare "rulesets" "$documented_rulesets" "$policy_rulesets"
 compare "organization settings" "$documented_org" "$policy_org"
 compare "organization Actions permissions" "$documented_org_actions" "$policy_org_actions"
@@ -109,5 +116,8 @@ if [[ $errors -gt 0 ]]; then
   exit 1
 fi
 
-total=$(($(wc -l <<<"$policy_settings") + $(wc -l <<<"$policy_security") + $(wc -l <<<"$policy_rulesets") + $(wc -l <<<"$policy_org") + $(wc -l <<<"$policy_org_actions")))
+# grep -c . counts non-empty lines: an empty list (no actions block) is 0,
+# where wc -l on "" would count 1.
+count() { grep -c . <<<"$1" || true; }
+total=$(($(count "$policy_settings") + $(count "$policy_security") + $(count "$policy_actions") + $(count "$policy_rulesets") + $(count "$policy_org") + $(count "$policy_org_actions")))
 echo "check-settings-doc: OK ($total governed setting(s)/ruleset(s) match docs)."
