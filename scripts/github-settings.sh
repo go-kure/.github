@@ -2044,13 +2044,18 @@ build_ruleset_import_jq() {
 # (general) or github_repos.<repo> (override). Never writes the policy file
 # itself — it carries hand-authored comments a yq round-trip would risk
 # mangling, and default-vs-override is a judgment call.
+#
+# Call it through import_repo_checked, not inside `if`/`||`/`&&`: bash
+# ignores errexit for the whole function body in those contexts, so an
+# unchecked failure in it would read as a complete import.
 import_repo() {
     local repo="$1"
 
     echo "# ---- drift from policy (settings/security/actions/rulesets): $GITHUB_ORG/$repo ($(date -u +%Y-%m-%dT%H:%M:%SZ)) ----"
 
-    # Every read below is checked explicitly: main calls this inside `||` to
-    # collect its status, which switches errexit off for the whole function.
+    # The reads below are checked explicitly so that a failed one marks the
+    # import incomplete (exit 1) rather than aborting it before the rest of
+    # the repo is printed.
     local settings
     if ! settings=$(gh api "repos/$GITHUB_ORG/$repo"); then
         echo "# WARNING: could not read repository settings for $repo — nothing imported for it this run" >&2
@@ -2201,6 +2206,26 @@ import_repo() {
     if [ "$rulesets_fetch_ok" != "true" ] || [ "$actions_fetch_ok" != "true" ]; then
         return 1
     fi
+    return 0
+}
+
+# Run import_repo for one repo with errexit in force and leave its status in
+# IMPORT_REPO_RC, so --all can carry on to the next repo after a failure.
+# The status is not this function's return value on purpose: a caller
+# testing it with `if`/`||` would switch errexit off inside import_repo.
+# The subshell holds the errexit abort to this one repo; the caller's own
+# errexit setting is restored afterwards.
+IMPORT_REPO_RC=0
+import_repo_checked() {
+    local errexit_was=false
+    [[ $- == *e* ]] && errexit_was=true
+    set +e
+    (
+        set -e
+        import_repo "$1"
+    )
+    IMPORT_REPO_RC=$?
+    [ "$errexit_was" = "true" ] && set -e
     return 0
 }
 
@@ -2540,13 +2565,13 @@ main() {
         elif [ "$all_repos" = "true" ]; then
             local import_rc=0
             for r in ${GITHUB_REPOS:-}; do
-                import_repo "$r" || import_rc=1
+                import_repo_checked "$r"
+                [ "$IMPORT_REPO_RC" -eq 0 ] || import_rc=1
             done
             return "$import_rc"
         else
-            local import_rc=0
-            import_repo "$repo" || import_rc=1
-            return "$import_rc"
+            import_repo_checked "$repo"
+            return "$IMPORT_REPO_RC"
         fi
         return 0
     fi
