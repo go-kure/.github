@@ -1979,12 +1979,15 @@ ruleset_has_drift() {
     local ruleset_name="$2"
     local full_ruleset="$3"
 
-    local status
+    # Read the whole diff: returning at the first drift line closes the pipe
+    # while ruleset_diff still writes, and where SIGPIPE is ignored (CI
+    # runners, mise) each later printf reports "Broken pipe" on stderr.
+    local status drift=1
     while IFS=$'\t' read -r status _ _ _; do
-        [ "$status" != "OK" ] && return 0
+        [ "$status" != "OK" ] && drift=0
     done < <(ruleset_diff "$repo" "$ruleset_name" "$full_ruleset")
 
-    return 1
+    return "$drift"
 }
 
 # Assemble the jq filter that maps a live API ruleset onto the compact
