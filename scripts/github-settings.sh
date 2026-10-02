@@ -181,6 +181,24 @@ ORG_ACTIONS_WORKFLOW_KEYS=(
     "can_approve_pull_request_reviews"
 )
 
+# Repository Actions permissions (audit_repo_actions + import_repo), the
+# per-repo counterpart of the two lists above, on
+# repos/{owner}/{repo}/actions/permissions[/workflow] (go-kure/.github#158).
+# Opt-in: the policy's `actions` block is optional at both tiers, and a key
+# no tier declares is not managed, so a policy without the block reads and
+# writes neither endpoint. allowed_actions and enabled stay unmanaged here —
+# the permissions PUT requires enabled and would reset allowed_actions, so
+# apply resends both as read live. Mirrored in the policy schema
+# (github_defaults.actions: all three keys required when the block is
+# declared; repo overrides: any subset).
+REPO_ACTIONS_PERMISSIONS_KEYS=(
+    "sha_pinning_required"
+)
+REPO_ACTIONS_WORKFLOW_KEYS=(
+    "default_workflow_permissions"
+    "can_approve_pull_request_reviews"
+)
+
 # Rule-type registry. This is the single source of truth for which ruleset
 # rule types this script understands — build_ruleset_payload (apply),
 # ruleset_diff (audit + drift detection) and build_ruleset_import_jq
@@ -451,7 +469,7 @@ require_org_scope() {
 # refuses a key this script does not read, because the exact lookups would
 # miss it and apply the default (or an incomplete rule) in its place. The
 # schemas' key sets are pinned to SETTING_KEYS, ORG_SETTING_KEYS,
-# ORG_READONLY_KEYS, ORG_ACTIONS_*_KEYS and RULE_TYPE_ORDER by
+# ORG_READONLY_KEYS, ORG_ACTIONS_*_KEYS, REPO_ACTIONS_*_KEYS and RULE_TYPE_ORDER by
 # scripts/test/github-settings-test.sh, so an unmodeled rule type or a key
 # outside the registries is a schema violation. A further "field X is not
 # validated" finding belongs in the schema, not in a new check below.
@@ -1472,6 +1490,126 @@ audit_security_settings() {
     fi
 }
 
+# The keys of one repo Actions endpoint that policy manages for REPO — those
+# whose resolved value (override, else github_defaults) is not null — one per
+# line, in registry order. Empty when the policy declares none of them.
+repo_actions_managed_keys() {
+    local repo="$1"
+    shift
+    local key
+    for key in "$@"; do
+        [ "$(gh_policy_json "$repo" "actions.$key")" != "null" ] && printf '%s\n' "$key"
+    done
+    return 0
+}
+
+# GET one repo Actions endpoint and print its body. Fails, printing nothing,
+# when gh fails (it writes an HTTP error body to stdout, so the output is
+# kept only on success) or when the body is not an object carrying the
+# field that endpoint always returns — a read that cannot be compared is an
+# error, never an empty object that would compare as drift-free or as drift.
+repo_actions_get() {
+    local repo="$1" endpoint="$2" out required
+    case "$endpoint" in
+        permissions) required='(.enabled | type) == "boolean"' ;;
+        *) required='(.default_workflow_permissions | type) == "string"' ;;
+    esac
+    out=$(gh api "repos/$GITHUB_ORG/$repo/actions/$endpoint" 2>/dev/null) || return 1
+    jq -e "type == \"object\" and $required" <<<"$out" >/dev/null 2>&1 || return 1
+    printf '%s' "$out"
+}
+
+# Audit repository Actions permissions (go-kure/.github#158): the per-repo
+# counterpart of audit_org_actions, on repos/{owner}/{repo}/actions/
+# permissions (sha_pinning_required) and .../permissions/workflow
+# (default_workflow_permissions, can_approve_pull_request_reviews). Only the
+# keys policy declares for this repo are read or written; with none, neither
+# endpoint is called and nothing is printed. An endpoint that cannot be read
+# is a failure in both modes, like an unreadable default branch: audit
+# counts it as drift, apply records it, and nothing is written on a guess.
+#
+# Both endpoints are PUT. The permissions PUT requires enabled and resets an
+# omitted allowed_actions, so its body resends both as read live and changes
+# only sha_pinning_required; the workflow PUT resends the live value of a key
+# that did not drift. Each endpoint is written only when one of its keys
+# drifted.
+audit_repo_actions() {
+    local repo="$1"
+    local apply="$2"
+
+    local -a perm_keys workflow_keys
+    mapfile -t perm_keys < <(repo_actions_managed_keys "$repo" "${REPO_ACTIONS_PERMISSIONS_KEYS[@]}")
+    mapfile -t workflow_keys < <(repo_actions_managed_keys "$repo" "${REPO_ACTIONS_WORKFLOW_KEYS[@]}")
+    [ "${#perm_keys[@]}" -eq 0 ] && [ "${#workflow_keys[@]}" -eq 0 ] && return 0
+
+    echo -e "\n${BLUE}=== Actions Permissions: $GITHUB_ORG/$repo ===${NC}"
+
+    local endpoint live key fixes
+    for endpoint in permissions permissions/workflow; do
+        local -a keys
+        if [ "$endpoint" = permissions ]; then
+            keys=("${perm_keys[@]}")
+        else
+            keys=("${workflow_keys[@]}")
+        fi
+        [ "${#keys[@]}" -eq 0 ] && continue
+
+        if ! live=$(repo_actions_get "$repo" "$endpoint"); then
+            SETTINGS_MISSING=$((SETTINGS_MISSING + 1))
+            echo -e "  ${RED}FAILED${NC}: Could not read repos/$GITHUB_ORG/$repo/actions/$endpoint — $(printf 'actions.%s ' "${keys[@]}")not audited"
+            [ "$apply" = "true" ] && record_apply_failure "$repo: actions/$endpoint unreadable, Actions permissions not audited"
+            continue
+        fi
+
+        fixes="{}"
+        for key in "${keys[@]}"; do
+            local expected_json actual_json
+            expected_json=$(gh_policy_json "$repo" "actions.$key")
+            actual_json=$(jq -c --arg k "$key" '.[$k]' <<<"$live")
+
+            if [ "$actual_json" = "$expected_json" ]; then
+                echo -e "  ${GREEN}OK${NC}: actions.$key = $(jq -r '.' <<<"$expected_json")"
+                SETTINGS_OK=$((SETTINGS_OK + 1))
+            else
+                SETTINGS_MISSING=$((SETTINGS_MISSING + 1))
+                fixes=$(jq --arg k "$key" --argjson v "$expected_json" '. + {($k): $v}' <<<"$fixes")
+                if [ "$apply" = "true" ]; then
+                    echo -e "  ${YELLOW}SETTING${NC}: actions.$key to $(jq -r '.' <<<"$expected_json") (was: $(jq -r '.' <<<"$actual_json"))"
+                else
+                    echo -e "  ${RED}WRONG${NC}: actions.$key = $(jq -r '.' <<<"$actual_json") (should be $(jq -r '.' <<<"$expected_json"))"
+                fi
+            fi
+        done
+
+        [ "$apply" = "true" ] && [ "$fixes" != "{}" ] || continue
+
+        local body
+        body=$(repo_actions_put_body "$endpoint" "$live" "$fixes")
+        if ! gh api "repos/$GITHUB_ORG/$repo/actions/$endpoint" --method PUT --input - <<<"$body" --silent; then
+            echo -e "  ${RED}FAILED${NC}: Could not apply actions/$endpoint"
+            record_apply_failure "$repo: apply actions/$endpoint ($(jq -r 'keys | join(", ")' <<<"$fixes"))"
+        fi
+    done
+}
+
+# The PUT body for one repo Actions endpoint: the live fields that endpoint's
+# PUT would otherwise reset, overlaid with FIXES (the drifted keys and their
+# policy values). For permissions that is enabled (required by the PUT) and
+# allowed_actions, which this script does not manage; for the workflow
+# endpoint, both of its keys. A field the live read did not carry is left out
+# rather than sent as null.
+repo_actions_put_body() {
+    local endpoint="$1" live="$2" fixes="$3" keep
+    if [ "$endpoint" = permissions ]; then
+        keep='["enabled", "allowed_actions"]'
+    else
+        keep='["default_workflow_permissions", "can_approve_pull_request_reviews"]'
+    fi
+    jq -c --argjson keep "$keep" --argjson fixes "$fixes" '
+        with_entries(select(.key as $k | $keep | index($k) != null) | select(.value != null)) + $fixes
+    ' <<<"$live"
+}
+
 # Audit organization-level scalar settings (ORG_SETTING_KEYS + ORG_READONLY_KEYS
 # against GET/PATCH /orgs/{org}). Structurally a copy of audit_repo_settings,
 # but reading policy straight from org_policy_json — there's no per-repo
@@ -1895,7 +2033,8 @@ build_ruleset_import_jq() {
 
 # Dump ONLY the parts of a repo's live settings that drift from what policy
 # currently resolves to (via default or per-repo override) — settings/security
-# keys use a JSON-vs-JSON comparison; rulesets already known to (and scoped
+# keys, and the Actions keys policy manages, use a JSON-vs-JSON comparison
+# (an Actions key no tier declares is not read); rulesets already known to (and scoped
 # to this repo by) policy use ruleset_has_drift(); rulesets policy doesn't
 # apply here at all always print in full since there's nothing to diff
 # against. Values that already match policy are omitted entirely — the
@@ -1908,7 +2047,7 @@ build_ruleset_import_jq() {
 import_repo() {
     local repo="$1"
 
-    echo "# ---- drift from policy (settings/security/rulesets): $GITHUB_ORG/$repo ($(date -u +%Y-%m-%dT%H:%M:%SZ)) ----"
+    echo "# ---- drift from policy (settings/security/actions/rulesets): $GITHUB_ORG/$repo ($(date -u +%Y-%m-%dT%H:%M:%SZ)) ----"
 
     local settings
     settings=$(gh api "repos/$GITHUB_ORG/$repo")
@@ -1933,6 +2072,34 @@ import_repo() {
         if [ "$actual" != "$expected" ]; then
             security_json=$(echo "$security_json" | jq --arg k "$key" --arg v "$actual" '. + {($k): $v}')
         fi
+    done
+
+    # Actions permissions: only the keys policy manages for this repo, so a
+    # policy without an actions block reads neither endpoint. An endpoint
+    # that cannot be read is warned about and keeps the "nothing to import"
+    # line from printing — an unknown is not a match.
+    local actions_json="{}" actions_fetch_ok=true endpoint live
+    for endpoint in permissions permissions/workflow; do
+        local -a keys
+        if [ "$endpoint" = permissions ]; then
+            mapfile -t keys < <(repo_actions_managed_keys "$repo" "${REPO_ACTIONS_PERMISSIONS_KEYS[@]}")
+        else
+            mapfile -t keys < <(repo_actions_managed_keys "$repo" "${REPO_ACTIONS_WORKFLOW_KEYS[@]}")
+        fi
+        [ "${#keys[@]}" -eq 0 ] && continue
+        if ! live=$(repo_actions_get "$repo" "$endpoint"); then
+            actions_fetch_ok=false
+            echo "# WARNING: could not read actions/$endpoint for $repo — $(printf 'actions.%s ' "${keys[@]}")drift skipped this run" >&2
+            continue
+        fi
+        for key in "${keys[@]}"; do
+            local expected_json actual_json
+            expected_json=$(gh_policy_json "$repo" "actions.$key")
+            actual_json=$(jq -c --arg k "$key" '.[$k]' <<<"$live")
+            if [ "$actual_json" != "$expected_json" ]; then
+                actions_json=$(jq --arg k "$key" --argjson v "$actual_json" '. + {($k): $v}' <<<"$actions_json")
+            fi
+        done
     done
 
     local -a all_names applicable_names
@@ -2002,8 +2169,8 @@ import_repo() {
         echo "# WARNING: could not fetch live rulesets for $repo — ruleset drift and missing-ruleset detection skipped this run" >&2
     fi
 
-    if [ "$rulesets_fetch_ok" = "true" ] && [ "$settings_json" = "{}" ] && [ "$security_json" = "{}" ] && [ "$rulesets_json" = "{}" ] && [ "$missing_rulesets_json" = "[]" ]; then
-        echo "# $repo: settings/security/rulesets match policy — nothing to import"
+    if [ "$rulesets_fetch_ok" = "true" ] && [ "$actions_fetch_ok" = "true" ] && [ "$settings_json" = "{}" ] && [ "$security_json" = "{}" ] && [ "$actions_json" = "{}" ] && [ "$rulesets_json" = "{}" ] && [ "$missing_rulesets_json" = "[]" ]; then
+        echo "# $repo: settings/security/actions/rulesets match policy — nothing to import"
         echo "# (labels are governed by standards/labels.json and are not importable — run without --import to audit them)"
         echo ""
         return 0
@@ -2011,6 +2178,7 @@ import_repo() {
 
     local body="$settings_json"
     [ "$security_json" != "{}" ] && body=$(echo "$body" | jq --argjson s "$security_json" '. + {security: $s}')
+    [ "$actions_json" != "{}" ] && body=$(jq --argjson a "$actions_json" '. + {actions: $a}' <<<"$body")
     [ "$rulesets_json" != "{}" ] && body=$(echo "$body" | jq --argjson r "$rulesets_json" '. + {rulesets: $r}')
 
     jq -n --arg repo "$repo" --argjson body "$body" '{($repo): $body}' | yq -p=json -o=yaml -
@@ -2107,6 +2275,7 @@ audit_repo() {
     audit_labels "$repo" "$apply"
     audit_repo_settings "$repo" "$apply"
     audit_security_settings "$repo" "$apply"
+    audit_repo_actions "$repo" "$apply"
     audit_rulesets "$repo" "$apply"
 
     # JSON output for this repo
