@@ -1763,6 +1763,10 @@ assert_eq "#279: and leaves that ruleset out of the YAML" "null" \
     "$(grep -v '^#' <<<"$imp_out" | yq -oj -I0 '.kure.rulesets["main-protection"]')"
 assert_eq "#279: and exits 1" "1" "$imp_rc"
 assert_eq "#279: and does not report nothing to import" "0" "$(grep -c 'nothing to import' <<<"$imp_out")"
+# The drift check must not close its pipe early: where SIGPIPE is ignored
+# (CI runners, mise) the diff's later writes would print "Broken pipe".
+imp_out="$( (trap '' PIPE; ACT_RULESETS='[{"id": 7}]' ACT_RULESET="$imp_rs_live" run_import_actions kure "$POLICY_JSON") )"
+assert_eq "#279: importing a drifted ruleset with SIGPIPE ignored prints no Broken pipe" "0" "$(grep -c 'Broken pipe' <<<"$imp_out")"
 imp_rs_full=$(jq -c '.rules = [{type: "pull_request", parameters: {required_approving_review_count: 1, dismiss_stale_reviews_on_push: false, require_code_owner_review: false, require_last_push_approval: false, required_review_thread_resolution: false}}, {type: "required_status_checks", parameters: {required_status_checks: [{context: "lint"}], strict_required_status_checks_policy: true}}]' <<<"$imp_rs_live")
 imp_out="$(ACT_RULESETS='[{"id": 7}]' ACT_RULESET="$imp_rs_full" run_import_actions kure "$POLICY_JSON")"
 imp_rc=$?
