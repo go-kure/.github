@@ -1751,17 +1751,36 @@ assert_eq "#158: --import writes the drifted live values into an actions block" 
 imp_out="$(ACT_PERMS="$ACT_LIVE_PERMS" ACT_WF="$ACT_LIVE_WF" run_import_actions kure "$POLICY_JSON")"
 assert_eq "#158: --import without an actions block reads no Actions endpoint" "0" "$(grep -c 'actions/permissions' "$ACT_LOG")"
 assert_eq "#158: and prints no actions block" "null" "$(grep -v '^#' <<<"$imp_out" | yq -oj -I0 '.kure.actions')"
-# #279: an override cannot remove a parameterized rule github_defaults
-# declares, so a live ruleset lacking one is flagged, not offered as paste-ready.
+# #279: an override cannot remove a parameterized rule an applicable
+# github_defaults ruleset declares, so a live ruleset lacking one is left out
+# of the YAML and the import exits 1, instead of being offered as paste-ready.
 imp_rs_live='{"id": 7, "name": "main-protection", "target": "branch", "enforcement": "active", "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}}, "bypass_actors": [], "rules": []}'
 imp_out="$(ACT_RULESETS='[{"id": 7}]' ACT_RULESET="$imp_rs_live" run_import_actions kure "$POLICY_JSON")"
+imp_rc=$?
 assert_contains "#279: --import warns that a rule-less ruleset cannot drop the default pull_request and required_status_checks rules" "$imp_out" \
-    "# WARNING: ruleset 'main-protection' has no live [\"pull_request\",\"required_status_checks\"] rule(s) that github_defaults declares"
-imp_rs_live=$(jq -c '.rules = [{type: "pull_request", parameters: {required_approving_review_count: 1, dismiss_stale_reviews_on_push: false, require_code_owner_review: false, require_last_push_approval: false, required_review_thread_resolution: false}}, {type: "required_status_checks", parameters: {required_status_checks: [{context: "lint"}], strict_required_status_checks_policy: true}}]' <<<"$imp_rs_live")
-imp_out="$(ACT_RULESETS='[{"id": 7}]' ACT_RULESET="$imp_rs_live" run_import_actions kure "$POLICY_JSON")"
+    "# WARNING: ruleset 'main-protection' omitted from import: it has no live [\"pull_request\",\"required_status_checks\"] rule(s) that github_defaults declares"
+assert_eq "#279: and leaves that ruleset out of the YAML" "null" \
+    "$(grep -v '^#' <<<"$imp_out" | yq -oj -I0 '.kure.rulesets["main-protection"]')"
+assert_eq "#279: and exits 1" "1" "$imp_rc"
+assert_eq "#279: and does not report nothing to import" "0" "$(grep -c 'nothing to import' <<<"$imp_out")"
+imp_rs_full=$(jq -c '.rules = [{type: "pull_request", parameters: {required_approving_review_count: 1, dismiss_stale_reviews_on_push: false, require_code_owner_review: false, require_last_push_approval: false, required_review_thread_resolution: false}}, {type: "required_status_checks", parameters: {required_status_checks: [{context: "lint"}], strict_required_status_checks_policy: true}}]' <<<"$imp_rs_live")
+imp_out="$(ACT_RULESETS='[{"id": 7}]' ACT_RULESET="$imp_rs_full" run_import_actions kure "$POLICY_JSON")"
+imp_rc=$?
 assert_eq "#279: control: a drifted ruleset that keeps every default parameterized rule draws no such warning" "0" \
     "$(grep -c 'override cannot remove' <<<"$imp_out")"
 assert_contains "#279: control: and is imported" "$imp_out" "required_approving_review_count: 1"
+assert_eq "#279: control: and exits 0" "0" "$imp_rc"
+# A defaults ruleset whose repos: scope excludes the repo is not applied
+# there, so a repo-only rule-less copy is expressible and imported as is.
+imp_scoped=$(jq '.github_defaults.rulesets["release-protection"].repos = ["launcher"]' <<<"$POLICY_JSON")
+imp_rs_rel='{"id": 8, "name": "release-protection", "target": "branch", "enforcement": "active", "conditions": {"ref_name": {"include": ["refs/heads/release/*"], "exclude": []}}, "bypass_actors": [], "rules": []}'
+imp_out="$(ACT_RULESETS='[{"id": 8}]' ACT_RULESET="$imp_rs_rel" run_import_actions kure "$imp_scoped")"
+imp_rc=$?
+assert_eq "#279: a rule-less ruleset on a repo outside the defaults' repos: scope draws no such warning" "0" \
+    "$(grep -c 'override cannot remove' <<<"$imp_out")"
+assert_eq "#279: and is imported" "active" \
+    "$(grep -v '^#' <<<"$imp_out" | yq -r '.kure.rulesets["release-protection"].enforcement')"
+assert_eq "#279: and exits 0" "0" "$imp_rc"
 imp_out="$(ACT_PERMS=FAIL ACT_WF="$ACT_LIVE_WF" run_import_actions kure "$act_policy")"
 assert_contains "#158: --import warns on an unreadable endpoint" "$imp_out" "# WARNING: could not read actions/permissions for kure — actions.sha_pinning_required drift skipped this run"
 assert_eq "#158: and does not print sha_pinning_required as captured" "null" \
@@ -1796,6 +1815,26 @@ assert_eq "#158: control: --import with every section readable and matching says
     "$(ACT_PERMS='{"enabled": true, "sha_pinning_required": true}' imp_match | grep -c 'nothing to import')"
 assert_eq "#158: --import with only a failed actions read never says nothing to import" "0" \
     "$(ACT_PERMS=FAIL imp_match | grep -c 'nothing to import')"
+# #279: with no other drift, a ruleset left out because an override cannot
+# express it must not read as "nothing to import" either.
+imp_only_ruleset() {
+    (
+        act_gh
+        # shellcheck disable=SC2317,SC2329 # replaces the sourced helpers for this one call
+        gh_policy_json() { echo null; }
+        # shellcheck disable=SC2317,SC2329
+        gh_policy_value() { echo null; }
+        # shellcheck disable=SC2317,SC2329
+        ruleset_names() { echo main-protection; }
+        import_repo kure 2>&1
+    )
+}
+imp_out="$(ACT_RULESETS='[{"id": 7}]' ACT_RULESET="$imp_rs_live" imp_only_ruleset)"
+assert_contains "#279: an omitted ruleset as the only drift is still warned about" "$imp_out" "override cannot remove"
+assert_eq "#279: and never says nothing to import" "0" "$(grep -c 'nothing to import' <<<"$imp_out")"
+imp_out="$(ACT_RULESETS='[{"id": 7}]' ACT_RULESET="$imp_rs_full" imp_only_ruleset)"
+assert_eq "#279: control: a drifted expressible ruleset as the only drift is imported" "1" \
+    "$(grep -c 'required_approving_review_count: 1' <<<"$imp_out")"
 
 # The exit status carries the same verdict: an unread section is an
 # incomplete import (1), whether or not anything drifted; a complete one is 0.

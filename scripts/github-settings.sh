@@ -2136,7 +2136,7 @@ import_repo() {
         rulesets_fetch_ok=false
     fi
 
-    local rulesets_json="{}"
+    local rulesets_json="{}" rulesets_inexpressible=false
     local -a existing_ruleset_names=()
     local ruleset_id
     for ruleset_id in $(echo "$existing_rulesets" | jq -r '.[].id'); do
@@ -2167,15 +2167,21 @@ import_repo() {
         fi
         clean=$(echo "$transformed" | jq 'del(.unmapped_rule_types)')
         # A github_repos override can set a flag rule false but cannot remove a
-        # parameterized rule github_defaults declares: ruleset_rules_json
-        # deep-merges the two, so pasting this import would restore it.
-        local unremovable
-        unremovable=$(jq -c --arg n "$ruleset_name" --argjson live "$clean" '
-            [(.github_defaults.rulesets[$n].rules // {}) | to_entries[]
-             | select((.value | type) == "object") | .key
-             | select(. as $t | $live.rules | has($t) | not)]' <<<"$POLICY_JSON")
-        if [ "$unremovable" != "[]" ]; then
-            echo "# WARNING: ruleset '$ruleset_name' has no live $unremovable rule(s) that github_defaults declares; a github_repos override cannot remove them, so pasting this import would restore them" >&2
+        # parameterized rule an applicable github_defaults ruleset declares:
+        # ruleset_rules_json deep-merges the two, so a pasted import would
+        # restore it. Such a ruleset is left out of the YAML and the import
+        # is marked incomplete.
+        if [ "$is_applicable" = "true" ]; then
+            local unremovable
+            unremovable=$(jq -c --arg n "$ruleset_name" --argjson live "$clean" '
+                [(.github_defaults.rulesets[$n].rules // {}) | to_entries[]
+                 | select((.value | type) == "object") | .key
+                 | select(. as $t | $live.rules | has($t) | not)]' <<<"$POLICY_JSON")
+            if [ "$unremovable" != "[]" ]; then
+                echo "# WARNING: ruleset '$ruleset_name' omitted from import: it has no live $unremovable rule(s) that github_defaults declares, and a github_repos override cannot remove them (change github_defaults instead)" >&2
+                rulesets_inexpressible=true
+                continue
+            fi
         fi
         rulesets_json=$(echo "$rulesets_json" | jq --arg n "$ruleset_name" --argjson v "$clean" '. + {($n): $v}')
     done
@@ -2199,7 +2205,7 @@ import_repo() {
         echo "# WARNING: could not fetch live rulesets for $repo — the ruleset import is incomplete and missing-ruleset detection was skipped this run" >&2
     fi
 
-    if [ "$rulesets_fetch_ok" = "true" ] && [ "$actions_fetch_ok" = "true" ] && [ "$settings_json" = "{}" ] && [ "$security_json" = "{}" ] && [ "$actions_json" = "{}" ] && [ "$rulesets_json" = "{}" ] && [ "$missing_rulesets_json" = "[]" ]; then
+    if [ "$rulesets_fetch_ok" = "true" ] && [ "$actions_fetch_ok" = "true" ] && [ "$rulesets_inexpressible" = "false" ] && [ "$settings_json" = "{}" ] && [ "$security_json" = "{}" ] && [ "$actions_json" = "{}" ] && [ "$rulesets_json" = "{}" ] && [ "$missing_rulesets_json" = "[]" ]; then
         echo "# $repo: settings/security/actions/rulesets match policy — nothing to import"
         echo "# (labels are governed by standards/labels.json and are not importable — run without --import to audit them)"
         echo ""
@@ -2214,10 +2220,11 @@ import_repo() {
     jq -n --arg repo "$repo" --argjson body "$body" '{($repo): $body}' | yq -p=json -o=yaml -
     echo ""
 
-    # An unread section makes the printed drift incomplete: say so in the
-    # exit status too, so a caller checking only stdout and $? cannot take a
+    # An unread section, or a ruleset left out because an override cannot
+    # express it, makes the printed drift incomplete: say so in the exit
+    # status too, so a caller checking only stdout and $? cannot take a
     # partial import for a complete one.
-    if [ "$rulesets_fetch_ok" != "true" ] || [ "$actions_fetch_ok" != "true" ]; then
+    if [ "$rulesets_fetch_ok" != "true" ] || [ "$actions_fetch_ok" != "true" ] || [ "$rulesets_inexpressible" = "true" ]; then
         return 1
     fi
     return 0
