@@ -13,8 +13,9 @@
 # time loop 2 reads it.
 #
 # This file also owns the PR-wide gating-cap budget derived from the decision
-# table above (prt_thread_stays_gating / prt_reserved_count /
-# prt_gating_eligible / prt_apply_cap, below). Those four use jq — the rest
+# table above (prt_thread_stays_gating / prt_reserved_ranks /
+# prt_reserved_count / prt_severity_rank / prt_gating_eligible /
+# prt_apply_cap, below). Those use jq — the rest
 # of this file deliberately doesn't, since prt_decide_finding/prt_decide_absent
 # are plain string-comparison decision tables with no JSON to walk.
 
@@ -401,14 +402,25 @@ prt_decide_absent() {
 #     that finding is a rank candidate below while an open row still reserves
 # Only genuinely NEW findings (no OWNED match at all) ever need a rank slot —
 # they're the only candidates row 4 can CREATE — so prt_gating_eligible is
-# restricted to exactly that set, and remaining = max(0, CAP -
-# reserved_count) bounds how many of them can be within_cap. Re-derived by
-# hand: 12 findings, cap 5, nothing fixed between reruns -> run 1 creates 5
-# (reserved=0, 5 of 12 new candidates ranked in); run 2, same or reordered
-# severities -> reserved=5 (the 5 open threads, regardless of rank),
-# remaining=0, none of the other 7 compete -> still 5 gating, unconditionally.
-# A persisted open collision thread + 5 new eligible findings, cap 5 ->
-# reserved=1, remaining=4 -> 1+4=5, not 6. ---
+# restricted to exactly that set. Every reserved thread keeps gating whatever
+# its rank; what its rank decides (go-kure/.github#268) is only whether it
+# holds a slot against a given new candidate: a candidate is within_cap when
+# it ranks among the first CAP of the reserved threads plus the candidates,
+# ties going to the reserved threads (prt_apply_cap). Before #268 every
+# reserved thread held its slot against every candidate (remaining = max(0,
+# CAP - reserved)), so 5 open Medium threads kept a new Critical out of a
+# thread, and resolving them without a push left nothing gating it.
+# Re-derived by hand: 12 findings, cap 5, nothing fixed between reruns -> run
+# 1 creates the 5 most severe (reserved none); run 2, same severities ->
+# reserved = those 5, none of the other 7 outranks them -> still 5 gating.
+# If run 2 re-rates one of the 7 above the lowest open thread, it gets a
+# thread too: per run at most CAP new threads, but the standing total can grow
+# across reruns that re-rate findings (the accepted cost of #268, decided as
+# its option A). 5 open Medium + 1 new Critical, cap 5 -> the Critical ranks
+# first -> within_cap -> 6 gating. A persisted open collision thread (its
+# finding absent, its body Medium) + new High, High, Medium, Medium, Low ->
+# the Highs rank 1st and 2nd, each Medium is preceded by that thread too ->
+# 4th and 5th, the Low 6th -> 4 within_cap, 5 gating, not 6. ---
 
 # prt_thread_stays_gating ACTION THREAD_RESOLVED -> true/false
 # ACTION is a prt_decide_finding outcome for an OWNED (thread_exists=true)
@@ -439,20 +451,48 @@ prt_thread_stays_gating() {
   esac
 }
 
+# prt_severity_rank SEVERITY SEV_RANK_JSON -> integer
+# The rank prt_gating_eligible sorts by: SEV_RANK's value for the lowercased
+# severity, 99 for a severity it does not list. An empty SEVERITY (no
+# severity known for an open thread) ranks as the lowest severity SEV_RANK
+# lists, not 99: it then never yields its slot to a new finding of that
+# lowest severity, only to a higher one (go-kure/.github#268).
+prt_severity_rank() {
+  jq -n --arg s "$1" --argjson rank "$2" '
+    if $s == "" then ([$rank[]] | max) else ($rank[$s | ascii_downcase] // 99) end
+  ' 2>/dev/null
+}
+
 # prt_reserved_count OWNED_JSON FINDINGS_JSON -> integer
-# Walks OWNED (bash loop; jq per row). See the rationale block above for the
-# per-branch mapping to prt_decide_finding's rows.
+# How many OWNED rows stay gating after this run: the length of
+# prt_reserved_ranks.
 prt_reserved_count() {
-  local owned="$1" findings="$2"
-  local count=0 row rows
+  local ranks
+  ranks="$(prt_reserved_ranks "$1" "$2")" || return 1
+  jq -r 'length' <<< "$ranks" 2>/dev/null
+}
+
+# prt_reserved_ranks OWNED_JSON FINDINGS_JSON [SEV_RANK_JSON] -> JSON array
+# One severity rank (prt_severity_rank) per OWNED row that stays gating after
+# this run. Walks OWNED (bash loop; jq per row). See the rationale block above
+# for the per-branch mapping to prt_decide_finding's rows. go-kure/.github#268:
+# a matched row ranks by this run's finding's severity, an absent owned row by
+# the severity its thread body states (the inventory's .severity), and a
+# foreign row by no severity at all: its body is untrusted, and a severity
+# read from it could only ever keep a new finding out of a thread.
+prt_reserved_ranks() {
+  local owned="$1" findings="$2" sev_rank="${3:-}"
+  [ -z "$sev_rank" ] && sev_rank='{"critical":0,"high":1,"medium":2}'
+  local row rows ranks='[]'
 
   jq -e 'type == "array"' <<< "$owned" >/dev/null 2>&1 || return 1
   jq -e 'type == "array"' <<< "$findings" >/dev/null 2>&1 || return 1
+  jq -e 'type == "object" and length > 0' <<< "$sev_rank" >/dev/null 2>&1 || return 1
   rows="$(jq -c '.[]' <<< "$owned" 2>/dev/null)" || return 1
 
   while IFS= read -r row; do
     [ -z "$row" ] && continue
-    local fp match foreign gating=false
+    local fp match foreign gating=false severity=""
     fp="$(jq -er '.fp | select(type == "string")' <<< "$row" 2>/dev/null)" || return 1
     match="$(jq -c --arg fp "$fp" '[.[] | select(.fp == $fp)] | .[0] // null' <<< "$findings" 2>/dev/null)" || return 1
     foreign="$(jq -r '.foreign // false' <<< "$row" 2>/dev/null)" || return 1
@@ -471,6 +511,7 @@ prt_reserved_count() {
       local resolved
       resolved="$(jq -r '.resolved' <<< "$row" 2>/dev/null)" || return 1
       [ "$resolved" != true ] && gating=true
+      severity="$(jq -r '.severity | if type == "string" then . else "" end' <<< "$row" 2>/dev/null)" || return 1
     else
       local o_collision f_collision eff_collision verdict resolved rbb hhr action
       o_collision="$(jq -r '.collision' <<< "$row" 2>/dev/null)" || return 1
@@ -525,12 +566,18 @@ prt_reserved_count() {
       if [ "$source" = lift ] && [ "$resolved" != true ]; then
         gating=true
       fi
+      severity="$(jq -r '.severity | if type == "string" then . else "" end' <<< "$match" 2>/dev/null)" || return 1
     fi
 
-    [ "$gating" = true ] && count=$((count + 1))
+    if [ "$gating" = true ]; then
+      local rank
+      rank="$(prt_severity_rank "$severity" "$sev_rank")" || return 1
+      [[ "$rank" =~ ^[0-9]+$ ]] || return 1
+      ranks="$(jq -c --argjson r "$rank" '. + [$r]' <<< "$ranks" 2>/dev/null)" || return 1
+    fi
   done <<< "$rows"
 
-  echo "$count"
+  echo "$ranks"
 }
 
 # prt_gating_eligible FINDINGS_JSON OWNED_JSON SEV_RANK_JSON -> sorted JSON array
@@ -570,11 +617,32 @@ prt_apply_cap() {
   local cap="$1" owned="$2" findings="$3" sev_rank="${4:-}"
   [ -z "$sev_rank" ] && sev_rank='{"critical":0,"high":1,"medium":2}'
 
-  local reserved remaining eligible capped_fps
-  reserved="$(prt_reserved_count "$owned" "$findings")" || return 1
-  remaining="$(jq -n --argjson n "$cap" --argjson r "$reserved" '[($n - $r), 0] | max' 2>/dev/null)" || return 1
+  local reserved_ranks eligible capped_fps
+  reserved_ranks="$(prt_reserved_ranks "$owned" "$findings" "$sev_rank")" || return 1
   eligible="$(prt_gating_eligible "$findings" "$owned" "$sev_rank")" || return 1
-  capped_fps="$(jq -c --argjson n "$remaining" '[limit($n; .[])] | map(.fp)' <<< "$eligible" 2>/dev/null)" || return 1
+  # go-kure/.github#268: a new finding is within the cap when it ranks among
+  # the first CAP of every gating finding, the threads staying open plus the
+  # new candidates, with ties going to the open threads. The i-th candidate
+  # (eligible is sorted by rank) is preceded by its i earlier candidates and by
+  # every open thread ranked at or above it. That count only grows with i, so
+  # the candidates within the cap are a prefix, and there are at most CAP of
+  # them: an open thread never yields its slot (it stays gating), it only stops
+  # holding it against a strictly more severe new finding. When every open
+  # thread ranks at or above every candidate this is the old CAP - reserved.
+  capped_fps="$(printf '%s\n%s\n' "$eligible" "$reserved_ranks" |
+    jq -ces --argjson n "$cap" --argjson rank "$sev_rank" '
+      if length == 2 and all(.[]; type == "array") then
+        .[0] as $eligible
+        | .[1] as $reserved
+        | [ $eligible
+            | to_entries[]
+            | ($rank[.value.severity | ascii_downcase] // 99) as $k
+            | select(.key + ([$reserved[] | select(. <= $k)] | length) < $n)
+            | .value.fp ]
+      else
+        error("eligible and reserved ranks must be arrays")
+      end
+    ' 2>/dev/null)" || return 1
 
   printf '%s\n%s\n' "$findings" "$capped_fps" |
     jq -ces '

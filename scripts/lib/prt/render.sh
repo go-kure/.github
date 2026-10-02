@@ -47,6 +47,24 @@ ${issue}
 EOF
 }
 
+# prt_finding_body_severity BODY — the severity prt_render_finding_body wrote
+# on the line after the marker (the text before the first " · "), or nothing
+# when that line is not in its "**<severity> · <category>**" shape. The cap
+# walk ranks an open thread whose finding is absent this run by it
+# (go-kure/.github#268); an empty result ranks it as the lowest gating
+# severity.
+prt_finding_body_severity() {
+  local line rest
+  line="$(sed -n '2p' <<< "$1")"
+  line="${line%$'\r'}"
+  case "$line" in
+    '**'*' · '*'**') ;;
+    *) return 0 ;;
+  esac
+  rest="${line#\*\*}"
+  printf '%s' "${rest%% · *}"
+}
+
 # prt_render_reply_false_positive REASONING
 prt_render_reply_false_positive() {
   local reasoning

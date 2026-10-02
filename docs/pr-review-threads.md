@@ -225,14 +225,20 @@ overrides the workflow's own default) is one of three values. An unrecognized va
   with its line and the first line of its issue and of the assessor's reasoning, so the call can
   be checked (go-kure/.github#183).
   Threads whose decision outcome remains gating — or, for a thread absent from this run's
-  findings, that simply stays open — reserve first (regardless of severity rank) before new
-  findings compete for what remains; an open thread newly assessed `FALSE_POSITIVE` frees its slot
-  by being auto-resolved, *unless* a human has already replied on it (go-kure/.github#177), in
-  which case it stays open and keeps reserving. The cap only ever gates *new*
-  candidates: it never forces an already-gating thread closed, so if more threads are already
-  reserved than the cap allows (all `remaining` clamps to 0, never negative) the total gating
-  count for that run can still exceed `PRT_MAX_FINDINGS_TOTAL` — the cap bounds growth, not the
-  standing total.
+  findings, that simply stays open — are reserved: they stay gating whatever the cap says. An
+  open thread newly assessed `FALSE_POSITIVE` frees its place by being auto-resolved, *unless* a
+  human has already replied on it (go-kure/.github#177), in which case it stays open and stays
+  reserved. A new finding gets a thread when it ranks within the cap among the reserved threads
+  and the new candidates together, by severity, ties going to the reserved thread
+  (go-kure/.github#268). A reserved thread ranks by this run's matching finding, or, when absent
+  from this run, by the severity its own body states; a thread with no readable severity ranks as
+  the lowest gating severity, and a thread another login opened never outranks a new finding (its
+  body is not trusted). So five open Medium threads no longer keep a new Critical out: it gets a
+  thread, and six gate. A run adds at most `PRT_MAX_FINDINGS_TOTAL` new threads, and only as many
+  as the reserved threads ranked at or above them leave room for; the cap never forces an
+  already-gating thread closed. The standing total can therefore exceed the cap, and can grow
+  across reruns when the model re-rates an overflow finding above an open thread — the cap bounds
+  each run's growth, not the standing total.
 
   An empty net diff against base (e.g. a file added then deleted again within the same PR) is
   reviewed in `enforce` as zero findings rather than short-circuiting ahead of thread listing and
