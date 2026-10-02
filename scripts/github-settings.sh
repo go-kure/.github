@@ -2049,8 +2049,14 @@ import_repo() {
 
     echo "# ---- drift from policy (settings/security/actions/rulesets): $GITHUB_ORG/$repo ($(date -u +%Y-%m-%dT%H:%M:%SZ)) ----"
 
+    # Every read below is checked explicitly: main calls this inside `||` to
+    # collect its status, which switches errexit off for the whole function.
     local settings
-    settings=$(gh api "repos/$GITHUB_ORG/$repo")
+    if ! settings=$(gh api "repos/$GITHUB_ORG/$repo"); then
+        echo "# WARNING: could not read repository settings for $repo — nothing imported for it this run" >&2
+        echo ""
+        return 1
+    fi
 
     local settings_json="{}"
     local key
@@ -2127,7 +2133,12 @@ import_repo() {
     local ruleset_id
     for ruleset_id in $(echo "$existing_rulesets" | jq -r '.[].id'); do
         local full_ruleset ruleset_name
-        full_ruleset=$(gh api "repos/$GITHUB_ORG/$repo/rulesets/$ruleset_id" 2>/dev/null)
+        # An unreadable ruleset marks the rulesets read incomplete, which also
+        # skips the missing-ruleset check below (its name is unknown).
+        if ! full_ruleset=$(gh api "repos/$GITHUB_ORG/$repo/rulesets/$ruleset_id" 2>/dev/null); then
+            rulesets_fetch_ok=false
+            continue
+        fi
         ruleset_name=$(echo "$full_ruleset" | jq -r '.name')
         existing_ruleset_names+=("$ruleset_name")
 
@@ -2166,7 +2177,7 @@ import_repo() {
             echo "# WARNING: policy ruleset(s) expected on $repo but not found live (deleted?): $(jq -r 'join(", ")' <<<"$missing_rulesets_json")"
         fi
     else
-        echo "# WARNING: could not fetch live rulesets for $repo — ruleset drift and missing-ruleset detection skipped this run" >&2
+        echo "# WARNING: could not fetch live rulesets for $repo — the ruleset import is incomplete and missing-ruleset detection was skipped this run" >&2
     fi
 
     if [ "$rulesets_fetch_ok" = "true" ] && [ "$actions_fetch_ok" = "true" ] && [ "$settings_json" = "{}" ] && [ "$security_json" = "{}" ] && [ "$actions_json" = "{}" ] && [ "$rulesets_json" = "{}" ] && [ "$missing_rulesets_json" = "[]" ]; then

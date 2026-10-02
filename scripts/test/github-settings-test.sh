@@ -1576,6 +1576,8 @@ act_gh() {
             *"/actions/permissions/workflow "*) body="$ACT_WF" ;;
             *"/actions/permissions "*) body="$ACT_PERMS" ;;
             *"/rulesets?includes_parents=false "*) body="${ACT_RULESETS:-[]}" ;;
+            *"/rulesets/"*) body="${ACT_RULESET:-"{}"}" ;;
+            *" repos/$GITHUB_ORG/kure "*) body="${ACT_SETTINGS:-"{}"}" ;;
             *) body='{}' ;;
         esac
         if [ "$body" = FAIL ]; then
@@ -1751,6 +1753,31 @@ assert_eq "#158: --import with a failed actions read and drift elsewhere exits 1
     "$(ACT_PERMS=FAIL ACT_WF="$ACT_LIVE_WF" import_rc run_import_actions kure "$act_policy")"
 assert_eq "#158: --import with a failed rulesets read exits 1" "1" \
     "$(ACT_PERMS='{"enabled": true, "sha_pinning_required": true}' ACT_RULESETS=FAIL import_rc imp_match)"
+assert_eq "#158: --import with one unreadable ruleset exits 1" "1" \
+    "$(ACT_PERMS='{"enabled": true, "sha_pinning_required": true}' ACT_RULESETS='[{"id": 7}]' ACT_RULESET=FAIL import_rc imp_match)"
+assert_eq "#158: --import with unreadable repository settings exits 1" "1" \
+    "$(ACT_PERMS='{"enabled": true, "sha_pinning_required": true}' ACT_SETTINGS=FAIL import_rc imp_match)"
+# The status is collected through `||` in main, where errexit is off: run
+# both paths through main itself, not just import_repo.
+main_import_rc() {
+    (
+        act_gh
+        # shellcheck disable=SC2317,SC2329 # replaces the sourced helpers for this one call
+        check_requirements() { :; }
+        # shellcheck disable=SC2317,SC2329
+        gh_policy_json() { echo null; }
+        # shellcheck disable=SC2317,SC2329
+        gh_policy_value() { echo null; }
+        # shellcheck disable=SC2317,SC2329
+        ruleset_names() { :; }
+        GITHUB_REPOS="kure"
+        import_rc main "$@"
+    )
+}
+assert_eq "#158: control: main --import on a readable repo exits 0" "0" "$(main_import_rc --import kure)"
+assert_eq "#158: main --import with unreadable settings exits 1" "1" "$(ACT_SETTINGS=FAIL main_import_rc --import kure)"
+assert_eq "#158: main --import --all with one unreadable ruleset exits 1" "1" \
+    "$(ACT_RULESETS='[{"id": 7}]' ACT_RULESET=FAIL main_import_rc --import --all)"
 
 org_out="$( (fail_writes_gh; APPLY_FAILURES=(); audit_org_settings true >/dev/null 2>&1; audit_org_actions true >/dev/null 2>&1; apply_failures_of) )"
 assert_contains "a failed organization settings PATCH is recorded" "$org_out" "org go-kure: apply organization settings ("
