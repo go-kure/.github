@@ -2158,6 +2158,16 @@ import_repo() {
             [ "$n" = "$ruleset_name" ] && is_applicable=true && break
         done
 
+        # github_defaults declares this ruleset but its repos: scope leaves
+        # this repo out: ruleset_applies then ignores any github_repos entry
+        # of that name, so no paste can manage it here. Left out of the YAML
+        # and the import is marked incomplete.
+        if [ "$is_applicable" = "false" ] && jq -e --arg n "$ruleset_name" '.github_defaults.rulesets[$n] != null' <<<"$POLICY_JSON" >/dev/null; then
+            echo "# WARNING: ruleset '$ruleset_name' omitted from import: github_defaults declares it with a repos: scope that excludes $repo, and a github_repos entry of that name is ignored (add $repo to that scope instead)" >&2
+            rulesets_inexpressible=true
+            continue
+        fi
+
         if [ "$is_applicable" = "true" ] && ! ruleset_has_drift "$repo" "$ruleset_name" "$full_ruleset"; then
             continue # matches policy exactly — nothing to show
         fi
@@ -2170,21 +2180,19 @@ import_repo() {
         fi
         clean=$(echo "$transformed" | jq 'del(.unmapped_rule_types)')
         # A github_repos override can set a flag rule false but cannot remove a
-        # parameterized rule an applicable github_defaults ruleset declares:
-        # ruleset_rules_json deep-merges the two, so a pasted import would
-        # restore it. Such a ruleset is left out of the YAML and the import
-        # is marked incomplete.
-        if [ "$is_applicable" = "true" ]; then
-            local unremovable
-            unremovable=$(jq -c --arg n "$ruleset_name" --argjson live "$clean" '
-                [(.github_defaults.rulesets[$n].rules // {}) | to_entries[]
-                 | select((.value | type) == "object") | .key
-                 | select(. as $t | $live.rules | has($t) | not)]' <<<"$POLICY_JSON")
-            if [ "$unremovable" != "[]" ]; then
-                echo "# WARNING: ruleset '$ruleset_name' omitted from import: it has no live $unremovable rule(s) that github_defaults declares, and a github_repos override cannot remove them (change github_defaults instead)" >&2
-                rulesets_inexpressible=true
-                continue
-            fi
+        # parameterized rule github_defaults declares: ruleset_rules_json
+        # deep-merges the two, so a pasted import would restore it. Such a
+        # ruleset is left out of the YAML and the import is marked incomplete.
+        # (A ruleset reaching here either applies or has no defaults entry.)
+        local unremovable
+        unremovable=$(jq -c --arg n "$ruleset_name" --argjson live "$clean" '
+            [(.github_defaults.rulesets[$n].rules // {}) | to_entries[]
+             | select((.value | type) == "object") | .key
+             | select(. as $t | $live.rules | has($t) | not)]' <<<"$POLICY_JSON")
+        if [ "$unremovable" != "[]" ]; then
+            echo "# WARNING: ruleset '$ruleset_name' omitted from import: it has no live $unremovable rule(s) that github_defaults declares, and a github_repos override cannot remove them (change github_defaults instead)" >&2
+            rulesets_inexpressible=true
+            continue
         fi
         rulesets_json=$(echo "$rulesets_json" | jq --arg n "$ruleset_name" --argjson v "$clean" '. + {($n): $v}')
     done
