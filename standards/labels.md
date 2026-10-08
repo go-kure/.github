@@ -13,9 +13,9 @@ Every label follows `category/value` — one separator, applied uniformly.
 
 **All labels are multi-select** — an issue can have `type/epic` AND `area/helm` AND
 `upstream/kure` simultaneously. GitHub has no built-in per-category exclusivity, on this repo or
-any other: applying two `priority/*` labels to one issue is never rejected. `status/`, `priority/`
-and `effort/` are single-value **by convention only** — pick at most one per category because it
-keeps triage meaningful, not because anything enforces it. (This repo previously used a second
+any other: applying two `priority/*` labels to one issue is never rejected. `status/`, `priority/`,
+`effort/` and `do/` are single-value **by convention only** — pick at most one per category
+because it keeps triage meaningful, not because anything enforces it. (This repo previously used a second
 separator, `category::value`, to signal that convention. It never carried any enforcement either,
 so it bought nothing `/` doesn't already give — dropped 2026-08-27, see go-kure/.github#121.)
 
