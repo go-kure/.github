@@ -185,6 +185,16 @@
       "description": "Blocked on kure changes"
     },
     {
+      "name": "do/now",
+      "color": "#E99695",
+      "description": "Fix now: needed for the current release target"
+    },
+    {
+      "name": "do/next",
+      "color": "#E99695",
+      "description": "Valid and ticketed; scheduled after the current release target"
+    },
+    {
       "name": "dependencies",
       "color": "#0366D6",
       "description": "Dependency updates"
