@@ -29,6 +29,7 @@ so it bought nothing `/` doesn't already give — dropped 2026-08-27, see go-kur
 | `type/` | `bug`, `chore`, `ci`, `design`, `documentation`, `epic`, `feature`, `refactor`, `roadmap`, `security`, `testing`, `upgrade`, `breaking-change` | What kind of issue it is |
 | `area/` | `cli`, `core`, `docs`, `flux`, `helm`, `k8s`, `layout`, `oam`, `distribution` | Subsystem or component the issue touches |
 | `upstream/` | `kure` | Blocked on an upstream repo |
+| `do/` | `now`, `next` | When a valid finding is fixed — single-value by convention |
 | `scope/` | `launcher`, `downstream` | Whether the change reaches a surface an external consumer already imports |
 
 **`area/` is an open per-repo namespace.** Unlike the other categories above, a repo may create
@@ -93,6 +94,18 @@ type name it has reserved or shadowed. A brand-new surface nobody has claimed ye
 
 Not enumerated: a single issue can be `scope/launcher` (it is this repo's own decision to make)
 and `scope/downstream` (a consumer's registration or behavior depends on the outcome) at once.
+
+### `do/now` vs `do/next`
+
+Both apply to a finding already judged valid — from review, triage or a reviewer bot — and say
+when it is fixed, not whether. Nothing valid is dropped: it gets one of the two.
+
+- `do/now` `#E99695` — fix now: the current release target needs it, so it is fixed in the
+  change under way or before that release.
+- `do/next` `#E99695` — valid and ticketed: it gets its own issue and is fixed after the
+  current release target.
+
+One colour for the namespace. Maintainer decision 2026-10-08.
 
 ## Adding New Labels
 
