@@ -16,9 +16,12 @@ jobs:
   test:
     name: Test
     runs-on: autops-kube-kure
-    # 20 to match kure's ci.yml test job: the -race suite needs ~12m for
-    # pkg/kubernetes/internal/gen alone, and 15 left no headroom for setup.
-    timeout-minutes: 20
+    # This job builds and tests cold: setup-go's cache restores next to nothing
+    # here (a 7 KB entry). kure's CI test job, with a warm 1.7 GB cache, already
+    # spends ~15 min in its -race run, pkg/stack/fluxcd alone 688 s; cold, 20
+    # cancelled the v0.2.0-beta.16 Test twice with packages still running.
+    # 40 leaves headroom. Release waits for this whole workflow (release.yml).
+    timeout-minutes: 40
     permissions:
       contents: read
     steps:
@@ -40,10 +43,13 @@ jobs:
           go-version: ${{ steps.go-version.outputs.version }}
           cache: true
 
+      # -timeout applies to each test binary. 25 keeps the slowest package
+      # (688 s warm) clear of it on a cold, contended runner; the job's own
+      # limit above is the one meant to stop a run that is merely slow.
       - name: Run tests
         env:
           CGO_ENABLED: "1"
-        run: go test -v -race -timeout 15m ./...
+        run: go test -v -race -timeout 25m ./...
 
   validate:
     name: Validate tag and changelog

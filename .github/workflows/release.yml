@@ -122,7 +122,9 @@ jobs:
     needs: [guard, ci]
     if: ${{ !cancelled() && needs.guard.result == 'success' && (needs.ci.result == 'success' || needs.ci.result == 'skipped') }}
     runs-on: autops-kube-kure
-    timeout-minutes: 60
+    # Must hold the steps before the wait (seconds), up to 2 minutes for
+    # Release / Publish to start and the 75 minutes it may then take.
+    timeout-minutes: 90
     permissions:
       contents: write
       actions: read
@@ -211,8 +213,19 @@ jobs:
             exit 1
           fi
 
+          # 75 minutes is the sum of the job limits on Publish's critical path:
+          # Test 40 + goreleaser 30 + post-release 5 (deploy-docs, also 5, runs
+          # beside post-release). Measured at kure v0.2.0-beta.15: goreleaser
+          # 52s, post-release 5s, 78s for everything but Test, so even a Test
+          # that uses all 40 minutes finishes about 33 minutes inside this wait.
+          # The deadline is elapsed time, not a poll count: each poll's gh call
+          # adds to its 10s sleep.
+          START=$(date +%s)
+          DEADLINE=$((START + 75 * 60))
+          i=0
           echo "Watching run $RUN_ID..."
-          for i in $(seq 1 270); do
+          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+            i=$((i + 1))
             CONCLUSION=$(gh run view "$RUN_ID" \
               --repo "$GITHUB_REPOSITORY" \
               --json status,conclusion \
@@ -225,8 +238,8 @@ jobs:
               echo "::error::Release / Publish for $TAG concluded $CONCLUSION. The tag is pushed; see 'When a release fails' in the release guide."
               exit 1
             fi
-            [ $((i % 6)) -eq 0 ] && echo "Still waiting for Release / Publish... ${i}0s elapsed"
+            [ $((i % 6)) -eq 0 ] && echo "Still waiting for Release / Publish... $(($(date +%s) - START))s elapsed"
             sleep 10
           done
-          echo "::error::Release / Publish did not complete within 45 minutes for $TAG."
+          echo "::error::Release / Publish did not complete within 75 minutes for $TAG."
           exit 1
