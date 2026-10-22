@@ -80,9 +80,10 @@ What it encodes:
   migration) that an auto-created PR cannot carry.
 - **The Go toolchain is pinned and gated**: the `go` dep (mise + gomod + a
   custom-managed `go`, if any repo ever adds one) and the `golang` container image
-  require dashboard approval and carry an `allowedVersions` ceiling that tracks
-  Go's two-release support window. The ceiling is lifted deliberately when the next
-  Go major ships, never by a bot.
+  require dashboard approval and carry an `allowedVersions` ceiling just above the
+  Go minor the repos are on or moving to, so that minor's patches stay proposed and
+  the next minor does not. The ceiling is raised deliberately, together with the
+  repos' move to the next Go minor, never by a bot.
 - **Automerge** for mise minor/patch/digest, gomod patch/digest, and the trusted
   GitHub Actions lane described below — never for `github.com/go-kure/**` gomod
   deps, since cross-repo bumps carry release-ordering constraints (launcher must
