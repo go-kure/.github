@@ -22,7 +22,9 @@
 //     (same opt-in) — the lane label proves automerge eligibility, not
 //     which branch a dep lands on, and Renovate ANDs automerge across every
 //     member of one grouped branch, so two deps sharing a groupName share a
-//     branch regardless of what their own labels say. Also asserts every packageRules index is
+//     branch regardless of what their own labels say. `expectSeparateMinorPatch`
+//     asserts separateMinorPatch the same way as `expectDashboardApproval`
+//     (opt-in on key presence, `Boolean()` comparison). Also asserts every packageRules index is
 //     exercised, so a new rule with no matrix case fails loudly instead of
 //     going unexercised — and, separately, that every hand-declared
 //     ruleIndices entry actually matches that case's input (via renovate's
@@ -204,9 +206,11 @@ const MATRIX = [
   { name: "mise toolchain patch", ruleIndices: [0, 14], input: { manager: "mise", updateType: "patch", depName: "yq" }, expect: "unattended" },
   { name: "mise toolchain digest", ruleIndices: [0, 14], input: { manager: "mise", updateType: "digest", depName: "hugo" }, expect: "unattended" },
   { name: "mise toolchain major (excluded from the automerge group)", ruleIndices: [11], input: { manager: "mise", updateType: "major", depName: "hugo" }, expect: "needs-human" },
-  { name: "go itself via mise (dashboard-gated, never automerged)", ruleIndices: [9], input: { manager: "mise", updateType: "minor", depName: "go" }, expect: "needs-human" },
-  { name: "go itself via gomod (dashboard-gated, never automerged)", ruleIndices: [9], input: { manager: "gomod", updateType: "patch", depName: "go", packageName: "go" }, expect: "needs-human" },
-  { name: "golang dockerfile tag (dashboard-gated, never automerged)", ruleIndices: [10], input: { manager: "dockerfile", updateType: "minor", depName: "golang", packageName: "golang" }, expect: "needs-human" },
+  // expectSeparateMinorPatch: the two Go rules split a previous-minor patch from the next-minor
+  // move, so a repo one minor behind still sees its patches (renovate/shared.json, rule 9).
+  { name: "go itself via mise (dashboard-gated, never automerged)", ruleIndices: [9], input: { manager: "mise", updateType: "minor", depName: "go" }, expect: "needs-human", expectSeparateMinorPatch: true },
+  { name: "go itself via gomod (dashboard-gated, never automerged)", ruleIndices: [9], input: { manager: "gomod", updateType: "patch", depName: "go", packageName: "go" }, expect: "needs-human", expectSeparateMinorPatch: true },
+  { name: "golang dockerfile tag (dashboard-gated, never automerged)", ruleIndices: [10], input: { manager: "dockerfile", updateType: "minor", depName: "golang", packageName: "golang" }, expect: "needs-human", expectSeparateMinorPatch: true },
   { name: "gomod minor, kubernetes (no automerge rule matches minor)", ruleIndices: [1, 3], input: { manager: "gomod", updateType: "minor", depName: "k8s.io/api", packageName: "k8s.io/api" }, expect: "needs-human" },
   { name: "gomod patch, kubernetes (automerges)", ruleIndices: [2, 3, 15], input: { manager: "gomod", updateType: "patch", depName: "k8s.io/api", packageName: "k8s.io/api" }, expect: "unattended" },
   { name: "gomod digest, sigs.k8s.io (automerges)", ruleIndices: [2, 4, 15], input: { manager: "gomod", updateType: "digest", depName: "sigs.k8s.io/controller-runtime", packageName: "sigs.k8s.io/controller-runtime" }, expect: "unattended" },
@@ -233,7 +237,7 @@ const MATRIX = [
   // tier-2 depName that WOULD automerge on a non-major update (the case just above).
   { name: "github-actions tier-2 dep, major (dashboard-gated, excluded from the trusted lane by update type)", ruleIndices: [8, 11], input: { manager: "github-actions", updateType: "major", depName: "actions/checkout", packageName: "actions/checkout" }, expect: "needs-human", expectDashboardApproval: true, expectGroupName: "github-actions" },
   { name: "npm major (dashboard-gated, never automerged)", ruleIndices: [11], input: { manager: "npm", updateType: "major", depName: "some-pkg", packageName: "some-pkg" }, expect: "needs-human" },
-  { name: "dockerfile dep matching no groupRule at all (top-level default)", ruleIndices: [], input: { manager: "dockerfile", updateType: "minor", depName: "alpine", packageName: "alpine" }, expect: "needs-human", expectDashboardApproval: false },
+  { name: "dockerfile dep matching no groupRule at all (top-level default)", ruleIndices: [], input: { manager: "dockerfile", updateType: "minor", depName: "alpine", packageName: "alpine" }, expect: "needs-human", expectDashboardApproval: false, expectSeparateMinorPatch: false },
   // customManagers (regex/jsonata) entries report here as "custom.<customType>" (renovate's
   // ManagersMatcher qualifies the config.manager value at match time), never the bare type name
   // the entry's own config carries. These three cases prove the fix (go-kure/.github#87's own
@@ -388,6 +392,12 @@ for (const c of MATRIX) {
   // to `undefined` would pass) or fail a correctly-fixed preset outright.
   if ("expectDashboardApproval" in c && Boolean(result.dependencyDashboardApproval) !== Boolean(c.expectDashboardApproval)) {
     console.error(`FAIL [outcome] ${c.name}: expected dependencyDashboardApproval=${c.expectDashboardApproval}, got ${result.dependencyDashboardApproval}`);
+    failures++;
+  }
+  // Same key-presence opt-in and Boolean() comparison as expectDashboardApproval: the preset sets
+  // no top-level separateMinorPatch, so a case no Go rule matches resolves it to undefined.
+  if ("expectSeparateMinorPatch" in c && Boolean(result.separateMinorPatch) !== Boolean(c.expectSeparateMinorPatch)) {
+    console.error(`FAIL [outcome] ${c.name}: expected separateMinorPatch=${c.expectSeparateMinorPatch}, got ${result.separateMinorPatch}`);
     failures++;
   }
   // Strict, not Boolean(): an enabled:false rule is the one whose whole effect is the literal
