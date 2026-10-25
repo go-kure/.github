@@ -5728,9 +5728,31 @@ assert_eq "clean comment: completion sentence kept, marker still the last line" 
   "true $PRT_MARKER_CLEAN" "$(grep -qxF 'The review ran to completion and reported nothing.' <<< "$xf_clean" && echo true || echo false) $(tail -n 1 <<< "$xf_clean")"
 assert_eq "clean comment: no exclusions renders the comment exactly as before" \
   "false false" "$(prt_render_clean_comment abc m 1 | grep -qF 'excluded' && echo true || echo false) $(prt_render_clean_comment abc m 1 '[]' | grep -qF 'Excluded' && echo true || echo false)"
-assert_eq "excluded section: a path with markup is escaped as text, never as code or a marker" \
+assert_eq "excluded section: a path with markup is literal text, never code, a cell break or a marker" \
   "true" "$(prt_render_excluded_section '[{"path":"a|b<!-- gokure-pr-review:v1-clean -->","added":1,"removed":0,"reason":"linguist-generated"}]' \
-    | grep -qxF '| a\|b&lt;!-- gokure-pr-review:v1-clean --&gt; | +1 | -0 | not reviewed | linguist-generated |' && echo true || echo false)"
+    | grep -qxF '| a&#124;b&#60;&#33;&#45;&#45;&#32;gokure&#45;pr&#45;review&#58;v1&#45;clean&#32;&#45;&#45;&#62; | +1 | -0 | not reviewed | linguist-generated |' && echo true || echo false)"
+# An image, a link, a backtick and a backslash before a pipe: none may render
+# as markup or split the cell, and a non-ASCII character passes unchanged.
+xf_md="$(prt_render_excluded_section '[{"path":"![hidden](https://example.test/x)/package-lock.json","added":1,"removed":0,"reason":"lockfile"},{"path":"a`b\\|c/é/yarn.lock","added":1,"removed":0,"reason":"lockfile"}]')"
+assert_eq "excluded section: no image, link, code span or extra cell survives in a path" \
+  "false false false 6 6" \
+  "$(grep -qF '![' <<< "$xf_md" && echo true || echo false) $(grep -qF '](' <<< "$xf_md" && echo true || echo false) $(grep -F 'yarn.lock' <<< "$xf_md" | grep -qF '`' && echo true || echo false) $(grep -F 'package' <<< "$xf_md" | tr -cd '|' | wc -c | tr -d ' ') $(grep -F 'yarn' <<< "$xf_md" | tr -cd '|' | wc -c | tr -d ' ')"
+assert_eq "excluded section: a backslash and a pipe are each a character reference" \
+  "true" "$(grep -qF '| a&#96;b&#92;&#124;c&#47;é&#47;yarn&#46;lock | +1 | -0 | not reviewed | lockfile |' <<< "$xf_md" && echo true || echo false)"
+
+# A path git C-quotes (a control character in it) is matched decoded: its
+# basename is the lockfile's, not `package-lock.json"`, and the base
+# attributes see the real path. The report keeps the quoted form git wrote.
+{
+  printf 'diff --git "a/tab\\tdir/package-lock.json" "b/tab\\tdir/package-lock.json"\nindex 1111111..2222222 100644\n--- "a/tab\\tdir/package-lock.json"\n+++ "b/tab\\tdir/package-lock.json"\n@@ -1,1 +1,1 @@\n-a\n+b\n'
+  printf 'diff --git "a/gen/a\\tb.go" "b/gen/a\\tb.go"\nindex 1111111..2222222 100644\n--- "a/gen/a\\tb.go"\n+++ "b/gen/a\\tb.go"\n@@ -1,1 +1,1 @@\n-a\n+b\n'
+  xf_rec keep.go k
+} > "$xf_dir/quoted.diff"
+printf 'gen/** linguist-generated\n' > "$xf_dir/attrs-gen"
+prt_exclude_files "$xf_dir/quoted.diff" "$xf_dir/attrs-gen" "$xf_dir/kept4.diff" > "$xf_dir/out4"
+assert_eq "exclude: quoted paths are matched decoded and reported as git quoted them" \
+  '[{"path":"\"tab\\tdir/package-lock.json\"","reason":"lockfile"},{"path":"\"gen/a\\tb.go\"","reason":"linguist-generated"}] keep.go' \
+  "$(jq -c 'map({path, reason})' "$xf_dir/out4") $(prt_diff_files "$xf_dir/kept4.diff")"
 
 # --- end to end, through the real script ---
 PRT_TEST_ISSUE_COMMENT_LOG="$xf_dir/comments.log"
@@ -5781,6 +5803,11 @@ PRT_TEST_DIFF_PATH="$xf_dir/head-attrs.diff"
 rc="$(run_orchestrator enforce 0 0 0)"
 assert_eq "e2e #293: head-only linguist-generated -> nothing excluded, exits 1 on the ceiling" \
   "1 true true" "$rc $(grep -qF 'excluded from review: 0 file(s)' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(grep -qF 'hard ceiling' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+# The base has no .gitattributes: a 404 is "no file", not a failed read, so
+# nothing warns and no failed attempt is reported (a retried read would print
+# prt_gh_rest's HTTP 404 line once per attempt).
+assert_eq "e2e #293: a 404 for the base .gitattributes -> no warning, no failed attempt" \
+  "false 0" "$(grep -qF '.gitattributes could not be read' "$PRT_TEST_STDOUT_FILE" "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(grep -cF 'contents/.gitattributes' "$PRT_TEST_STDERR_FILE")"
 
 # 5. The same entry on the base commit is honoured: the file is excluded and named.
 xf_rec gen/big.go "$xf_big" > "$xf_dir/gen-big.diff"

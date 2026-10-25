@@ -217,7 +217,10 @@ marks the run `REVIEW_INCOMPLETE`, as before. A failure of the exclusion step it
 "Excluded from review" in the clean-verdict comment, the advisory comment and the job summary. The
 clean-verdict comment also gets an `| excluded | N |` row after the `chunks` row. A run with nothing
 excluded renders exactly as before. A path with characters outside `[A-Za-z0-9._/@+=,~-]` is shown
-as escaped text instead of a code span.
+as literal text instead of a code span: every ASCII character but a letter or digit becomes a
+numeric character reference, so no path renders as an image, link, code span or extra cell. A path
+git C-quotes (one holding a control character) is matched on its decoded form and listed as git
+quoted it.
 
 **What "complete" means here.** A clean verdict means every hunk outside the excluded list was
 reviewed; the excluded files are named as unreviewed, not covered by it. A diff whose every file is

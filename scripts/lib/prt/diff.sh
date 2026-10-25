@@ -336,9 +336,10 @@ prt_diff_files() {
 # input widens or narrows it.
 PRT_EXCLUDED_BASENAMES=(package-lock.json npm-shrinkwrap.json pnpm-lock.yaml yarn.lock go.sum Cargo.lock poetry.lock uv.lock composer.lock Gemfile.lock)
 
-# prt_generated_paths ATTR_FILE PATHS_FILE — prints each path of PATHS_FILE
-# (one per line) whose `linguist-generated` attribute is set, or `true`, under
-# the rules in ATTR_FILE. ATTR_FILE is the base commit's root .gitattributes,
+# prt_generated_paths ATTR_FILE PATHS_FILE — prints, NUL-terminated, each path
+# of PATHS_FILE (NUL-terminated, decoded: a path may hold a tab or newline)
+# whose `linguist-generated` attribute is set, or `true`, under the rules in
+# ATTR_FILE. ATTR_FILE is the base commit's root .gitattributes,
 # never the PR head's: a PR must not be able to exclude its own files. It is
 # evaluated by `git check-attr` in an empty temporary repository, so git's own
 # pattern rules apply and no other attribute source is read (system, global,
@@ -353,17 +354,16 @@ prt_generated_paths() {
     rm -rf "$repo"
     return 1
   fi
-  tr '\n' '\0' < "$paths_file" \
-    | GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_ATTR_NOSYSTEM=1 \
-      git -C "$repo/r" -c core.attributesFile=/dev/null check-attr -z --stdin linguist-generated \
-      > "$repo/out" || rc=1
+  GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_ATTR_NOSYSTEM=1 \
+    git -C "$repo/r" -c core.attributesFile=/dev/null check-attr -z --stdin linguist-generated \
+    < "$paths_file" > "$repo/out" || rc=1
   if [ "$rc" = 0 ]; then
     # -z output is three NUL-terminated fields per path: path, attribute, value.
     local -a f=()
     mapfile -d $'\0' -t f < "$repo/out"
     for ((i = 0; i + 2 < ${#f[@]}; i += 3)); do
       case "${f[$((i + 2))]}" in
-        set|true) printf '%s\n' "${f[$i]}" ;;
+        set|true) printf '%s\0' "${f[$i]}" ;;
       esac
     done
   fi
@@ -377,7 +377,9 @@ prt_generated_paths() {
 # (go-kure/.github#293). A file is excluded when its basename is in
 # PRT_EXCLUDED_BASENAMES (reason "lockfile") or ATTR_FILE marks it
 # linguist-generated (reason "linguist-generated"); a deleted file is matched
-# on its old path, a rename on its new one. `added`/`removed` count the +/-
+# on its old path, a rename on its new one. Matching uses the decoded path: a
+# path git C-quotes (a control character in it) is unquoted first, while the
+# reported `path` keeps the quoted form git wrote. `added`/`removed` count the +/-
 # lines of its hunks. Every other record is copied byte for byte, so a hunk
 # over the hard ceiling in a file that is not excluded still reaches
 # prt_split_diff and still fails the run. Returns 1, printing nothing, when a
@@ -393,22 +395,34 @@ prt_exclude_files() {
     /^diff --git / { if (n++) printf "%c", 0; }
     { print }
   ' "$diff_file" > "$work/records" || rc=1
-  local -a records=() paths=()
+  local -a records=() paths=() matches=()
   mapfile -d $'\0' -t records < "$work/records"
 
   : > "$work/paths" || rc=1
+  local match inner
   for ((i = 0; i < ${#records[@]}; i++)); do
     printf '%s' "${records[$i]}" > "$work/rec" || rc=1
     path="$(prt_diff_files "$work/rec" | head -n 1)"
     paths[i]="$path"
-    [ -n "$path" ] && { printf '%s\n' "$path" >> "$work/paths" || rc=1; }
+    match="$path"
+    if [ "${#path}" -ge 2 ] && [ "${path:0:1}" = '"' ] && [ "${path: -1}" = '"' ]; then
+      # prt_diff_files keeps git's C-quoting only for a path holding a control
+      # character. Its escapes (\t \n \" \\ \ooo ...) are printf's own, and git
+      # escapes every backslash, so printf decodes it exactly once `%` is doubled.
+      inner="${path:1:${#path}-2}"
+      inner="${inner//%/%%}"
+      # shellcheck disable=SC2059 # the format IS the quoted path; see above
+      printf -v match -- "$inner"
+    fi
+    matches[i]="$match"
+    [ -n "$match" ] && { printf '%s\0' "$match" >> "$work/paths" || rc=1; }
   done
 
   local -A generated=()
   local gpath
   if [ "$rc" = 0 ]; then
     prt_generated_paths "$attr_file" "$work/paths" > "$work/generated" || rc=1
-    while IFS= read -r gpath; do
+    while IFS= read -r -d '' gpath; do
       generated["$gpath"]=1
     done < "$work/generated"
   fi
@@ -418,14 +432,15 @@ prt_exclude_files() {
     rec="${records[$i]}"
     [ -n "$rec" ] || continue
     path="${paths[$i]}"
-    base="${path##*/}"
+    match="${matches[$i]}"
+    base="${match##*/}"
     reason=""
-    if [ -n "$path" ]; then
+    if [ -n "$match" ]; then
       local name
       for name in "${PRT_EXCLUDED_BASENAMES[@]}"; do
         [ "$base" = "$name" ] && { reason=lockfile; break; }
       done
-      [ -z "$reason" ] && [ -n "${generated[$path]:-}" ] && reason=linguist-generated
+      [ -z "$reason" ] && [ -n "${generated[$match]:-}" ] && reason=linguist-generated
     fi
     if [ -z "$reason" ]; then
       printf '%s' "$rec" >> "$out_diff" || rc=1
