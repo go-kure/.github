@@ -436,3 +436,32 @@ prt_upsert_issue_comment() {
     prt_gh_rest POST "/repos/${repo}/issues/${pr_number}/comments" "$payload" >/dev/null
   fi
 }
+
+# prt_fetch_base_gitattributes REPO BASE_SHA OUT_FILE — writes the root
+# .gitattributes of commit BASE_SHA to OUT_FILE (go-kure/.github#293): the
+# only attribute source prt_exclude_files honours, never the PR head's. A 404
+# (no such file at that commit) leaves OUT_FILE empty and succeeds. Any other
+# failure, or a body that is not a base64 file, leaves OUT_FILE empty and
+# returns 1. Single attempt; the caller wraps it in prt_retry.
+prt_fetch_base_gitattributes() {
+  local repo="$1" sha="$2" out="$3" body err rc=0
+  : > "$out" || return 1
+  err="$(mktemp)" || return 1
+  body="$(prt_gh_rest GET "/repos/${repo}/contents/.gitattributes?ref=${sha}" 2>"$err")" || rc=1
+  if [ "$rc" = 1 ]; then
+    if [ "$PRT_LAST_HTTP_STATUS" = 404 ]; then
+      rm -f "$err"
+      return 0
+    fi
+    cat "$err" >&2
+    rm -f "$err"
+    return 1
+  fi
+  rm -f "$err"
+  if ! jq -e -r 'select(.type == "file" and .encoding == "base64") | .content | gsub("\n"; "") | @base64d' \
+    <<< "$body" > "$out" 2>/dev/null; then
+    : > "$out"
+    echo "prt_fetch_base_gitattributes: .gitattributes at ${sha} is not a base64 file body" >&2
+    return 1
+  fi
+}

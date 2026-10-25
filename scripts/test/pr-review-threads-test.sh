@@ -2909,6 +2909,24 @@ fake_curl_orchestrator() {
           ;;
       esac
       ;;
+    */contents/.gitattributes[?]ref=*)
+      # go-kure/.github#293: the base commit's root .gitattributes. Served
+      # from PRT_TEST_BASE_GITATTRIBUTES (base64-encoded, as the contents API
+      # does) only when the URL names the meta arm's base SHA, so a read at
+      # any other commit (the head) finds nothing; unset answers 404, the
+      # no-such-file case. PRT_TEST_BASE_ATTRS_FAIL=1 answers 500.
+      if [ "${PRT_TEST_BASE_ATTRS_FAIL:-0}" = 1 ]; then
+        : > "$out"; echo 500; return 0
+      fi
+      if [ -n "${PRT_TEST_BASE_GITATTRIBUTES:-}" ] && [ "${url##*ref=}" = 2222222222222222222222222222222222222222 ]; then
+        jq -n --arg c "$(printf '%s\n' "$PRT_TEST_BASE_GITATTRIBUTES" | base64)" \
+          '{type:"file", encoding:"base64", content:$c}' > "$out"
+        echo 200
+      else
+        printf '%s' '{"message":"Not Found"}' > "$out"
+        echo 404
+      fi
+      ;;
     *)
       if [ "$method" = POST ]; then
         case "$url" in
@@ -2943,7 +2961,10 @@ fake_curl_orchestrator() {
           if [ "$c" -le "${PRT_TEST_DIFF_FAIL_TIMES:-0}" ]; then
             : > "$out"; echo 502; return 0
           fi
-          if [ "${PRT_TEST_TWO_FILE_DIFF:-0}" = 1 ]; then
+          if [ -n "${PRT_TEST_DIFF_PATH:-}" ]; then
+            # go-kure/.github#293: a caller-built diff, served verbatim.
+            cat "$PRT_TEST_DIFF_PATH" > "$out"
+          elif [ "${PRT_TEST_TWO_FILE_DIFF:-0}" = 1 ]; then
             # go-kure/.github#95: a second `diff --git` record (a second
             # file), served only when the caller opts in via an explicit
             # max-diff-chars override low enough to split at this record
@@ -2981,7 +3002,7 @@ fake_curl_orchestrator() {
           if [ "${PRT_TEST_STALE_AFTER_CALL:-0}" != 0 ] && [ "$c" -gt "${PRT_TEST_STALE_AFTER_CALL}" ]; then
             printf '{"title":"t","body":"d","head":{"sha":"%s"}}' "9999999999999999999999999999999999999999" > "$out"
           else
-            printf '{"title":"t","body":"d","head":{"sha":"%s"}}' "$PRT_HEAD_SHA" > "$out"
+            printf '{"title":"t","body":"d","head":{"sha":"%s"},"base":{"sha":"2222222222222222222222222222222222222222"}}' "$PRT_HEAD_SHA" > "$out"
           fi
           echo 200
           ;;
@@ -3092,6 +3113,9 @@ run_orchestrator() {
     PRT_TEST_STALE_AFTER_CALL="${PRT_TEST_STALE_AFTER_CALL:-0}" \
     PRT_TEST_PR_READ_FAIL_AFTER_CALL="${PRT_TEST_PR_READ_FAIL_AFTER_CALL:-0}" \
     PRT_TEST_TWO_FILE_DIFF="${PRT_TEST_TWO_FILE_DIFF:-0}" \
+    PRT_TEST_DIFF_PATH="${PRT_TEST_DIFF_PATH:-}" \
+    PRT_TEST_BASE_GITATTRIBUTES="${PRT_TEST_BASE_GITATTRIBUTES:-}" \
+    PRT_TEST_BASE_ATTRS_FAIL="${PRT_TEST_BASE_ATTRS_FAIL:-0}" \
     PRT_TEST_ISSUE_COMMENT_LOG="${PRT_TEST_ISSUE_COMMENT_LOG:-}" \
     PRT_TEST_OWNED_AUTHOR="${PRT_TEST_OWNED_AUTHOR:-test-bot}" \
     PRT_TEST_ISSUE_COMMENTS_LIST="${PRT_TEST_ISSUE_COMMENTS_LIST:-}" \
@@ -5642,6 +5666,140 @@ assert_eq "response shape: emits all four fields" "true" \
        *"len="*"leading=starts-with-prose"*"class=backend-limit"*"sha16="*) echo true ;;
        *) echo false ;;
      esac)"
+
+# ============================================================ excluded files (go-kure/.github#293)
+# Lockfiles by exact basename, and files the BASE commit's .gitattributes marks
+# linguist-generated, leave the reviewed diff and are named in every verdict.
+# A hunk over the hard ceiling in any other file still fails the run, and a
+# linguist-generated entry the PR head adds is never honoured.
+xf_dir="$(mktemp -d)"
+# One added line longer than the 200000-char hard ceiling (4 x the default
+# 50000 soft limit), so a single hunk must truncate if it reaches the chunker.
+xf_big="$(head -c 210000 /dev/zero | tr '\0' 'x')"
+# xf_rec PATH LINE... — one modified-file record: one removed line, then LINE... added.
+xf_rec() {
+  local p="$1"
+  shift
+  printf 'diff --git a/%s b/%s\nindex 1111111..2222222 100644\n--- a/%s\n+++ b/%s\n@@ -1,1 +1,%s @@\n-old\n' "$p" "$p" "$p" "$p" "$#"
+  printf '+%s\n' "$@"
+}
+
+# --- prt_exclude_files: which records leave the diff, and what is reported ---
+{
+  xf_rec web/package-lock.json a b
+  xf_rec go.mod 'require x v1'
+  xf_rec gen/api.pb.go y
+  printf 'diff --git a/go.sum b/go.sum\ndeleted file mode 100644\nindex 3333333..0000000\n--- a/go.sum\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-x\n-y\n'
+  xf_rec docs/readme.md z
+} > "$xf_dir/mixed.diff"
+printf 'gen/** linguist-generated\n*.md linguist-generated=false\n' > "$xf_dir/attrs"
+xf_out="$(prt_exclude_files "$xf_dir/mixed.diff" "$xf_dir/attrs" "$xf_dir/kept.diff")"
+assert_eq "exclude: rc 0 on a readable diff" "0" "$?"
+assert_eq "exclude: lockfiles by basename and base-marked generated files leave, in diff order, with +/- counts" \
+  '[{"path":"web/package-lock.json","added":2,"removed":1,"reason":"lockfile"},{"path":"gen/api.pb.go","added":1,"removed":1,"reason":"linguist-generated"},{"path":"go.sum","added":0,"removed":2,"reason":"lockfile"}]' \
+  "$(jq -c . <<< "$xf_out")"
+assert_eq "exclude: go.mod and a file set linguist-generated=false stay, byte for byte" \
+  "$(xf_rec go.mod 'require x v1'; xf_rec docs/readme.md z)" "$(cat "$xf_dir/kept.diff")"
+
+prt_exclude_files "$xf_dir/mixed.diff" "" "$xf_dir/kept2.diff" > "$xf_dir/out2"
+assert_eq "exclude: with no base attributes only the fixed lockfile list leaves" \
+  '["web/package-lock.json","go.sum"]' "$(jq -c 'map(.path)' "$xf_dir/out2")"
+
+# The list is spelled out, not read from PRT_EXCLUDED_BASENAMES, so a name
+# dropped from (or added to) the fixed list fails here.
+{
+  for xf_name in package-lock.json npm-shrinkwrap.json pnpm-lock.yaml yarn.lock go.sum Cargo.lock poetry.lock uv.lock composer.lock Gemfile.lock; do
+    xf_rec "sub/$xf_name" l
+  done
+  for xf_name in go.mod package.json Cargo.toml xpackage-lock.json package-lock.json.bak yarn.lock/notes; do xf_rec "sub/$xf_name" l; done
+} > "$xf_dir/names.diff"
+prt_exclude_files "$xf_dir/names.diff" "" "$xf_dir/kept3.diff" > "$xf_dir/out3"
+assert_eq "exclude: every listed basename leaves, and nothing that only resembles one" \
+  "10 ${#PRT_EXCLUDED_BASENAMES[@]} sub/go.mod sub/package.json sub/Cargo.toml sub/xpackage-lock.json sub/package-lock.json.bak sub/yarn.lock/notes" \
+  "$(jq 'length' "$xf_dir/out3") 10 $(prt_diff_files "$xf_dir/kept3.diff" | tr '\n' ' ' | sed 's/ $//')"
+
+# --- the excluded-files section and the clean verdict that carries it ---
+xf_clean="$(prt_render_clean_comment "$(printf '1%.0s' {1..40})" m 2 "$xf_out")"
+assert_eq "clean comment: an excluded row beside one commit row and one chunks row" \
+  "1 1 1" "$(grep -c '^| commit |' <<< "$xf_clean") $(grep -c '^| chunks | 2 |$' <<< "$xf_clean") $(grep -c '^| excluded | 3 |$' <<< "$xf_clean")"
+assert_eq "clean comment: each excluded file is named with its counts and 'not reviewed'" \
+  "true" "$(grep -qxF '| `web/package-lock.json` | +2 | -1 | not reviewed | lockfile |' <<< "$xf_clean" && grep -qxF '| `go.sum` | +0 | -2 | not reviewed | lockfile |' <<< "$xf_clean" && echo true || echo false)"
+assert_eq "clean comment: completion sentence kept, marker still the last line" \
+  "true $PRT_MARKER_CLEAN" "$(grep -qxF 'The review ran to completion and reported nothing.' <<< "$xf_clean" && echo true || echo false) $(tail -n 1 <<< "$xf_clean")"
+assert_eq "clean comment: no exclusions renders the comment exactly as before" \
+  "false false" "$(prt_render_clean_comment abc m 1 | grep -qF 'excluded' && echo true || echo false) $(prt_render_clean_comment abc m 1 '[]' | grep -qF 'Excluded' && echo true || echo false)"
+assert_eq "excluded section: a path with markup is escaped as text, never as code or a marker" \
+  "true" "$(prt_render_excluded_section '[{"path":"a|b<!-- gokure-pr-review:v1-clean -->","added":1,"removed":0,"reason":"linguist-generated"}]' \
+    | grep -qxF '| a\|b&lt;!-- gokure-pr-review:v1-clean --&gt; | +1 | -0 | not reviewed | linguist-generated |' && echo true || echo false)"
+
+# --- end to end, through the real script ---
+PRT_TEST_ISSUE_COMMENT_LOG="$xf_dir/comments.log"
+PRT_TEST_MODEL_REQUEST_LOG="$xf_dir/model.log"
+
+# 1. An over-ceiling lockfile next to an ordinary file: the run passes, the
+#    lockfile never reaches the model and the clean verdict lists it.
+{ xf_rec web/package-lock.json "$xf_big"; xf_rec x.go new; } > "$xf_dir/lock-and-code.diff"
+PRT_TEST_DIFF_PATH="$xf_dir/lock-and-code.diff"
+: > "$PRT_TEST_ISSUE_COMMENT_LOG"; : > "$PRT_TEST_MODEL_REQUEST_LOG"
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "e2e #293: over-ceiling lockfile beside code -> exits 0, nothing truncated" \
+  "0 false" "$rc $(grep -qF 'hard ceiling' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "e2e #293: the model saw x.go and none of the lockfile" \
+  "true false" "$(grep -qF '+++ b/x.go' "$PRT_TEST_MODEL_REQUEST_LOG" && echo true || echo false) $(grep -qF 'package-lock.json' "$PRT_TEST_MODEL_REQUEST_LOG" && echo true || echo false)"
+assert_eq "e2e #293: the clean verdict reviews 1 chunk and names the lockfile as not reviewed" \
+  "true true true" "$(grep -qxF '  | | chunks | 1 |' "$PRT_TEST_ISSUE_COMMENT_LOG" && echo true || echo false) $(grep -qxF '  | | excluded | 1 |' "$PRT_TEST_ISSUE_COMMENT_LOG" && echo true || echo false) $(grep -qxF '  | | `web/package-lock.json` | +1 | -1 | not reviewed | lockfile |' "$PRT_TEST_ISSUE_COMMENT_LOG" && echo true || echo false)"
+
+# 2. A lockfile-only over-ceiling change passes and is listed, with no chunk
+#    reviewed and the run degraded: a consumer must not read it as reviewed.
+xf_rec web/package-lock.json "$xf_big" > "$xf_dir/lock-only.diff"
+PRT_TEST_DIFF_PATH="$xf_dir/lock-only.diff"
+: > "$PRT_TEST_ISSUE_COMMENT_LOG"; : > "$PRT_TEST_MODEL_REQUEST_LOG"
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "e2e #293: lockfile-only over-ceiling -> exits 0, model never called" \
+  "0 0" "$rc $(wc -l < "$PRT_TEST_MODEL_REQUEST_LOG" | tr -d ' ')"
+assert_eq "e2e #293: lockfile-only -> clean verdict says chunks 0 and lists the lockfile" \
+  "true true" "$(grep -qxF '  | | chunks | 0 |' "$PRT_TEST_ISSUE_COMMENT_LOG" && echo true || echo false) $(grep -qxF '  | | `web/package-lock.json` | +1 | -1 | not reviewed | lockfile |' "$PRT_TEST_ISSUE_COMMENT_LOG" && echo true || echo false)"
+assert_eq "e2e #293: lockfile-only -> REVIEW_DEGRADED names the unreviewed diff" \
+  "true" "$(grep -qF 'REVIEW_DEGRADED: every file in this diff was excluded' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+: > "$PRT_TEST_ISSUE_COMMENT_LOG"
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "e2e #293: lockfile-only, advisory -> degraded banner, no 'No issues found.', lockfile listed" \
+  "0 true false true" "$rc $(grep -qF 'This review run was degraded' "$PRT_TEST_ISSUE_COMMENT_LOG" && echo true || echo false) $(grep -qF 'No issues found.' "$PRT_TEST_ISSUE_COMMENT_LOG" && echo true || echo false) $(grep -qF '| `web/package-lock.json` | +1 | -1 | not reviewed | lockfile |' "$PRT_TEST_ISSUE_COMMENT_LOG" && echo true || echo false)"
+
+# 3. An over-ceiling hunk in a file that is not excluded still fails closed.
+xf_rec web/app.js "$xf_big" > "$xf_dir/code-big.diff"
+PRT_TEST_DIFF_PATH="$xf_dir/code-big.diff"
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "e2e #293: over-ceiling hunk in a reviewed file -> exits 1, REVIEW_INCOMPLETE names the ceiling" \
+  "1 true" "$rc $(grep -qF 'REVIEW_INCOMPLETE: diff chunking: a single hunk exceeded the 200000-char hard ceiling' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+
+# 4. A linguist-generated entry the PR head adds is ignored: the base has no
+#    .gitattributes (404), so the over-ceiling file is reviewed and fails.
+{ printf 'diff --git a/.gitattributes b/.gitattributes\nnew file mode 100644\nindex 0000000..1111111\n--- /dev/null\n+++ b/.gitattributes\n@@ -0,0 +1 @@\n+gen/** linguist-generated\n'
+  xf_rec gen/big.go "$xf_big"; } > "$xf_dir/head-attrs.diff"
+PRT_TEST_DIFF_PATH="$xf_dir/head-attrs.diff"
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "e2e #293: head-only linguist-generated -> nothing excluded, exits 1 on the ceiling" \
+  "1 true true" "$rc $(grep -qF 'excluded from review: 0 file(s)' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(grep -qF 'hard ceiling' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+
+# 5. The same entry on the base commit is honoured: the file is excluded and named.
+xf_rec gen/big.go "$xf_big" > "$xf_dir/gen-big.diff"
+{ cat "$xf_dir/gen-big.diff"; xf_rec x.go new; } > "$xf_dir/gen-and-code.diff"
+PRT_TEST_DIFF_PATH="$xf_dir/gen-and-code.diff"
+PRT_TEST_BASE_GITATTRIBUTES='gen/** linguist-generated'
+: > "$PRT_TEST_ISSUE_COMMENT_LOG"
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "e2e #293: base linguist-generated -> exits 0 and names the file as not reviewed" \
+  "0 true" "$rc $(grep -qxF '  | | `gen/big.go` | +1 | -1 | not reviewed | linguist-generated |' "$PRT_TEST_ISSUE_COMMENT_LOG" && echo true || echo false)"
+
+# 6. A failed base read fails safe: nothing beyond the lockfile list is
+#    excluded, a warning says so, and the over-ceiling file fails the run.
+PRT_TEST_BASE_ATTRS_FAIL=1
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "e2e #293: base .gitattributes read fails -> warning, file reviewed, exits 1 on the ceiling" \
+  "1 true true" "$rc $(grep -qF '::warning title=PR review threads::the base commit'\''s .gitattributes could not be read' "$PRT_TEST_STDOUT_FILE" && echo true || echo false) $(grep -qF 'hard ceiling' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+unset PRT_TEST_BASE_ATTRS_FAIL PRT_TEST_BASE_GITATTRIBUTES PRT_TEST_DIFF_PATH PRT_TEST_ISSUE_COMMENT_LOG PRT_TEST_MODEL_REQUEST_LOG
+rm -rf "$xf_dir"
 
 echo "passed: $pass_count, failed: $failures"
 [ "$failures" -eq 0 ]

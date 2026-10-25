@@ -150,7 +150,7 @@ EOF
 
 # prt_render_summary MODE SOURCE_SHA CHUNK_COUNT FINDINGS_JSON \
 #                     SUPPRESSED_COUNT INCOMPLETE_REASONS [DEGRADED_REASONS] \
-#                     [SUPPRESSED_JSON]
+#                     [SUPPRESSED_JSON] [EXCLUDED_JSON]
 # Written to $GITHUB_STEP_SUMMARY — free, no API call, so it survives even
 # when the job itself fails closed on a REVIEW_INCOMPLETE state.
 # DEGRADED_REASONS (go-kure/.github#98) is optional and defaults to empty —
@@ -162,8 +162,10 @@ EOF
 # assessor's reason can be read to check the call: each row carries the
 # line and the first line of the issue and of the reasoning, which the
 # findings table above does not.
+# EXCLUDED_JSON (go-kure/.github#293) is prt_exclude_files' list of files
+# kept out of the review, rendered by prt_render_excluded_section.
 prt_render_summary() {
-  local mode="$1" sha="$2" chunk_count="$3" findings="$4" suppressed_count="$5" incomplete_reasons="$6" degraded_reasons="${7:-}" suppressed="${8:-[]}"
+  local mode="$1" sha="$2" chunk_count="$3" findings="$4" suppressed_count="$5" incomplete_reasons="$6" degraded_reasons="${7:-}" suppressed="${8:-[]}" excluded="${9:-[]}"
   {
     printf '## PR Review Threads (%s mode)\n\n' "$mode"
     printf -- '- Source SHA: %s\n' "$sha"
@@ -197,6 +199,10 @@ prt_render_summary() {
         def first_line: tostring | split("\n") | map(select(test("[^[:space:]]"))) | (.[0] // "");
         .[] | "| `\(.fp)` | \(.severity|esc) | \(.file|esc) | \((.line // "n/a")|esc) | \((.issue // "")|first_line|esc) | \((.reasoning // "")|first_line|esc) |"
       ' <<< "$suppressed"
+    fi
+    if [ "$(jq 'length' <<< "$excluded")" -gt 0 ]; then
+      printf '\n'
+      prt_render_excluded_section "$excluded"
     fi
     if [ -n "$incomplete_reasons" ]; then
       printf '\n### REVIEW_INCOMPLETE\n\n'
@@ -308,7 +314,7 @@ prt_render_overflow_comment() {
   }
 }
 
-# prt_render_advisory_comment FINDINGS_JSON [INCOMPLETE_REASONS] [DEGRADED_REASONS]
+# prt_render_advisory_comment FINDINGS_JSON [INCOMPLETE_REASONS] [DEGRADED_REASONS] [EXCLUDED_JSON]
 # — used in `advisory` mode, where NO thread is ever created; this single
 # comment carries the merged review+assessment table, matching today's
 # plain-comment behavior exactly. INCOMPLETE_REASONS, when non-empty, is
@@ -342,8 +348,10 @@ prt_render_overflow_comment() {
 # (chatgpt-codex-connector[bot] review,
 # github.com/go-kure/.github/pull/101#pullrequestreview-5028172237; kure-bot
 # pr-review AI Code Review on go-kure/.github#101 at 9b2fe22).
+# EXCLUDED_JSON (optional 4th argument, go-kure/.github#293) lists the files
+# this run excluded; prt_render_excluded_section puts them above the footer.
 prt_render_advisory_comment() {
-  local findings="$1" incomplete_reasons="${2:-}" degraded_reasons="${3:-}"
+  local findings="$1" incomplete_reasons="${2:-}" degraded_reasons="${3:-}" excluded="${4:-[]}"
   local count
   count="$(jq 'length' <<< "$findings")"
   {
@@ -387,12 +395,16 @@ prt_render_advisory_comment() {
         .[] | "| \(.severity|esc) | \(.category|esc) | \(.file|esc) | \((.line // "n/a")|esc) | \(.issue|esc) | \(.fix|esc) |"
       ' <<< "$findings"
     fi
+    if [ "$(jq 'length' <<< "$excluded")" -gt 0 ]; then
+      printf '\n'
+      prt_render_excluded_section "$excluded"
+    fi
     printf '\n---\n*Automated review — advisory only (PR_REVIEW_THREADS_MODE=advisory). '
     printf 'No threads were created or resolved.*\n'
   }
 }
 
-# prt_render_clean_comment SHA MODEL CHUNK_COUNT — `enforce` mode's zero-
+# prt_render_clean_comment SHA MODEL CHUNK_COUNT [EXCLUDED_JSON] — `enforce` mode's zero-
 # findings verdict. Without this, a zero-finding enforce run posts nothing
 # (no threads to create), which is indistinguishable on the PR page from the
 # job never having run, a model response that parsed to zero findings
@@ -402,8 +414,16 @@ prt_render_advisory_comment() {
 # prt_find_marked_comment/prt_upsert_issue_comment — see the PRT_MODE=enforce
 # call site in pr-review-threads.sh for the gating conditions (this run's
 # own findings count is zero AND the run is not REVIEW_INCOMPLETE).
+#
+# EXCLUDED_JSON (optional, go-kure/.github#293) is prt_exclude_files' list.
+# When it is non-empty the table gains an `excluded` row and the comment the
+# file list, so "ran to completion" reads as every hunk outside those files.
+# Neither adds a second `commit` or `chunks` row, the advisory footer or a
+# banner, which a consumer parsing this verdict would read as malformed.
 prt_render_clean_comment() {
-  local sha="$1" model="$2" chunk_count="$3"
+  local sha="$1" model="$2" chunk_count="$3" excluded="${4:-[]}" excluded_count excluded_row=""
+  excluded_count="$(jq 'length' <<< "$excluded")"
+  [ "$excluded_count" -gt 0 ] && excluded_row="| excluded | ${excluded_count} |"$'\n'
   cat <<EOF
 ## AI Code Review — Reviewed, no findings
 
@@ -412,9 +432,15 @@ prt_render_clean_comment() {
 | commit | \`${sha}\` |
 | model | \`${model}\` |
 | chunks | ${chunk_count} |
-
+${excluded_row}
 The review ran to completion and reported nothing.
 
+EOF
+  if [ "$excluded_count" -gt 0 ]; then
+    prt_render_excluded_section "$excluded"
+    printf '\n'
+  fi
+  cat <<EOF
 ---
 *This comment is edited in place on every push, never appended.*
 
@@ -598,4 +624,30 @@ A later review of \`${sha}\` assessed every chunk.
 ${PRT_MARKER_STATE_SUPERSEDED}
 ${PRT_MARKER_PARTIAL}
 EOF
+}
+
+# prt_render_excluded_section EXCLUDED_JSON — the list of files this run
+# excluded from the review (prt_exclude_files, go-kure/.github#293), one row
+# per file with its added/removed line counts and "not reviewed"; nothing at
+# all when the array is empty. Appended to the clean-verdict comment, the
+# advisory comment and the job summary, so an exclusion is never silent. A
+# path made only of ordinary path characters is shown as code; any other is
+# escaped as plain text (a backtick could not be quoted inside a code span),
+# whose `<` encoding also keeps marker syntax out of the comment.
+prt_render_excluded_section() {
+  local excluded="$1" count
+  count="$(jq 'length' <<< "$excluded")"
+  [ "$count" -gt 0 ] || return 0
+  printf '### Excluded from review\n\n'
+  printf 'These %s file(s) were not sent to the reviewer: dependency lockfiles by name, and\n' "$count"
+  # shellcheck disable=SC2016 # the backticks are markdown code spans, not command substitution
+  printf 'files the base branch'\''s `.gitattributes` marks `linguist-generated`. A defect in them\n'
+  printf 'was not looked for.\n\n'
+  printf '| File | Added | Removed | Review | Why |\n'
+  printf '|------|-------|---------|--------|-----|\n'
+  jq -r '
+    def esc: tostring | gsub("\r\n"; " ") | gsub("[\n\r]"; " ") | gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;") | gsub("\\|"; "\\|");
+    def shown: if test("^[A-Za-z0-9._/@+=,~-]+$") then "`\(.)`" else esc end;
+    .[] | "| \(.path | shown) | +\(.added) | -\(.removed) | not reviewed | \(.reason | esc) |"
+  ' <<< "$excluded"
 }
