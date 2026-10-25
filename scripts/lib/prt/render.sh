@@ -632,8 +632,11 @@ EOF
 # all when the array is empty. Appended to the clean-verdict comment, the
 # advisory comment and the job summary, so an exclusion is never silent. A
 # path made only of ordinary path characters is shown as code; any other is
-# escaped as plain text (a backtick could not be quoted inside a code span),
-# whose `<` encoding also keeps marker syntax out of the comment.
+# shown as literal text (a backtick could not be quoted inside a code span):
+# every ASCII character but a letter or digit becomes a numeric character
+# reference, which Markdown never reads as markup, a cell break or marker
+# syntax (`!`, `[`, a backtick, `\`, `|`, `<`, a leading space). Non-ASCII
+# characters pass unchanged; none of them is markup.
 prt_render_excluded_section() {
   local excluded="$1" count
   count="$(jq 'length' <<< "$excluded")"
@@ -647,7 +650,10 @@ prt_render_excluded_section() {
   printf '|------|-------|---------|--------|-----|\n'
   jq -r '
     def esc: tostring | gsub("\r\n"; " ") | gsub("[\n\r]"; " ") | gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;") | gsub("\\|"; "\\|");
-    def shown: if test("^[A-Za-z0-9._/@+=,~-]+$") then "`\(.)`" else esc end;
+    def lit: tostring | explode | map(
+      if (. >= 48 and . <= 57) or (. >= 65 and . <= 90) or (. >= 97 and . <= 122) or . >= 128
+      then [.] | implode else "&#\(.);" end) | join("");
+    def shown: if test("^[A-Za-z0-9._/@+=,~-]+$") then "`\(.)`" else lit end;
     .[] | "| \(.path | shown) | +\(.added) | -\(.removed) | not reviewed | \(.reason | esc) |"
   ' <<< "$excluded"
 }

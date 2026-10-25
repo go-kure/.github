@@ -447,21 +447,26 @@ prt_fetch_base_gitattributes() {
   local repo="$1" sha="$2" out="$3" body err rc=0
   : > "$out" || return 1
   err="$(mktemp)" || return 1
-  body="$(prt_gh_rest GET "/repos/${repo}/contents/.gitattributes?ref=${sha}" 2>"$err")" || rc=1
+  body="$(mktemp)" || { rm -f "$err"; return 1; }
+  # Called directly, not in a command substitution: PRT_LAST_HTTP_STATUS is
+  # set in this shell only that way, and the 404 check below reads it.
+  prt_gh_rest GET "/repos/${repo}/contents/.gitattributes?ref=${sha}" > "$body" 2> "$err" || rc=1
   if [ "$rc" = 1 ]; then
     if [ "$PRT_LAST_HTTP_STATUS" = 404 ]; then
-      rm -f "$err"
+      rm -f "$err" "$body"
       return 0
     fi
     cat "$err" >&2
-    rm -f "$err"
+    rm -f "$err" "$body"
     return 1
   fi
   rm -f "$err"
   if ! jq -e -r 'select(.type == "file" and .encoding == "base64") | .content | gsub("\n"; "") | @base64d' \
-    <<< "$body" > "$out" 2>/dev/null; then
+    < "$body" > "$out" 2>/dev/null; then
+    rm -f "$body"
     : > "$out"
     echo "prt_fetch_base_gitattributes: .gitattributes at ${sha} is not a base64 file body" >&2
     return 1
   fi
+  rm -f "$body"
 }
