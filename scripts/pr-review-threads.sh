@@ -260,6 +260,8 @@ chunk_idx=0
 chunk_count=0
 LINE_INDEX='{}'
 PR_TITLE=""; PR_DESC=""; PROJECT_AGENTS=""; PROJECT_CLAUDE_MD=""; PROJECT_STANDARDS=""
+# go-kure/.github#293: the files taken out of the reviewed diff (prt_exclude_files).
+EXCLUDED_FILES='[]'
 
 if [ "$EMPTY_DIFF" != 1 ]; then
 meta_json="$(prt_retry 3 prt_gh_rest GET "/repos/${PRT_REPO}/pulls/${PRT_PR_NUMBER}")" || {
@@ -295,12 +297,54 @@ if [ -n "$PRT_STANDARDS_FILE" ]; then
   unset _prt_standards_path
 fi
 
+# --- Excluded files (go-kure/.github#293) ---
+# Lockfiles by exact basename, and files the BASE commit's root .gitattributes
+# marks linguist-generated (never the PR head's, so a PR cannot exclude its
+# own files), leave the reviewed diff here; every verdict this run posts names
+# them. A file that is not excluded keeps every hunk: one over the hard
+# ceiling still truncates in prt_split_diff and still fails the run. The
+# attributes read fails safe: when it fails, only the fixed lockfile list is
+# excluded and everything else is reviewed, so a failure can never widen the
+# exclusion.
+BASE_ATTRS_FILE="$WORKDIR/base.gitattributes"
+: > "$BASE_ATTRS_FILE"
+base_sha="$(jq -r '.base.sha // empty' <<< "$meta_json")"
+base_attrs_note=""
+if [[ ! "$base_sha" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then
+  base_attrs_note="PR metadata names no base commit"
+elif ! prt_retry 3 prt_fetch_base_gitattributes "$PRT_REPO" "$base_sha" "$BASE_ATTRS_FILE"; then
+  : > "$BASE_ATTRS_FILE"
+  base_attrs_note="the base commit's .gitattributes could not be read"
+fi
+if [ -n "$base_attrs_note" ]; then
+  prt_log "$base_attrs_note; linguist-generated is not honoured this run (only lockfiles are excluded)"
+  printf '::warning title=PR review threads::%s; linguist-generated is not honoured this run, so every file except lockfiles is reviewed\n' "$base_attrs_note"
+fi
+REVIEW_DIFF_FILE="$WORKDIR/review.diff"
+if ! EXCLUDED_FILES="$(prt_exclude_files "$DIFF_FILE" "$BASE_ATTRS_FILE" "$REVIEW_DIFF_FILE")"; then
+  # Neither diff is a safe fallback: the full one would send excluded files to
+  # the model, a partial one would review less than it claims. Review nothing,
+  # like a prt_split_diff failure below.
+  prt_mark_incomplete "excluding lockfiles and generated files from the diff failed — the reviewed diff could not be built"
+  EXCLUDED_FILES='[]'
+  : > "$REVIEW_DIFF_FILE"
+fi
+prt_log "excluded from review: $(jq 'length' <<< "$EXCLUDED_FILES") file(s)"
+# Every file excluded: nothing reaches the model, so no verdict may read as a
+# completed review. The clean-verdict comment already says `chunks | 0`; the
+# advisory comment carries no chunk count, and without this its "No issues
+# found." over an unreviewed diff would read as complete. Degraded, not
+# incomplete: nothing failed, and the run stays green.
+if [ ! -s "$REVIEW_DIFF_FILE" ] && [ "$(jq 'length' <<< "$EXCLUDED_FILES")" -gt 0 ]; then
+  prt_mark_degraded "every file in this diff was excluded from review (lockfiles or base linguist-generated); no part of it was reviewed"
+fi
+
 # --- Commentable-line index (full diff, not per chunk) ---
 LINE_INDEX="$(prt_build_line_index "$DIFF_FILE")"
 
 # --- Chunk + review + assess ---
 CHUNK_DIR="$WORKDIR/chunks"
-chunk_count="$(prt_split_diff "$DIFF_FILE" "$PRT_MAX_DIFF_CHARS" "$CHUNK_DIR")"
+chunk_count="$(prt_split_diff "$REVIEW_DIFF_FILE" "$PRT_MAX_DIFF_CHARS" "$CHUNK_DIR")"
 split_rc=$?
 if [ "$split_rc" -ne 0 ] || ! [[ "$chunk_count" =~ ^[0-9]+$ ]]; then
   prt_mark_incomplete "prt_split_diff failed (rc=$split_rc, chunk_count='$chunk_count') — diff chunking did not complete; its own incomplete-file append may not have landed"
@@ -370,8 +414,9 @@ declare -A CHUNK_REVIEW_FAILED=()
 # though a row was silently dropped from this chunk.
 declare -A CHUNK_PARTIAL_DROP=()
 # go-kure/.github#173: every prompt of a chunked review names its chunk and
-# the files of the whole diff (prt_chunk_scope; empty for a single chunk).
-ALL_DIFF_FILES="$(prt_diff_files "$DIFF_FILE")"
+# the files of the whole diff (prt_chunk_scope; empty for a single chunk) —
+# the reviewed diff, so the model is never told of a file it cannot see.
+ALL_DIFF_FILES="$(prt_diff_files "$REVIEW_DIFF_FILE")"
 for chunk_file in "$CHUNK_DIR"/chunk-*.diff; do
   [ -f "$chunk_file" ] || continue
   chunk_diff="$(cat "$chunk_file")"
@@ -895,7 +940,7 @@ if [ "$inventory_failed" = 1 ]; then
   {
     # 0, not $SUPPRESSED_COUNT: this abort happens before loop 1 (which
     # increments it) ever runs, so nothing has been suppressed yet.
-    prt_render_summary "$PRT_MODE" "$PRT_HEAD_SHA" "$chunk_idx" "$ALL_FINDINGS" 0 "$(prt_incomplete_reasons)" "$(prt_degraded_reasons)"
+    prt_render_summary "$PRT_MODE" "$PRT_HEAD_SHA" "$chunk_idx" "$ALL_FINDINGS" 0 "$(prt_incomplete_reasons)" "$(prt_degraded_reasons)" '[]' "$EXCLUDED_FILES"
   } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
   prt_report_degraded_annotations
   exit 1
@@ -1080,7 +1125,7 @@ fi
 if [ "$inventory_failed" = 1 ]; then
   prt_mark_incomplete "review thread inventory failed at $inventory_failure_stage"
   {
-    prt_render_summary "$PRT_MODE" "$PRT_HEAD_SHA" "$chunk_idx" "$ALL_FINDINGS" 0 "$(prt_incomplete_reasons)" "$(prt_degraded_reasons)"
+    prt_render_summary "$PRT_MODE" "$PRT_HEAD_SHA" "$chunk_idx" "$ALL_FINDINGS" 0 "$(prt_incomplete_reasons)" "$(prt_degraded_reasons)" '[]' "$EXCLUDED_FILES"
   } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
   prt_report_degraded_annotations
   exit 1
@@ -1132,7 +1177,7 @@ if ! cap_foreign="$(prt_cap_foreign_rows "$FOREIGN" "$ALL_FINDINGS")" ||
   echo "ERROR: review inventory cap evaluation failed; aborting before any write." >&2
   prt_mark_incomplete "review inventory cap evaluation failed"
   {
-    prt_render_summary "$PRT_MODE" "$PRT_HEAD_SHA" "$chunk_idx" "$ALL_FINDINGS" 0 "$(prt_incomplete_reasons)" "$(prt_degraded_reasons)"
+    prt_render_summary "$PRT_MODE" "$PRT_HEAD_SHA" "$chunk_idx" "$ALL_FINDINGS" 0 "$(prt_incomplete_reasons)" "$(prt_degraded_reasons)" '[]' "$EXCLUDED_FILES"
   } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
   prt_report_degraded_annotations
   exit 1
@@ -1266,7 +1311,7 @@ if [ "$PRT_MODE" = advisory ]; then
   prt_is_incomplete && advisory_incomplete_reasons="$(prt_incomplete_reasons)"
   advisory_degraded_reasons=""
   prt_is_degraded && advisory_degraded_reasons="$(prt_degraded_reasons)"
-  body="$(prt_render_advisory_comment "$advisory_findings" "$advisory_incomplete_reasons" "$advisory_degraded_reasons")"
+  body="$(prt_render_advisory_comment "$advisory_findings" "$advisory_incomplete_reasons" "$advisory_degraded_reasons" "$EXCLUDED_FILES")"
   payload="$(jq -n --arg b "$body" '{body:$b}')"
   if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
     prt_gh_rest POST "/repos/${PRT_REPO}/issues/${PRT_PR_NUMBER}/comments" "$payload" >/dev/null || \
@@ -1971,7 +2016,7 @@ if [ "$PRT_MODE" = enforce ]; then
         # wall-clock spans the pagination, so a check taken before it started
         # does not cover a write landing after the head has since moved.
         if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
-          clean_body="$(prt_render_clean_comment "$PRT_HEAD_SHA" "$PRT_MODEL" "$chunk_idx")"
+          clean_body="$(prt_render_clean_comment "$PRT_HEAD_SHA" "$PRT_MODEL" "$chunk_idx" "$EXCLUDED_FILES")"
           prt_upsert_issue_comment "$PRT_REPO" "$PRT_PR_NUMBER" "$clean_body" "$clean_id" || \
             prt_mark_incomplete "failed to upsert clean-verdict comment (HTTP ${PRT_LAST_HTTP_STATUS:-unknown})"
         else
@@ -2150,7 +2195,7 @@ if [ "$PRT_MODE" = enforce ]; then
 fi
 
 {
-  prt_render_summary "$PRT_MODE" "$PRT_HEAD_SHA" "$chunk_idx" "$ALL_FINDINGS" "$SUPPRESSED_COUNT" "$(prt_incomplete_reasons)" "$(prt_degraded_reasons)" "$SUPPRESSED"
+  prt_render_summary "$PRT_MODE" "$PRT_HEAD_SHA" "$chunk_idx" "$ALL_FINDINGS" "$SUPPRESSED_COUNT" "$(prt_incomplete_reasons)" "$(prt_degraded_reasons)" "$SUPPRESSED" "$EXCLUDED_FILES"
 } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
 
 incomplete_count=0

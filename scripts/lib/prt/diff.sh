@@ -327,3 +327,121 @@ prt_diff_files() {
     END { flush() }
   ' "$1"
 }
+
+# Files the reviewer never sends to the model (go-kure/.github#293), matched
+# by exact basename: dependency lockfiles, written by a package manager, whose
+# single hunk routinely exceeds the hard ceiling above and would otherwise fail
+# every run on that PR the same way. A manifest (go.mod, package.json,
+# Cargo.toml, ...) is not on the list and stays reviewed. Fixed on purpose: no
+# input widens or narrows it.
+PRT_EXCLUDED_BASENAMES=(package-lock.json npm-shrinkwrap.json pnpm-lock.yaml yarn.lock go.sum Cargo.lock poetry.lock uv.lock composer.lock Gemfile.lock)
+
+# prt_generated_paths ATTR_FILE PATHS_FILE — prints each path of PATHS_FILE
+# (one per line) whose `linguist-generated` attribute is set, or `true`, under
+# the rules in ATTR_FILE. ATTR_FILE is the base commit's root .gitattributes,
+# never the PR head's: a PR must not be able to exclude its own files. It is
+# evaluated by `git check-attr` in an empty temporary repository, so git's own
+# pattern rules apply and no other attribute source is read (system, global,
+# info/attributes, the caller's checkout). An empty or missing ATTR_FILE
+# prints nothing. Returns 1 when git itself fails, printing nothing.
+prt_generated_paths() {
+  local attr_file="$1" paths_file="$2" repo rc=0 i
+  { [ -s "$attr_file" ] && [ -s "$paths_file" ]; } || return 0
+  repo="$(mktemp -d)" || return 1
+  if ! GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git init -q "$repo/r" >/dev/null 2>&1 \
+    || ! cp "$attr_file" "$repo/r/.gitattributes"; then
+    rm -rf "$repo"
+    return 1
+  fi
+  tr '\n' '\0' < "$paths_file" \
+    | GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_ATTR_NOSYSTEM=1 \
+      git -C "$repo/r" -c core.attributesFile=/dev/null check-attr -z --stdin linguist-generated \
+      > "$repo/out" || rc=1
+  if [ "$rc" = 0 ]; then
+    # -z output is three NUL-terminated fields per path: path, attribute, value.
+    local -a f=()
+    mapfile -d $'\0' -t f < "$repo/out"
+    for ((i = 0; i + 2 < ${#f[@]}; i += 3)); do
+      case "${f[$((i + 2))]}" in
+        set|true) printf '%s\n' "${f[$i]}" ;;
+      esac
+    done
+  fi
+  rm -rf "$repo"
+  return "$rc"
+}
+
+# prt_exclude_files DIFF_FILE ATTR_FILE OUT_DIFF — writes DIFF_FILE to
+# OUT_DIFF without the records of excluded files, and prints the excluded
+# files as a JSON array of {path, added, removed, reason} in diff order
+# (go-kure/.github#293). A file is excluded when its basename is in
+# PRT_EXCLUDED_BASENAMES (reason "lockfile") or ATTR_FILE marks it
+# linguist-generated (reason "linguist-generated"); a deleted file is matched
+# on its old path, a rename on its new one. `added`/`removed` count the +/-
+# lines of its hunks. Every other record is copied byte for byte, so a hunk
+# over the hard ceiling in a file that is not excluded still reaches
+# prt_split_diff and still fails the run. Returns 1, printing nothing, when a
+# write fails or the attribute check cannot run; the caller must then treat
+# the review as incomplete rather than fall back to either diff.
+prt_exclude_files() {
+  local diff_file="$1" attr_file="$2" out_diff="$3"
+  local work rc=0 rec path base reason added removed i
+  work="$(mktemp -d)" || return 1
+  : > "$out_diff" || { rm -rf "$work"; return 1; }
+
+  awk '
+    /^diff --git / { if (n++) printf "%c", 0; }
+    { print }
+  ' "$diff_file" > "$work/records" || rc=1
+  local -a records=() paths=()
+  mapfile -d $'\0' -t records < "$work/records"
+
+  : > "$work/paths" || rc=1
+  for ((i = 0; i < ${#records[@]}; i++)); do
+    printf '%s' "${records[$i]}" > "$work/rec" || rc=1
+    path="$(prt_diff_files "$work/rec" | head -n 1)"
+    paths[i]="$path"
+    [ -n "$path" ] && { printf '%s\n' "$path" >> "$work/paths" || rc=1; }
+  done
+
+  local -A generated=()
+  local gpath
+  if [ "$rc" = 0 ]; then
+    prt_generated_paths "$attr_file" "$work/paths" > "$work/generated" || rc=1
+    while IFS= read -r gpath; do
+      generated["$gpath"]=1
+    done < "$work/generated"
+  fi
+
+  local excluded='[]'
+  for ((i = 0; i < ${#records[@]}; i++)); do
+    rec="${records[$i]}"
+    [ -n "$rec" ] || continue
+    path="${paths[$i]}"
+    base="${path##*/}"
+    reason=""
+    if [ -n "$path" ]; then
+      local name
+      for name in "${PRT_EXCLUDED_BASENAMES[@]}"; do
+        [ "$base" = "$name" ] && { reason=lockfile; break; }
+      done
+      [ -z "$reason" ] && [ -n "${generated[$path]:-}" ] && reason=linguist-generated
+    fi
+    if [ -z "$reason" ]; then
+      printf '%s' "$rec" >> "$out_diff" || rc=1
+      continue
+    fi
+    read -r added removed < <(awk '
+      /^@@ / { in_hunk = 1; next }
+      in_hunk && /^\+/ { a++ }
+      in_hunk && /^-/ { r++ }
+      END { print a + 0, r + 0 }
+    ' <<< "$rec")
+    excluded="$(jq -c --arg p "$path" --arg why "$reason" --argjson a "${added:-0}" --argjson r "${removed:-0}" \
+      '. + [{path: $p, added: $a, removed: $r, reason: $why}]' <<< "$excluded")" || rc=1
+  done
+
+  rm -rf "$work"
+  [ "$rc" = 0 ] || return 1
+  printf '%s\n' "$excluded"
+}

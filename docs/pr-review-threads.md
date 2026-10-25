@@ -41,7 +41,7 @@ This is the design/operations reference the code cites but didn't yet have:
 - `scripts/lib/prt/*.sh` — the modules it sources: `state.sh` (REVIEW_INCOMPLETE tracking),
   `json.sh` (stdin-only transforms for unbounded reconciliation collections), `gh.sh` (all
   GitHub I/O — REST, GraphQL, retry, freshness), `diff.sh` (chunking, the
-  commentable-line index), `finding.sh` (fingerprinting, ordinal/collision assignment),
+  commentable-line index, the excluded-file filter — see "Excluded files"), `finding.sh` (fingerprinting, ordinal/collision assignment),
   `marker.sh` (the HTML-comment marker embedded in each thread's first comment, carrying the
   fingerprint across runs), `render.sh` (job summary and comment bodies, including the withheld/
   quarantine section), `model.sh` (the two
@@ -188,6 +188,49 @@ Creating it with `kure-bot`'s personal account as resource owner produces a toke
 authenticates fine but gets 403 `Resource not accessible by personal access token` on every write
 to an org repo, with no repo picker even offered for org repos.
 
+## Excluded files
+
+Before chunking, the orchestrator removes two kinds of file from the diff it sends to the model
+(`prt_exclude_files`, `diff.sh`; go-kure/.github#293). Without this, a consumer repository with a
+committed npm lockfile failed every dependency PR: the lockfile's single hunk exceeds the
+200000-char hard ceiling, so the run truncated it and marked itself `REVIEW_INCOMPLETE`.
+
+- **Lockfiles, by exact basename** at any depth (`PRT_EXCLUDED_BASENAMES`): `package-lock.json`,
+  `npm-shrinkwrap.json`, `pnpm-lock.yaml`, `yarn.lock`, `go.sum`, `Cargo.lock`, `poetry.lock`,
+  `uv.lock`, `composer.lock`, `Gemfile.lock`. The list is fixed in code, not an input. Manifests stay
+  in the reviewed diff: `go.mod`, `package.json`, `Cargo.toml` and the rest are always reviewed.
+- **Files the base branch marks `linguist-generated`** (set, or `=true`). Only the root
+  `.gitattributes` of the PR's base commit counts. It is read through the contents API at `base.sha`
+  (`prt_fetch_base_gitattributes`, `gh.sh`) and evaluated by `git check-attr` in an empty temporary
+  repository with system, global and user attribute files disabled (`prt_generated_paths`). The
+  head's `.gitattributes` is never read, so a PR cannot exclude its own files by adding an entry.
+  Nested `.gitattributes` files are not read. A missing file (404) excludes nothing extra. If the
+  base commit is unknown or the read fails, the run emits a `::warning` and excludes lockfiles only,
+  reviewing every other file.
+
+The ceiling still applies to everything else: a truncated hunk in any file that is not excluded
+marks the run `REVIEW_INCOMPLETE`, as before. A failure of the exclusion step itself also marks it
+`REVIEW_INCOMPLETE`. The commentable-line index is still built from the full diff.
+
+**Named, not silent.** Each excluded file is listed with its path, added and removed line counts,
+"not reviewed" and the reason (`prt_render_excluded_section`, `render.sh`). The list appears under
+"Excluded from review" in the clean-verdict comment, the advisory comment and the job summary. The
+clean-verdict comment also gets an `| excluded | N |` row after the `chunks` row. A run with nothing
+excluded renders exactly as before. A path with characters outside `[A-Za-z0-9._/@+=,~-]` is shown
+as escaped text instead of a code span.
+
+**What "complete" means here.** A clean verdict means every hunk outside the excluded list was
+reviewed; the excluded files are named as unreviewed, not covered by it. A diff whose every file is
+excluded is reported with no reviewed chunks; consumers treat that as not reviewed. That run never
+calls the model, records the `REVIEW_DEGRADED` reason "every file in this diff was excluded from
+review", and in `enforce` mode posts the clean-verdict comment with `chunks 0`.
+
+**Limits.**
+- An `enforce` run with findings shows its excluded list only in the job summary, which expires with
+  run retention. Thread comments do not carry it.
+- An open thread on a file that a later run excludes (for example after the base branch marks it
+  `linguist-generated`) is matched by no finding, so the absence pass can resolve it.
+
 ## Modes
 
 `PRT_MODE` (env `PR_REVIEW_THREADS_MODE`, org/repo variable `vars.PR_REVIEW_THREADS_MODE`
@@ -274,8 +317,9 @@ overrides the workflow's own default) is one of three values. An unrecognized va
   the next absence at a new head can resolve the thread on one absence (go-kure/.github#261).
 
   **The clean-verdict comment.** A zero-finding `enforce` run posts one plain issue comment,
-  "Reviewed, no findings", naming the reviewed head SHA, model and chunk count
-  (`prt_render_clean_comment`, `render.sh`). Its last line is the identity marker
+  "Reviewed, no findings", naming the reviewed head SHA, model and chunk count, plus the excluded
+  count and list when files were excluded (`prt_render_clean_comment`, `render.sh`; see "Excluded
+  files"). Its last line is the identity marker
   `<!-- gokure-pr-review:v1-clean -->` (`PRT_MARKER_CLEAN`, `marker.sh`); every later run finds the
   comment by that marker (a `contains` match on comments authored by the bot login) and edits it in
   place rather than posting another. A comment with the marker from another login is never edited
