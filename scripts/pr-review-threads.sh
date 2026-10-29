@@ -25,6 +25,10 @@
 #                               per-chunk assess call: findings carry no
 #                               verdict, the coverage line says "not
 #                               assessed". Refused in enforce mode.
+#   PRT_ASSESS_BACKEND          empty|runner (default: empty = the proxy).
+#                               runner serves each chunk's assess call from a
+#                               review-run process (see lib/prt/model.sh,
+#                               _prt_call_runner). Needs PRT_ASSESS_RUNNER_BACKEND.
 #   PRT_MODEL                   default: claude-opus-4
 #   PRT_MAX_TOKENS               default: 1500
 #   PRT_ASSESS_MODEL             default: claude-sonnet-4-6
@@ -216,6 +220,17 @@ case "$PRT_ASSESS_ENABLED" in
 esac
 if [ "$PRT_ASSESS_ENABLED" = false ] && [ "$PRT_MODE" = enforce ]; then
   echo "ERROR: PRT_ASSESS_ENABLED=false is not allowed in enforce mode: enforce keeps assessment" >&2
+  exit 1
+fi
+
+# Assessment backend: the proxy (empty) or the runner. Any other value is
+# refused, never read as the default, for the same reason as the switch above.
+case "${PRT_ASSESS_BACKEND:-}" in
+  ""|runner) : ;;
+  *) echo "ERROR: PRT_ASSESS_BACKEND must be empty or runner, got '$PRT_ASSESS_BACKEND'" >&2; exit 1 ;;
+esac
+if [ "${PRT_ASSESS_BACKEND:-}" = runner ] && [ -z "${PRT_ASSESS_RUNNER_BACKEND:-}" ]; then
+  echo "ERROR: PRT_ASSESS_RUNNER_BACKEND is required when PRT_ASSESS_BACKEND=runner" >&2
   exit 1
 fi
 

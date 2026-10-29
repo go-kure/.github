@@ -3479,6 +3479,11 @@ run_orchestrator() {
     PRT_FINDINGS_FILE="${PRT_TEST_FINDINGS_FILE:-}" \
     PRT_REVIEW_BASE_SHA="${PRT_TEST_REVIEW_BASE_SHA:-}" \
     PRT_REVIEW_MATERIAL_SHA256="${PRT_TEST_REVIEW_MATERIAL_SHA256:-}" \
+    PRT_ASSESS_BACKEND="${PRT_TEST_ASSESS_BACKEND:-}" \
+    PRT_ASSESS_RUNNER="${PRT_TEST_ASSESS_RUNNER:-}" \
+    PRT_ASSESS_RUNNER_BACKEND="${PRT_TEST_ASSESS_RUNNER_BACKEND:-}" \
+    PRT_TEST_RUNNER_MODE="${PRT_TEST_RUNNER_MODE:-clean}" \
+    PRT_TEST_RUNNER_LOG="${PRT_TEST_RUNNER_LOG:-}" \
     PRT_MAX_DIFF_CHARS="$max_diff_chars" \
     PRT_GH_TOKEN=x PRT_REPO=owner/repo PRT_PR_NUMBER=1 \
     PRT_HEAD_SHA=1111111111111111111111111111111111111111 \
@@ -6547,6 +6552,109 @@ rm -f "$PRT_TEST_SUMMARY_COPY"
 unset PRT_TEST_SUMMARY_COPY
 PRT_TEST_TWO_FILE_DIFF=0
 rm -rf "$prt_as_dir"
+
+# ============================================================ assessment served by the runner (PRT_ASSESS_BACKEND=runner)
+# The assess call goes to a review-run process instead of the proxy. A stub
+# review-run stands in: it records argv, stdin and environment per call, reads
+# the findings the orchestrator sent (the line after the FINDINGS marker) and
+# answers one verdict per fp. Everything after the call (salvage, retry, join,
+# degrade) is the proxy path's own code, so the cases here only show the switch.
+prt_ar_dir="$(mktemp -d)"
+cat > "$prt_ar_dir/review-run" <<'ARSTUB'
+#!/usr/bin/env bash
+set -u
+log="${PRT_TEST_RUNNER_LOG:?}"
+args=("$@")
+out=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --out) out="$2"; shift 2 ;;
+    --) shift; break ;;
+    --backend|--root|--base|--seconds|--sandbox|--effort|--add-dir) shift 2 ;;
+    *) shift ;;
+  esac
+done
+req="$(cat)"
+n=$(($(cat "$log.count" 2>/dev/null || echo 0) + 1))
+echo "$n" > "$log.count"
+printf '%s\n' "${args[@]}" > "$log.argv.$n"
+printf '%s' "$req" > "$log.stdin.$n"
+env > "$log.env.$n"
+verdict=VALID
+[ "${PRT_TEST_RUNNER_MODE:-clean}" = false_positive ] && verdict=FALSE_POSITIVE
+fps="$(sed -n '/^--- FINDINGS (JSON) ---$/{n;p;}' <<< "$req" | jq -c '[.[].fp]')"
+mkdir -p "$out"
+jq -n --argjson fps "$fps" --arg v "$verdict" \
+  '{assessments: [$fps[] | {fp: ., verdict: $v, reasoning: "stub"}]}' > "$out/review.md"
+jq -n --arg head "${PRT_HEAD_SHA:-}" '{format:"review-run-v1", outcome:"completed", identity:{head:$head}}' > "$out/provider.json"
+exit 0
+ARSTUB
+chmod 755 "$prt_ar_dir/review-run"
+PRT_TEST_RUNNER_LOG="$prt_ar_dir/log"
+PRT_TEST_ASSESS_RUNNER="$prt_ar_dir/review-run"
+PRT_TEST_ASSESS_RUNNER_BACKEND="codex"
+PRT_TEST_REVIEW_BASE_SHA="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+PRT_TEST_REVIEW_MATERIAL_SHA256="cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+PRT_TEST_MODEL_RESPONSE_MODE=clean_with_finding
+prt_ar_calls() { cat "$PRT_TEST_RUNNER_LOG.count" 2>/dev/null || echo 0; }
+
+# A VALID verdict from the runner: the finding gets its thread, the proxy never assesses.
+rm -f "$PRT_TEST_RUNNER_LOG".*
+PRT_TEST_ASSESS_BACKEND="runner"
+PRT_TEST_RUNNER_MODE=clean
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "assess runner, VALID: exits 0 and the finding gets its thread" "0 1" "$rc $(cat "$PRT_TEST_CREATE_COUNTFILE")"
+assert_eq "assess runner: one runner call, no proxy assess call" "1 0" "$(prt_ar_calls) $(cat "$PRT_TEST_ASSESS_COUNTFILE")"
+assert_eq "assess runner: the review still came from the proxy (review call made)" \
+  "true" "$([ "$(cat "$PRT_TEST_MODEL_COUNTFILE")" -ge 1 ] && echo true || echo false)"
+assert_eq "assess runner: the coverage line says review+assess ok" \
+  "true" "$(grep -qE 'coverage: 1/1 chunks review\+assess ok' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "assess runner: the run is not degraded" \
+  "false" "$(grep -qF 'REVIEW_DEGRADED:' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+
+# A FALSE_POSITIVE verdict from the runner is honoured: no thread, suppressed.
+rm -f "$PRT_TEST_RUNNER_LOG".*
+PRT_TEST_RUNNER_MODE=false_positive
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "assess runner, FALSE_POSITIVE: exits 0, no thread created, suppressed=1" \
+  "0 0 true" "$rc $(cat "$PRT_TEST_CREATE_COUNTFILE") $(grep -qE 'done:.*suppressed=1' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "assess runner, FALSE_POSITIVE: still no proxy assess call" "1 0" "$(prt_ar_calls) $(cat "$PRT_TEST_ASSESS_COUNTFILE")"
+
+# Unset keeps the proxy: the runner is never called.
+rm -f "$PRT_TEST_RUNNER_LOG".*
+PRT_TEST_ASSESS_BACKEND=""
+PRT_TEST_RUNNER_MODE=clean
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "assess backend unset: the proxy assesses, the runner is never called" \
+  "0 1 0" "$rc $(cat "$PRT_TEST_ASSESS_COUNTFILE") $(prt_ar_calls)"
+
+# An unknown backend is refused at start, not read as the default, and nothing is called.
+rm -f "$PRT_TEST_RUNNER_LOG".*
+PRT_TEST_ASSESS_BACKEND="carrier-pigeon"
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "assess backend 'carrier-pigeon': fails closed before any call" \
+  "1 0 0 0" "$rc $(cat "$PRT_TEST_MODEL_COUNTFILE") $(cat "$PRT_TEST_ASSESS_COUNTFILE") $(prt_ar_calls)"
+assert_eq "assess backend 'carrier-pigeon': the error names PRT_ASSESS_BACKEND" \
+  "true" "$(grep -qF 'PRT_ASSESS_BACKEND must be empty or runner' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+
+# The runner without a backend to run is a configuration error, caught at start.
+PRT_TEST_ASSESS_BACKEND="runner"
+PRT_TEST_ASSESS_RUNNER_BACKEND=""
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "assess runner without PRT_ASSESS_RUNNER_BACKEND: fails closed before any call" \
+  "1 0 0 0" "$rc $(cat "$PRT_TEST_MODEL_COUNTFILE") $(cat "$PRT_TEST_ASSESS_COUNTFILE") $(prt_ar_calls)"
+assert_eq "assess runner without PRT_ASSESS_RUNNER_BACKEND: the error names it" \
+  "true" "$(grep -qF 'PRT_ASSESS_RUNNER_BACKEND is required' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+
+# PRT_MODE=off stays the escape hatch whatever this says.
+PRT_TEST_ASSESS_BACKEND="carrier-pigeon"
+rc="$(run_orchestrator off 0 0 0)"
+assert_eq "mode off with assess backend 'carrier-pigeon': still exits 0" "0" "$rc"
+
+unset PRT_TEST_ASSESS_BACKEND PRT_TEST_ASSESS_RUNNER PRT_TEST_ASSESS_RUNNER_BACKEND PRT_TEST_RUNNER_MODE PRT_TEST_RUNNER_LOG \
+  PRT_TEST_REVIEW_BASE_SHA PRT_TEST_REVIEW_MATERIAL_SHA256
+PRT_TEST_MODEL_RESPONSE_MODE=clean
+rm -rf "$prt_ar_dir"
 
 # ============================================================ model.sh: unparseable-response diagnostic (go-kure/.github#81)
 # Every PR in this repo went red with `len=57 leading=starts-with-prose` and
