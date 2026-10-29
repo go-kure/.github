@@ -6763,12 +6763,28 @@ echo "$n" > "$log.count"
 printf '%s\n' "${args[@]}" > "$log.argv.$n"
 printf '%s' "$req" > "$log.stdin.$n"
 env > "$log.env.$n"
+mode="${PRT_TEST_RUNNER_MODE:-clean}"
+# The real runner refuses an output directory that already holds a result.
+if [ -e "$out/review.md" ] || { [ -d "$out" ] && [ -n "$(ls -A "$out")" ]; }; then exit 64; fi
+case "$mode" in
+  exit[0-9]*) exit "${mode#exit}" ;;
+  garbage_then_exit4) if [ "$n" -ge 2 ]; then exit 4; fi; mode=garbage ;;
+  garbage_then_clean) if [ "$n" -ge 2 ]; then mode=clean; else mode=garbage; fi ;;
+esac
 verdict=VALID
-[ "${PRT_TEST_RUNNER_MODE:-clean}" = false_positive ] && verdict=FALSE_POSITIVE
+[ "$mode" = false_positive ] && verdict=FALSE_POSITIVE
 fps="$(sed -n '/^--- FINDINGS (JSON) ---$/{n;p;}' <<< "$req" | jq -c '[.[].fp]')"
+good="$(jq -n -c --argjson fps "$fps" --arg v "$verdict" \
+  '{assessments: [$fps[] | {fp: ., verdict: $v, reasoning: "stub"}]}')"
 mkdir -p "$out"
-jq -n --argjson fps "$fps" --arg v "$verdict" \
-  '{assessments: [$fps[] | {fp: ., verdict: $v, reasoning: "stub"}]}' > "$out/review.md"
+case "$mode" in
+  nofile) exit 0 ;;
+  empty) : > "$out/review.md" ;;
+  garbage) printf 'not json at all, sorry' > "$out/review.md" ;;
+  prose) printf 'Here is the assessment:\n%s\nDone.' "$good" > "$out/review.md" ;;
+  bad_shape) printf '{"assessments":"oops-not-an-array"}' > "$out/review.md" ;;
+  *) printf '%s' "$good" > "$out/review.md" ;;
+esac
 jq -n --arg head "${PRT_HEAD_SHA:-}" '{format:"review-run-v1", outcome:"completed", identity:{head:$head}}' > "$out/provider.json"
 exit 0
 ARSTUB
@@ -6828,6 +6844,81 @@ assert_eq "assess runner without PRT_ASSESS_RUNNER_BACKEND: fails closed before 
   "1 0 0 0" "$rc $(cat "$PRT_TEST_MODEL_COUNTFILE") $(cat "$PRT_TEST_ASSESS_COUNTFILE") $(prt_ar_calls)"
 assert_eq "assess runner without PRT_ASSESS_RUNNER_BACKEND: the error names it" \
   "true" "$(grep -qF 'PRT_ASSESS_RUNNER_BACKEND is required' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+
+# Failure parity with the proxy path: whatever goes wrong with the runner, the run
+# is degraded, never fatal, and the findings stay unverdicted (still blocking).
+PRT_TEST_ASSESS_BACKEND="runner"
+PRT_TEST_ASSESS_RUNNER_BACKEND="codex"
+prt_ar_failure_case() { # label mode expected-exit expected-reason
+  rm -f "$PRT_TEST_RUNNER_LOG".*
+  PRT_TEST_RUNNER_MODE="$2"
+  rc="$(run_orchestrator advisory 0 0 0)"
+  assert_eq "assess runner $1: exits 0 (degraded, not fatal)" "0" "$rc"
+  assert_eq "assess runner $1: one runner call, no proxy call" "1 0" "$(prt_ar_calls) $(cat "$PRT_TEST_ASSESS_COUNTFILE")"
+  assert_eq "assess runner $1: degraded as an assessment transport failure (exit $3)" \
+    "true" "$(grep -qF "assessment call failed (transport/proxy error, exit $3)" "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+  assert_eq "assess runner $1: the failure reason is $4" \
+    "true" "$(grep -qF "[$4]" "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+  assert_eq "assess runner $1: not reported as an incomplete review" \
+    "false" "$(grep -qF 'REVIEW_INCOMPLETE' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+}
+prt_ar_failure_case "quota (exit 3)" exit3 1 runner-quota
+prt_ar_failure_case "launch failure (exit 4)" exit4 1 runner-launch
+prt_ar_failure_case "incomplete (exit 2)" exit2 1 runner-incomplete
+prt_ar_failure_case "usage/over-limit (exit 64)" exit64 1 runner-usage
+prt_ar_failure_case "unexpected exit (7)" exit7 1 runner-failed
+prt_ar_failure_case "no review.md" nofile 1 runner-no-output
+prt_ar_failure_case "empty review.md" empty 1 runner-empty
+
+# A malformed answer is retried once with a fresh output directory, then degrades.
+rm -f "$PRT_TEST_RUNNER_LOG".*
+PRT_TEST_RUNNER_MODE=garbage
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "assess runner, garbage twice: exits 0, runner called twice" "0 2" "$rc $(prt_ar_calls)"
+assert_eq "assess runner, garbage twice: degraded as not valid JSON after retry" \
+  "true" "$(grep -qF 'assessment response was not valid JSON after retry=true' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "assess runner, garbage twice: the raw text is not echoed" \
+  "false" "$(grep -qF 'not json at all' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+
+# Garbage then a clean answer: the retry recovers.
+rm -f "$PRT_TEST_RUNNER_LOG".*
+PRT_TEST_RUNNER_MODE=garbage_then_clean
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "assess runner, garbage then clean: recovered, thread created, two calls" \
+  "0 1 2" "$rc $(cat "$PRT_TEST_CREATE_COUNTFILE") $(prt_ar_calls)"
+assert_eq "assess runner, garbage then clean: not degraded" \
+  "false" "$(grep -qF 'REVIEW_DEGRADED:' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+
+# Garbage then a runner failure on the retry.
+rm -f "$PRT_TEST_RUNNER_LOG".*
+PRT_TEST_RUNNER_MODE=garbage_then_exit4
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "assess runner, garbage then launch failure: exits 0, two calls" "0 2" "$rc $(prt_ar_calls)"
+assert_eq "assess runner, garbage then launch failure: degraded on retry" \
+  "true" "$(grep -qF 'assessment call failed on retry' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+
+# Prose around the JSON is salvaged, as on the proxy path.
+rm -f "$PRT_TEST_RUNNER_LOG".*
+PRT_TEST_RUNNER_MODE=prose
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "assess runner, prose-wrapped JSON: salvaged, one call, thread created" \
+  "0 1 1" "$rc $(cat "$PRT_TEST_CREATE_COUNTFILE") $(prt_ar_calls)"
+
+# Valid JSON of the wrong shape degrades the chunk.
+rm -f "$PRT_TEST_RUNNER_LOG".*
+PRT_TEST_RUNNER_MODE=bad_shape
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "assess runner, bad shape: exits 0 and degrades" \
+  "0 true" "$rc $(grep -qF '.assessments missing/null/non-array' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_RUNNER_MODE=clean
+
+# In enforce the unverdicted finding still gets its thread (null counts as VALID).
+rm -f "$PRT_TEST_RUNNER_LOG".*
+PRT_TEST_RUNNER_MODE=exit3
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "assess runner quota in enforce: exits 0, the unverdicted finding is still posted" \
+  "0 1" "$rc $(cat "$PRT_TEST_CREATE_COUNTFILE")"
+PRT_TEST_RUNNER_MODE=clean
 
 # PRT_MODE=off stays the escape hatch whatever this says.
 PRT_TEST_ASSESS_BACKEND="carrier-pigeon"
