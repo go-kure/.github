@@ -448,17 +448,22 @@ failed assess call, but nothing is marked `REVIEW_DEGRADED`, because the skip wa
 per-chunk log says `assess skipped`, and the coverage line reads `coverage: M/M chunks review ok,
 not assessed` instead of `review+assess ok`, so a consumer matching the old wording never reads an
 unassessed run as an assessed one. A chunk that lost a malformed finding row is not counted, as
-before.
+before. The advisory comment posted on the PR has no verdict column, so it opens with `Assessment
+was switched off for this run — the findings below were not checked for false positives` (also when
+it reports no findings).
 
 - **Advisory only.** `false` in `enforce` mode is refused before any network call (`PRT_ASSESS_ENABLED=false
   is not allowed in enforce mode`): enforce gates on verdicts. Any value other than `true` or
-  `false` is refused too, never read as the default, so a typo cannot turn verification off.
+  `false` is refused too, never read as the default, so a typo cannot turn verification off. Both
+  checks run after the `PRT_MODE=off` short-circuit, so `off` still skips the run whatever the
+  switch holds.
 - **The proxy.** `PRT_PROXY_URL` (action input `proxy-url`, now optional) is required unless the
   review comes from a findings file (`PRT_REVIEW_BACKEND=file`) and assessment is off. The script
   checks this at start and fails the run with `PRT_PROXY_URL is required`; with the proxy review
   backend, or with assessment on, an empty URL still fails closed.
 - **What it does not solve.** Unassessed findings include the ones assessment would have judged
-  false positives; nothing in this mode suppresses them. Whether to run the pilot unassessed is
+  false positives; nothing in this mode suppresses them (the advisory comment's `FALSE_POSITIVE`
+  filter has no verdict to act on), so the advisory comment is noisier. Whether to run the pilot unassessed is
   decided by the caller, from measurement, not by this switch.
 
 ## Failure surface
