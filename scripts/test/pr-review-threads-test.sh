@@ -4276,6 +4276,8 @@ assert_eq "orchestrator: permanent metadata-fetch failure — stderr carries the
 # the retry cap, so a non-off run would exit 1 either way).
 rc="$(run_orchestrator off 99 0 1)"
 assert_eq "orchestrator: PRT_MODE=off exits 0 even when everything else would fail/incomplete" "0" "$rc"
+assert_eq "orchestrator: PRT_MODE=off posts nothing (no create, reply, resolve, unresolve, patch or issue comment)" \
+  "0 0 0 0 0 0" "$(cat "$PRT_TEST_CREATE_COUNTFILE") $(cat "$PRT_TEST_REPLY_COUNTFILE") $(cat "$PRT_TEST_RESOLVE_COUNTFILE") $(cat "$PRT_TEST_UNRESOLVE_COUNTFILE") $(cat "$PRT_TEST_PATCH_COUNTFILE") $(cat "$PRT_TEST_ISSUE_COMMENT_COUNTFILE")"
 
 rc="$(run_orchestrator advisory 1 0 0)"
 assert_eq "orchestrator: diff-fetch retry — one mocked 502 then success still exits 0" "0" "$rc"
@@ -5849,6 +5851,8 @@ assert_eq "orchestrator #156: an unknown standards source exits 1 naming the val
 # Except in off mode: the incident escape hatch exits 0 before the check.
 rc="$(run_orchestrator off 0 0 0)"
 assert_eq "orchestrator #156: off mode still exits 0 with an unknown standards source" "0" "$rc"
+assert_eq "orchestrator #156: off mode with an unknown standards source posts nothing" \
+  "0 0 0 0 0 0" "$(cat "$PRT_TEST_CREATE_COUNTFILE") $(cat "$PRT_TEST_REPLY_COUNTFILE") $(cat "$PRT_TEST_RESOLVE_COUNTFILE") $(cat "$PRT_TEST_UNRESOLVE_COUNTFILE") $(cat "$PRT_TEST_PATCH_COUNTFILE") $(cat "$PRT_TEST_ISSUE_COMMENT_COUNTFILE")"
 
 rm -f "$PRT_TEST_MODEL_SYSTEM_LOG"
 
@@ -6515,12 +6519,16 @@ rc="$(run_orchestrator off 0 0 0 150)"
 assert_eq "mode off with assess 'maybe': still exits 0 (off short-circuits before the switch is validated)" "0" "$rc"
 assert_eq "mode off with assess 'maybe': no switch error was printed" \
   "false" "$(grep -qF 'PRT_ASSESS_ENABLED must be true or false' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "mode off with assess 'maybe': posts nothing (no create, reply, resolve, unresolve, patch or issue comment)" \
+  "0 0 0 0 0 0" "$(cat "$PRT_TEST_CREATE_COUNTFILE") $(cat "$PRT_TEST_REPLY_COUNTFILE") $(cat "$PRT_TEST_RESOLVE_COUNTFILE") $(cat "$PRT_TEST_UNRESOLVE_COUNTFILE") $(cat "$PRT_TEST_PATCH_COUNTFILE") $(cat "$PRT_TEST_ISSUE_COMMENT_COUNTFILE")"
 # The same with no proxy URL at all (a findings-file caller): off must not ask for it either.
 PRT_TEST_PROXY_URL=""
 rc="$(run_orchestrator off 0 0 0 150)"
 assert_eq "mode off, file backend, assess 'maybe', no proxy URL: still exits 0" "0" "$rc"
 assert_eq "mode off, file backend, assess 'maybe', no proxy URL: no PRT_PROXY_URL error" \
   "false" "$(grep -qF 'PRT_PROXY_URL is required' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "mode off, file backend, assess 'maybe', no proxy URL: posts nothing (no create, reply, resolve, unresolve, patch or issue comment)" \
+  "0 0 0 0 0 0" "$(cat "$PRT_TEST_CREATE_COUNTFILE") $(cat "$PRT_TEST_REPLY_COUNTFILE") $(cat "$PRT_TEST_RESOLVE_COUNTFILE") $(cat "$PRT_TEST_UNRESOLVE_COUNTFILE") $(cat "$PRT_TEST_PATCH_COUNTFILE") $(cat "$PRT_TEST_ISSUE_COMMENT_COUNTFILE")"
 PRT_TEST_PROXY_URL="http://proxy.invalid"
 
 # The rendered advisory comment itself: the notice shows with findings and with none.
