@@ -403,6 +403,26 @@ assert_eq "line index: the file after such a hunk keeps its own path" \
   "[5,6]" "$(jq -c '."second.md" // []' <<< "$idx")"
 rm -f "$header_body_fixture"
 
+# A path git writes with a space (the +++ line ends in a tab) or quotes (a
+# `"`, or a non-ASCII byte in octal) is indexed under its whole decoded name,
+# the one prt_diff_files reports, not cut at the space or kept with its quotes.
+name_fixture="$(mktemp)"
+{
+  printf '%s\n' 'diff --git a/sp ace.go b/sp ace.go' 'index 1111111..2222222 100644' '--- a/sp ace.go'$'\t'
+  printf '%s\n' '+++ b/sp ace.go'$'\t' '@@ -1,1 +1,2 @@' ' keep' '+spaced'
+  printf '%s\n' 'diff --git "a/qu\"ote.go" "b/qu\"ote.go"' 'index 3333333..4444444 100644' '--- "a/qu\"ote.go"'
+  printf '%s\n' '+++ "b/qu\"ote.go"' '@@ -1,1 +1,2 @@' ' keep' '+quoted'
+  printf '%s\n' 'diff --git "a/caf\303\251.go" "b/caf\303\251.go"' 'index 5555555..6666666 100644' '--- "a/caf\303\251.go"'
+  printf '%s\n' '+++ "b/caf\303\251.go"' '@@ -1,1 +1,2 @@' ' keep' '+accent'
+} > "$name_fixture"
+idx="$(prt_build_line_index "$name_fixture")"
+assert_eq "line index: a path with a space is indexed whole" "[1,2]" "$(jq -c '."sp ace.go" // []' <<< "$idx")"
+assert_eq "line index: a git-quoted path is indexed decoded" "[1,2]" "$(jq -c '."qu\"ote.go" // []' <<< "$idx")"
+assert_eq "line index: an octal-escaped path is indexed decoded" "[1,2]" "$(jq -c '."café.go" // []' <<< "$idx")"
+assert_eq "line index: its paths are exactly the ones prt_diff_files reports" \
+  "$(prt_diff_files "$name_fixture" | LC_ALL=C sort | tr '\n' ,)" "$(jq -r 'keys[]' <<< "$idx" | LC_ALL=C sort | tr '\n' ,)"
+rm -f "$name_fixture"
+
 # ============================================================ diff chunking
 chunk_dir="$(mktemp -d)"
 small_diff="$(mktemp)"
@@ -5721,6 +5741,64 @@ cp "$prt_fb_dir/art/findings.all" "$prt_fb_dir/art/findings.json"
 # 6. A retry of the same chunk gets the same answer (the orchestrator retries).
 assert_eq "file backend: a second call for the same chunk returns the same answer" \
   "$(jq -S -c '.' <<< "$prt_fb_out0")" "$(PRT_REVIEW_BACKEND="file" prt_fb_review 0 | jq -S -c '.')"
+
+# 6b. A file split across chunks is found by its whole path: one with a space
+# (git ends the +++ path with a tab) and one git quotes (a `"` in the name).
+# The line index used to cut the first at the space and keep the quotes of the
+# second, so a finding in the later hunk fell back to the first chunk.
+prt_fb_sp_hunk() { # NAME-AS-DIFF-HEADER-PAIR HUNK-HEADER: one file section
+  printf '%s\n%s\n' "diff --git $1" "index 1111111..2222222 100644"
+  printf '%s\n%s\n' "--- $2" "+++ $3"
+  printf '%s\n%s\n%s\n%s\n' "$4" "-old" "+new" " keep"
+}
+mkdir -p "$prt_fb_dir/chunks-sp"
+{
+  prt_fb_sp_hunk 'a/sp ace.go b/sp ace.go' 'a/sp ace.go'$'\t' 'b/sp ace.go'$'\t' '@@ -1,2 +1,2 @@'
+  prt_fb_sp_hunk '"a/qu\"ote.go" "b/qu\"ote.go"' '"a/qu\"ote.go"' '"b/qu\"ote.go"' '@@ -1,2 +1,2 @@'
+} > "$prt_fb_dir/chunks-sp/chunk-000.diff"
+{
+  prt_fb_sp_hunk 'a/sp ace.go b/sp ace.go' 'a/sp ace.go'$'\t' 'b/sp ace.go'$'\t' '@@ -50,2 +50,2 @@'
+  prt_fb_sp_hunk '"a/qu\"ote.go" "b/qu\"ote.go"' '"a/qu\"ote.go"' '"b/qu\"ote.go"' '@@ -50,2 +50,2 @@'
+} > "$prt_fb_dir/chunks-sp/chunk-001.diff"
+cat > "$prt_fb_dir/art/findings-sp.json" <<'FINDINGS'
+{"format":"review-findings-v1","findings":[
+ {"file":"sp ace.go","line":1,"severity":"high","category":"other","issue":"s1","fix":"f","klass":"blocking","claim":"c"},
+ {"file":"sp ace.go","line":51,"severity":"high","category":"other","issue":"s2","fix":"f","klass":"blocking","claim":"c"},
+ {"file":"qu\"ote.go","line":1,"severity":"high","category":"other","issue":"q1","fix":"f","klass":"blocking","claim":"c"},
+ {"file":"qu\"ote.go","line":51,"severity":"high","category":"other","issue":"q2","fix":"f","klass":"blocking","claim":"c"}
+]}
+FINDINGS
+prt_fb_review_dir() { # CHUNK_DIR FINDINGS_FILE IDX — like prt_fb_review, other fixtures
+  PRT_CHUNK_DIR="$1" PRT_FINDINGS_FILE="$2" \
+    PRT_HEAD_SHA="$prt_fb_head" PRT_REVIEW_BASE_SHA="$prt_fb_base" PRT_REVIEW_MATERIAL_SHA256="$prt_fb_mat" \
+    PRT_CURL="$prt_fb_dir/fake-curl" PRT_LAST_MODEL_FAILURE_FILE="$prt_fb_dir/failure" \
+    PRT_REVIEW_BACKEND="file" prt_model_review "http://proxy.invalid" "m" 1500 "diff" "t" "d" "" "" "" "" "" "$3"
+}
+prt_fb_sp0="$(prt_fb_review_dir "$prt_fb_dir/chunks-sp" "$prt_fb_dir/art/findings-sp.json" 0)"
+prt_fb_sp1="$(prt_fb_review_dir "$prt_fb_dir/chunks-sp" "$prt_fb_dir/art/findings-sp.json" 1)"
+assert_eq "file backend: a spaced and a git-quoted path split across chunks, first hunks stay in chunk 0" \
+  'qu"ote.go:1,sp ace.go:1' "$(prt_fb_keys "$prt_fb_sp0")"
+assert_eq "file backend: a spaced and a git-quoted path split across chunks, second hunks go to chunk 1" \
+  'qu"ote.go:51,sp ace.go:51' "$(prt_fb_keys "$prt_fb_sp1")"
+
+# 6c. A chunk whose line index is bigger than one argv entry may be (131072
+# bytes on Linux) is still served: nothing large goes through jq's command line.
+mkdir -p "$prt_fb_dir/chunks-big"
+{
+  printf '%s\n' 'diff --git a/huge.txt b/huge.txt' 'index 1111111..2222222 100644' '--- a/huge.txt' '+++ b/huge.txt' '@@ -0,0 +1,30000 @@'
+  seq 30000 | sed 's/^/+/'
+} > "$prt_fb_dir/chunks-big/chunk-000.diff"
+cat > "$prt_fb_dir/art/findings-big.json" <<'FINDINGS'
+{"format":"review-findings-v1","findings":[
+ {"file":"huge.txt","line":29999,"severity":"high","category":"other","issue":"h1","fix":"f","klass":"blocking","claim":"c"}
+]}
+FINDINGS
+prt_fb_big="$(prt_fb_review_dir "$prt_fb_dir/chunks-big" "$prt_fb_dir/art/findings-big.json" 0)"; prt_fb_big_rc=$?
+assert_eq "file backend: a line index larger than one argv entry is served (rc)" "0" "$prt_fb_big_rc"
+assert_eq "file backend: a line index larger than one argv entry is served (finding)" "huge.txt:29999" "$(prt_fb_keys "$prt_fb_big")"
+rm -rf "$prt_fb_dir/chunks-sp" "$prt_fb_dir/chunks-big" "$prt_fb_dir/art/findings-sp.json" "$prt_fb_dir/art/findings-big.json"
+unset prt_fb_sp0 prt_fb_sp1 prt_fb_big prt_fb_big_rc
+unset -f prt_fb_sp_hunk prt_fb_review_dir
 
 # 5. Refusals: rc 1 and a closed-vocabulary reason, never a guess.
 prt_fb_refuse() { # DESC REASON  (the artifact has been broken by the caller)

@@ -157,6 +157,53 @@ prt_split_diff() {
   echo $((chunk_idx + 1))
 }
 
+# The awk function both prt_build_line_index and prt_diff_files read a path
+# with, so one file has one name in both. Text for awk, not run by the shell.
+# shellcheck disable=SC2016  # awk source: $ and backticks are awk's, not the shell's
+_PRT_AWK_NAME='
+    # name(tok, pfx): the path at the start of tok, with the side prefix pfx
+    # ("a/", "b/" or "") removed. Sets REST to whatever follows the path when
+    # it is quoted.
+    function name(tok, pfx,   n, i, c, k, o, out, ctrl, raw) {
+      REST = ""
+      if (substr(tok, 1, 1) != "\"") {
+        sub(/\t$/, "", tok)
+        if (pfx != "" && substr(tok, 1, length(pfx)) == pfx) tok = substr(tok, length(pfx) + 1)
+        return tok
+      }
+      out = ""; ctrl = 0; n = length(tok)
+      for (i = 2; i <= n; i++) {
+        c = substr(tok, i, 1)
+        if (c == "\"") break
+        if (c != "\\") { out = out c; continue }
+        i++; c = substr(tok, i, 1)
+        if (c ~ /[0-7]/) {
+          o = 0
+          for (k = 0; k < 3 && substr(tok, i, 1) ~ /[0-7]/; k++) { o = o * 8 + substr(tok, i, 1); i++ }
+          i--
+          if (o < 32 || o == 127) ctrl = 1
+          else out = out sprintf("%c", o)
+        } else if (c ~ /[abfnrtv]/) {
+          ctrl = 1
+        } else {
+          out = out c
+        }
+      }
+      if (i > n) return tok
+      raw = substr(tok, 1, i); REST = substr(tok, i + 1)
+      if (pfx != "" && substr(out, 1, length(pfx)) == pfx) out = substr(out, length(pfx) + 1)
+      # A control character keeps the quoted form git wrote. So does a decoded
+      # path that itself starts with `"`, or it could read the same as a kept
+      # form ("new\nline.go") and be dropped as a duplicate; git always quotes
+      # `"`, so every path starting with `"` is then the unique git quoting.
+      if (ctrl || substr(out, 1, 1) == "\"") {
+        if (pfx != "" && substr(raw, 2, length(pfx)) == pfx) raw = "\"" substr(raw, length(pfx) + 2)
+        return raw
+      }
+      return out
+    }
+'
+
 # prt_build_line_index DIFF_FILE — prints a JSON object {"path": [line, ...]}
 # of every "commentable" new-file line: added (+) and context ( ) lines,
 # which have a real position on the right-hand side GitHub can anchor a
@@ -166,7 +213,7 @@ prt_split_diff() {
 # falling back to a file-level (subject_type: file) thread for it instead.
 prt_build_line_index() {
   local diff_file="$1"
-  awk '
+  LC_ALL=C awk "$_PRT_AWK_NAME"'
     # The header rules are position-gated, not pattern-gated. Inside a hunk
     # every body line carries a +/- prefix, so adding a line whose own text
     # begins "++ " arrives as "+++ ..." — a pattern-only match reassigns cur
@@ -178,8 +225,10 @@ prt_build_line_index() {
     # scripts/eval/build-gold.sh (go-kure/.github#163).
     /^diff --git / { in_hunk = 0; cur = ""; next }
     !in_hunk && /^\+\+\+ / {
-      f = $2
-      sub(/^b\//, "", f)
+      # The whole rest of the line, read as prt_diff_files reads it: a path
+      # holding a space is not cut there, and a git-quoted one is decoded.
+      f = substr($0, 5)
+      f = (f == "/dev/null") ? f : name(f, "b/")
       cur = (f == "/dev/null") ? "" : f
       next
     }
@@ -224,48 +273,7 @@ prt_build_line_index() {
 # dropped. Header lines are position-gated as in prt_build_line_index: a body
 # line that reads `+++ x` inside a hunk is never a header.
 prt_diff_files() {
-  LC_ALL=C awk '
-    # name(tok, pfx): the path at the start of tok, with the side prefix pfx
-    # ("a/", "b/" or "") removed. Sets REST to whatever follows the path when
-    # it is quoted.
-    function name(tok, pfx,   n, i, c, k, o, out, ctrl, raw) {
-      REST = ""
-      if (substr(tok, 1, 1) != "\"") {
-        sub(/\t$/, "", tok)
-        if (pfx != "" && substr(tok, 1, length(pfx)) == pfx) tok = substr(tok, length(pfx) + 1)
-        return tok
-      }
-      out = ""; ctrl = 0; n = length(tok)
-      for (i = 2; i <= n; i++) {
-        c = substr(tok, i, 1)
-        if (c == "\"") break
-        if (c != "\\") { out = out c; continue }
-        i++; c = substr(tok, i, 1)
-        if (c ~ /[0-7]/) {
-          o = 0
-          for (k = 0; k < 3 && substr(tok, i, 1) ~ /[0-7]/; k++) { o = o * 8 + substr(tok, i, 1); i++ }
-          i--
-          if (o < 32 || o == 127) ctrl = 1
-          else out = out sprintf("%c", o)
-        } else if (c ~ /[abfnrtv]/) {
-          ctrl = 1
-        } else {
-          out = out c
-        }
-      }
-      if (i > n) return tok
-      raw = substr(tok, 1, i); REST = substr(tok, i + 1)
-      if (pfx != "" && substr(out, 1, length(pfx)) == pfx) out = substr(out, length(pfx) + 1)
-      # A control character keeps the quoted form git wrote. So does a decoded
-      # path that itself starts with `"`, or it could read the same as a kept
-      # form ("new\nline.go") and be dropped as a duplicate; git always quotes
-      # `"`, so every path starting with `"` is then the unique git quoting.
-      if (ctrl || substr(out, 1, 1) == "\"") {
-        if (pfx != "" && substr(raw, 2, length(pfx)) == pfx) raw = "\"" substr(raw, length(pfx) + 2)
-        return raw
-      }
-      return out
-    }
+  LC_ALL=C awk "$_PRT_AWK_NAME"'
     # gitline(rest): the new-side path of a `diff --git` line.
     function gitline(rest,   n, h, i) {
       if (substr(rest, 1, 1) == "\"") { name(rest, "a/"); rest = REST; sub(/^ /, "", rest); return name(rest, "b/") }

@@ -405,6 +405,11 @@ chunk, first match in this order:
    a line the diff does not show);
 3. chunk 0, so a finding naming a file the reviewed diff does not contain is never dropped.
 
+A file is matched by its whole path as `prt_diff_files` reports it: a path with a space (git ends
+the `+++` line with a tab) and a git-quoted path (a `"`, or non-ASCII bytes in octal) are decoded,
+not cut at the space or kept with their quotes. Each chunk's line index and file list go through
+temporary files, never through a command line, so a chunk of any size is served.
+
 A chunk with nothing assigned answers an empty list. Asking for the same chunk twice (the
 orchestrator retries a chunk) returns the same answer. The proxy is never called, and
 `PRT_LAST_MODEL_CALLS` is 0. `severity` is passed through as written: a value the gating ranking
@@ -415,7 +420,9 @@ orchestrator reports like a proxy failure: `backend-config` (an unknown backend 
 mode without a findings path, chunk directory, chunk index or one of the three variables above),
 `findings-file-missing`, `findings-file-malformed` (not JSON, wrong `format`, `findings` not an
 array, a finding without a `file`, or a `line` that is neither a number nor `null`), and
-`provenance-mismatch`. The orchestrator hands the chunk directory to the call as
+`provenance-mismatch`; and, for a local fault while building the answer, `local-tempdir` (no
+temporary directory) and `payload-build` (the answer could not be assembled). The orchestrator hands
+the chunk directory to the call as
 `PRT_CHUNK_DIR` and the chunk's position as the twelfth argument. The failure line keeps the
 shared wording `review call failed (transport/proxy error, exit 1)` that the rest of this
 document and the tests match on; in file mode the bracketed reason after it is the cause.
