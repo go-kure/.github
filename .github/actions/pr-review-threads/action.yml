@@ -26,8 +26,21 @@ inputs:
     required: false
     default: "advisory"
   proxy-url:
-    description: claude-max-proxy base URL (OpenAI-compatible /v1/chat/completions).
-    required: true
+    description: >-
+      claude-max-proxy base URL (OpenAI-compatible /v1/chat/completions).
+      Required unless the review comes from a findings file
+      (PRT_REVIEW_BACKEND=file) and assess-enabled is "false"; the script
+      fails the run when it is empty and anything still needs the proxy.
+    required: false
+    default: ""
+  assess-enabled:
+    description: >-
+      "true" (default) or "false". "false" skips the per-chunk assessment call,
+      so every finding is reported with no verdict and the coverage line says
+      "not assessed". Only for advisory mode: enforce refuses "false". Any other
+      value fails the run.
+    required: false
+    default: "true"
   bot-login:
     description: >-
       The login the github-token posts as, REST spelling (e.g.
@@ -114,6 +127,7 @@ runs:
         PRT_MAX_TOKENS: ${{ inputs.max-tokens }}
         PRT_ASSESS_MODEL: ${{ inputs.assess-model }}
         PRT_ASSESS_MAX_TOKENS: ${{ inputs.assess-max-tokens }}
+        PRT_ASSESS_ENABLED: ${{ inputs.assess-enabled }}
         PRT_MAX_DIFF_CHARS: ${{ inputs.max-diff-chars }}
         PRT_MAX_FINDINGS_TOTAL: ${{ inputs.max-findings-total }}
         PRT_PROJECT_CONTEXT: ${{ inputs.project-context }}
