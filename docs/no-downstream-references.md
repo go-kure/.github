@@ -19,6 +19,10 @@ bash scripts/check-forbidden-terms.sh --full-tree
 git ls-files \
   | grep -E '^(docs/|site/content/|pkg/|cmd/|scripts/|\.github/(workflows|actions)/)|\.(md|json|ya?ml|toml)$' \
   | xargs rg -ni '\b(wharf|crane|barge|harbor|rudder)\b'  # allow-term:wharf allow-term:crane allow-term:barge allow-term:harbor allow-term:rudder
+# Then the same file list for terms inside camelCase identifiers (case-sensitive):
+git ls-files \
+  | grep -E '^(docs/|site/content/|pkg/|cmd/|scripts/|\.github/(workflows|actions)/)|\.(md|json|ya?ml|toml)$' \
+  | xargs rg -n '[[:lower:][:digit:]_](Wharf|Crane|Barge|Harbor|Rudder)([^[:lower:]]|$)'  # allow-term:wharf allow-term:crane allow-term:barge allow-term:harbor allow-term:rudder
 ```
 
 **Do not narrow that file list to directories.** The earlier form of this command listed

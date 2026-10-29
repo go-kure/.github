@@ -940,6 +940,10 @@ identifiers. Downstream consumers depend on go-kure; the reverse coupling must n
 - `crane`, `harbor`, `barge`, `rudder` — downstream platform components <!-- allow-term:crane allow-term:harbor allow-term:barge allow-term:rudder -->
 - `wharf` / `wharf.zone` — the downstream platform and its label / DNS zone <!-- allow-term:wharf -->
 
+Inside an identifier a term is also a hit when it forms a whole camelCase segment: the
+capitalised term after a lowercase letter, a digit or `_`, and not followed by a lowercase
+letter (`newTermClient`, `v2Term`, `Test_Term`, where `Term` stands for a forbidden term).
+
 **What to do with an existing reference:**
 
 - **Incidental mention** (e.g. "so crane can validate") → reword to a generic role such as <!-- allow-term:crane -->

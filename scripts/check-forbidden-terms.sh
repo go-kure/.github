@@ -21,6 +21,9 @@
 #
 # Forbidden terms (case-insensitive, whole word):
 #   wharf  crane  barge  harbor  rudder
+# Also inside an identifier, as a camelCase segment: the capitalised term after a
+# lowercase letter, a digit or `_`, and not followed by a lowercase letter
+# (`newTermClient`, `v2Term`, `Test_Term`; not `newTerms`).
 #
 # Escape hatch: place `allow-term:<word>` on the same line as a legitimate hit, or
 # on the line immediately above or below it (e.g. go-containerregistry's `crane`).
@@ -38,7 +41,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --full-tree) MODE="full"; shift ;;
     --diff) MODE="diff"; BASE="${2:-}"; [[ -n "$BASE" ]] || { echo "ERROR: --diff needs a BASE ref" >&2; exit 2; }; shift 2 ;;
-    -h|--help) sed -n '2,29p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
     *) echo "ERROR: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -87,6 +90,22 @@ allowed() {
   return 0
 }
 
+# The terms a line matches, lowercase and space-separated: as a whole word in any
+# case, or as a camelCase segment (see the header). Each term is tested on its own:
+# a single `grep -o` over all terms consumes the character after one match, so in
+# `xFirstSecond`, with both segments terms, the second would go unseen and a pragma
+# for the first would excuse the line.
+line_words() {
+  local text="$1" w words=""
+  for w in ${TERMS_RE//|/ }; do
+    if grep -qiE "\b${w}\b" <<<"$text" \
+      || grep -qE "[[:lower:][:digit:]_]${w^}([^[:lower:]]|\$)" <<<"$text"; then
+      words+="$w "
+    fi
+  done
+  printf '%s' "$words"
+}
+
 violations=0
 report() {
   echo "FORBIDDEN: $1:$2: $3" >&2
@@ -100,8 +119,9 @@ candidates() {
     while IFS= read -r f; do
       in_scope "$f" || continue
       [[ -f "$f" ]] || continue
-      # grep exits 1 when a file has no match; tolerate it under set -e/pipefail.
-      { grep -niE "\b(${TERMS_RE})\b" "$f" 2>/dev/null || true; } | while IFS=: read -r ln _; do
+      # Any line holding a term anywhere is a candidate; line_words decides whether it
+      # is a hit. grep exits 1 when a file has no match; tolerate it under set -e/pipefail.
+      { grep -niE "${TERMS_RE}" "$f" 2>/dev/null || true; } | while IFS=: read -r ln _; do
         printf '%s\t%s\n' "$f" "$ln"
       done
     done < <(git ls-files)
@@ -123,9 +143,9 @@ while IFS=$'\t' read -r file lineno; do
   in_scope "$file" || continue
   [[ -f "$file" ]] || continue
   text="$(sed -n "${lineno}p" "$file")"
-  # Matched words on this line (deduped, lowercase). grep exits 1 with no match —
-  # expected for diff-mode candidate lines that carry no term; tolerate under set -e.
-  words="$(printf '%s' "$text" | grep -oiE "\b(${TERMS_RE})\b" | tr '[:upper:]' '[:lower:]' | sort -u | tr '\n' ' ' || true)"
+  # Most diff-mode candidate lines carry no term at all; skip them with one grep.
+  grep -qiE "${TERMS_RE}" <<<"$text" || continue
+  words="$(line_words "$text")"
   [[ -n "${words// /}" ]] || continue
   allowed "$file" "$lineno" "$words" && continue
   report "$file" "$lineno" "$text"
