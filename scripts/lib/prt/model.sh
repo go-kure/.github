@@ -690,5 +690,74 @@ ${findings_json}
 \`\`\`
 ${chunk_diff}
 \`\`\`"
-  _prt_call_proxy "$proxy_url" "$model" "$max_tokens" "$system" "$user"
+  # PRT_ASSESS_BACKEND selects the source of the answer, as PRT_REVIEW_BACKEND
+  # does for the review: unset or empty, the proxy; "runner", _prt_call_runner;
+  # any other value is refused (backend-config), never read as the default.
+  case "${PRT_ASSESS_BACKEND:-}" in
+    "") _prt_call_proxy "$proxy_url" "$model" "$max_tokens" "$system" "$user" ;;
+    runner) _prt_call_runner "${system}"$'\n\n'"${user}" ;;
+    *) _prt_set_model_failure "backend-config"; return 1 ;;
+  esac
+}
+
+# _prt_call_runner REQUEST — the assess call served by a review-run process
+# (PRT_ASSESS_BACKEND=runner) instead of the proxy. Prints the answer body
+# review-run returned, verbatim, so the caller's parse, salvage, retry and join
+# are the proxy path's own. REQUEST (the assess system prompt, the project
+# context, the findings with their fp and the chunk diff) goes to the runner on
+# standard input through a file, never through argv: a chunk can pass the 128 KiB
+# single-argument cap (see _prt_call_proxy). The prompt argument is a fixed
+# instruction. Reads, all from the environment:
+#   PRT_ASSESS_RUNNER_BACKEND    review-run --backend value (required)
+#   PRT_ASSESS_RUNNER            the review-run executable (default: review-run)
+#   PRT_ASSESS_RUNNER_ROOT       the checkout it reads (default: the working directory)
+#   PRT_ASSESS_RUNNER_SECONDS    its deadline (default: 600)
+#   PRT_REVIEW_BASE_SHA          the PR's base commit (required)
+# Every refusal returns 1 with a closed-vocabulary reason in the failure file:
+# backend-config (an input this mode needs is not set), local-tempdir,
+# runner-failed (review-run exited non-zero), runner-no-output (it exited 0 and
+# left no review.md), runner-empty (review.md holds nothing).
+_prt_call_runner() {
+  local request="$1" runner backend root seconds tmp out rc=0
+  _prt_set_model_failure ""
+  _prt_set_model_calls 0
+  runner="${PRT_ASSESS_RUNNER:-review-run}"
+  backend="${PRT_ASSESS_RUNNER_BACKEND:-}"
+  root="${PRT_ASSESS_RUNNER_ROOT:-$PWD}"
+  seconds="${PRT_ASSESS_RUNNER_SECONDS:-600}"
+  if [ -z "$backend" ] || [ -z "${PRT_REVIEW_BASE_SHA:-}" ]; then
+    _prt_set_model_failure "backend-config"
+    return 1
+  fi
+  tmp="$(mktemp -d)"
+  if [ -z "$tmp" ] || [ ! -d "$tmp" ]; then
+    _prt_set_model_failure "local-tempdir"
+    return 1
+  fi
+  if ! printf '%s' "$request" > "$tmp/request"; then
+    rm -rf "$tmp"
+    _prt_set_model_failure "local-tempdir"
+    return 1
+  fi
+  out="$tmp/out"
+  "$runner" --backend "$backend" --root "$root" --base "$PRT_REVIEW_BASE_SHA" \
+    --seconds "$seconds" --sandbox none --out "$out" \
+    -- "Perform the assessment described on the standard input. Answer with only the JSON object it asks for." \
+    < "$tmp/request" > /dev/null || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    rm -rf "$tmp"
+    _prt_set_model_failure "runner-failed"
+    return 1
+  fi
+  if [ ! -s "$out/review.md" ]; then
+    if [ -e "$out/review.md" ]; then
+      _prt_set_model_failure "runner-empty"
+    else
+      _prt_set_model_failure "runner-no-output"
+    fi
+    rm -rf "$tmp"
+    return 1
+  fi
+  cat "$out/review.md"
+  rm -rf "$tmp"
 }
