@@ -235,10 +235,12 @@ if [ "${PRT_ASSESS_BACKEND:-}" = runner ] && [ -z "${PRT_ASSESS_RUNNER_BACKEND:-
 fi
 
 # The proxy is needed by the review call (any backend but the findings file) and
-# by the assess call (unless it is switched off). Only a findings-file review
-# with assessment off can run without it. Checked here, after the off
-# short-circuit, so a proxy-free caller can still turn the run off.
-if [ -z "$PRT_PROXY_URL" ] && { [ "${PRT_REVIEW_BACKEND:-}" != file ] || [ "$PRT_ASSESS_ENABLED" != false ]; }; then
+# by the assess call (unless it is switched off or served by the runner). Only a
+# findings-file review with assessment off or on the runner can run without it.
+# Checked here, after the off short-circuit, so a proxy-free caller can still
+# turn the run off.
+if [ -z "$PRT_PROXY_URL" ] && { [ "${PRT_REVIEW_BACKEND:-}" != file ] \
+    || { [ "$PRT_ASSESS_ENABLED" != false ] && [ "${PRT_ASSESS_BACKEND:-}" != runner ]; }; }; then
   echo "ERROR: PRT_PROXY_URL is required" >&2
   exit 1
 fi

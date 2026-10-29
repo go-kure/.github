@@ -6651,6 +6651,51 @@ PRT_TEST_ASSESS_BACKEND="carrier-pigeon"
 rc="$(run_orchestrator off 0 0 0)"
 assert_eq "mode off with assess backend 'carrier-pigeon': still exits 0" "0" "$rc"
 
+# Review from a findings file and assessment from the runner: nothing needs the
+# proxy, so enforce runs with assessment on and no proxy URL at all.
+prt_ar_ff="$(mktemp -d)"
+cat > "$prt_ar_ff/findings.json" <<'ARFINDINGS'
+{"format":"review-findings-v1","findings":[
+ {"file":"x.go","line":1,"severity":"high","category":"logic-error","issue":"issue-for-x","fix":"fix-x","klass":"blocking","claim":"cx"},
+ {"file":"y.go","line":1,"severity":"high","category":"race","issue":"issue-for-y","fix":"fix-y","klass":"blocking","claim":"cy"}
+]}
+ARFINDINGS
+jq -n '{format:"review-run-v1", outcome:"completed", backend:"x", identity:{root:"/r", head:"1111111111111111111111111111111111111111", base:"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", material_sha256:"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", input_sha256:"d", add_dirs:[]}}' \
+  > "$prt_ar_ff/provider.json"
+PRT_TEST_REVIEW_BACKEND="file"
+PRT_TEST_FINDINGS_FILE="$prt_ar_ff/findings.json"
+PRT_TEST_TWO_FILE_DIFF=1
+PRT_TEST_PROXY_URL=""
+PRT_TEST_ASSESS_BACKEND="runner"
+PRT_TEST_ASSESS_RUNNER_BACKEND="codex"
+PRT_TEST_RUNNER_MODE=clean
+rm -f "$PRT_TEST_RUNNER_LOG".*
+rc="$(run_orchestrator enforce 0 0 0 150)"
+assert_eq "enforce, file review, runner assess, no proxy URL: exits 0, both findings get a thread" \
+  "0 2" "$rc $(cat "$PRT_TEST_CREATE_COUNTFILE")"
+assert_eq "enforce, file review, runner assess, no proxy URL: one runner call per chunk, no proxy call" \
+  "2 0 0" "$(prt_ar_calls) $(cat "$PRT_TEST_MODEL_COUNTFILE") $(cat "$PRT_TEST_ASSESS_COUNTFILE")"
+assert_eq "enforce, file review, runner assess, no proxy URL: coverage says review+assess ok" \
+  "true" "$(grep -qE 'coverage: 2/2 chunks review\+assess ok' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+
+# The review still needs the proxy when it is not a findings file.
+PRT_TEST_REVIEW_BACKEND=""
+rc="$(run_orchestrator enforce 0 0 0 150)"
+assert_eq "enforce, proxy review, runner assess, no proxy URL: fails closed on the review's need" "1" "$rc"
+assert_eq "enforce, proxy review, runner assess, no proxy URL: the error names PRT_PROXY_URL" \
+  "true" "$(grep -qF 'PRT_PROXY_URL is required' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+
+# And the assessment needs it when it stays on the proxy.
+PRT_TEST_REVIEW_BACKEND="file"
+PRT_TEST_ASSESS_BACKEND=""
+rc="$(run_orchestrator enforce 0 0 0 150)"
+assert_eq "enforce, file review, proxy assess, no proxy URL: fails closed on the assessment's need" "1" "$rc"
+assert_eq "enforce, file review, proxy assess, no proxy URL: the error names PRT_PROXY_URL" \
+  "true" "$(grep -qF 'PRT_PROXY_URL is required' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_TWO_FILE_DIFF=0
+unset PRT_TEST_REVIEW_BACKEND PRT_TEST_FINDINGS_FILE PRT_TEST_PROXY_URL
+rm -rf "$prt_ar_ff"
+
 unset PRT_TEST_ASSESS_BACKEND PRT_TEST_ASSESS_RUNNER PRT_TEST_ASSESS_RUNNER_BACKEND PRT_TEST_RUNNER_MODE PRT_TEST_RUNNER_LOG \
   PRT_TEST_REVIEW_BASE_SHA PRT_TEST_REVIEW_MATERIAL_SHA256
 PRT_TEST_MODEL_RESPONSE_MODE=clean
