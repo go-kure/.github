@@ -20,6 +20,7 @@ CHECKER="$ROOT/scripts/check-forbidden-terms.sh"
 
 TERM_WORD="cra""ne"
 CAMEL_WORD="Cra""ne"
+UPPER_WORD="CRA""NE"
 
 failures=0
 pass_count=0
@@ -107,6 +108,26 @@ assert_rc "a pragma for another term does not cover a camelCase hit" 1 \
 
 assert_rc "a pragma for the first of two adjacent camelCase terms does not cover the second" 1 \
   "$(run_fixture "$(printf 'func stale%s%sProfile() {} // allow-term:%s' "$CAMEL_WORD" "Bar""ge" "$TERM_WORD")")"
+
+# An identifier may also start with the term: it is the leading segment, with no
+# lowercase letter, digit or `_` in front of it, and still no word boundary after it.
+assert_rc "a lowercase leading segment before a capital fails" 1 \
+  "$(run_fixture "$(printf 'var %sClient = nil' "$TERM_WORD")")"
+
+assert_rc "a capitalised leading segment before a capital fails" 1 \
+  "$(run_fixture "$(printf 'type %sClient struct{}' "$CAMEL_WORD")")"
+
+assert_rc "an upper-case leading segment before an underscore fails" 1 \
+  "$(run_fixture "$(printf 'const %s_HOST = "x"' "$UPPER_WORD")")"
+
+assert_rc "a leading segment before an underscore or a digit fails" 1 \
+  "$(run_fixture "$(printf 'var %s_x, %s2 = 1, 2' "$TERM_WORD" "$TERM_WORD")")"
+
+assert_rc "a pragma covers a leading-segment hit" 0 \
+  "$(run_fixture "$(printf 'var %sClient = nil // allow-term:%s' "$TERM_WORD" "$TERM_WORD")")"
+
+assert_rc "a leading term followed by lowercase letters passes" 0 \
+  "$(run_fixture "$(printf 'var %sline, %ss, %ss = 1, 2, 3' "$TERM_WORD" "$CAMEL_WORD" "$UPPER_WORD")")"
 
 assert_rc "a capitalised term in prose still fails" 1 \
   "$(run_fixture "$(printf '%s is the operator.' "$CAMEL_WORD")")"

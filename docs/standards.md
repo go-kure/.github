@@ -942,7 +942,10 @@ identifiers. Downstream consumers depend on go-kure; the reverse coupling must n
 
 Inside an identifier a term is also a hit when it forms a whole camelCase segment: the
 capitalised term after a lowercase letter, a digit or `_`, and not followed by a lowercase
-letter (`newTermClient`, `v2Term`, `Test_Term`, where `Term` stands for a forbidden term).
+letter (`newTermClient`, `v2Term`, `Test_Term`, where `Term` stands for a forbidden term). It
+is also a hit as the leading segment of an identifier: lower-case or capitalised before a
+capital letter, a digit or `_`, upper-case before a digit or `_` (`termClient`, `TermClient`,
+`TERM_HOST`).
 
 **What to do with an existing reference:**
 

@@ -23,7 +23,10 @@
 #   wharf  crane  barge  harbor  rudder
 # Also inside an identifier, as a camelCase segment: the capitalised term after a
 # lowercase letter, a digit or `_`, and not followed by a lowercase letter
-# (`newTermClient`, `v2Term`, `Test_Term`; not `newTerms`).
+# (`newTermClient`, `v2Term`, `Test_Term`; not `newTerms`), or as the leading segment:
+# the term at the start of an identifier, lower-case or capitalised before a capital
+# letter, a digit or `_`, upper-case before a digit or `_` (`termClient`, `TermClient`,
+# `TERM_HOST`; not `termline`, `Terms`).
 #
 # Escape hatch: place `allow-term:<word>` on the same line as a legitimate hit, or
 # on the line immediately above or below it (e.g. go-containerregistry's `crane`).
@@ -41,7 +44,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --full-tree) MODE="full"; shift ;;
     --diff) MODE="diff"; BASE="${2:-}"; [[ -n "$BASE" ]] || { echo "ERROR: --diff needs a BASE ref" >&2; exit 2; }; shift 2 ;;
-    -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,35p' "$0"; exit 0 ;;
     *) echo "ERROR: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -98,8 +101,13 @@ allowed() {
 line_words() {
   local text="$1" w words=""
   for w in ${TERMS_RE//|/ }; do
+    # Three shapes: the whole word in any case; a camelCase segment after a lowercase
+    # letter, a digit or `_`; the leading segment of an identifier (lower or capitalised
+    # before a capital, a digit or `_`; upper-case before a digit or `_`).
     if grep -qiE "\b${w}\b" <<<"$text" \
-      || grep -qE "[[:lower:][:digit:]_]${w^}([^[:lower:]]|\$)" <<<"$text"; then
+      || grep -qE "[[:lower:][:digit:]_]${w^}([^[:lower:]]|\$)" <<<"$text" \
+      || grep -qE "(^|[^[:alnum:]_])(${w}|${w^})[[:upper:][:digit:]_]" <<<"$text" \
+      || grep -qE "(^|[^[:alnum:]_])${w^^}[[:digit:]_]" <<<"$text"; then
       words+="$w "
     fi
   done
