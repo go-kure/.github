@@ -381,16 +381,19 @@ Inputs, all from the environment:
 |---|---|
 | `PRT_FINDINGS_FILE` | The findings file: `{"format":"review-findings-v1","findings":[{file,line,severity,category,issue,fix,klass,claim}]}`. `line` may be `null` (a file-level finding). |
 | `PRT_HEAD_SHA` | The reviewed head. Already an input of the orchestrator. |
-| `PRT_REVIEW_BASE_SHA` | The base commit the review diffed against. |
-| `PRT_REVIEW_MATERIAL_SHA256` | The sha256 of the `git diff` bytes between that base and the head that the review read. |
+| `PRT_REVIEW_BASE_SHA` | The base commit the review diffed against. Derive it from the PR's base, not from the record. |
+| `PRT_REVIEW_MATERIAL_SHA256` | The sha256 of the canonical diff bytes between that base and the head: `git diff` run with fixed flags that make the bytes independent of any user git configuration (`-c core.quotePath=false -c diff.suppressBlankEmpty=false`, `--no-color --no-ext-diff --no-textconv --no-renames --full-index --binary --src-prefix=a/ --dst-prefix=b/ --unified=3 --inter-hunk-context=0 --diff-algorithm=myers --indent-heuristic --no-relative --submodule=short --ignore-submodules=none -O/dev/null`, `base head --`). A plain `git diff` gives different bytes and a `provenance-mismatch`. |
 
 The record next to the findings file, `provider.json` in the same directory, is the provenance:
 format `review-run-v1`, `outcome` `completed`, and `identity.head`, `identity.base` and
 `identity.material_sha256` equal to the three variables above. A missing or unreadable record, a
 review that did not complete, or any difference refuses the run. The record names no repository,
-so the repository cannot be checked; the three commit-and-digest fields are what binds the
-artifact to this run. The findings file itself is not hash-bound to the record: both are
-produced by one step and read from one directory.
+so the repository cannot be checked. The check binds the record to the environment, no more:
+only `PRT_HEAD_SHA` is known to the orchestrator on its own. If the caller copies the base and
+the digest out of `provider.json` into the environment, those two comparisons read the record
+against itself and bind nothing. To bind the artifact to this PR, the caller takes the base from
+the PR and recomputes the digest with the flags above. The findings file itself is not
+hash-bound to the record: both are produced by one step and read from one directory.
 
 Each chunk is answered with only the findings assigned to it, as `{"findings":[...]}` in the six
 fields `prt_normalize_findings` reads (`klass` and `claim` are dropped). A finding goes to one
@@ -413,7 +416,9 @@ mode without a findings path, chunk directory, chunk index or one of the three v
 `findings-file-missing`, `findings-file-malformed` (not JSON, wrong `format`, `findings` not an
 array, a finding without a `file`, or a `line` that is neither a number nor `null`), and
 `provenance-mismatch`. The orchestrator hands the chunk directory to the call as
-`PRT_CHUNK_DIR` and the chunk's position as the twelfth argument.
+`PRT_CHUNK_DIR` and the chunk's position as the twelfth argument. The failure line keeps the
+shared wording `review call failed (transport/proxy error, exit 1)` that the rest of this
+document and the tests match on; in file mode the bracketed reason after it is the cause.
 
 ## Failure surface
 
