@@ -29,7 +29,8 @@ inputs:
     description: >-
       claude-max-proxy base URL (OpenAI-compatible /v1/chat/completions).
       Required unless the review comes from a findings file
-      (PRT_REVIEW_BACKEND=file) and assess-enabled is "false"; the script
+      (PRT_REVIEW_BACKEND=file) and the assessment is off (assess-enabled
+      "false") or served by the runner (assess-backend "runner"); the script
       fails the run when it is empty and anything still needs the proxy.
     required: false
     default: ""
@@ -41,6 +42,31 @@ inputs:
       value fails the run.
     required: false
     default: "true"
+  assess-backend:
+    description: >-
+      Who answers the assessment call. Empty (default) is the proxy. "runner"
+      runs a review-run process per chunk instead, so enforce needs no proxy
+      URL when the review also comes from a findings file. Needs
+      assess-runner-backend, and PRT_REVIEW_BASE_SHA and
+      PRT_REVIEW_MATERIAL_SHA256 in the calling step's env, as for a findings
+      file. Any other value fails the run.
+    required: false
+    default: ""
+  assess-runner-backend:
+    description: >-
+      The review-run --backend value used when assess-backend is "runner"
+      (for example codex). Required then.
+    required: false
+    default: ""
+  assess-runner-env:
+    description: >-
+      Space-separated names of environment variables the runner may inherit,
+      typically the metered model key the calling step sets in its env. The
+      runner starts under env -i with only PATH, HOME, TMPDIR, LANG, LC_ALL and
+      these names; a posting-token name (PRT_GH_TOKEN, GITHUB_TOKEN, GH_TOKEN)
+      here fails the run.
+    required: false
+    default: ""
   bot-login:
     description: >-
       The login the github-token posts as, REST spelling (e.g.
@@ -128,6 +154,9 @@ runs:
         PRT_ASSESS_MODEL: ${{ inputs.assess-model }}
         PRT_ASSESS_MAX_TOKENS: ${{ inputs.assess-max-tokens }}
         PRT_ASSESS_ENABLED: ${{ inputs.assess-enabled }}
+        PRT_ASSESS_BACKEND: ${{ inputs.assess-backend }}
+        PRT_ASSESS_RUNNER_BACKEND: ${{ inputs.assess-runner-backend }}
+        PRT_ASSESS_RUNNER_ENV: ${{ inputs.assess-runner-env }}
         PRT_MAX_DIFF_CHARS: ${{ inputs.max-diff-chars }}
         PRT_MAX_FINDINGS_TOTAL: ${{ inputs.max-findings-total }}
         PRT_PROJECT_CONTEXT: ${{ inputs.project-context }}

@@ -373,8 +373,9 @@ The per-chunk review call can be answered from a findings file a separate review
 produced, instead of the proxy. The variable is read in `prt_model_review` (`model.sh`), one
 level above `_prt_call_proxy`, which has no chunk to assign by and is unchanged. Unset or empty
 is the proxy, as before; `file` selects `_prt_call_file`; any other value is refused, never read
-as the default. The assess call is untouched: it still goes to the proxy, so `PRT_PROXY_URL` is
-still required in this mode, unless assessment is switched off (next section).
+as the default. The assess call is untouched by this switch: it still goes to the proxy, so
+`PRT_PROXY_URL` is still required in this mode, unless assessment is switched off ("Skipping
+assessment") or served by the runner ("Assessment from the runner").
 
 Inputs, all from the environment:
 
@@ -446,7 +447,8 @@ it reports no findings).
   checks run after the `PRT_MODE=off` short-circuit, so `off` still skips the run whatever the
   switch holds.
 - **The proxy.** `PRT_PROXY_URL` (action input `proxy-url`, now optional) is required unless the
-  review comes from a findings file (`PRT_REVIEW_BACKEND=file`) and assessment is off. The script
+  review comes from a findings file (`PRT_REVIEW_BACKEND=file`) and assessment is off or served by
+  the runner (next section). The script
   checks this at start (after the `PRT_MODE=off` short-circuit, so `off` never needs a URL) and
   fails the run with `PRT_PROXY_URL is required`; with the proxy review
   backend, or with assessment on, an empty URL still fails closed.
@@ -454,6 +456,59 @@ it reports no findings).
   false positives; nothing in this mode suppresses them (the advisory comment's `FALSE_POSITIVE`
   filter has no verdict to act on), so the advisory comment is noisier. Whether to run the pilot unassessed is
   decided by the caller, from measurement, not by this switch.
+
+## Assessment from the runner (`PRT_ASSESS_BACKEND=runner`, action input `assess-backend`)
+
+`enforce` gates on verdicts and refuses `PRT_ASSESS_ENABLED=false`, so a deployment with no proxy
+needs the assessment served some other way. `runner` sends each chunk's assess request to a
+`review-run` process instead of the proxy. Unset or empty is the proxy, as before; any other value
+is refused at start, never read as the default (after the `PRT_MODE=off` short-circuit). The call is
+made inside the orchestrator, per chunk, because a finding's fingerprint is assigned only after
+every chunk is reviewed and the answer must echo it, so it cannot be a pre-built file. Everything
+after the call (salvage, one retry, join by fingerprint, degrade) is the proxy path's own code.
+
+Inputs, all from the environment:
+
+| Variable | Meaning |
+|---|---|
+| `PRT_ASSESS_RUNNER_BACKEND` | The runner's `--backend` value (action input `assess-runner-backend`). Required; its absence is refused at start. |
+| `PRT_ASSESS_RUNNER` | The runner executable (default `review-run`, found on `PATH`). |
+| `PRT_ASSESS_RUNNER_ROOT` | The checkout it reads (default: the working directory). |
+| `PRT_ASSESS_RUNNER_SECONDS` | Its deadline per call (default 600). |
+| `PRT_ASSESS_RUNNER_ENV` | Space-separated variable names the runner may inherit (action input `assess-runner-env`), typically the metered model key. |
+| `PRT_HEAD_SHA`, `PRT_REVIEW_BASE_SHA`, `PRT_REVIEW_MATERIAL_SHA256` | The identity the runner's record must carry; the last two are defined under "Review from a findings file". All required. |
+
+**The request.** System and user text are written to a temporary file and reach the runner on
+standard input, never in a command line; the one positional argument is a fixed instruction.
+Each call gets a fresh, empty output directory, so the retry after a malformed answer cannot read
+the first answer. The runner runs with `--sandbox none`.
+
+**Scrubbed environment.** The runner reads untrusted pull request text and has no sandbox, so it
+must not hold a token that can write to the PR. It is started under `env -i` with only `PATH`,
+`HOME`, `TMPDIR`, `LANG`, `LC_ALL` and the names in `PRT_ASSESS_RUNNER_ENV`. A list that names
+`PRT_GH_TOKEN`, `GITHUB_TOKEN` or `GH_TOKEN`, or a name that is not a plain identifier, fails the
+run at start (`PRT_ASSESS_RUNNER_ENV must list plain variable names and never a posting token`)
+rather than being dropped.
+
+**Provenance.** A call that exits 0 is still refused unless its `provider.json` has format
+`review-run-v1`, `outcome` `completed`, and `identity.head`, `identity.base`,
+`identity.material_sha256` equal to the three variables above and `identity.input_sha256` equal to
+the sha256 of the exact request bytes sent. The same caveat as for a findings file applies: copying
+the base and digest out of the record into the environment binds nothing.
+
+**Failures degrade, never abort.** Each ends as an assessment transport failure
+(`REVIEW_DEGRADED`, findings keep `verdict: null` and still gate, as `reconcile.sh` counts a null
+verdict like `VALID`), with the cause in brackets: `runner-incomplete` (exit 2), `runner-quota`
+(3), `runner-launch` (4), `runner-usage` (64, which includes an input over the runner's size
+limit), `runner-failed` (any other non-zero exit), `runner-no-output` (no `review.md`),
+`runner-empty`, `provenance-mismatch`, `backend-config` (a required variable is unset) and
+`local-tempdir`. A malformed answer is salvaged and retried once like a proxy answer.
+
+- **Proxy URL.** With the review also from a findings file, `enforce` runs with assessment on and
+  no `PRT_PROXY_URL`. With the proxy review, the URL is still required.
+- **What it does not solve.** No measurement yet of any backend as an assessor, or of per-chunk
+  latency and cost. Pointed at the backend that wrote the findings, a model grades its own
+  output. The GitLab review is a separate script and is not covered.
 
 ## Failure surface
 
