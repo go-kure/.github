@@ -15,8 +15,8 @@
 # PRT_LAST_MODEL_FAILURE — short, closed-vocabulary reason code for the LAST
 # failure _prt_call_proxy produced (curl-exit-N, http-NNN, empty-content,
 # deadline-exhausted, payload-build, local-tempdir) or _prt_call_file produced
-# (backend-config, findings-file-missing, findings-file-malformed,
-# provenance-mismatch; PRT_REVIEW_BACKEND=file). Read by callers in
+# (backend-config, local-tempdir, payload-build, findings-file-missing,
+# findings-file-malformed, provenance-mismatch; PRT_REVIEW_BACKEND=file). Read by callers in
 # pr-review-threads.sh to annotate a bare "exit 1" with which of several
 # unrelated causes actually fired — same cross-file pattern as
 # PRT_LAST_RETRY_AFTER/PRT_LAST_RATELIMIT_REMAINING in gh.sh.
@@ -521,7 +521,9 @@ prt_chunk_scope() {
 #                                what the record must say it reviewed
 # Every refusal returns 1 with a closed-vocabulary reason in the failure file,
 # like _prt_call_proxy's: backend-config (an input this mode needs is not
-# set), findings-file-missing, findings-file-malformed, provenance-mismatch.
+# set), local-tempdir (no scratch directory), payload-build (the selection
+# could not be built), findings-file-missing, findings-file-malformed,
+# provenance-mismatch.
 # The record names the commits and the digest of the base..head diff the review
 # read; it names no repository, so the repository cannot be checked here.
 #

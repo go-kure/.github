@@ -211,6 +211,8 @@ _PRT_AWK_NAME='
 # are never commentable. A file whose new path is /dev/null (deleted) is
 # skipped entirely — it has no right-side lines at all, consistent with
 # falling back to a file-level (subject_type: file) thread for it instead.
+# Git diffs only: a `diff -u` header carrying a tab and a timestamp after the
+# path would put the timestamp into the key, as it does in prt_diff_files.
 prt_build_line_index() {
   local diff_file="$1"
   LC_ALL=C awk "$_PRT_AWK_NAME"'
