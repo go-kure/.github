@@ -14,7 +14,9 @@
 
 # PRT_LAST_MODEL_FAILURE — short, closed-vocabulary reason code for the LAST
 # failure _prt_call_proxy produced (curl-exit-N, http-NNN, empty-content,
-# deadline-exhausted, payload-build, local-tempdir). Read by callers in
+# deadline-exhausted, payload-build, local-tempdir) or _prt_call_file produced
+# (backend-config, findings-file-missing, findings-file-malformed,
+# provenance-mismatch; PRT_REVIEW_BACKEND=file). Read by callers in
 # pr-review-threads.sh to annotate a bare "exit 1" with which of several
 # unrelated causes actually fired — same cross-file pattern as
 # PRT_LAST_RETRY_AFTER/PRT_LAST_RATELIMIT_REMAINING in gh.sh.

@@ -3123,6 +3123,10 @@ run_orchestrator() {
     PRT_TEST_WRITE_FAIL_BODY_MATCH="${PRT_TEST_WRITE_FAIL_BODY_MATCH:-}" \
     PRT_TEST_ISSUE_LIST_COUNTFILE="${PRT_TEST_ISSUE_LIST_COUNTFILE:-}" \
     PRT_TEST_ISSUE_LIST_FAIL_AFTER="${PRT_TEST_ISSUE_LIST_FAIL_AFTER:-}" \
+    PRT_REVIEW_BACKEND="${PRT_TEST_REVIEW_BACKEND:-}" \
+    PRT_FINDINGS_FILE="${PRT_TEST_FINDINGS_FILE:-}" \
+    PRT_REVIEW_BASE_SHA="${PRT_TEST_REVIEW_BASE_SHA:-}" \
+    PRT_REVIEW_MATERIAL_SHA256="${PRT_TEST_REVIEW_MATERIAL_SHA256:-}" \
     PRT_MAX_DIFF_CHARS="$max_diff_chars" \
     PRT_GH_TOKEN=x PRT_REPO=owner/repo PRT_PR_NUMBER=1 \
     PRT_HEAD_SHA=1111111111111111111111111111111111111111 \
@@ -5804,6 +5808,41 @@ assert_eq "file backend: file mode without a chunk index is refused (rc)" "1" "$
 
 unset PRT_TEST_CURL_COUNT_FILE
 rm -rf "$prt_fb_dir"
+
+# The orchestrator's own wiring: it must set PRT_CHUNK_DIR and hand each review
+# call its chunk index, or file mode refuses every chunk. Two files, two chunks
+# (the same fixture as the two-chunk cases above); one finding per file.
+prt_fo_dir="$(mktemp -d)"
+cat > "$prt_fo_dir/findings.json" <<'FOFINDINGS'
+{"format":"review-findings-v1","findings":[
+ {"file":"x.go","line":1,"severity":"high","category":"logic-error","issue":"issue-for-x","fix":"fix-x","klass":"blocking","claim":"cx"},
+ {"file":"y.go","line":1,"severity":"high","category":"race","issue":"issue-for-y","fix":"fix-y","klass":"blocking","claim":"cy"}
+]}
+FOFINDINGS
+jq -n '{format:"review-run-v1", outcome:"completed", backend:"x", identity:{root:"/r", head:"1111111111111111111111111111111111111111", base:"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", material_sha256:"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", input_sha256:"d", add_dirs:[]}}' \
+  > "$prt_fo_dir/provider.json"
+PRT_TEST_REVIEW_BACKEND="file"
+PRT_TEST_FINDINGS_FILE="$prt_fo_dir/findings.json"
+PRT_TEST_REVIEW_BASE_SHA="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+PRT_TEST_REVIEW_MATERIAL_SHA256="cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+PRT_TEST_TWO_FILE_DIFF=1
+PRT_TEST_CREATE_BODY_LOG="$(mktemp)"
+rc="$(run_orchestrator enforce 0 0 0 150)"
+assert_eq "file backend, orchestrator: two chunks served from the findings file -> exits 0" "0" "$rc"
+assert_eq "file backend, orchestrator: no proxy review call was made" "0" "$(cat "$PRT_TEST_MODEL_COUNTFILE")"
+assert_eq "file backend, orchestrator: no chunk refused (no REVIEW_INCOMPLETE, no REVIEW_DEGRADED)" \
+  "false false" "$(grep -qF 'REVIEW_INCOMPLETE:' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(grep -qF 'REVIEW_DEGRADED:' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "file backend, orchestrator: each chunk's own finding became a thread (one for x.go, one for y.go)" \
+  "true true" "$(grep -qF 'issue-for-x' "$PRT_TEST_CREATE_BODY_LOG" && echo true || echo false) $(grep -qF 'issue-for-y' "$PRT_TEST_CREATE_BODY_LOG" && echo true || echo false)"
+# A record for another run refuses every chunk, and the refusal is the reason, not a proxy error.
+jq '.identity.head = "9999999999999999999999999999999999999999"' "$prt_fo_dir/provider.json" > "$prt_fo_dir/provider.tmp" && mv "$prt_fo_dir/provider.tmp" "$prt_fo_dir/provider.json"
+rc="$(run_orchestrator enforce 0 0 0 150)"
+assert_eq "file backend, orchestrator: a record for another head fails closed -> exits 1" "1" "$rc"
+assert_eq "file backend, orchestrator: the refusal names provenance-mismatch" \
+  "true" "$(grep -qF 'provenance-mismatch' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+unset PRT_TEST_REVIEW_BACKEND PRT_TEST_FINDINGS_FILE PRT_TEST_REVIEW_BASE_SHA PRT_TEST_REVIEW_MATERIAL_SHA256 PRT_TEST_CREATE_BODY_LOG
+PRT_TEST_TWO_FILE_DIFF=0
+rm -rf "$prt_fo_dir"
 
 # ============================================================ model.sh: unparseable-response diagnostic (go-kure/.github#81)
 # Every PR in this repo went red with `len=57 leading=starts-with-prose` and
