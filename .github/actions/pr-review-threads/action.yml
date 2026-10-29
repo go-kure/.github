@@ -46,8 +46,9 @@ inputs:
     description: >-
       Who answers the assessment call. Empty (default) is the proxy. "runner"
       runs a review-run process per chunk instead, so the run needs no proxy
-      URL when the review also comes from a findings file. Refused in enforce
-      mode until the runner has a process boundary. Needs
+      URL when the review also comes from a findings file. Do not enable it on
+      a consumer, in any mode, until the runner has a process boundary;
+      enforce refuses it. Needs
       assess-runner-backend, and PRT_REVIEW_BASE_SHA and
       PRT_REVIEW_MATERIAL_SHA256 in the calling step's env, as for a findings
       file. Any other value fails the run.
@@ -61,7 +62,8 @@ inputs:
     default: ""
   assess-runner-env:
     description: >-
-      Space-separated names of environment variables the runner may inherit,
+      Names (any whitespace between them) of environment variables the runner
+      may inherit, each of which must be set in the calling step,
       typically the metered model key the calling step sets in its env. The
       runner starts under env -i with only PATH, HOME, TMPDIR, LANG, LC_ALL and
       these names; a posting-token name (PRT_GH_TOKEN, GITHUB_TOKEN, GH_TOKEN)

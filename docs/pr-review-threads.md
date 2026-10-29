@@ -479,7 +479,7 @@ made inside the orchestrator, per chunk, because a finding's fingerprint is assi
 every chunk is reviewed and the answer must echo it, so it cannot be a pre-built file. Everything
 after the call (salvage, one retry, join by fingerprint, degrade) is the proxy path's own code.
 
-For now it runs in `advisory` only: `enforce` refuses it at start (see "Not in `enforce`" below).
+The default stays the proxy, and nothing in this repository sets the runner backend for a caller. Do not enable it on any consumer, in any mode, until the runner has a process boundary (see "What it does not solve" below): `advisory` has the same exposure, and `enforce` refuses it at start.
 
 Inputs, all from the environment:
 
@@ -489,8 +489,8 @@ Inputs, all from the environment:
 | `PRT_ASSESS_RUNNER` | The runner executable (default `review-run`, found on `PATH`). |
 | `PRT_ASSESS_RUNNER_ROOT` | The checkout it reads (default: the working directory). |
 | `PRT_ASSESS_RUNNER_SECONDS` | Its deadline per call (default 600), clamped to what is left of the run's model deadline (`PRT_MODEL_DEADLINE_EPOCH`, the same one the proxy calls use). A call is refused as `deadline-exhausted` when less than the 30-second floor remains. Must be a whole number of seconds. |
-| `PRT_ASSESS_RUNNER_ENV` | Space-separated variable names the runner may inherit (action input `assess-runner-env`), typically the metered model key. |
-| `PRT_HEAD_SHA`, `PRT_REVIEW_BASE_SHA`, `PRT_REVIEW_MATERIAL_SHA256` | The identity the runner's record must carry; the last two are defined under "Review from a findings file". All required. |
+| `PRT_ASSESS_RUNNER_ENV` | Variable names the runner may inherit, separated by any whitespace, newlines included (action input `assess-runner-env`), typically the metered model key. Every listed name must be set in the step, or the run fails at start naming it. |
+| `PRT_HEAD_SHA`, `PRT_REVIEW_BASE_SHA`, `PRT_REVIEW_MATERIAL_SHA256` | The identity the runner's record must carry; the last two are defined under "Review from a findings file". All required: a missing one fails the run at start. |
 
 **The request.** System and user text are written to a temporary file and reach the runner on
 standard input, never in a command line; the one positional argument is a fixed instruction.
@@ -500,9 +500,11 @@ the first answer. The runner runs with `--sandbox none`.
 **Scrubbed environment.** The runner reads untrusted pull request text and has no sandbox, so it
 must not hold a token that can write to the PR. It is started under `env -i` with only `PATH`,
 `HOME`, `TMPDIR`, `LANG`, `LC_ALL` and the names in `PRT_ASSESS_RUNNER_ENV`. A list that names
-`PRT_GH_TOKEN`, `GITHUB_TOKEN` or `GH_TOKEN`, or a name that is not a plain identifier, fails the
-run at start (`PRT_ASSESS_RUNNER_ENV must list plain variable names and never a posting token`)
-rather than being dropped.
+`PRT_GH_TOKEN`, `GITHUB_TOKEN` or `GH_TOKEN` on any line, a name that is not a plain identifier, or
+a name that is not set fails the run at start with `PRT_ASSESS_RUNNER_ENV` in the message, rather
+than being dropped. The calling workflow's checkout also has to leave no credentials in
+`.git/config` (`persist-credentials: false`, as `pr-review.yml` sets), because the runner reads the
+checkout.
 
 **Provenance.** A call that exits 0 is still refused unless its `provider.json` has format
 `review-run-v1`, `outcome` `completed`, and `identity.head`, `identity.base`,
@@ -516,7 +518,8 @@ verdict like `VALID`), with the cause in brackets: `runner-incomplete` (exit 2),
 (3), `runner-launch` (4), `runner-usage` (64, which includes an input over the runner's size
 limit), `runner-failed` (any other non-zero exit), `runner-no-output` (no `review.md`),
 `runner-empty`, `provenance-mismatch`, `deadline-exhausted`, `backend-config` (a required
-variable is unset or `PRT_ASSESS_RUNNER_SECONDS` is not a whole number) and `local-tempdir`. A malformed answer is salvaged and retried once like a proxy answer.
+variable is unset or `PRT_ASSESS_RUNNER_SECONDS` is not a whole number; the start checks catch the
+usual cases first) and `local-tempdir`. A malformed answer is salvaged and retried once like a proxy answer.
 
 - **Proxy URL.** With the review also from a findings file, the run needs no `PRT_PROXY_URL`
   when assessment is on. With the proxy review, the URL is still required.

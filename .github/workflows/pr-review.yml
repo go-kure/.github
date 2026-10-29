@@ -235,6 +235,10 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
+          # The review reads files and calls the API with the github-token input; it
+          # never pushes, so no token should sit in .git/config where a runner
+          # started under this checkout could read it.
+          persist-credentials: false
 
       - name: Setup tools
         run: |

@@ -14,9 +14,12 @@
 
 # PRT_LAST_MODEL_FAILURE — short, closed-vocabulary reason code for the LAST
 # failure _prt_call_proxy produced (curl-exit-N, http-NNN, empty-content,
-# deadline-exhausted, payload-build, local-tempdir) or _prt_call_file produced
+# deadline-exhausted, payload-build, local-tempdir), _prt_call_file produced
 # (backend-config, local-tempdir, payload-build, findings-file-missing,
-# findings-file-malformed, provenance-mismatch; PRT_REVIEW_BACKEND=file). Read by callers in
+# findings-file-malformed, provenance-mismatch; PRT_REVIEW_BACKEND=file) or
+# _prt_call_runner produced (backend-config, local-tempdir, deadline-exhausted,
+# runner-incomplete, runner-quota, runner-launch, runner-usage, runner-failed,
+# runner-no-output, runner-empty, provenance-mismatch; PRT_ASSESS_BACKEND=runner). Read by callers in
 # pr-review-threads.sh to annotate a bare "exit 1" with which of several
 # unrelated causes actually fired — same cross-file pattern as
 # PRT_LAST_RETRY_AFTER/PRT_LAST_RATELIMIT_REMAINING in gh.sh.
@@ -729,21 +732,38 @@ ${chunk_diff}
 # _prt_runner_env_build — fills PRT_RUNNER_ENV_ARGS with NAME=value words for
 # `env -i`. The runner reads untrusted PR text and runs without a sandbox, so it
 # gets PATH, HOME, TMPDIR, LANG, LC_ALL and the names listed in
-# PRT_ASSESS_RUNNER_ENV (space separated; the model key lives there), nothing
-# else. A posting-token name in the list, or a name that is not a plain
-# identifier, is refused (return 1) rather than dropped.
+# PRT_ASSESS_RUNNER_ENV (any whitespace separates them, newlines included; the
+# model key lives there), nothing else. Returns 1, with the reason in
+# PRT_RUNNER_ENV_ERROR, for a posting-token name, a name that is not a plain
+# identifier (refused, never dropped) and a listed name that is not set: a
+# variable the runner needs but never receives would surface later as an opaque
+# runner failure. The five defaults are skipped when unset.
+# shellcheck disable=SC2034 # PRT_RUNNER_ENV_ERROR is read by pr-review-threads.sh at start, not within this file
 _prt_runner_env_build() {
-  local name extra=()
+  local name extra=() IFS=$' \t\n'
   PRT_RUNNER_ENV_ARGS=()
-  read -ra extra <<< "${PRT_ASSESS_RUNNER_ENV:-}"
-  for name in PATH HOME TMPDIR LANG LC_ALL "${extra[@]}"; do
-    case "$name" in
-      PRT_GH_TOKEN|GITHUB_TOKEN|GH_TOKEN) return 1 ;;
-    esac
-    [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
+  PRT_RUNNER_ENV_ERROR=""
+  read -rd '' -a extra <<< "${PRT_ASSESS_RUNNER_ENV:-}" || true
+  for name in PATH HOME TMPDIR LANG LC_ALL; do
     if [ -n "${!name+x}" ]; then
       PRT_RUNNER_ENV_ARGS+=("$name=${!name}")
     fi
+  done
+  for name in ${extra[@]+"${extra[@]}"}; do
+    case "$name" in
+      PRT_GH_TOKEN|GITHUB_TOKEN|GH_TOKEN)
+        PRT_RUNNER_ENV_ERROR="PRT_ASSESS_RUNNER_ENV must not name a posting token ($name)"
+        return 1 ;;
+    esac
+    if ! [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+      PRT_RUNNER_ENV_ERROR="PRT_ASSESS_RUNNER_ENV holds a name that is not a plain variable name"
+      return 1
+    fi
+    if [ -z "${!name+x}" ]; then
+      PRT_RUNNER_ENV_ERROR="PRT_ASSESS_RUNNER_ENV lists $name, which is not set"
+      return 1
+    fi
+    PRT_RUNNER_ENV_ARGS+=("$name=${!name}")
   done
 }
 
