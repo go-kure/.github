@@ -447,7 +447,8 @@ it reports no findings).
   switch holds.
 - **The proxy.** `PRT_PROXY_URL` (action input `proxy-url`, now optional) is required unless the
   review comes from a findings file (`PRT_REVIEW_BACKEND=file`) and assessment is off. The script
-  checks this at start and fails the run with `PRT_PROXY_URL is required`; with the proxy review
+  checks this at start (after the `PRT_MODE=off` short-circuit, so `off` never needs a URL) and
+  fails the run with `PRT_PROXY_URL is required`; with the proxy review
   backend, or with assessment on, an empty URL still fails closed.
 - **What it does not solve.** Unassessed findings include the ones assessment would have judged
   false positives; nothing in this mode suppresses them (the advisory comment's `FALSE_POSITIVE`

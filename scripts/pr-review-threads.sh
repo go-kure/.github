@@ -174,14 +174,7 @@ esac
 # short-circuit below, so a misconfigured switch cannot block "off". ---
 : "${PRT_ASSESS_ENABLED:=true}"
 
-# The proxy is needed by the review call (any backend but the findings file) and
-# by the assess call (unless it is switched off). Only a findings-file review
-# with assessment off can run without it.
 : "${PRT_PROXY_URL:=}"
-if [ -z "$PRT_PROXY_URL" ] && { [ "${PRT_REVIEW_BACKEND:-}" != file ] || [ "$PRT_ASSESS_ENABLED" != false ]; }; then
-  echo "ERROR: PRT_PROXY_URL is required" >&2
-  exit 1
-fi
 
 WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT
@@ -223,6 +216,15 @@ case "$PRT_ASSESS_ENABLED" in
 esac
 if [ "$PRT_ASSESS_ENABLED" = false ] && [ "$PRT_MODE" = enforce ]; then
   echo "ERROR: PRT_ASSESS_ENABLED=false is not allowed in enforce mode: enforce keeps assessment" >&2
+  exit 1
+fi
+
+# The proxy is needed by the review call (any backend but the findings file) and
+# by the assess call (unless it is switched off). Only a findings-file review
+# with assessment off can run without it. Checked here, after the off
+# short-circuit, so a proxy-free caller can still turn the run off.
+if [ -z "$PRT_PROXY_URL" ] && { [ "${PRT_REVIEW_BACKEND:-}" != file ] || [ "$PRT_ASSESS_ENABLED" != false ]; }; then
+  echo "ERROR: PRT_PROXY_URL is required" >&2
   exit 1
 fi
 
