@@ -6665,6 +6665,10 @@ PRT_TEST_ASSESS_ENABLED=""
 rc="$(run_orchestrator advisory 0 0 0)"
 assert_eq "assess unset, same review: the assess call is made (the switch is what skips it)" \
   "1" "$(cat "$PRT_TEST_ASSESS_COUNTFILE")"
+# The negative check below only means something if a comment was posted: the
+# harness empties the capture before each run, so an aborted run leaves it empty.
+assert_eq "assess unset, same review: the run exits 0 and a comment was posted (capture holds its heading)" \
+  "0 true" "$rc $(grep -qF '## AI Code Review (advisory mode' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && echo true || echo false)"
 assert_eq "assess unset, same review: the posted comment carries no not-assessed notice" \
   "false" "$(grep -qF 'Assessment was switched off' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && echo true || echo false)"
 rm -f "$PRT_TEST_ISSUE_COMMENT_BODY_FILE"
@@ -6694,6 +6698,13 @@ rc="$(run_orchestrator off 0 0 0 150)"
 assert_eq "mode off with assess 'maybe': still exits 0 (off short-circuits before the switch is validated)" "0" "$rc"
 assert_eq "mode off with assess 'maybe': no switch error was printed" \
   "false" "$(grep -qF 'PRT_ASSESS_ENABLED must be true or false' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+# The same with no proxy URL at all (a findings-file caller): off must not ask for it either.
+PRT_TEST_PROXY_URL=""
+rc="$(run_orchestrator off 0 0 0 150)"
+assert_eq "mode off, file backend, assess 'maybe', no proxy URL: still exits 0" "0" "$rc"
+assert_eq "mode off, file backend, assess 'maybe', no proxy URL: no PRT_PROXY_URL error" \
+  "false" "$(grep -qF 'PRT_PROXY_URL is required' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_PROXY_URL="http://proxy.invalid"
 
 # The rendered advisory comment itself: the notice shows with findings and with none.
 adv_as_rows="$(prt_render_advisory_comment '[{"severity":"High","category":"other","file":"x.go","line":7,"issue":"i","fix":"f"}]' "" "" "[]" true)"
