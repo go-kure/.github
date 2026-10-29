@@ -708,6 +708,8 @@ ${chunk_diff}
 #   PRT_ASSESS_RUNNER_SECONDS    its deadline (default: 600)
 #   PRT_REVIEW_BASE_SHA          the PR's base commit (required)
 #   PRT_HEAD_SHA, PRT_REVIEW_MATERIAL_SHA256   the identity its record must carry (required)
+#   PRT_ASSESS_RUNNER_ENV        extra variable names the runner may inherit (the model
+#                                key); it runs under `env -i`, see _prt_runner_env_build
 # Every refusal returns 1 with a closed-vocabulary reason in the failure file:
 # backend-config (an input this mode needs is not set), local-tempdir,
 # runner-incomplete (review-run exit 2), runner-quota (3), runner-launch (4),
@@ -715,6 +717,27 @@ ${chunk_diff}
 # non-zero exit), runner-no-output (it exited 0 and left no review.md),
 # runner-empty (review.md holds nothing), provenance-mismatch (provider.json
 # does not tie the answer to this head, base, material and request).
+# _prt_runner_env_build — fills PRT_RUNNER_ENV_ARGS with NAME=value words for
+# `env -i`. The runner reads untrusted PR text and runs without a sandbox, so it
+# gets PATH, HOME, TMPDIR, LANG, LC_ALL and the names listed in
+# PRT_ASSESS_RUNNER_ENV (space separated; the model key lives there), nothing
+# else. A posting-token name in the list, or a name that is not a plain
+# identifier, is refused (return 1) rather than dropped.
+_prt_runner_env_build() {
+  local name extra=()
+  PRT_RUNNER_ENV_ARGS=()
+  read -ra extra <<< "${PRT_ASSESS_RUNNER_ENV:-}"
+  for name in PATH HOME TMPDIR LANG LC_ALL "${extra[@]}"; do
+    case "$name" in
+      PRT_GH_TOKEN|GITHUB_TOKEN|GH_TOKEN) return 1 ;;
+    esac
+    [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
+    if [ -n "${!name+x}" ]; then
+      PRT_RUNNER_ENV_ARGS+=("$name=${!name}")
+    fi
+  done
+}
+
 _prt_call_runner() {
   local request="$1" runner backend root seconds tmp out req_sha rc=0
   _prt_set_model_failure ""
@@ -725,6 +748,10 @@ _prt_call_runner() {
   seconds="${PRT_ASSESS_RUNNER_SECONDS:-600}"
   if [ -z "$backend" ] || [ -z "${PRT_REVIEW_BASE_SHA:-}" ] \
      || [ -z "${PRT_HEAD_SHA:-}" ] || [ -z "${PRT_REVIEW_MATERIAL_SHA256:-}" ]; then
+    _prt_set_model_failure "backend-config"
+    return 1
+  fi
+  if ! _prt_runner_env_build; then
     _prt_set_model_failure "backend-config"
     return 1
   fi
@@ -739,7 +766,8 @@ _prt_call_runner() {
     return 1
   fi
   out="$tmp/out"
-  "$runner" --backend "$backend" --root "$root" --base "$PRT_REVIEW_BASE_SHA" \
+  env -i "${PRT_RUNNER_ENV_ARGS[@]}" \
+    "$runner" --backend "$backend" --root "$root" --base "$PRT_REVIEW_BASE_SHA" \
     --seconds "$seconds" --sandbox none --out "$out" \
     -- "Perform the assessment described on the standard input. Answer with only the JSON object it asks for." \
     < "$tmp/request" > /dev/null || rc=$?

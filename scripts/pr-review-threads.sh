@@ -233,6 +233,10 @@ if [ "${PRT_ASSESS_BACKEND:-}" = runner ] && [ -z "${PRT_ASSESS_RUNNER_BACKEND:-
   echo "ERROR: PRT_ASSESS_RUNNER_BACKEND is required when PRT_ASSESS_BACKEND=runner" >&2
   exit 1
 fi
+if [ "${PRT_ASSESS_BACKEND:-}" = runner ] && ! _prt_runner_env_build; then
+  echo "ERROR: PRT_ASSESS_RUNNER_ENV must list plain variable names and never a posting token (PRT_GH_TOKEN, GITHUB_TOKEN, GH_TOKEN)" >&2
+  exit 1
+fi
 
 # The proxy is needed by the review call (any backend but the findings file) and
 # by the assess call (unless it is switched off or served by the runner). Only a
