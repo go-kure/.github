@@ -394,7 +394,7 @@ prt_render_overflow_comment() {
 # EXCLUDED_JSON (optional 4th argument, go-kure/.github#293) lists the files
 # this run excluded; prt_render_excluded_section puts them above the footer.
 prt_render_advisory_comment() {
-  local findings="$1" incomplete_reasons="${2:-}" degraded_reasons="${3:-}" excluded="${4:-[]}"
+  local findings="$1" incomplete_reasons="${2:-}" degraded_reasons="${3:-}" excluded="${4:-[]}" assess_skipped="${5:-}"
   local count excluded_len rows="" excluded_section=""
   # Every jq runs, checked, before anything is printed (see prt_render_summary).
   count="$(jq 'length' <<< "$findings" 2>/dev/null)" || return 1
@@ -419,6 +419,13 @@ prt_render_advisory_comment() {
   fi
   {
     printf '## AI Code Review (advisory mode — %s finding(s))\n\n' "$count"
+    # ASSESS_SKIPPED (optional 5th argument, "true" when PRT_ASSESS_ENABLED=false):
+    # no finding was assessed, so none was checked for a false positive, and the
+    # table has no verdict column to show it. This line is the only place the
+    # posted comment says so; it applies to the "No issues found." case too.
+    if [ "$assess_skipped" = true ]; then
+      printf '> **Assessment was switched off for this run** — the findings below were not checked for false positives.\n\n'
+    fi
     if [ -n "$incomplete_reasons" ]; then
       printf '> **⚠ This review run was incomplete** — some or all chunks failed to review.'
       printf ' The finding count/table below reflects only what succeeded; it is not a clean bill of health.\n'

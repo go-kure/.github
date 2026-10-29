@@ -6469,14 +6469,23 @@ assert_eq "assess off, proxy review backend, no proxy URL: the error names PRT_P
 # Assessment off with the proxy review: the review is served, assess is never called.
 PRT_TEST_PROXY_URL="http://proxy.invalid"
 PRT_TEST_MODEL_RESPONSE_MODE=clean_with_finding
+PRT_TEST_ISSUE_COMMENT_BODY_FILE="$(mktemp)"
 rc="$(run_orchestrator advisory 0 0 0)"
 assert_eq "assess off, proxy review backend: exits 0" "0" "$rc"
 assert_eq "assess off, proxy review backend: review called, assess never (the review returned a finding)" \
   "true 0" "$([ "$(cat "$PRT_TEST_MODEL_COUNTFILE")" -ge 1 ] && echo true || echo false) $(cat "$PRT_TEST_ASSESS_COUNTFILE")"
+# The posted advisory comment is the surface a reader sees: it must say the
+# findings were not assessed, not only the job summary and the log.
+assert_eq "assess off: the posted advisory comment discloses that assessment was off, above a non-empty table" \
+  "true true" "$(grep -qF 'Assessment was switched off for this run' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && echo true || echo false) $(grep -qF '| Severity | Category | File | Line | Issue | Fix |' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && echo true || echo false)"
 PRT_TEST_ASSESS_ENABLED=""
 rc="$(run_orchestrator advisory 0 0 0)"
 assert_eq "assess unset, same review: the assess call is made (the switch is what skips it)" \
   "1" "$(cat "$PRT_TEST_ASSESS_COUNTFILE")"
+assert_eq "assess unset, same review: the posted comment carries no not-assessed notice" \
+  "false" "$(grep -qF 'Assessment was switched off' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && echo true || echo false)"
+rm -f "$PRT_TEST_ISSUE_COMMENT_BODY_FILE"
+unset PRT_TEST_ISSUE_COMMENT_BODY_FILE
 PRT_TEST_MODEL_RESPONSE_MODE=clean
 PRT_TEST_ASSESS_ENABLED="false"
 PRT_TEST_REVIEW_BACKEND="file"
@@ -6496,6 +6505,23 @@ rc="$(run_orchestrator advisory 0 0 0 150)"
 assert_eq "assess 'maybe': fails closed" "1" "$rc"
 assert_eq "assess 'maybe': the error names PRT_ASSESS_ENABLED" \
   "true" "$(grep -qF 'PRT_ASSESS_ENABLED must be true or false' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+
+# PRT_MODE=off stays the escape hatch: a misconfigured switch does not stop it.
+rc="$(run_orchestrator off 0 0 0 150)"
+assert_eq "mode off with assess 'maybe': still exits 0 (off short-circuits before the switch is validated)" "0" "$rc"
+assert_eq "mode off with assess 'maybe': no switch error was printed" \
+  "false" "$(grep -qF 'PRT_ASSESS_ENABLED must be true or false' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+
+# The rendered advisory comment itself: the notice shows with findings and with none.
+adv_as_rows="$(prt_render_advisory_comment '[{"severity":"High","category":"other","file":"x.go","line":7,"issue":"i","fix":"f"}]' "" "" "[]" true)"
+assert_eq "prt_render_advisory_comment: assess-skipped flag puts the notice above the table" \
+  "true" "$(awk '/Assessment was switched off/ {n=NR} /\| Severity \|/ {t=NR} END {print (n && t && n < t) ? "true" : "false"}' <<< "$adv_as_rows")"
+adv_as_zero="$(prt_render_advisory_comment '[]' "" "" "[]" true)"
+assert_eq "prt_render_advisory_comment: assess-skipped flag shows the notice even with no findings" \
+  "true" "$(grep -qF 'Assessment was switched off for this run' <<< "$adv_as_zero" && echo true || echo false)"
+adv_as_default="$(prt_render_advisory_comment '[{"severity":"High","category":"other","file":"x.go","line":7,"issue":"i","fix":"f"}]')"
+assert_eq "prt_render_advisory_comment: without the flag there is no notice" \
+  "false" "$(grep -qF 'Assessment was switched off' <<< "$adv_as_default" && echo true || echo false)"
 
 unset PRT_TEST_REVIEW_BACKEND PRT_TEST_FINDINGS_FILE PRT_TEST_REVIEW_BASE_SHA PRT_TEST_REVIEW_MATERIAL_SHA256 PRT_TEST_ASSESS_ENABLED PRT_TEST_PROXY_URL
 rm -f "$PRT_TEST_SUMMARY_COPY"
