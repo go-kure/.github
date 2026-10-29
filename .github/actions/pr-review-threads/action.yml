@@ -66,8 +66,8 @@ inputs:
       may inherit, each of which must be set in the calling step,
       typically the metered model key the calling step sets in its env. The
       runner starts under env -i with only PATH, HOME, TMPDIR, LANG, LC_ALL and
-      these names; a posting-token name (PRT_GH_TOKEN, GITHUB_TOKEN, GH_TOKEN)
-      here fails the run.
+      these names; a token name (PRT_GH_TOKEN, GITHUB_TOKEN, GH_TOKEN, the
+      enterprise and Actions runtime tokens) here fails the run.
     required: false
     default: ""
   bot-login:
