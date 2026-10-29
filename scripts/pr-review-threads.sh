@@ -242,9 +242,19 @@ if [ "${PRT_ASSESS_BACKEND:-}" = runner ] && [ -z "${PRT_ASSESS_RUNNER_BACKEND:-
   echo "ERROR: PRT_ASSESS_RUNNER_BACKEND is required when PRT_ASSESS_BACKEND=runner" >&2
   exit 1
 fi
-if [ "${PRT_ASSESS_BACKEND:-}" = runner ] && ! _prt_runner_env_build; then
-  echo "ERROR: PRT_ASSESS_RUNNER_ENV must list plain variable names and never a posting token (PRT_GH_TOKEN, GITHUB_TOKEN, GH_TOKEN)" >&2
-  exit 1
+# The record the runner writes must tie its answer to this head, base and diff, so
+# a missing identity input is a configuration error here, not a degraded chunk later.
+if [ "${PRT_ASSESS_BACKEND:-}" = runner ]; then
+  for _prt_need in PRT_REVIEW_BASE_SHA PRT_REVIEW_MATERIAL_SHA256; do
+    if [ -z "${!_prt_need:-}" ]; then
+      echo "ERROR: $_prt_need is required when PRT_ASSESS_BACKEND=runner" >&2
+      exit 1
+    fi
+  done
+  if ! _prt_runner_env_build; then
+    echo "ERROR: $PRT_RUNNER_ENV_ERROR (names are plain variable names, set in this step, and never a posting token: PRT_GH_TOKEN, GITHUB_TOKEN, GH_TOKEN)" >&2
+    exit 1
+  fi
 fi
 
 # The proxy is needed by the review call (any backend but the findings file) and
