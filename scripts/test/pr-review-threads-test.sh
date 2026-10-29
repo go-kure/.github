@@ -3572,6 +3572,8 @@ run_orchestrator() {
     PRT_TEST_RUNNER_LOG="${PRT_TEST_RUNNER_LOG:-}" \
     PRT_TEST_RUNNER_PROV="${PRT_TEST_RUNNER_PROV:-}" \
     PRT_ASSESS_RUNNER_ENV="${PRT_TEST_ASSESS_RUNNER_ENV:-}" \
+    PRT_MODEL_BUDGET_SECONDS="${PRT_TEST_MODEL_BUDGET_SECONDS:-}" \
+    PRT_ASSESS_RUNNER_SECONDS="${PRT_TEST_ASSESS_RUNNER_SECONDS:-}" \
     PRT_MAX_DIFF_CHARS="$max_diff_chars" \
     PRT_GH_TOKEN="${PRT_TEST_GH_TOKEN:-x}" PRT_REPO=owner/repo PRT_PR_NUMBER=1 \
     PRT_HEAD_SHA=1111111111111111111111111111111111111111 \
@@ -7053,6 +7055,35 @@ assert_eq "enforce, file review, runner assess, no proxy URL: one runner call pe
 assert_eq "enforce, file review, runner assess, no proxy URL: coverage says review+assess ok" \
   "true" "$(grep -qE 'coverage: 2/2 chunks review\+assess ok' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 
+# The runner call shares the run's model deadline with the proxy calls: it is
+# clamped to what is left, and refused when too little is left, so slow chunks
+# cannot eat the time reserved for posting the findings.
+prt_ar_seconds() { sed -n '/^--seconds$/{n;p;}' "$PRT_TEST_RUNNER_LOG.argv.${1:-1}"; }
+rm -f "$PRT_TEST_RUNNER_LOG".*
+rc="$(run_orchestrator advisory 0 0 0 150)"
+assert_eq "assess runner deadline, default budget: each call gets the 600s default" \
+  "0 2 600 600" "$rc $(prt_ar_calls) $(prt_ar_seconds 1) $(prt_ar_seconds 2)"
+rm -f "$PRT_TEST_RUNNER_LOG".*
+PRT_TEST_MODEL_BUDGET_SECONDS=100
+rc="$(run_orchestrator advisory 0 0 0 150)"
+assert_eq "assess runner deadline, 100s budget: the call is clamped to what is left" \
+  "0 2 true true" "$rc $(prt_ar_calls) \
+$([ "$(prt_ar_seconds 1)" -ge 90 ] && [ "$(prt_ar_seconds 1)" -le 100 ] && echo true || echo false) \
+$([ "$(prt_ar_seconds 2)" -ge 1 ] && [ "$(prt_ar_seconds 2)" -le 100 ] && echo true || echo false)"
+rm -f "$PRT_TEST_RUNNER_LOG".*
+PRT_TEST_MODEL_BUDGET_SECONDS=10
+rc="$(run_orchestrator advisory 0 0 0 150)"
+assert_eq "assess runner deadline, budget below the floor: no runner call, run still exits 0" "0 0" "$rc $(prt_ar_calls)"
+assert_eq "assess runner deadline, budget below the floor: degraded as deadline-exhausted" \
+  "true" "$(grep -qF '[deadline-exhausted]' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+rm -f "$PRT_TEST_RUNNER_LOG".*
+PRT_TEST_MODEL_BUDGET_SECONDS=""
+PRT_TEST_ASSESS_RUNNER_SECONDS=soon
+rc="$(run_orchestrator advisory 0 0 0 150)"
+assert_eq "assess runner, non-numeric PRT_ASSESS_RUNNER_SECONDS: no runner call, degraded as backend-config" \
+  "0 0 true" "$rc $(prt_ar_calls) $(grep -qF '[backend-config]' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_ASSESS_RUNNER_SECONDS=""
+
 # The review still needs the proxy when it is not a findings file.
 PRT_TEST_REVIEW_BACKEND=""
 rc="$(run_orchestrator enforce 0 0 0 150)"
@@ -7072,7 +7103,8 @@ unset PRT_TEST_REVIEW_BACKEND PRT_TEST_FINDINGS_FILE PRT_TEST_PROXY_URL
 rm -rf "$prt_ar_ff"
 
 unset PRT_TEST_ASSESS_BACKEND PRT_TEST_ASSESS_RUNNER PRT_TEST_ASSESS_RUNNER_BACKEND PRT_TEST_RUNNER_MODE PRT_TEST_RUNNER_LOG \
-  PRT_TEST_REVIEW_BASE_SHA PRT_TEST_REVIEW_MATERIAL_SHA256 PRT_TEST_RUNNER_PROV PRT_TEST_ASSESS_RUNNER_ENV
+  PRT_TEST_REVIEW_BASE_SHA PRT_TEST_REVIEW_MATERIAL_SHA256 PRT_TEST_RUNNER_PROV PRT_TEST_ASSESS_RUNNER_ENV \
+  PRT_TEST_MODEL_BUDGET_SECONDS PRT_TEST_ASSESS_RUNNER_SECONDS
 PRT_TEST_MODEL_RESPONSE_MODE=clean
 rm -rf "$prt_ar_dir"
 
