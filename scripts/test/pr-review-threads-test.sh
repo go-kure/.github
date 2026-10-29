@@ -5575,6 +5575,216 @@ assert_eq "model: curl exec failure does not claim an HTTP status" "true" \
 unset PRT_TEST_BODYLEN_FILE
 rm -rf "$prt_e2big_dir"
 
+# ============================================================ model.sh: file review backend (PRT_REVIEW_BACKEND=file)
+# The review call can be served from a findings file a separate review step
+# already produced, instead of the proxy. The switch sits in prt_model_review,
+# one level above _prt_call_proxy (which has no chunk to assign by): it
+# returns, per chunk, only the findings that belong to that chunk, and refuses
+# an artifact whose provenance record does not match this run. With the
+# variable unset nothing changes: the proxy path runs as before.
+prt_fb_dir="$(mktemp -d)"
+mkdir -p "$prt_fb_dir/chunks" "$prt_fb_dir/art"
+
+# A fake curl on disk that counts its invocations (a function stub would never
+# be execve'd; see the E2BIG block above).
+cat > "$prt_fb_dir/fake-curl" <<'FAKECURL2'
+#!/usr/bin/env bash
+out=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) out="$2"; shift 2 ;;
+    *)  shift ;;
+  esac
+done
+printf 'x' >> "$PRT_TEST_CURL_COUNT_FILE"
+printf '%s' '{"choices":[{"message":{"content":"{\"findings\":[{\"file\":\"proxy.go\",\"line\":1,\"category\":\"other\",\"severity\":\"High\",\"issue\":\"i\",\"fix\":\"f\"}]}"}}]}' > "$out"
+printf '200'
+FAKECURL2
+chmod +x "$prt_fb_dir/fake-curl"
+export PRT_TEST_CURL_COUNT_FILE="$prt_fb_dir/curl-count"
+
+# Two chunks. big.go is split across them (hunk 1 = new lines 1-2 in chunk 0,
+# hunk 2 = new lines 50-52 in chunk 1), as diff.sh does for an oversized file.
+cat > "$prt_fb_dir/chunks/chunk-000.diff" <<'CHUNK0'
+diff --git a/a.go b/a.go
+index 1111111..2222222 100644
+--- a/a.go
++++ b/a.go
+@@ -1,3 +1,4 @@
+ package a
++var x = 1
+ func f() {}
+ func g() {}
+diff --git a/big.go b/big.go
+index 3333333..4444444 100644
+--- a/big.go
++++ b/big.go
+@@ -1,2 +1,2 @@
+-old
++new
+ keep
+CHUNK0
+cat > "$prt_fb_dir/chunks/chunk-001.diff" <<'CHUNK1'
+diff --git a/big.go b/big.go
+index 3333333..4444444 100644
+--- a/big.go
++++ b/big.go
+@@ -50,2 +50,3 @@
+ ctx
++added
+ ctx2
+diff --git a/c.go b/c.go
+index 5555555..6666666 100644
+--- a/c.go
++++ b/c.go
+@@ -1 +1,2 @@
+ line
++more
+CHUNK1
+
+prt_fb_head="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+prt_fb_base="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+prt_fb_mat="cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+
+# Findings, by where they must land:
+#   a.go:2   -> chunk 0 (inside its hunk)        big.go:51 -> chunk 1 (inside its second hunk)
+#   big.go:1 -> chunk 0 (inside its first hunk)  big.go:30 -> chunk 0 (in no hunk: first chunk holding the file)
+#   c.go null -> chunk 1 (file-level, only chunk) ghost.go:3 -> chunk 0 (in no chunk: first chunk, never dropped)
+prt_fb_write_findings() {
+  cat > "$prt_fb_dir/art/findings.json" <<'FINDINGS'
+{"format":"review-findings-v1","findings":[
+ {"file":"a.go","line":2,"severity":"high","category":"logic-error","issue":"i1","fix":"f1","klass":"blocking","claim":"c1"},
+ {"file":"big.go","line":51,"severity":"high","category":"race","issue":"i2","fix":"f2","klass":"blocking","claim":"c2"},
+ {"file":"big.go","line":1,"severity":"low","category":"nil-deref","issue":"i3","fix":"f3","klass":"wording","claim":"c3"},
+ {"file":"big.go","line":30,"severity":"low","category":"other","issue":"i4","fix":"f4","klass":"wording","claim":"c4"},
+ {"file":"c.go","line":null,"severity":"high","category":"unchecked-err","issue":"i5","fix":"f5","klass":"blocking","claim":"c5"},
+ {"file":"ghost.go","line":3,"severity":"low","category":"resource-leak","issue":"i6","fix":"f6","klass":"citation","claim":"c6"}
+]}
+FINDINGS
+}
+prt_fb_write_provider() {
+  jq -n --arg head "$prt_fb_head" --arg base "$prt_fb_base" --arg mat "$prt_fb_mat" \
+    '{format:"review-run-v1", outcome:"completed", backend:"x", identity:{root:"/r", head:$head, base:$base, material_sha256:$mat, input_sha256:"d", add_dirs:[]}}' \
+    > "$prt_fb_dir/art/provider.json"
+}
+prt_fb_write_findings
+prt_fb_write_provider
+
+# One chunk's answer, as prt_model_review would print it for chunk IDX.
+prt_fb_review() {
+  PRT_CHUNK_DIR="$prt_fb_dir/chunks" PRT_FINDINGS_FILE="$prt_fb_dir/art/findings.json" \
+    PRT_HEAD_SHA="$prt_fb_head" PRT_REVIEW_BASE_SHA="$prt_fb_base" PRT_REVIEW_MATERIAL_SHA256="$prt_fb_mat" \
+    PRT_CURL="$prt_fb_dir/fake-curl" PRT_LAST_MODEL_FAILURE_FILE="$prt_fb_dir/failure" \
+    prt_model_review "http://proxy.invalid" "m" 1500 "$(cat "$prt_fb_dir/chunks/chunk-$(printf '%03d' "$1").diff")" \
+    "title" "desc" "" "" "" "" "" "$1"
+}
+prt_fb_keys() { jq -r '.findings | map(.file + ":" + (.line | tostring)) | sort | join(",")' <<< "$1"; }
+
+# 1. Default off: the proxy path runs, through curl, once.
+: > "$prt_fb_dir/curl-count"
+prt_fb_off_out="$(PRT_CURL="$prt_fb_dir/fake-curl" PRT_LAST_MODEL_FAILURE_FILE="$prt_fb_dir/failure" \
+  prt_model_review "http://proxy.invalid" "m" 1500 "diff" "t" "d" "" "" "" "" "" "0")"
+assert_eq "file backend: backend unset still calls the proxy once" "1" "$(wc -c < "$prt_fb_dir/curl-count" | tr -d ' ')"
+assert_eq "file backend: backend unset returns the proxy's content" "proxy.go:1" "$(prt_fb_keys "$prt_fb_off_out")"
+
+# 2/3. Each chunk gets exactly its own findings; every finding lands once.
+: > "$prt_fb_dir/curl-count"
+prt_fb_out0="$(PRT_REVIEW_BACKEND="file" prt_fb_review 0)"; prt_fb_rc0=$?
+prt_fb_out1="$(PRT_REVIEW_BACKEND="file" prt_fb_review 1)"; prt_fb_rc1=$?
+assert_eq "file backend: chunk 0 rc" "0" "$prt_fb_rc0"
+assert_eq "file backend: chunk 1 rc" "0" "$prt_fb_rc1"
+assert_eq "file backend: chunk 0 holds the findings inside its hunks, the in-file miss and the file in no chunk" \
+  "a.go:2,big.go:1,big.go:30,ghost.go:3" "$(prt_fb_keys "$prt_fb_out0")"
+assert_eq "file backend: chunk 1 holds big.go's second hunk and the file-level finding of c.go" \
+  "big.go:51,c.go:null" "$(prt_fb_keys "$prt_fb_out1")"
+assert_eq "file backend: six findings in, six answered across the chunks, none twice" "6" \
+  "$(jq -s '[.[].findings[] | .issue] | unique | length' <<< "$prt_fb_out0 $prt_fb_out1")"
+assert_eq "file backend: an answered finding keeps the six fields the normalizer reads" "true" \
+  "$(jq -s 'all(.[].findings[]; (keys - ["file","line","severity","category","issue","fix"]) == [])' <<< "$prt_fb_out0 $prt_fb_out1")"
+assert_eq "file backend: the answer normalizes clean (rc 0)" "0" \
+  "$(prt_normalize_findings "$prt_fb_out0" >/dev/null 2>&1; echo $?)"
+# 4. The proxy is never reached in file mode.
+assert_eq "file backend: curl is never invoked" "0" "$(wc -c < "$prt_fb_dir/curl-count" | tr -d ' ')"
+
+# 4b. A chunk with nothing assigned answers a clean empty review.
+jq -c '.findings |= map(select(.file == "a.go"))' "$prt_fb_dir/art/findings.json" > "$prt_fb_dir/art/findings.one"
+cp "$prt_fb_dir/art/findings.json" "$prt_fb_dir/art/findings.all"
+cp "$prt_fb_dir/art/findings.one" "$prt_fb_dir/art/findings.json"
+assert_eq "file backend: a chunk with no findings answers an empty list" '{"findings":[]}' \
+  "$(PRT_REVIEW_BACKEND="file" prt_fb_review 1 | jq -c '.')"
+cp "$prt_fb_dir/art/findings.all" "$prt_fb_dir/art/findings.json"
+
+# 6. A retry of the same chunk gets the same answer (the orchestrator retries).
+assert_eq "file backend: a second call for the same chunk returns the same answer" \
+  "$(jq -S -c '.' <<< "$prt_fb_out0")" "$(PRT_REVIEW_BACKEND="file" prt_fb_review 0 | jq -S -c '.')"
+
+# 5. Refusals: rc 1 and a closed-vocabulary reason, never a guess.
+prt_fb_refuse() { # DESC REASON  (the artifact has been broken by the caller)
+  local desc="$1" reason="$2" rc
+  : > "$prt_fb_dir/failure"
+  PRT_REVIEW_BACKEND="file" prt_fb_review 0 >/dev/null 2>&1; rc=$?
+  assert_eq "file backend refusal: $desc: rc" "1" "$rc"
+  assert_eq "file backend refusal: $desc: reason" "$reason" "$(cat "$prt_fb_dir/failure")"
+}
+prt_fb_restore() { cp "$prt_fb_dir/art/findings.all" "$prt_fb_dir/art/findings.json"; prt_fb_write_provider; }
+
+rm -f "$prt_fb_dir/art/findings.json"
+prt_fb_refuse "findings file missing" "findings-file-missing"
+prt_fb_restore
+printf 'not json' > "$prt_fb_dir/art/findings.json"
+prt_fb_refuse "findings file is not JSON" "findings-file-malformed"
+prt_fb_restore
+jq -c '.findings = "x"' "$prt_fb_dir/art/findings.all" > "$prt_fb_dir/art/findings.json"
+prt_fb_refuse "findings is not an array" "findings-file-malformed"
+prt_fb_restore
+jq -c '.format = "other"' "$prt_fb_dir/art/findings.all" > "$prt_fb_dir/art/findings.json"
+prt_fb_refuse "findings format is not review-findings-v1" "findings-file-malformed"
+prt_fb_restore
+jq -c '.findings[0] |= del(.file)' "$prt_fb_dir/art/findings.all" > "$prt_fb_dir/art/findings.json"
+prt_fb_refuse "a finding without a file" "findings-file-malformed"
+prt_fb_restore
+rm -f "$prt_fb_dir/art/provider.json"
+prt_fb_refuse "provenance record missing" "provenance-mismatch"
+prt_fb_restore
+printf '{bad' > "$prt_fb_dir/art/provider.json"
+prt_fb_refuse "provenance record is not JSON" "provenance-mismatch"
+prt_fb_restore
+jq -c '.identity.head = "dddddddddddddddddddddddddddddddddddddddd"' "$prt_fb_dir/art/provider.json" > "$prt_fb_dir/art/p.tmp" && mv "$prt_fb_dir/art/p.tmp" "$prt_fb_dir/art/provider.json"
+prt_fb_refuse "stale head" "provenance-mismatch"
+prt_fb_restore
+jq -c '.identity.base = "dddddddddddddddddddddddddddddddddddddddd"' "$prt_fb_dir/art/provider.json" > "$prt_fb_dir/art/p.tmp" && mv "$prt_fb_dir/art/p.tmp" "$prt_fb_dir/art/provider.json"
+prt_fb_refuse "different base" "provenance-mismatch"
+prt_fb_restore
+jq -c '.identity.material_sha256 = "e"' "$prt_fb_dir/art/provider.json" > "$prt_fb_dir/art/p.tmp" && mv "$prt_fb_dir/art/p.tmp" "$prt_fb_dir/art/provider.json"
+prt_fb_refuse "different material digest" "provenance-mismatch"
+prt_fb_restore
+jq -c '.identity.material_sha256 = null' "$prt_fb_dir/art/provider.json" > "$prt_fb_dir/art/p.tmp" && mv "$prt_fb_dir/art/p.tmp" "$prt_fb_dir/art/provider.json"
+prt_fb_refuse "no material digest recorded" "provenance-mismatch"
+prt_fb_restore
+jq -c '.outcome = "incomplete"' "$prt_fb_dir/art/provider.json" > "$prt_fb_dir/art/p.tmp" && mv "$prt_fb_dir/art/p.tmp" "$prt_fb_dir/art/provider.json"
+prt_fb_refuse "review did not complete" "provenance-mismatch"
+prt_fb_restore
+jq -c '.format = "review-run-v0"' "$prt_fb_dir/art/provider.json" > "$prt_fb_dir/art/p.tmp" && mv "$prt_fb_dir/art/p.tmp" "$prt_fb_dir/art/provider.json"
+prt_fb_refuse "unknown provenance format" "provenance-mismatch"
+prt_fb_restore
+
+# Misconfiguration fails closed too, and says so.
+: > "$prt_fb_dir/failure"
+PRT_REVIEW_BACKEND=carrier-pigeon prt_fb_review 0 >/dev/null 2>&1; prt_fb_rc=$?
+assert_eq "file backend: an unknown backend value is refused (rc)" "1" "$prt_fb_rc"
+assert_eq "file backend: an unknown backend value is refused (reason)" "backend-config" "$(cat "$prt_fb_dir/failure")"
+: > "$prt_fb_dir/failure"
+PRT_REVIEW_BACKEND="file" PRT_CHUNK_DIR="$prt_fb_dir/chunks" PRT_FINDINGS_FILE="" PRT_HEAD_SHA="$prt_fb_head" \
+  PRT_LAST_MODEL_FAILURE_FILE="$prt_fb_dir/failure" prt_model_review "http://proxy.invalid" "m" 1500 "d" "t" "d" "" "" "" "" "" "0" >/dev/null 2>&1; prt_fb_rc=$?
+assert_eq "file backend: file mode without a findings path is refused (rc)" "1" "$prt_fb_rc"
+assert_eq "file backend: file mode without a findings path is refused (reason)" "backend-config" "$(cat "$prt_fb_dir/failure")"
+: > "$prt_fb_dir/failure"
+PRT_REVIEW_BACKEND="file" prt_fb_review "" >/dev/null 2>&1; prt_fb_rc=$?
+assert_eq "file backend: file mode without a chunk index is refused (rc)" "1" "$prt_fb_rc"
+
+unset PRT_TEST_CURL_COUNT_FILE
+rm -rf "$prt_fb_dir"
+
 # ============================================================ model.sh: unparseable-response diagnostic (go-kure/.github#81)
 # Every PR in this repo went red with `len=57 leading=starts-with-prose` and
 # nothing else — enough to know a fixed prose string came back, not enough to

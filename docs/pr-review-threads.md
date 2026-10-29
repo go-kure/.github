@@ -366,6 +366,55 @@ to PR2 avoids a placeholder window entirely — and the non-bootstrap rule this 
 procedure"). Caller/callee `PR_REVIEW_THREADS_MODE` resolution (V2, resolved 2026-08-18) is
 covered below under "Incident procedure".
 
+## Review from a findings file (`PRT_REVIEW_BACKEND=file`)
+
+The per-chunk review call can be answered from a findings file a separate review step already
+produced, instead of the proxy. The variable is read in `prt_model_review` (`model.sh`), one
+level above `_prt_call_proxy`, which has no chunk to assign by and is unchanged. Unset or empty
+is the proxy, as before; `file` selects `_prt_call_file`; any other value is refused, never read
+as the default. The assess call is untouched: it still goes to the proxy, so `PRT_PROXY_URL` is
+still required in this mode.
+
+Inputs, all from the environment:
+
+| Variable | Meaning |
+|---|---|
+| `PRT_FINDINGS_FILE` | The findings file: `{"format":"review-findings-v1","findings":[{file,line,severity,category,issue,fix,klass,claim}]}`. `line` may be `null` (a file-level finding). |
+| `PRT_HEAD_SHA` | The reviewed head. Already an input of the orchestrator. |
+| `PRT_REVIEW_BASE_SHA` | The base commit the review diffed against. |
+| `PRT_REVIEW_MATERIAL_SHA256` | The sha256 of the `git diff` bytes between that base and the head that the review read. |
+
+The record next to the findings file, `provider.json` in the same directory, is the provenance:
+format `review-run-v1`, `outcome` `completed`, and `identity.head`, `identity.base` and
+`identity.material_sha256` equal to the three variables above. A missing or unreadable record, a
+review that did not complete, or any difference refuses the run. The record names no repository,
+so the repository cannot be checked; the three commit-and-digest fields are what binds the
+artifact to this run. The findings file itself is not hash-bound to the record: both are
+produced by one step and read from one directory.
+
+Each chunk is answered with only the findings assigned to it, as `{"findings":[...]}` in the six
+fields `prt_normalize_findings` reads (`klass` and `claim` are dropped). A finding goes to one
+chunk, first match in this order:
+
+1. the first chunk whose commentable new-file lines (`prt_build_line_index`) hold its file and
+   line;
+2. the first chunk whose diff touches its file (this is also where a file-level finding goes, and
+   a line the diff does not show);
+3. chunk 0, so a finding naming a file the reviewed diff does not contain is never dropped.
+
+A chunk with nothing assigned answers an empty list. Asking for the same chunk twice (the
+orchestrator retries a chunk) returns the same answer. The proxy is never called, and
+`PRT_LAST_MODEL_CALLS` is 0. `severity` is passed through as written: a value the gating ranking
+does not know (such as `low`) ranks below `medium`, which is not an error.
+
+Refusals return 1 with one of these reasons in `PRT_LAST_MODEL_FAILURE_FILE`, which the
+orchestrator reports like a proxy failure: `backend-config` (an unknown backend value, or file
+mode without a findings path, chunk directory, chunk index or one of the three variables above),
+`findings-file-missing`, `findings-file-malformed` (not JSON, wrong `format`, `findings` not an
+array, a finding without a `file`, or a `line` that is neither a number nor `null`), and
+`provenance-mismatch`. The orchestrator hands the chunk directory to the call as
+`PRT_CHUNK_DIR` and the chunk's position as the twelfth argument.
+
 ## Failure surface
 
 Every write (create/reply/resolve/unresolve/marker edit) that depends on the head SHA still being

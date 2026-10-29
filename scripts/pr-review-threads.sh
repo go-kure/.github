@@ -344,6 +344,8 @@ LINE_INDEX="$(prt_build_line_index "$DIFF_FILE")"
 
 # --- Chunk + review + assess ---
 CHUNK_DIR="$WORKDIR/chunks"
+# shellcheck disable=SC2034 # read by _prt_call_file in lib/prt/model.sh (PRT_REVIEW_BACKEND=file), not within this file
+PRT_CHUNK_DIR="$CHUNK_DIR"
 chunk_count="$(prt_split_diff "$REVIEW_DIFF_FILE" "$PRT_MAX_DIFF_CHARS" "$CHUNK_DIR")"
 split_rc=$?
 if [ "$split_rc" -ne 0 ] || ! [[ "$chunk_count" =~ ^[0-9]+$ ]]; then
@@ -424,7 +426,7 @@ for chunk_file in "$CHUNK_DIR"/chunk-*.diff; do
 
   review_rc=0
   raw="$(prt_model_review "$PRT_PROXY_URL" "$PRT_MODEL" "$PRT_MAX_TOKENS" "$chunk_diff" \
-    "$PR_TITLE" "$PR_DESC" "$PRT_PROJECT_CONTEXT" "$PROJECT_AGENTS" "$PROJECT_CLAUDE_MD" "$PROJECT_STANDARDS" "$chunk_scope")" || review_rc=$?
+    "$PR_TITLE" "$PR_DESC" "$PRT_PROJECT_CONTEXT" "$PROJECT_AGENTS" "$PROJECT_CLAUDE_MD" "$PROJECT_STANDARDS" "$chunk_scope" "$chunk_idx")" || review_rc=$?
   # The call above ran in a command-substitution subshell, so model.sh's own
   # PRT_LAST_MODEL_FAILURE assignment never reached this shell — re-read the
   # file-backed copy PRT_LAST_MODEL_FAILURE_FILE points at instead (set once,
@@ -486,7 +488,7 @@ for chunk_file in "$CHUNK_DIR"/chunk-*.diff; do
     retried=true
     review_rc=0
     raw="$(prt_model_review "$PRT_PROXY_URL" "$PRT_MODEL" "$PRT_MAX_TOKENS" "$chunk_diff" \
-      "$PR_TITLE" "$PR_DESC" "$PRT_PROJECT_CONTEXT" "$PROJECT_AGENTS" "$PROJECT_CLAUDE_MD" "$PROJECT_STANDARDS" "$chunk_scope")" || review_rc=$?
+      "$PR_TITLE" "$PR_DESC" "$PRT_PROJECT_CONTEXT" "$PROJECT_AGENTS" "$PROJECT_CLAUDE_MD" "$PROJECT_STANDARDS" "$chunk_scope" "$chunk_idx")" || review_rc=$?
     # Same subshell-scoping reason as the original attempt's re-read above.
     PRT_LAST_MODEL_FAILURE="$(cat "$PRT_LAST_MODEL_FAILURE_FILE" 2>/dev/null || true)"
     if [ "$review_rc" -ne 0 ]; then

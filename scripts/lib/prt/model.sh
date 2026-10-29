@@ -506,17 +506,101 @@ prt_chunk_scope() {
   printf '%s\n' "Code in the other chunks exists but is not shown here: not seeing something in this chunk says nothing about the rest of the diff."
 }
 
+# _prt_call_file CHUNK_IDX — the review call served from a findings file a
+# separate review step already produced (PRT_REVIEW_BACKEND=file), instead of
+# the proxy. Prints {"findings":[...]} holding only the findings assigned to
+# chunk CHUNK_IDX, in the six fields prt_normalize_findings reads; no model is
+# called. Reads, all from the environment:
+#   PRT_FINDINGS_FILE            the findings file (review-findings-v1); its
+#                                sibling provider.json (review-run-v1) is the
+#                                provenance record
+#   PRT_CHUNK_DIR                the chunk files the orchestrator split
+#   PRT_HEAD_SHA, PRT_REVIEW_BASE_SHA, PRT_REVIEW_MATERIAL_SHA256
+#                                what the record must say it reviewed
+# Every refusal returns 1 with a closed-vocabulary reason in the failure file,
+# like _prt_call_proxy's: backend-config (an input this mode needs is not
+# set), findings-file-missing, findings-file-malformed, provenance-mismatch.
+# The record names the commits and the digest of the base..head diff the review
+# read; it names no repository, so the repository cannot be checked here.
+#
+# A finding goes to exactly one chunk, first match in this order: the first
+# chunk whose commentable new-file lines hold (file, line); else the first
+# chunk whose diff touches the file; else chunk 0, so a finding is never
+# dropped for naming a file this review does not show. A file-level finding
+# (null line) takes the second rule.
+_prt_call_file() {
+  local idx="$1" findings_file="${PRT_FINDINGS_FILE:-}" chunk_dir="${PRT_CHUNK_DIR:-}" \
+        provider chunk_file chunks='[]' n=0
+  _prt_set_model_failure ""
+  _prt_set_model_calls 0
+  if [ -z "$findings_file" ] || [ -z "$chunk_dir" ] || ! [[ "$idx" =~ ^[0-9]+$ ]] \
+     || [ -z "${PRT_HEAD_SHA:-}" ] || [ -z "${PRT_REVIEW_BASE_SHA:-}" ] \
+     || [ -z "${PRT_REVIEW_MATERIAL_SHA256:-}" ]; then
+    _prt_set_model_failure "backend-config"
+    return 1
+  fi
+  if [ ! -f "$findings_file" ]; then
+    _prt_set_model_failure "findings-file-missing"
+    return 1
+  fi
+  if ! jq -e '
+        .format == "review-findings-v1" and (.findings | type) == "array"
+        and all(.findings[]; type == "object" and (.file | type) == "string" and (.file | length) > 0
+                             and (.line == null or (.line | type) == "number"))
+      ' "$findings_file" >/dev/null 2>&1; then
+    _prt_set_model_failure "findings-file-malformed"
+    return 1
+  fi
+  provider="$(dirname "$findings_file")/provider.json"
+  if [ ! -f "$provider" ] || ! jq -e \
+        --arg head "$PRT_HEAD_SHA" --arg base "$PRT_REVIEW_BASE_SHA" --arg mat "$PRT_REVIEW_MATERIAL_SHA256" '
+        .format == "review-run-v1" and .outcome == "completed"
+        and .identity.head == $head and .identity.base == $base and .identity.material_sha256 == $mat
+      ' "$provider" >/dev/null 2>&1; then
+    _prt_set_model_failure "provenance-mismatch"
+    return 1
+  fi
+  for chunk_file in "$chunk_dir"/chunk-*.diff; do
+    [ -f "$chunk_file" ] || continue
+    chunks="$(jq -c --argjson n "$n" --argjson index "$(prt_build_line_index "$chunk_file")" \
+      --argjson files "$(prt_diff_files "$chunk_file" | jq -R -s -c 'split("\n") | map(select(length > 0))')" \
+      '. + [{idx: $n, index: $index, files: $files}]' <<< "$chunks")" || {
+      _prt_set_model_failure "backend-config"
+      return 1
+    }
+    n=$((n + 1))
+  done
+  jq -c --argjson want "$idx" --argjson chunks "$chunks" '
+    {findings: [.findings[] | . as $f
+      | (([$chunks[] | select($f.line != null and ((.index[$f.file] // []) | any(. == $f.line))) | .idx] | .[0])
+         // ([$chunks[] | select(.files | any(. == $f.file)) | .idx] | .[0])
+         // 0) as $at
+      | select($at == $want)
+      | {file, line, severity, category, issue, fix}]}
+  ' "$findings_file"
+}
+
 # prt_model_review PROXY_URL MODEL MAX_TOKENS CHUNK_DIFF PR_TITLE PR_DESC \
 #                   PROJECT_CONTEXT PROJECT_AGENTS PROJECT_CLAUDE_MD PROJECT_STANDARDS \
-#                   [CHUNK_SCOPE]
+#                   [CHUNK_SCOPE [CHUNK_IDX]]
 # CHUNK_SCOPE (prt_chunk_scope, go-kure/.github#173) is empty for a
 # single-chunk diff; otherwise it goes ahead of the diff with the rule that
 # a claim depending on code outside the chunk is omitted, never reported.
+# PRT_REVIEW_BACKEND selects the source of the answer: unset or empty, the
+# proxy (default); "file", _prt_call_file, which needs CHUNK_IDX; any other
+# value is refused (backend-config), never read as the default. The switch
+# sits here, not in _prt_call_proxy, because only this level knows the chunk.
 prt_model_review() {
   local proxy_url="$1" model="$2" max_tokens="$3" chunk_diff="$4" \
         pr_title="$5" pr_desc="$6" project_context="$7" project_agents="$8" \
-        project_claude_md="$9" project_standards="${10}" chunk_scope="${11:-}"
+        project_claude_md="$9" project_standards="${10}" chunk_scope="${11:-}" \
+        chunk_idx="${12:-}"
   local system user scope_block=""
+  case "${PRT_REVIEW_BACKEND:-}" in
+    "") ;;
+    file) _prt_call_file "$chunk_idx"; return $? ;;
+    *) _prt_set_model_failure "backend-config"; return 1 ;;
+  esac
   system="$(_prt_review_system_prompt)"
   [ -n "$project_context" ] && system="${system}"$'\n\nADDITIONAL PROJECT CONTEXT:\n'"${project_context}"
   [ -n "$project_agents" ] && system="${system}"$'\n\nPROJECT DOCUMENTATION (AGENTS.md):\n'"${project_agents}"
