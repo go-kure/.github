@@ -467,6 +467,8 @@ made inside the orchestrator, per chunk, because a finding's fingerprint is assi
 every chunk is reviewed and the answer must echo it, so it cannot be a pre-built file. Everything
 after the call (salvage, one retry, join by fingerprint, degrade) is the proxy path's own code.
 
+For now it runs in `advisory` only: `enforce` refuses it at start (see "Not in `enforce`" below).
+
 Inputs, all from the environment:
 
 | Variable | Meaning |
@@ -504,8 +506,11 @@ limit), `runner-failed` (any other non-zero exit), `runner-no-output` (no `revie
 `runner-empty`, `provenance-mismatch`, `deadline-exhausted`, `backend-config` (a required
 variable is unset or `PRT_ASSESS_RUNNER_SECONDS` is not a whole number) and `local-tempdir`. A malformed answer is salvaged and retried once like a proxy answer.
 
-- **Proxy URL.** With the review also from a findings file, `enforce` runs with assessment on and
-  no `PRT_PROXY_URL`. With the proxy review, the URL is still required.
+- **Proxy URL.** With the review also from a findings file, the run needs no `PRT_PROXY_URL`
+  when assessment is on. With the proxy review, the URL is still required.
+- **Not in `enforce`.** `PRT_ASSESS_BACKEND=runner` is refused at start in `enforce` mode, whatever
+  else is set, until the runner has a process boundary (see the next bullet) and a test on the
+  runner image shows the runner cannot read the posting token. It runs in `advisory` only.
 - **What it does not solve.** The scrub keeps the token out of the runner's own environment, no
   more. The runner is the same user, started without a sandbox, as a child of the process that
   holds the token, so on a host that lets a process read a same-user process's `/proc/<pid>/environ`

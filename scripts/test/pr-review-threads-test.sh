@@ -6635,13 +6635,17 @@ PRT_TEST_MODEL_RESPONSE_MODE=clean_with_finding
 # are passed through to the stub, besides the always-passed PATH and HOME.
 PRT_TEST_ASSESS_RUNNER_ENV="PRT_TEST_RUNNER_LOG PRT_TEST_RUNNER_MODE PRT_TEST_RUNNER_PROV PRT_HEAD_SHA PRT_REVIEW_BASE_SHA PRT_REVIEW_MATERIAL_SHA256"
 prt_ar_calls() { cat "$PRT_TEST_RUNNER_LOG.count" 2>/dev/null || echo 0; }
+# Enforce refuses the runner (see below), so these cases run in advisory and read the
+# comment it posts: the number of findings it reports, 0 when none survive.
+prt_ar_found() { local n; n="$(sed -n "s/.*advisory mode — \([0-9]*\) finding.*/\1/p" "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" | head -1)"; echo "${n:-0}"; }
 
 # A VALID verdict from the runner: the finding gets its thread, the proxy never assesses.
 rm -f "$PRT_TEST_RUNNER_LOG".*
 PRT_TEST_ASSESS_BACKEND="runner"
 PRT_TEST_RUNNER_MODE=clean
-rc="$(run_orchestrator enforce 0 0 0)"
-assert_eq "assess runner, VALID: exits 0 and the finding gets its thread" "0 1" "$rc $(cat "$PRT_TEST_CREATE_COUNTFILE")"
+PRT_TEST_ISSUE_COMMENT_BODY_FILE="$(mktemp)"; export PRT_TEST_ISSUE_COMMENT_BODY_FILE
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "assess runner, VALID: exits 0 and the finding is reported" "0 1" "$rc $(prt_ar_found)"
 assert_eq "assess runner: one runner call, no proxy assess call" "1 0" "$(prt_ar_calls) $(cat "$PRT_TEST_ASSESS_COUNTFILE")"
 assert_eq "assess runner: the review still came from the proxy (review call made)" \
   "true" "$([ "$(cat "$PRT_TEST_MODEL_COUNTFILE")" -ge 1 ] && echo true || echo false)"
@@ -6653,9 +6657,9 @@ assert_eq "assess runner: the run is not degraded" \
 # A FALSE_POSITIVE verdict from the runner is honoured: no thread, suppressed.
 rm -f "$PRT_TEST_RUNNER_LOG".*
 PRT_TEST_RUNNER_MODE=false_positive
-rc="$(run_orchestrator enforce 0 0 0)"
-assert_eq "assess runner, FALSE_POSITIVE: exits 0, no thread created, suppressed=1" \
-  "0 0 true" "$rc $(cat "$PRT_TEST_CREATE_COUNTFILE") $(grep -qE 'done:.*suppressed=1' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "assess runner, FALSE_POSITIVE: exits 0, no finding reported" \
+  "0 0" "$rc $(prt_ar_found)"
 assert_eq "assess runner, FALSE_POSITIVE: still no proxy assess call" "1 0" "$(prt_ar_calls) $(cat "$PRT_TEST_ASSESS_COUNTFILE")"
 
 # Unset keeps the proxy: the runner is never called.
@@ -6678,7 +6682,7 @@ assert_eq "assess backend 'carrier-pigeon': the error names PRT_ASSESS_BACKEND" 
 # The runner without a backend to run is a configuration error, caught at start.
 PRT_TEST_ASSESS_BACKEND="runner"
 PRT_TEST_ASSESS_RUNNER_BACKEND=""
-rc="$(run_orchestrator enforce 0 0 0)"
+rc="$(run_orchestrator advisory 0 0 0)"
 assert_eq "assess runner without PRT_ASSESS_RUNNER_BACKEND: fails closed before any call" \
   "1 0 0 0" "$rc $(cat "$PRT_TEST_MODEL_COUNTFILE") $(cat "$PRT_TEST_ASSESS_COUNTFILE") $(prt_ar_calls)"
 assert_eq "assess runner without PRT_ASSESS_RUNNER_BACKEND: the error names it" \
@@ -6722,9 +6726,9 @@ assert_eq "assess runner, garbage twice: the raw text is not echoed" \
 # Garbage then a clean answer: the retry recovers.
 rm -f "$PRT_TEST_RUNNER_LOG".*
 PRT_TEST_RUNNER_MODE=garbage_then_clean
-rc="$(run_orchestrator enforce 0 0 0)"
-assert_eq "assess runner, garbage then clean: recovered, thread created, two calls" \
-  "0 1 2" "$rc $(cat "$PRT_TEST_CREATE_COUNTFILE") $(prt_ar_calls)"
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "assess runner, garbage then clean: recovered, finding reported, two calls" \
+  "0 1 2" "$rc $(prt_ar_found) $(prt_ar_calls)"
 assert_eq "assess runner, garbage then clean: not degraded" \
   "false" "$(grep -qF 'REVIEW_DEGRADED:' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 
@@ -6739,9 +6743,9 @@ assert_eq "assess runner, garbage then launch failure: degraded on retry" \
 # Prose around the JSON is salvaged, as on the proxy path.
 rm -f "$PRT_TEST_RUNNER_LOG".*
 PRT_TEST_RUNNER_MODE=prose
-rc="$(run_orchestrator enforce 0 0 0)"
-assert_eq "assess runner, prose-wrapped JSON: salvaged, one call, thread created" \
-  "0 1 1" "$rc $(cat "$PRT_TEST_CREATE_COUNTFILE") $(prt_ar_calls)"
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "assess runner, prose-wrapped JSON: salvaged, one call, finding reported" \
+  "0 1 1" "$rc $(prt_ar_found) $(prt_ar_calls)"
 
 # Valid JSON of the wrong shape degrades the chunk.
 rm -f "$PRT_TEST_RUNNER_LOG".*
@@ -6751,12 +6755,12 @@ assert_eq "assess runner, bad shape: exits 0 and degrades" \
   "0 true" "$rc $(grep -qF '.assessments missing/null/non-array' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 PRT_TEST_RUNNER_MODE=clean
 
-# In enforce the unverdicted finding still gets its thread (null counts as VALID).
+# A quota failure degrades the run, never fails it (the unverdicted finding stays unverdicted).
 rm -f "$PRT_TEST_RUNNER_LOG".*
 PRT_TEST_RUNNER_MODE=exit3
-rc="$(run_orchestrator enforce 0 0 0)"
-assert_eq "assess runner quota in enforce: exits 0, the unverdicted finding is still posted" \
-  "0 1" "$rc $(cat "$PRT_TEST_CREATE_COUNTFILE")"
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "assess runner quota: exits 0, one call, degraded as runner-quota" \
+  "0 1 true" "$rc $(prt_ar_calls) $(grep -qF "[runner-quota]" "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 PRT_TEST_RUNNER_MODE=clean
 
 # Provenance: the runner's record must tie the answer to this head, this base, this
@@ -6785,8 +6789,8 @@ PRT_TEST_RUNNER_PROV=""
 
 # The faithful record passes, and the material hash must be configured.
 rm -f "$PRT_TEST_RUNNER_LOG".*
-rc="$(run_orchestrator enforce 0 0 0)"
-assert_eq "assess runner provenance, faithful record: accepted, thread created" "0 1" "$rc $(cat "$PRT_TEST_CREATE_COUNTFILE")"
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "assess runner provenance, faithful record: accepted, not degraded" "0 1 false" "$rc $(prt_ar_calls) $(grep -qF "[provenance-mismatch]" "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 rm -f "$PRT_TEST_RUNNER_LOG".*
 PRT_TEST_REVIEW_MATERIAL_SHA256=""
 rc="$(run_orchestrator advisory 0 0 0)"
@@ -6801,8 +6805,8 @@ export GITHUB_TOKEN="sentinel-github-token" GH_TOKEN="sentinel-gh-token" \
   OPENAI_API_KEY="sentinel-model-key" PRT_AR_UNRELATED="sentinel-unrelated"
 PRT_TEST_ASSESS_RUNNER_ENV="$PRT_TEST_ASSESS_RUNNER_ENV OPENAI_API_KEY"
 rm -f "$PRT_TEST_RUNNER_LOG".*
-rc="$(run_orchestrator enforce 0 0 0)"
-assert_eq "assess runner scrub: the run succeeds with the scrubbed environment" "0 1 1" "$rc $(cat "$PRT_TEST_CREATE_COUNTFILE") $(prt_ar_calls)"
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "assess runner scrub: the run succeeds with the scrubbed environment" "0 1" "$rc $(prt_ar_calls)"
 assert_eq "assess runner scrub: the posting token is not in the orchestrator's own output" \
   "true" "$(grep -qF 'sentinel-posting-token' "$PRT_TEST_STDERR_FILE" "$PRT_TEST_STDOUT_FILE" && echo leak || echo true)"
 assert_eq "assess runner scrub: no token value reaches the runner's environment" \
@@ -6826,7 +6830,7 @@ assert_eq "assess runner request: backend, base and no-sandbox flags are passed"
 for prt_ar_name in GITHUB_TOKEN GH_TOKEN PRT_GH_TOKEN; do
   rm -f "$PRT_TEST_RUNNER_LOG".*
   PRT_TEST_ASSESS_RUNNER_ENV="OPENAI_API_KEY $prt_ar_name"
-  rc="$(run_orchestrator enforce 0 0 0)"
+  rc="$(run_orchestrator advisory 0 0 0)"
   assert_eq "assess runner scrub, pass-through names $prt_ar_name: fails closed before any call" \
     "1 0 0 0" "$rc $(cat "$PRT_TEST_MODEL_COUNTFILE") $(cat "$PRT_TEST_ASSESS_COUNTFILE") $(prt_ar_calls)"
   assert_eq "assess runner scrub, pass-through names $prt_ar_name: the error names PRT_ASSESS_RUNNER_ENV" \
@@ -6834,7 +6838,7 @@ for prt_ar_name in GITHUB_TOKEN GH_TOKEN PRT_GH_TOKEN; do
 done
 rm -f "$PRT_TEST_RUNNER_LOG".*
 PRT_TEST_ASSESS_RUNNER_ENV="OPENAI_API_KEY BAD-NAME"
-rc="$(run_orchestrator enforce 0 0 0)"
+rc="$(run_orchestrator advisory 0 0 0)"
 assert_eq "assess runner scrub, a malformed name in the list: fails closed before any call" \
   "1 0" "$rc $(prt_ar_calls)"
 PRT_TEST_ASSESS_RUNNER_ENV="PRT_TEST_RUNNER_LOG PRT_TEST_RUNNER_MODE PRT_TEST_RUNNER_PROV PRT_HEAD_SHA PRT_REVIEW_BASE_SHA PRT_REVIEW_MATERIAL_SHA256"
@@ -6846,7 +6850,7 @@ rc="$(run_orchestrator off 0 0 0)"
 assert_eq "mode off with assess backend 'carrier-pigeon': still exits 0" "0" "$rc"
 
 # Review from a findings file and assessment from the runner: nothing needs the
-# proxy, so enforce runs with assessment on and no proxy URL at all.
+# proxy, so the run works with assessment on and no proxy URL at all.
 prt_ar_ff="$(mktemp -d)"
 cat > "$prt_ar_ff/findings.json" <<'ARFINDINGS'
 {"format":"review-findings-v1","findings":[
@@ -6864,12 +6868,11 @@ PRT_TEST_ASSESS_BACKEND="runner"
 PRT_TEST_ASSESS_RUNNER_BACKEND="codex"
 PRT_TEST_RUNNER_MODE=clean
 rm -f "$PRT_TEST_RUNNER_LOG".*
-rc="$(run_orchestrator enforce 0 0 0 150)"
-assert_eq "enforce, file review, runner assess, no proxy URL: exits 0, both findings get a thread" \
-  "0 2" "$rc $(cat "$PRT_TEST_CREATE_COUNTFILE")"
-assert_eq "enforce, file review, runner assess, no proxy URL: one runner call per chunk, no proxy call" \
+rc="$(run_orchestrator advisory 0 0 0 150)"
+assert_eq "advisory, file review, runner assess, no proxy URL: exits 0" "0" "$rc"
+assert_eq "advisory, file review, runner assess, no proxy URL: one runner call per chunk, no proxy call" \
   "2 0 0" "$(prt_ar_calls) $(cat "$PRT_TEST_MODEL_COUNTFILE") $(cat "$PRT_TEST_ASSESS_COUNTFILE")"
-assert_eq "enforce, file review, runner assess, no proxy URL: coverage says review+assess ok" \
+assert_eq "advisory, file review, runner assess, no proxy URL: coverage says review+assess ok" \
   "true" "$(grep -qE 'coverage: 2/2 chunks review\+assess ok' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 
 # The runner call shares the run's model deadline with the proxy calls: it is
@@ -6903,10 +6906,26 @@ PRT_TEST_ASSESS_RUNNER_SECONDS=""
 
 # The review still needs the proxy when it is not a findings file.
 PRT_TEST_REVIEW_BACKEND=""
-rc="$(run_orchestrator enforce 0 0 0 150)"
-assert_eq "enforce, proxy review, runner assess, no proxy URL: fails closed on the review's need" "1" "$rc"
-assert_eq "enforce, proxy review, runner assess, no proxy URL: the error names PRT_PROXY_URL" \
+rc="$(run_orchestrator advisory 0 0 0 150)"
+assert_eq "advisory, proxy review, runner assess, no proxy URL: fails closed on the review's need" "1" "$rc"
+assert_eq "advisory, proxy review, runner assess, no proxy URL: the error names PRT_PROXY_URL" \
   "true" "$(grep -qF 'PRT_PROXY_URL is required' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+
+# The runner has no process boundary yet (it runs with no sandbox, as the same
+# user as the orchestrator), so enforce refuses it at start, whatever else is
+# configured: it cannot be switched on by accident before the boundary exists.
+rm -f "$PRT_TEST_RUNNER_LOG".*
+PRT_TEST_REVIEW_BACKEND="file"
+PRT_TEST_PROXY_URL="http://proxy.invalid"
+rc="$(run_orchestrator enforce 0 0 0 150)"
+assert_eq "enforce with the runner assess: refused at start, before any call" \
+  "1 0 0 0" "$rc $(cat "$PRT_TEST_MODEL_COUNTFILE") $(cat "$PRT_TEST_ASSESS_COUNTFILE") $(prt_ar_calls)"
+assert_eq "enforce with the runner assess: the error names the missing process boundary" \
+  "true" "$(grep -qF 'PRT_ASSESS_BACKEND=runner is not allowed in enforce mode' "$PRT_TEST_STDERR_FILE" && grep -qF 'process boundary' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+rm -f "$PRT_TEST_RUNNER_LOG".*
+rc="$(run_orchestrator advisory 0 0 0 150)"
+assert_eq "advisory with the runner assess and a proxy URL: still runs" "0 2" "$rc $(prt_ar_calls)"
+PRT_TEST_PROXY_URL=""
 
 # And the assessment needs it when it stays on the proxy.
 PRT_TEST_REVIEW_BACKEND="file"
@@ -6922,6 +6941,8 @@ rm -rf "$prt_ar_ff"
 unset PRT_TEST_ASSESS_BACKEND PRT_TEST_ASSESS_RUNNER PRT_TEST_ASSESS_RUNNER_BACKEND PRT_TEST_RUNNER_MODE PRT_TEST_RUNNER_LOG \
   PRT_TEST_REVIEW_BASE_SHA PRT_TEST_REVIEW_MATERIAL_SHA256 PRT_TEST_RUNNER_PROV PRT_TEST_ASSESS_RUNNER_ENV \
   PRT_TEST_MODEL_BUDGET_SECONDS PRT_TEST_ASSESS_RUNNER_SECONDS
+rm -f "$PRT_TEST_ISSUE_COMMENT_BODY_FILE"
+unset PRT_TEST_ISSUE_COMMENT_BODY_FILE
 PRT_TEST_MODEL_RESPONSE_MODE=clean
 rm -rf "$prt_ar_dir"
 
