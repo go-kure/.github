@@ -374,7 +374,7 @@ produced, instead of the proxy. The variable is read in `prt_model_review` (`mod
 level above `_prt_call_proxy`, which has no chunk to assign by and is unchanged. Unset or empty
 is the proxy, as before; `file` selects `_prt_call_file`; any other value is refused, never read
 as the default. The assess call is untouched: it still goes to the proxy, so `PRT_PROXY_URL` is
-still required in this mode.
+still required in this mode, unless assessment is switched off (next section).
 
 Inputs, all from the environment:
 
@@ -427,6 +427,27 @@ the chunk directory to the call as
 `PRT_CHUNK_DIR` and the chunk's position as the twelfth argument. The failure line keeps the
 shared wording `review call failed (transport/proxy error, exit 1)` that the rest of this
 document and the tests match on; in file mode the bracketed reason after it is the cause.
+
+## Skipping assessment (`PRT_ASSESS_ENABLED`, action input `assess-enabled`)
+
+`true` (the default, also when unset or empty) runs the per-chunk assess call as before. `false`
+skips it: every finding is reported with no verdict (`n/a` in the findings table), as after a
+failed assess call, but nothing is marked `REVIEW_DEGRADED`, because the skip was asked for. The
+per-chunk log says `assess skipped`, and the coverage line reads `coverage: M/M chunks review ok,
+not assessed` instead of `review+assess ok`, so a consumer matching the old wording never reads an
+unassessed run as an assessed one. A chunk that lost a malformed finding row is not counted, as
+before.
+
+- **Advisory only.** `false` in `enforce` mode is refused before any network call (`PRT_ASSESS_ENABLED=false
+  is not allowed in enforce mode`): enforce gates on verdicts. Any value other than `true` or
+  `false` is refused too, never read as the default, so a typo cannot turn verification off.
+- **The proxy.** `PRT_PROXY_URL` (action input `proxy-url`, now optional) is required unless the
+  review comes from a findings file (`PRT_REVIEW_BACKEND=file`) and assessment is off. The script
+  checks this at start and fails the run with `PRT_PROXY_URL is required`; with the proxy review
+  backend, or with assessment on, an empty URL still fails closed.
+- **What it does not solve.** Unassessed findings include the ones assessment would have judged
+  false positives; nothing in this mode suppresses them. Whether to run the pilot unassessed is
+  decided by the caller, from measurement, not by this switch.
 
 ## Failure surface
 

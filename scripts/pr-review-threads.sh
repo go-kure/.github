@@ -17,9 +17,14 @@
 #   PRT_PR_NUMBER       PR number
 #   PRT_HEAD_SHA        github.event.pull_request.head.sha (NOT github.sha)
 #   PRT_BOT_LOGIN       login the token posts as (e.g. github-actions[bot])
-#   PRT_PROXY_URL       claude-max-proxy base URL
+#   PRT_PROXY_URL       claude-max-proxy base URL; optional only with
+#                       PRT_REVIEW_BACKEND=file and PRT_ASSESS_ENABLED=false
 # Optional env (defaults noted):
 #   PRT_MODE                    enforce|advisory|off (default: advisory)
+#   PRT_ASSESS_ENABLED          true|false (default: true). false skips the
+#                               per-chunk assess call: findings carry no
+#                               verdict, the coverage line says "not
+#                               assessed". Refused in enforce mode.
 #   PRT_MODEL                   default: claude-opus-4
 #   PRT_MAX_TOKENS               default: 1500
 #   PRT_ASSESS_MODEL             default: claude-sonnet-4-6
@@ -139,7 +144,7 @@ PRT_MODEL_DEADLINE_EPOCH=$(( $(date +%s) + PRT_MODEL_BUDGET_SECONDS ))
 # a PRT_JOB_STARTED_EPOCH captured in a workflow step before checkout would
 # close that gap if it's ever observed to matter in practice.
 
-for req in PRT_GH_TOKEN PRT_REPO PRT_PR_NUMBER PRT_HEAD_SHA PRT_BOT_LOGIN PRT_PROXY_URL; do
+for req in PRT_GH_TOKEN PRT_REPO PRT_PR_NUMBER PRT_HEAD_SHA PRT_BOT_LOGIN; do
   [ -n "${!req:-}" ] || { echo "ERROR: $req is required" >&2; exit 1; }
 done
 
@@ -162,6 +167,29 @@ case "$PRT_MODE" in
     PRT_MODE=advisory
     ;;
 esac
+
+# --- Assessment switch. Default on; off is an opt-in for the advisory pilot and
+# skips the per-chunk assess call, so every finding stays unverdicted. Enforce
+# keeps assessment, and any value but true/false is refused, never read as the
+# default: a typo must not silently turn verification off. ---
+: "${PRT_ASSESS_ENABLED:=true}"
+case "$PRT_ASSESS_ENABLED" in
+  true|false) : ;;
+  *) echo "ERROR: PRT_ASSESS_ENABLED must be true or false, got '$PRT_ASSESS_ENABLED'" >&2; exit 1 ;;
+esac
+if [ "$PRT_ASSESS_ENABLED" = false ] && [ "$PRT_MODE" = enforce ]; then
+  echo "ERROR: PRT_ASSESS_ENABLED=false is not allowed in enforce mode: enforce keeps assessment" >&2
+  exit 1
+fi
+
+# The proxy is needed by the review call (any backend but the findings file) and
+# by the assess call (unless it is switched off). Only a findings-file review
+# with assessment off can run without it.
+: "${PRT_PROXY_URL:=}"
+if [ -z "$PRT_PROXY_URL" ] && { [ "${PRT_REVIEW_BACKEND:-}" != file ] || [ "$PRT_ASSESS_ENABLED" != false ]; }; then
+  echo "ERROR: PRT_PROXY_URL is required" >&2
+  exit 1
+fi
 
 WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT
@@ -707,6 +735,15 @@ for ((i = 0; i < chunk_idx; i++)); do
     [ -n "${CHUNK_REVIEW_FAILED[$i]:-}" ] || chunk_ok_count=$((chunk_ok_count + 1))
     continue
   fi
+  # PRT_ASSESS_ENABLED=false: no assess call. The findings go on with no verdict,
+  # as after an assess failure, but nothing degraded: this was asked for. The
+  # chunk counts as reviewed, not as assessed (the coverage line says so).
+  if [ "$PRT_ASSESS_ENABLED" = false ]; then
+    [ -n "${CHUNK_PARTIAL_DROP[$i]:-}" ] || chunk_ok_count=$((chunk_ok_count + 1))
+    prt_log "chunk $((i + 1))/$chunk_count: review ok, assess skipped (PRT_ASSESS_ENABLED=false)"
+    ASSESSED="$(jq -c -n --argjson a "$ASSESSED" --argjson b "$chunk_findings" '$a + ($b | map(. + {verdict: null, reasoning: null}))')"
+    continue
+  fi
   chunk_diff="$(cat "$chunk_file")"
   chunk_scope="$(prt_chunk_scope "$i" "$chunk_count" "$ALL_DIFF_FILES" "$(prt_diff_files "$chunk_file")")"
 
@@ -842,7 +879,11 @@ fi
 # chunk_ok_count=0) from vacuously satisfying an "M of M" consumer check —
 # the issue's "Zero-chunk" acceptance criterion.
 if [ "$chunk_count" -gt 0 ] && [ "$chunk_ok_count" -eq "$chunk_count" ] && [ "$assembly_fault" = false ]; then
-  prt_log "coverage: $chunk_ok_count/$chunk_count chunks review+assess ok"
+  if [ "$PRT_ASSESS_ENABLED" = false ]; then
+    prt_log "coverage: $chunk_ok_count/$chunk_count chunks review ok, not assessed"
+  else
+    prt_log "coverage: $chunk_ok_count/$chunk_count chunks review+assess ok"
+  fi
 fi
 ALL_FINDINGS="$ASSESSED"
 fi # EMPTY_DIFF != 1
