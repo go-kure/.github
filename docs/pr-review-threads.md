@@ -91,6 +91,16 @@ fails the run before any network call, except under `PRT_MODE=off`, which still 
 file missing from the chosen checkout is logged and the review runs without PROJECT STANDARDS. The
 path is not checked for `..` or an absolute prefix, as `agents-file` is not.
 
+**Which commit the caller's checkout is.** The workflow checks out the pull request head
+(`github.event.pull_request.head.sha`) with full history, the same commit it attributes its results
+to, instead of the temporary merge commit a `pull_request` event checks out by default. The job only
+runs for same-repository pull requests, so the head carries no fork code. The diff under review
+still comes from the GitHub API, not from the checkout. What the checkout feeds the review is
+`agents-file`, `.claude/CLAUDE.md` and, with `standards-source: caller`, the standards file: these
+are now the head's versions, which differ from the merge commit's only when the base branch changed
+one of them after the pull request branched. The default `standards-source: action` reads from the
+pinned action and is unaffected. The full history lets a later step compute a merge base.
+
 **Why not just `github.token`:** `GITHUB_TOKEN` (and any GitHub App installation token) gets
 `viewerCanResolve:false` on review threads it authors, even with `pull-requests: write` granted.
 This is a categorical rejection of bot/App actor types by `resolveReviewThread`, not a scope gap —

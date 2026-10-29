@@ -225,8 +225,16 @@ jobs:
             exit 1
           fi
 
+      # The head this job attributes its results to (`head-sha` below), not the
+      # temporary merge commit a pull_request event checks out by default, and
+      # the full history, so a later step can compute a merge base. The job
+      # only runs for same-repository PRs (the `if:` above), so this fetches no
+      # fork code. The diff itself still comes from the GitHub API.
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
 
       - name: Setup tools
         run: |

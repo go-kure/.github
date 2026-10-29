@@ -5490,6 +5490,26 @@ assert_eq "wiring #156: standards-file declared by pr-review.yml, bound to its e
   "'docs/standards.md' true true \"docs/standards.md\" true" "$(prt_wiring standards-file PR_REVIEW_STANDARDS_FILE PRT_STANDARDS_FILE)"
 assert_eq "wiring #156: standards-source declared by pr-review.yml (default action), bound to its env, passed to the action, declared there and bound to PRT_STANDARDS_SOURCE" \
   "'action' true true \"action\" true" "$(prt_wiring standards-source PR_REVIEW_STANDARDS_SOURCE PRT_STANDARDS_SOURCE)"
+
+# The job checks out the head it attributes its results
+# to. Under pull_request the default ref is the temporary merge commit, at
+# depth 1; the head step takes the PR head and the full history, so a later
+# step can compute a merge base. Exact lines inside the checkout step only.
+prt_checkout_step() { # the "Checkout repository" step of pr-review.yml, up to the next step
+  awk '
+    $0 == "      - name: Checkout repository" { inb = 1; print; next }
+    inb && /^      - name: / { exit }
+    inb { print }
+  ' "$prt_wf"
+}
+prt_checkout="$(prt_checkout_step)"
+# shellcheck disable=SC2016  # ${{ }} is literal workflow text, not a shell expansion
+assert_eq "wiring checkout: the checkout step takes the PR head SHA" "true" \
+  "$(printf '%s\n' "$prt_checkout" | grep -qxF -- '          ref: ${{ github.event.pull_request.head.sha }}' && echo true || echo false)"
+assert_eq "wiring checkout: the checkout step takes the full history" "true" \
+  "$(printf '%s\n' "$prt_checkout" | grep -qxF -- '          fetch-depth: 0' && echo true || echo false)"
+unset prt_checkout
+unset -f prt_checkout_step
 unset prt_wf prt_act
 unset -f prt_has_line prt_input_default prt_wiring
 unset PRT_TEST_MODEL_SYSTEM_LOG PRT_TEST_STANDARDS_SOURCE PRT_TEST_STANDARDS_FILE PRT_TEST_CALLER_FILE PRT_TEST_CALLER_FILE_CONTENT
