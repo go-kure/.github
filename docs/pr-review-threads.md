@@ -486,7 +486,7 @@ Inputs, all from the environment:
 | `PRT_ASSESS_RUNNER_BACKEND` | The runner's `--backend` value (action input `assess-runner-backend`). Required; its absence is refused at start. |
 | `PRT_ASSESS_RUNNER` | The runner executable (default `review-run`, found on `PATH`). |
 | `PRT_ASSESS_RUNNER_ROOT` | The checkout it reads (default: the working directory). |
-| `PRT_ASSESS_RUNNER_SECONDS` | Its deadline per call (default 600). |
+| `PRT_ASSESS_RUNNER_SECONDS` | Its deadline per call (default 600), clamped to what is left of the run's model deadline (`PRT_MODEL_DEADLINE_EPOCH`, the same one the proxy calls use). A call is refused as `deadline-exhausted` when less than the 30-second floor remains. Must be a whole number of seconds. |
 | `PRT_ASSESS_RUNNER_ENV` | Space-separated variable names the runner may inherit (action input `assess-runner-env`), typically the metered model key. |
 | `PRT_HEAD_SHA`, `PRT_REVIEW_BASE_SHA`, `PRT_REVIEW_MATERIAL_SHA256` | The identity the runner's record must carry; the last two are defined under "Review from a findings file". All required. |
 
@@ -513,13 +513,18 @@ the base and digest out of the record into the environment binds nothing.
 verdict like `VALID`), with the cause in brackets: `runner-incomplete` (exit 2), `runner-quota`
 (3), `runner-launch` (4), `runner-usage` (64, which includes an input over the runner's size
 limit), `runner-failed` (any other non-zero exit), `runner-no-output` (no `review.md`),
-`runner-empty`, `provenance-mismatch`, `backend-config` (a required variable is unset) and
-`local-tempdir`. A malformed answer is salvaged and retried once like a proxy answer.
+`runner-empty`, `provenance-mismatch`, `deadline-exhausted`, `backend-config` (a required
+variable is unset or `PRT_ASSESS_RUNNER_SECONDS` is not a whole number) and `local-tempdir`. A malformed answer is salvaged and retried once like a proxy answer.
 
 - **Proxy URL.** With the review also from a findings file, `enforce` runs with assessment on and
   no `PRT_PROXY_URL`. With the proxy review, the URL is still required.
-- **What it does not solve.** No measurement yet of any backend as an assessor, or of per-chunk
-  latency and cost. Pointed at the backend that wrote the findings, a model grades its own
+- **What it does not solve.** The scrub keeps the token out of the runner's own environment, no
+  more. The runner is the same user, started without a sandbox, as a child of the process that
+  holds the token, so on a host that lets a process read a same-user process's `/proc/<pid>/environ`
+  it could still recover the token from an ancestor. Closing that needs a process boundary the
+  runner cannot cross (a separate user, or a sandbox with its own PID namespace); this mode does
+  not provide one. No measurement yet of any backend as an assessor, or of per-chunk latency and
+  cost. Pointed at the backend that wrote the findings, a model grades its own
   output. The GitLab review is a separate script and is not covered.
 
 ## Failure surface
