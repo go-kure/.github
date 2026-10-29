@@ -715,8 +715,10 @@ ${chunk_diff}
 #   PRT_REVIEW_BASE_SHA          the PR's base commit (required)
 # Every refusal returns 1 with a closed-vocabulary reason in the failure file:
 # backend-config (an input this mode needs is not set), local-tempdir,
-# runner-failed (review-run exited non-zero), runner-no-output (it exited 0 and
-# left no review.md), runner-empty (review.md holds nothing).
+# runner-incomplete (review-run exit 2), runner-quota (3), runner-launch (4),
+# runner-usage (64, includes an input over its ceiling), runner-failed (any other
+# non-zero exit), runner-no-output (it exited 0 and left no review.md),
+# runner-empty (review.md holds nothing).
 _prt_call_runner() {
   local request="$1" runner backend root seconds tmp out rc=0
   _prt_set_model_failure ""
@@ -746,7 +748,13 @@ _prt_call_runner() {
     < "$tmp/request" > /dev/null || rc=$?
   if [ "$rc" -ne 0 ]; then
     rm -rf "$tmp"
-    _prt_set_model_failure "runner-failed"
+    case "$rc" in
+      2) _prt_set_model_failure "runner-incomplete" ;;
+      3) _prt_set_model_failure "runner-quota" ;;
+      4) _prt_set_model_failure "runner-launch" ;;
+      64) _prt_set_model_failure "runner-usage" ;;
+      *) _prt_set_model_failure "runner-failed" ;;
+    esac
     return 1
   fi
   if [ ! -s "$out/review.md" ]; then
