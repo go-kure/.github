@@ -3484,6 +3484,7 @@ run_orchestrator() {
     PRT_ASSESS_RUNNER_BACKEND="${PRT_TEST_ASSESS_RUNNER_BACKEND:-}" \
     PRT_TEST_RUNNER_MODE="${PRT_TEST_RUNNER_MODE:-clean}" \
     PRT_TEST_RUNNER_LOG="${PRT_TEST_RUNNER_LOG:-}" \
+    PRT_TEST_RUNNER_PROV="${PRT_TEST_RUNNER_PROV:-}" \
     PRT_MAX_DIFF_CHARS="$max_diff_chars" \
     PRT_GH_TOKEN=x PRT_REPO=owner/repo PRT_PR_NUMBER=1 \
     PRT_HEAD_SHA=1111111111111111111111111111111111111111 \
@@ -6602,7 +6603,22 @@ case "$mode" in
   bad_shape) printf '{"assessments":"oops-not-an-array"}' > "$out/review.md" ;;
   *) printf '%s' "$good" > "$out/review.md" ;;
 esac
-jq -n --arg head "${PRT_HEAD_SHA:-}" '{format:"review-run-v1", outcome:"completed", identity:{head:$head}}' > "$out/provider.json"
+# A faithful provenance record; the prov_* modes break exactly one field.
+in_sha="$(printf '%s' "$req" | sha256sum | cut -d' ' -f1)"
+p_head="${PRT_HEAD_SHA:-}"; p_base="${PRT_REVIEW_BASE_SHA:-}"; p_mat="${PRT_REVIEW_MATERIAL_SHA256:-}"
+p_format=review-run-v1; p_outcome=completed
+case "${PRT_TEST_RUNNER_PROV:-}" in
+  head) p_head=0000000000000000000000000000000000000000 ;;
+  base) p_base=0000000000000000000000000000000000000000 ;;
+  material) p_mat=0000000000000000000000000000000000000000000000000000000000000000 ;;
+  input) in_sha=0000000000000000000000000000000000000000000000000000000000000000 ;;
+  format) p_format=review-run-v0 ;;
+  outcome) p_outcome=incomplete ;;
+esac
+if [ "${PRT_TEST_RUNNER_PROV:-}" = missing ]; then exit 0; fi
+if [ "${PRT_TEST_RUNNER_PROV:-}" = malformed ]; then printf 'not json' > "$out/provider.json"; exit 0; fi
+jq -n --arg f "$p_format" --arg o "$p_outcome" --arg h "$p_head" --arg b "$p_base" --arg m "$p_mat" --arg i "$in_sha" \
+  '{format:$f, outcome:$o, identity:{head:$h, base:$b, material_sha256:$m, input_sha256:$i}}' > "$out/provider.json"
 exit 0
 ARSTUB
 chmod 755 "$prt_ar_dir/review-run"
@@ -6737,6 +6753,41 @@ assert_eq "assess runner quota in enforce: exits 0, the unverdicted finding is s
   "0 1" "$rc $(cat "$PRT_TEST_CREATE_COUNTFILE")"
 PRT_TEST_RUNNER_MODE=clean
 
+# Provenance: the runner's record must tie the answer to this head, this base, this
+# material and the exact request sent. Any mismatch is refused, never read.
+export PRT_TEST_RUNNER_PROV
+prt_ar_prov_case() { # label prov-mode
+  rm -f "$PRT_TEST_RUNNER_LOG".*
+  PRT_TEST_RUNNER_PROV="$2"
+  rc="$(run_orchestrator advisory 0 0 0)"
+  assert_eq "assess runner provenance, $1: exits 0 (degraded, not fatal), one call" "0 1" "$rc $(prt_ar_calls)"
+  assert_eq "assess runner provenance, $1: refused as provenance-mismatch" \
+    "true" "$(grep -qF '[provenance-mismatch]' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+  assert_eq "assess runner provenance, $1: the verdicts are not used" \
+    "false" "$(grep -qE 'coverage: [0-9]+/[0-9]+ chunks review\+assess ok' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+}
+PRT_TEST_RUNNER_MODE=clean
+prt_ar_prov_case "other head" head
+prt_ar_prov_case "other base" base
+prt_ar_prov_case "other material" material
+prt_ar_prov_case "other input (request not the one sent)" input
+prt_ar_prov_case "wrong format" format
+prt_ar_prov_case "outcome not completed" outcome
+prt_ar_prov_case "no provider.json" missing
+prt_ar_prov_case "unparseable provider.json" malformed
+PRT_TEST_RUNNER_PROV=""
+
+# The faithful record passes, and the material hash must be configured.
+rm -f "$PRT_TEST_RUNNER_LOG".*
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "assess runner provenance, faithful record: accepted, thread created" "0 1" "$rc $(cat "$PRT_TEST_CREATE_COUNTFILE")"
+rm -f "$PRT_TEST_RUNNER_LOG".*
+PRT_TEST_REVIEW_MATERIAL_SHA256=""
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "assess runner without PRT_REVIEW_MATERIAL_SHA256: no runner call, degraded as backend-config" \
+  "0 0 true" "$rc $(prt_ar_calls) $(grep -qF '[backend-config]' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_REVIEW_MATERIAL_SHA256="cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+
 # PRT_MODE=off stays the escape hatch whatever this says.
 PRT_TEST_ASSESS_BACKEND="carrier-pigeon"
 rc="$(run_orchestrator off 0 0 0)"
@@ -6788,7 +6839,7 @@ unset PRT_TEST_REVIEW_BACKEND PRT_TEST_FINDINGS_FILE PRT_TEST_PROXY_URL
 rm -rf "$prt_ar_ff"
 
 unset PRT_TEST_ASSESS_BACKEND PRT_TEST_ASSESS_RUNNER PRT_TEST_ASSESS_RUNNER_BACKEND PRT_TEST_RUNNER_MODE PRT_TEST_RUNNER_LOG \
-  PRT_TEST_REVIEW_BASE_SHA PRT_TEST_REVIEW_MATERIAL_SHA256
+  PRT_TEST_REVIEW_BASE_SHA PRT_TEST_REVIEW_MATERIAL_SHA256 PRT_TEST_RUNNER_PROV
 PRT_TEST_MODEL_RESPONSE_MODE=clean
 rm -rf "$prt_ar_dir"
 

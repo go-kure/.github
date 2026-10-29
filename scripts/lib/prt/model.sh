@@ -707,21 +707,24 @@ ${chunk_diff}
 #   PRT_ASSESS_RUNNER_ROOT       the checkout it reads (default: the working directory)
 #   PRT_ASSESS_RUNNER_SECONDS    its deadline (default: 600)
 #   PRT_REVIEW_BASE_SHA          the PR's base commit (required)
+#   PRT_HEAD_SHA, PRT_REVIEW_MATERIAL_SHA256   the identity its record must carry (required)
 # Every refusal returns 1 with a closed-vocabulary reason in the failure file:
 # backend-config (an input this mode needs is not set), local-tempdir,
 # runner-incomplete (review-run exit 2), runner-quota (3), runner-launch (4),
 # runner-usage (64, includes an input over its ceiling), runner-failed (any other
 # non-zero exit), runner-no-output (it exited 0 and left no review.md),
-# runner-empty (review.md holds nothing).
+# runner-empty (review.md holds nothing), provenance-mismatch (provider.json
+# does not tie the answer to this head, base, material and request).
 _prt_call_runner() {
-  local request="$1" runner backend root seconds tmp out rc=0
+  local request="$1" runner backend root seconds tmp out req_sha rc=0
   _prt_set_model_failure ""
   _prt_set_model_calls 0
   runner="${PRT_ASSESS_RUNNER:-review-run}"
   backend="${PRT_ASSESS_RUNNER_BACKEND:-}"
   root="${PRT_ASSESS_RUNNER_ROOT:-$PWD}"
   seconds="${PRT_ASSESS_RUNNER_SECONDS:-600}"
-  if [ -z "$backend" ] || [ -z "${PRT_REVIEW_BASE_SHA:-}" ]; then
+  if [ -z "$backend" ] || [ -z "${PRT_REVIEW_BASE_SHA:-}" ] \
+     || [ -z "${PRT_HEAD_SHA:-}" ] || [ -z "${PRT_REVIEW_MATERIAL_SHA256:-}" ]; then
     _prt_set_model_failure "backend-config"
     return 1
   fi
@@ -758,6 +761,20 @@ _prt_call_runner() {
       _prt_set_model_failure "runner-no-output"
     fi
     rm -rf "$tmp"
+    return 1
+  fi
+  # The record must tie this answer to this head, base, material and the exact
+  # request sent; a stale or foreign output directory fails here, not downstream.
+  req_sha="$(sha256sum < "$tmp/request" | cut -d' ' -f1)"
+  if [ ! -f "$out/provider.json" ] || ! jq -e \
+        --arg head "$PRT_HEAD_SHA" --arg base "$PRT_REVIEW_BASE_SHA" \
+        --arg mat "$PRT_REVIEW_MATERIAL_SHA256" --arg inp "$req_sha" '
+        .format == "review-run-v1" and .outcome == "completed"
+        and .identity.head == $head and .identity.base == $base
+        and .identity.material_sha256 == $mat and .identity.input_sha256 == $inp
+      ' "$out/provider.json" >/dev/null 2>&1; then
+    rm -rf "$tmp"
+    _prt_set_model_failure "provenance-mismatch"
     return 1
   fi
   cat "$out/review.md"
