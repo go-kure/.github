@@ -169,18 +169,10 @@ case "$PRT_MODE" in
 esac
 
 # --- Assessment switch. Default on; off is an opt-in for the advisory pilot and
-# skips the per-chunk assess call, so every finding stays unverdicted. Enforce
-# keeps assessment, and any value but true/false is refused, never read as the
-# default: a typo must not silently turn verification off. ---
+# skips the per-chunk assess call, so every finding stays unverdicted. Only the
+# default is applied here: the value is validated after the PRT_MODE=off
+# short-circuit below, so a misconfigured switch cannot block "off". ---
 : "${PRT_ASSESS_ENABLED:=true}"
-case "$PRT_ASSESS_ENABLED" in
-  true|false) : ;;
-  *) echo "ERROR: PRT_ASSESS_ENABLED must be true or false, got '$PRT_ASSESS_ENABLED'" >&2; exit 1 ;;
-esac
-if [ "$PRT_ASSESS_ENABLED" = false ] && [ "$PRT_MODE" = enforce ]; then
-  echo "ERROR: PRT_ASSESS_ENABLED=false is not allowed in enforce mode: enforce keeps assessment" >&2
-  exit 1
-fi
 
 # The proxy is needed by the review call (any backend but the findings file) and
 # by the assess call (unless it is switched off). Only a findings-file review
@@ -220,6 +212,18 @@ if [ "$PRT_MODE" = off ]; then
     echo "PR_REVIEW_THREADS_MODE=off — skipped."
   } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
   exit 0
+fi
+
+# Assessment switch validation (default applied above). Enforce keeps
+# assessment, and any value but true/false is refused, never read as the
+# default: a typo must not silently turn verification off.
+case "$PRT_ASSESS_ENABLED" in
+  true|false) : ;;
+  *) echo "ERROR: PRT_ASSESS_ENABLED must be true or false, got '$PRT_ASSESS_ENABLED'" >&2; exit 1 ;;
+esac
+if [ "$PRT_ASSESS_ENABLED" = false ] && [ "$PRT_MODE" = enforce ]; then
+  echo "ERROR: PRT_ASSESS_ENABLED=false is not allowed in enforce mode: enforce keeps assessment" >&2
+  exit 1
 fi
 
 # go-kure/.github#156: a misspelt source must not quietly read the standards
@@ -1442,9 +1446,11 @@ if [ "$PRT_MODE" = advisory ]; then
   prt_is_incomplete && advisory_incomplete_reasons="$(prt_incomplete_reasons)"
   advisory_degraded_reasons=""
   prt_is_degraded && advisory_degraded_reasons="$(prt_degraded_reasons)"
+  advisory_assess_skipped=""
+  [ "$PRT_ASSESS_ENABLED" = false ] && advisory_assess_skipped=true
   # A render or payload fault must not post a half-built table: nothing is posted.
   payload=""
-  if ! body="$(prt_render_advisory_comment "$advisory_findings" "$advisory_incomplete_reasons" "$advisory_degraded_reasons" "$EXCLUDED_FILES")" ||
+  if ! body="$(prt_render_advisory_comment "$advisory_findings" "$advisory_incomplete_reasons" "$advisory_degraded_reasons" "$EXCLUDED_FILES" "$advisory_assess_skipped")" ||
      ! payload="$(prt_json_body_payload "$body")" || [ -z "$payload" ]; then
     prt_mark_incomplete "the advisory comment could not be rendered (local fault); nothing was posted"
     payload=""
