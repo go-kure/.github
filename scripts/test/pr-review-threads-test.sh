@@ -6974,12 +6974,25 @@ PRT_TEST_RUNNER_PROV=""
 rm -f "$PRT_TEST_RUNNER_LOG".*
 rc="$(run_orchestrator advisory 0 0 0)"
 assert_eq "assess runner provenance, faithful record: accepted, not degraded" "0 1 false" "$rc $(prt_ar_calls) $(grep -qF "[provenance-mismatch]" "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+# The identity the record must carry is checked at start: a missing input fails the
+# run before any call, never degrades every chunk one by one.
 rm -f "$PRT_TEST_RUNNER_LOG".*
 PRT_TEST_REVIEW_MATERIAL_SHA256=""
 rc="$(run_orchestrator advisory 0 0 0)"
-assert_eq "assess runner without PRT_REVIEW_MATERIAL_SHA256: no runner call, degraded as backend-config" \
-  "0 0 true" "$rc $(prt_ar_calls) $(grep -qF '[backend-config]' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "assess runner without PRT_REVIEW_MATERIAL_SHA256: fails closed before any call" \
+  "1 0 0 0" "$rc $(cat "$PRT_TEST_MODEL_COUNTFILE") $(cat "$PRT_TEST_ASSESS_COUNTFILE") $(prt_ar_calls)"
+assert_eq "assess runner without PRT_REVIEW_MATERIAL_SHA256: the error names it" \
+  "true" "$(grep -qF 'PRT_REVIEW_MATERIAL_SHA256' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 PRT_TEST_REVIEW_MATERIAL_SHA256="cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+rm -f "$PRT_TEST_RUNNER_LOG".*
+prt_ar_base="$PRT_TEST_REVIEW_BASE_SHA"
+PRT_TEST_REVIEW_BASE_SHA=""
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "assess runner without PRT_REVIEW_BASE_SHA: fails closed before any call" \
+  "1 0 0 0" "$rc $(cat "$PRT_TEST_MODEL_COUNTFILE") $(cat "$PRT_TEST_ASSESS_COUNTFILE") $(prt_ar_calls)"
+assert_eq "assess runner without PRT_REVIEW_BASE_SHA: the error names it" \
+  "true" "$(grep -qF 'PRT_REVIEW_BASE_SHA' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_REVIEW_BASE_SHA="$prt_ar_base"
 
 # The runner reads untrusted PR text and runs with no sandbox, so it must never
 # hold a token that can write to the PR: the child gets a scrubbed environment.
@@ -7024,6 +7037,36 @@ PRT_TEST_ASSESS_RUNNER_ENV="OPENAI_API_KEY BAD-NAME"
 rc="$(run_orchestrator advisory 0 0 0)"
 assert_eq "assess runner scrub, a malformed name in the list: fails closed before any call" \
   "1 0" "$rc $(prt_ar_calls)"
+
+# The list is read whole: a name on a later line is checked and passed like any other.
+for prt_ar_name in GITHUB_TOKEN GH_TOKEN PRT_GH_TOKEN; do
+  rm -f "$PRT_TEST_RUNNER_LOG".*
+  PRT_TEST_ASSESS_RUNNER_ENV=$'OPENAI_API_KEY\n'"$prt_ar_name"
+  rc="$(run_orchestrator advisory 0 0 0)"
+  assert_eq "assess runner scrub, $prt_ar_name on a second line: fails closed before any call" \
+    "1 0" "$rc $(prt_ar_calls)"
+done
+rm -f "$PRT_TEST_RUNNER_LOG".*
+PRT_TEST_ASSESS_RUNNER_ENV=$'OPENAI_API_KEY\n\tBAD-NAME'
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "assess runner scrub, a malformed name on a second line: fails closed before any call" \
+  "1 0" "$rc $(prt_ar_calls)"
+export PRT_AR_SECOND="sentinel-second-line"
+rm -f "$PRT_TEST_RUNNER_LOG".*
+PRT_TEST_ASSESS_RUNNER_ENV=$'OPENAI_API_KEY\nPRT_AR_SECOND PRT_TEST_RUNNER_LOG PRT_TEST_RUNNER_MODE PRT_TEST_RUNNER_PROV PRT_HEAD_SHA PRT_REVIEW_BASE_SHA PRT_REVIEW_MATERIAL_SHA256'
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "assess runner scrub, names on several lines: the run works and the second line's name reaches the runner" \
+  "0 1 1" "$rc $(prt_ar_calls) $(grep -c '^PRT_AR_SECOND=sentinel-second-line$' "$PRT_TEST_RUNNER_LOG.env.1")"
+unset PRT_AR_SECOND
+# A listed name that is not set in the orchestrator is a configuration error naming
+# that variable, not a silent skip that surfaces later as an opaque runner failure.
+rm -f "$PRT_TEST_RUNNER_LOG".*
+PRT_TEST_ASSESS_RUNNER_ENV="OPENAI_API_KEY PRT_AR_NEVER_SET"
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "assess runner scrub, a listed name that is unset: fails closed before any call" \
+  "1 0" "$rc $(prt_ar_calls)"
+assert_eq "assess runner scrub, a listed name that is unset: the error names the variable" \
+  "true" "$(grep -qF 'PRT_AR_NEVER_SET' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 PRT_TEST_ASSESS_RUNNER_ENV="PRT_TEST_RUNNER_LOG PRT_TEST_RUNNER_MODE PRT_TEST_RUNNER_PROV PRT_HEAD_SHA PRT_REVIEW_BASE_SHA PRT_REVIEW_MATERIAL_SHA256"
 unset GITHUB_TOKEN GH_TOKEN OPENAI_API_KEY PRT_AR_UNRELATED PRT_TEST_GH_TOKEN prt_ar_name
 
@@ -7072,7 +7115,7 @@ rc="$(run_orchestrator advisory 0 0 0 150)"
 assert_eq "assess runner deadline, 100s budget: the call is clamped to what is left" \
   "0 2 true true" "$rc $(prt_ar_calls) \
 $([ "$(prt_ar_seconds 1)" -ge 90 ] && [ "$(prt_ar_seconds 1)" -le 100 ] && echo true || echo false) \
-$([ "$(prt_ar_seconds 2)" -ge 1 ] && [ "$(prt_ar_seconds 2)" -le 100 ] && echo true || echo false)"
+$([ "$(prt_ar_seconds 2)" -ge 85 ] && [ "$(prt_ar_seconds 2)" -le 100 ] && echo true || echo false)"
 rm -f "$PRT_TEST_RUNNER_LOG".*
 PRT_TEST_MODEL_BUDGET_SECONDS=10
 rc="$(run_orchestrator advisory 0 0 0 150)"
