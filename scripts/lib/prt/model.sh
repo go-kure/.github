@@ -728,7 +728,8 @@ ${chunk_diff}
 # gets PATH, HOME, TMPDIR, LANG, LC_ALL and the names listed in
 # PRT_ASSESS_RUNNER_ENV (any whitespace separates them, newlines included; the
 # model key lives there), nothing else. Returns 1, with the reason in
-# PRT_RUNNER_ENV_ERROR, for a posting-token name, a name that is not a plain
+# PRT_RUNNER_ENV_ERROR, for a posting-token name (the PRT/GitHub/GH tokens and the
+# enterprise and Actions runtime ones), a name that is not a plain
 # identifier (refused, never dropped) and a listed name that is not set: a
 # variable the runner needs but never receives would surface later as an opaque
 # runner failure. The five defaults are skipped when unset.
@@ -745,11 +746,15 @@ _prt_runner_env_build() {
   done
   for name in ${extra[@]+"${extra[@]}"}; do
     case "$name" in
-      PRT_GH_TOKEN|GITHUB_TOKEN|GH_TOKEN)
+      PRT_GH_TOKEN|GITHUB_TOKEN|GH_TOKEN|GH_ENTERPRISE_TOKEN|GITHUB_ENTERPRISE_TOKEN|ACTIONS_RUNTIME_TOKEN|ACTIONS_ID_TOKEN_REQUEST_TOKEN)
         PRT_RUNNER_ENV_ERROR="PRT_ASSESS_RUNNER_ENV must not name a posting token ($name)"
         return 1 ;;
     esac
-    if ! [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+    # The check runs in the C locale: under a UTF-8 locale the identifier class
+    # also matches accented letters, and the indirect expansion below then aborts
+    # the whole command instead of failing it, so the run would go on with that
+    # name silently dropped.
+    if ! ( LC_ALL=C; [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] ); then
       PRT_RUNNER_ENV_ERROR="PRT_ASSESS_RUNNER_ENV holds a name that is not a plain variable name"
       return 1
     fi

@@ -488,8 +488,9 @@ the first answer. The runner runs with `--sandbox none`.
 **Scrubbed environment.** The runner reads untrusted pull request text and has no sandbox, so it
 must not hold a token that can write to the PR. It is started under `env -i` with only `PATH`,
 `HOME`, `TMPDIR`, `LANG`, `LC_ALL` and the names in `PRT_ASSESS_RUNNER_ENV`. A list that names
-`PRT_GH_TOKEN`, `GITHUB_TOKEN` or `GH_TOKEN` on any line, a name that is not a plain identifier, or
-a name that is not set fails the run at start with `PRT_ASSESS_RUNNER_ENV` in the message, rather
+`PRT_GH_TOKEN`, `GITHUB_TOKEN`, `GH_TOKEN`, `GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`,
+`ACTIONS_RUNTIME_TOKEN` or `ACTIONS_ID_TOKEN_REQUEST_TOKEN` on any line, a name that is not a plain
+ASCII identifier, or a name that is not set fails the run at start with `PRT_ASSESS_RUNNER_ENV` in the message, rather
 than being dropped. The calling workflow's checkout also has to leave no credentials in
 `.git/config` (`persist-credentials: false`, as `pr-review.yml` sets), because the runner reads the
 checkout.
@@ -513,7 +514,8 @@ usual cases first) and `local-tempdir`. A malformed answer is salvaged and retri
   when assessment is on. With the proxy review, the URL is still required.
 - **Not in `enforce`.** `PRT_ASSESS_BACKEND=runner` is refused at start in `enforce` mode, whatever
   else is set, until the runner has a process boundary (see the next bullet) and a test on the
-  runner image shows the runner cannot read the posting token. It runs in `advisory` only.
+  runner image shows the runner cannot read the posting token. `advisory` accepts it, but is no
+  safe place for it either (see the first paragraph of this section).
 - **What it does not solve.** The scrub keeps the token out of the runner's own environment, no
   more. The runner is the same user, started without a sandbox, as a child of the process that
   holds the token, so on a host that lets a process read a same-user process's `/proc/<pid>/environ`

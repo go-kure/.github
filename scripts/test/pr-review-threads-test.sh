@@ -6856,18 +6856,36 @@ assert_eq "assess runner scrub, a malformed name in the list: fails closed befor
   "1 0" "$rc $(prt_ar_calls)"
 
 # The list is read whole: a name on a later line is checked and passed like any other.
-for prt_ar_name in GITHUB_TOKEN GH_TOKEN PRT_GH_TOKEN; do
+for prt_ar_name in GITHUB_TOKEN GH_TOKEN PRT_GH_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN ACTIONS_RUNTIME_TOKEN ACTIONS_ID_TOKEN_REQUEST_TOKEN; do
   rm -f "$PRT_TEST_RUNNER_LOG".*
   PRT_TEST_ASSESS_RUNNER_ENV=$'OPENAI_API_KEY\n'"$prt_ar_name"
   rc="$(run_orchestrator advisory 0 0 0)"
   assert_eq "assess runner scrub, $prt_ar_name on a second line: fails closed before any call" \
     "1 0" "$rc $(prt_ar_calls)"
+  assert_eq "assess runner scrub, $prt_ar_name on a second line: the error names the token" \
+    "true" "$(grep -qF "must not name a posting token ($prt_ar_name)" "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 done
 rm -f "$PRT_TEST_RUNNER_LOG".*
 PRT_TEST_ASSESS_RUNNER_ENV=$'OPENAI_API_KEY\n\tBAD-NAME'
 rc="$(run_orchestrator advisory 0 0 0)"
 assert_eq "assess runner scrub, a malformed name on a second line: fails closed before any call" \
   "1 0" "$rc $(prt_ar_calls)"
+assert_eq "assess runner scrub, a malformed name on a second line: the error says so" \
+  "true" "$(grep -qF 'not a plain variable name' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+
+# A non-ASCII name must be refused whatever the locale: under a UTF-8 locale the
+# identifier regex alone accepts it and the later indirect expansion aborts the
+# whole check, which used to let the run continue with that name silently dropped.
+for prt_ar_loc in C C.utf8 en_GB.utf8; do
+  rm -f "$PRT_TEST_RUNNER_LOG".*
+  PRT_TEST_ASSESS_RUNNER_ENV=$'OPENAI_API_KEY \xc3\xa9 PRT_AR_SECOND'
+  rc="$(LC_ALL=$prt_ar_loc run_orchestrator advisory 0 0 0)"
+  assert_eq "assess runner scrub, an accented name under $prt_ar_loc: fails closed before any call" \
+    "1 0" "$rc $(prt_ar_calls)"
+  assert_eq "assess runner scrub, an accented name under $prt_ar_loc: the error says so" \
+    "true" "$(grep -qF 'not a plain variable name' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+done
+unset prt_ar_loc
 export PRT_AR_SECOND="sentinel-second-line"
 rm -f "$PRT_TEST_RUNNER_LOG".*
 PRT_TEST_ASSESS_RUNNER_ENV=$'OPENAI_API_KEY\nPRT_AR_SECOND PRT_TEST_RUNNER_LOG PRT_TEST_RUNNER_MODE PRT_TEST_RUNNER_PROV PRT_HEAD_SHA PRT_REVIEW_BASE_SHA PRT_REVIEW_MATERIAL_SHA256'
