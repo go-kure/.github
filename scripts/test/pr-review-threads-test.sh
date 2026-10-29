@@ -3571,8 +3571,9 @@ run_orchestrator() {
     PRT_TEST_RUNNER_MODE="${PRT_TEST_RUNNER_MODE:-clean}" \
     PRT_TEST_RUNNER_LOG="${PRT_TEST_RUNNER_LOG:-}" \
     PRT_TEST_RUNNER_PROV="${PRT_TEST_RUNNER_PROV:-}" \
+    PRT_ASSESS_RUNNER_ENV="${PRT_TEST_ASSESS_RUNNER_ENV:-}" \
     PRT_MAX_DIFF_CHARS="$max_diff_chars" \
-    PRT_GH_TOKEN=x PRT_REPO=owner/repo PRT_PR_NUMBER=1 \
+    PRT_GH_TOKEN="${PRT_TEST_GH_TOKEN:-x}" PRT_REPO=owner/repo PRT_PR_NUMBER=1 \
     PRT_HEAD_SHA=1111111111111111111111111111111111111111 \
     PRT_BOT_LOGIN="test-bot[bot]" PRT_PROXY_URL="${PRT_TEST_PROXY_URL-http://proxy.invalid}" \
     PRT_ASSESS_ENABLED="${PRT_TEST_ASSESS_ENABLED:-}" \
@@ -6811,6 +6812,9 @@ PRT_TEST_ASSESS_RUNNER_BACKEND="codex"
 PRT_TEST_REVIEW_BASE_SHA="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 PRT_TEST_REVIEW_MATERIAL_SHA256="cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 PRT_TEST_MODEL_RESPONSE_MODE=clean_with_finding
+# The runner sees a scrubbed environment: only these (non-secret) test variables
+# are passed through to the stub, besides the always-passed PATH and HOME.
+PRT_TEST_ASSESS_RUNNER_ENV="PRT_TEST_RUNNER_LOG PRT_TEST_RUNNER_MODE PRT_TEST_RUNNER_PROV PRT_HEAD_SHA PRT_REVIEW_BASE_SHA PRT_REVIEW_MATERIAL_SHA256"
 prt_ar_calls() { cat "$PRT_TEST_RUNNER_LOG.count" 2>/dev/null || echo 0; }
 
 # A VALID verdict from the runner: the finding gets its thread, the proxy never assesses.
@@ -6971,6 +6975,52 @@ assert_eq "assess runner without PRT_REVIEW_MATERIAL_SHA256: no runner call, deg
   "0 0 true" "$rc $(prt_ar_calls) $(grep -qF '[backend-config]' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 PRT_TEST_REVIEW_MATERIAL_SHA256="cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 
+# The runner reads untrusted PR text and runs with no sandbox, so it must never
+# hold a token that can write to the PR: the child gets a scrubbed environment.
+PRT_TEST_GH_TOKEN="sentinel-posting-token"
+export GITHUB_TOKEN="sentinel-github-token" GH_TOKEN="sentinel-gh-token" \
+  OPENAI_API_KEY="sentinel-model-key" PRT_AR_UNRELATED="sentinel-unrelated"
+PRT_TEST_ASSESS_RUNNER_ENV="$PRT_TEST_ASSESS_RUNNER_ENV OPENAI_API_KEY"
+rm -f "$PRT_TEST_RUNNER_LOG".*
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "assess runner scrub: the run succeeds with the scrubbed environment" "0 1 1" "$rc $(cat "$PRT_TEST_CREATE_COUNTFILE") $(prt_ar_calls)"
+assert_eq "assess runner scrub: the posting token is not in the orchestrator's own output" \
+  "true" "$(grep -qF 'sentinel-posting-token' "$PRT_TEST_STDERR_FILE" "$PRT_TEST_STDOUT_FILE" && echo leak || echo true)"
+assert_eq "assess runner scrub: no token value reaches the runner's environment" \
+  "0" "$(grep -c 'sentinel-posting-token\|sentinel-github-token\|sentinel-gh-token' "$PRT_TEST_RUNNER_LOG.env.1")"
+assert_eq "assess runner scrub: no token variable name reaches it either" \
+  "0" "$(grep -cE '^(PRT_GH_TOKEN|GITHUB_TOKEN|GH_TOKEN)=' "$PRT_TEST_RUNNER_LOG.env.1")"
+assert_eq "assess runner scrub: an unrelated variable is dropped" \
+  "0" "$(grep -c 'sentinel-unrelated' "$PRT_TEST_RUNNER_LOG.env.1")"
+assert_eq "assess runner scrub: PATH, HOME and the named model key are kept" \
+  "1 1 1" "$(grep -c '^PATH=' "$PRT_TEST_RUNNER_LOG.env.1") $(grep -c '^HOME=' "$PRT_TEST_RUNNER_LOG.env.1") $(grep -c '^OPENAI_API_KEY=sentinel-model-key$' "$PRT_TEST_RUNNER_LOG.env.1")"
+
+# The request travels on stdin; the prompt argument is a fixed instruction.
+assert_eq "assess runner request: the findings are on stdin" \
+  "true" "$(grep -qF -- '--- FINDINGS (JSON) ---' "$PRT_TEST_RUNNER_LOG.stdin.1" && echo true || echo false)"
+assert_eq "assess runner request: argv carries no findings and stays small" \
+  "true" "$(! grep -qF 'FINDINGS' "$PRT_TEST_RUNNER_LOG.argv.1" && [ "$(wc -c < "$PRT_TEST_RUNNER_LOG.argv.1")" -lt 600 ] && echo true || echo false)"
+assert_eq "assess runner request: backend, base and no-sandbox flags are passed" \
+  "1 1 1" "$(grep -cxF codex "$PRT_TEST_RUNNER_LOG.argv.1") $(grep -cxF "$PRT_TEST_REVIEW_BASE_SHA" "$PRT_TEST_RUNNER_LOG.argv.1") $(grep -cxF none "$PRT_TEST_RUNNER_LOG.argv.1")"
+
+# A pass-through list that names a posting token is refused at start, before any call.
+for prt_ar_name in GITHUB_TOKEN GH_TOKEN PRT_GH_TOKEN; do
+  rm -f "$PRT_TEST_RUNNER_LOG".*
+  PRT_TEST_ASSESS_RUNNER_ENV="OPENAI_API_KEY $prt_ar_name"
+  rc="$(run_orchestrator enforce 0 0 0)"
+  assert_eq "assess runner scrub, pass-through names $prt_ar_name: fails closed before any call" \
+    "1 0 0 0" "$rc $(cat "$PRT_TEST_MODEL_COUNTFILE") $(cat "$PRT_TEST_ASSESS_COUNTFILE") $(prt_ar_calls)"
+  assert_eq "assess runner scrub, pass-through names $prt_ar_name: the error names PRT_ASSESS_RUNNER_ENV" \
+    "true" "$(grep -qF 'PRT_ASSESS_RUNNER_ENV' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+done
+rm -f "$PRT_TEST_RUNNER_LOG".*
+PRT_TEST_ASSESS_RUNNER_ENV="OPENAI_API_KEY BAD-NAME"
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "assess runner scrub, a malformed name in the list: fails closed before any call" \
+  "1 0" "$rc $(prt_ar_calls)"
+PRT_TEST_ASSESS_RUNNER_ENV="PRT_TEST_RUNNER_LOG PRT_TEST_RUNNER_MODE PRT_TEST_RUNNER_PROV PRT_HEAD_SHA PRT_REVIEW_BASE_SHA PRT_REVIEW_MATERIAL_SHA256"
+unset GITHUB_TOKEN GH_TOKEN OPENAI_API_KEY PRT_AR_UNRELATED PRT_TEST_GH_TOKEN prt_ar_name
+
 # PRT_MODE=off stays the escape hatch whatever this says.
 PRT_TEST_ASSESS_BACKEND="carrier-pigeon"
 rc="$(run_orchestrator off 0 0 0)"
@@ -7022,7 +7072,7 @@ unset PRT_TEST_REVIEW_BACKEND PRT_TEST_FINDINGS_FILE PRT_TEST_PROXY_URL
 rm -rf "$prt_ar_ff"
 
 unset PRT_TEST_ASSESS_BACKEND PRT_TEST_ASSESS_RUNNER PRT_TEST_ASSESS_RUNNER_BACKEND PRT_TEST_RUNNER_MODE PRT_TEST_RUNNER_LOG \
-  PRT_TEST_REVIEW_BASE_SHA PRT_TEST_REVIEW_MATERIAL_SHA256 PRT_TEST_RUNNER_PROV
+  PRT_TEST_REVIEW_BASE_SHA PRT_TEST_REVIEW_MATERIAL_SHA256 PRT_TEST_RUNNER_PROV PRT_TEST_ASSESS_RUNNER_ENV
 PRT_TEST_MODEL_RESPONSE_MODE=clean
 rm -rf "$prt_ar_dir"
 
