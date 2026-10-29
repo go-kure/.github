@@ -705,7 +705,9 @@ ${chunk_diff}
 #   PRT_ASSESS_RUNNER_BACKEND    review-run --backend value (required)
 #   PRT_ASSESS_RUNNER            the review-run executable (default: review-run)
 #   PRT_ASSESS_RUNNER_ROOT       the checkout it reads (default: the working directory)
-#   PRT_ASSESS_RUNNER_SECONDS    its deadline (default: 600)
+#   PRT_ASSESS_RUNNER_SECONDS    its deadline (default: 600), clamped to what is left of
+#                                PRT_MODEL_DEADLINE_EPOCH; a call is refused when less
+#                                than PRT_MODEL_TIMEOUT_FLOOR remains (deadline-exhausted)
 #   PRT_REVIEW_BASE_SHA          the PR's base commit (required)
 #   PRT_HEAD_SHA, PRT_REVIEW_MATERIAL_SHA256   the identity its record must carry (required)
 #   PRT_ASSESS_RUNNER_ENV        extra variable names the runner may inherit (the model
@@ -716,7 +718,8 @@ ${chunk_diff}
 # runner-usage (64, includes an input over its ceiling), runner-failed (any other
 # non-zero exit), runner-no-output (it exited 0 and left no review.md),
 # runner-empty (review.md holds nothing), provenance-mismatch (provider.json
-# does not tie the answer to this head, base, material and request).
+# does not tie the answer to this head, base, material and request),
+# deadline-exhausted (the run's model deadline leaves too little time).
 # _prt_runner_env_build — fills PRT_RUNNER_ENV_ARGS with NAME=value words for
 # `env -i`. The runner reads untrusted PR text and runs without a sandbox, so it
 # gets PATH, HOME, TMPDIR, LANG, LC_ALL and the names listed in
@@ -751,9 +754,24 @@ _prt_call_runner() {
     _prt_set_model_failure "backend-config"
     return 1
   fi
-  if ! _prt_runner_env_build; then
+  if ! _prt_runner_env_build || ! [[ "$seconds" =~ ^[0-9]+$ ]] || [ "$seconds" -lt 1 ]; then
     _prt_set_model_failure "backend-config"
     return 1
+  fi
+  # Same run deadline as the proxy calls (_prt_call_proxy): a call that cannot
+  # finish in what is left is refused, and any other is clamped to it, so slow
+  # chunks cannot eat the time reserved for posting the findings.
+  local now budget_left
+  now="$(date +%s)"
+  budget_left=$(( ${PRT_MODEL_DEADLINE_EPOCH:-$((now + 300))} - now ))
+  : "${PRT_MODEL_TIMEOUT_FLOOR:=30}"
+  if [ "$budget_left" -lt "$PRT_MODEL_TIMEOUT_FLOOR" ]; then
+    echo "prt_model: run deadline exhausted before runner call (${budget_left}s left, floor ${PRT_MODEL_TIMEOUT_FLOOR}s) — refusing call" >&2
+    _prt_set_model_failure "deadline-exhausted"
+    return 1
+  fi
+  if [ "$seconds" -gt "$budget_left" ]; then
+    seconds="$budget_left"
   fi
   tmp="$(mktemp -d)"
   if [ -z "$tmp" ] || [ ! -d "$tmp" ]; then
