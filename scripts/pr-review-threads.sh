@@ -29,7 +29,11 @@
 #                               runner serves each chunk's assess call from a
 #                               review-run process (see lib/prt/model.sh,
 #                               _prt_call_runner). Needs PRT_ASSESS_RUNNER_BACKEND.
-#                               Refused in enforce mode (no process boundary yet).
+#                               Each call runs behind a process boundary (a PID
+#                               namespace by default; PRT_ASSESS_RUNNER_BOUNDARY,
+#                               PRT_ASSESS_RUNNER_BOUNDARY_CMD) or is refused.
+#                               Refused in enforce mode until that boundary is
+#                               shown to hold on the runner image.
 #   PRT_MODEL                   default: claude-opus-4
 #   PRT_MAX_TOKENS               default: 1500
 #   PRT_ASSESS_MODEL             default: claude-sonnet-4-6
@@ -230,12 +234,14 @@ case "${PRT_ASSESS_BACKEND:-}" in
   ""|runner) : ;;
   *) echo "ERROR: PRT_ASSESS_BACKEND must be empty or runner, got '$PRT_ASSESS_BACKEND'" >&2; exit 1 ;;
 esac
-# The runner starts with no sandbox, as the same user as this script, so it could
-# read this process's environment (the posting token). Enforce stays refused
-# until the runner has a process boundary (a separate user or its own PID
-# namespace) that a test on the runner image has shown to hold.
+# The runner starts with no sandbox of its own, as the same user as this script,
+# so without a boundary it could read this process's environment (the posting
+# token). Every call now runs behind a PID namespace of its own (or an operator
+# supplied command) that is checked first and refuses the call if it fails. Enforce
+# stays refused until a test on the runner image has shown that boundary to hold
+# there: that is the S7 acceptance run, and nothing on a development host proves it.
 if [ "${PRT_ASSESS_BACKEND:-}" = runner ] && [ "$PRT_MODE" = enforce ]; then
-  echo "ERROR: PRT_ASSESS_BACKEND=runner is not allowed in enforce mode: the runner has no process boundary yet (separate user or own PID namespace)" >&2
+  echo "ERROR: PRT_ASSESS_BACKEND=runner is not allowed in enforce mode: the runner's process boundary has not been shown to hold on the runner image yet" >&2
   exit 1
 fi
 if [ "${PRT_ASSESS_BACKEND:-}" = runner ] && [ -z "${PRT_ASSESS_RUNNER_BACKEND:-}" ]; then
@@ -253,6 +259,12 @@ if [ "${PRT_ASSESS_BACKEND:-}" = runner ]; then
   done
   if ! _prt_runner_env_build; then
     echo "ERROR: $PRT_RUNNER_ENV_ERROR (names are plain variable names, set in this step, and never a posting token: PRT_GH_TOKEN, GITHUB_TOKEN, GH_TOKEN)" >&2
+    exit 1
+  fi
+  # The form of the boundary is a start check; whether it can be established on this
+  # host is decided per call, because a call that cannot get one degrades, never aborts.
+  if ! _prt_runner_boundary_build; then
+    echo "ERROR: $PRT_RUNNER_BOUNDARY_ERROR" >&2
     exit 1
   fi
 fi
