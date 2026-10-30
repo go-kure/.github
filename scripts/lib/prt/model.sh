@@ -779,12 +779,17 @@ _prt_runner_env_build() {
 # token lives. PRT_ASSESS_RUNNER_BOUNDARY picks the form:
 #   pidns (the default, also when empty): a PID namespace of its own, so the
 #     orchestrator and every other ancestor are not in the runner's /proc.
-#     Unprivileged it also takes a user namespace that maps the current user to
-#     itself (the files it reads keep their owner); as root it needs none.
+#     It always takes a user namespace that maps the current user to itself
+#     (the files it reads keep their owner), for root too: root in a user
+#     namespace could otherwise unmount the fresh /proc and see the host's
+#     again. Whoever the user is, the runner is left no capability: for root
+#     (uid 0 keeps the namespace's capabilities across exec) setpriv empties
+#     the bounding and inheritable sets and sets no_new_privs; any other user
+#     has none after exec.
 #   cmd: the words of PRT_ASSESS_RUNNER_BOUNDARY_CMD, a command the operator
 #     supplies (for instance one that switches to another user). Trusted
-#     configuration, never PR content. The orchestrator checks only that it
-#     starts; that it isolates is the operator's claim.
+#     configuration, never PR content. It is held to the same check as pidns,
+#     see _prt_runner_boundary_check: its own claim to isolate counts for nothing.
 # There is no form that runs the runner without one. Returns 1, with the reason
 # in PRT_RUNNER_BOUNDARY_ERROR, for an unknown value or a cmd form with no words.
 # shellcheck disable=SC2034 # PRT_RUNNER_BOUNDARY_ERROR is read by pr-review-threads.sh at start, not within this file
@@ -794,10 +799,9 @@ _prt_runner_boundary_build() {
   PRT_RUNNER_BOUNDARY_ERROR=""
   case "${PRT_ASSESS_RUNNER_BOUNDARY:-pidns}" in
     pidns)
+      PRT_RUNNER_BOUNDARY_ARGS=(unshare --user --map-current-user --pid --fork --mount-proc --kill-child)
       if [ "$(id -u)" = 0 ]; then
-        PRT_RUNNER_BOUNDARY_ARGS=(unshare --pid --fork --mount-proc --kill-child)
-      else
-        PRT_RUNNER_BOUNDARY_ARGS=(unshare --user --map-current-user --pid --fork --mount-proc --kill-child)
+        PRT_RUNNER_BOUNDARY_ARGS+=(setpriv --no-new-privs --bounding-set=-all --inh-caps=-all)
       fi ;;
     cmd)
       read -rd '' -a PRT_RUNNER_BOUNDARY_ARGS <<< "${PRT_ASSESS_RUNNER_BOUNDARY_CMD:-}" || true
@@ -812,26 +816,56 @@ _prt_runner_boundary_build() {
 }
 
 # _prt_runner_boundary_check — proves, before the runner is started, that the
-# boundary built above starts here and, for pidns, that it does its job: a probe
-# program run behind it must find none of this process's ancestors readable under
-# /proc (a boundary that starts but hides nothing fails). Run for every call, so
-# nothing depends on a result cached from another host or another moment.
+# boundary built above starts here and does its job, whichever form it is: a
+# probe program run behind it must (a) fail to open /proc/<pid>/environ for this
+# process and every ancestor of it, up to pid 1, and (b) hold no capability.
+# A boundary that starts but hides nothing, or leaves the runner able to undo
+# it, fails. The result of the probe decides; nothing the operator says does.
+# Run for every call, so nothing depends on a result cached from another host or
+# another moment. Returns 1 when the ancestors cannot be listed (a stat that
+# cannot be read or parsed): never a check of fewer pids than there are.
+# The probe runs in the background under `timeout -k 2` and writes to a file, so
+# neither a prefix that ignores TERM nor a helper that keeps the probe's output
+# open can hold the check past its deadline (PRT_BOUNDARY_CHECK_SECONDS, default 10).
 _prt_runner_boundary_check() {
-  local ancestors=() q="$BASHPID" ppid out
-  if [ "${PRT_ASSESS_RUNNER_BOUNDARY:-pidns}" = pidns ]; then
-    while [ "$q" -gt 1 ]; do
-      ancestors+=("$q")
-      read -r _ ppid < <(sed 's/^.*) //' "/proc/$q/stat" 2>/dev/null) || break
-      q="${ppid:-0}"
-    done
-    [ "${#ancestors[@]}" -gt 0 ] || return 1
-  fi
+  local ancestors=() q="$BASHPID" stat fields=() out out_file probe_pid rc=0 secs="${PRT_BOUNDARY_CHECK_SECONDS:-10}"
+  [[ "$secs" =~ ^[0-9]{1,3}$ ]] && [ "$secs" -ge 1 ] || secs=10
+  while [ "$q" -ge 1 ]; do
+    [ "${#ancestors[@]}" -lt 256 ] || return 1
+    # The command name is in parentheses and may hold spaces and parentheses, so the
+    # fields start after the last ") ": state, parent pid, ... start time (index 19).
+    { stat="$(< "/proc/$q/stat")"; } 2> /dev/null || return 1
+    read -ra fields <<< "${stat##*) }"
+    [[ "${fields[1]:-}" =~ ^[0-9]+$ && "${fields[19]:-}" =~ ^[0-9]+$ ]] || return 1
+    # Each ancestor is named by pid and start time: behind a PID namespace its pid number
+    # can belong to the probe's own neighbours (pid 1 always does), and only the same start
+    # time shows it is the ancestor itself.
+    ancestors+=("$q:${fields[19]}")
+    q="${fields[1]}"
+  done
   command -v "${PRT_RUNNER_BOUNDARY_ARGS[0]}" > /dev/null 2>&1 || return 1
+  out_file="$(mktemp)" || return 1
   # shellcheck disable=SC2016 # the probe is the child shell's program, not an expansion here
-  out="$(timeout 10 "${PRT_RUNNER_BOUNDARY_ARGS[@]}" env -i "PATH=$PATH" sh -c \
-    'for p; do if [ -r "/proc/$p/environ" ]; then exit 1; fi; done; echo boundary-ok' sh \
-    ${ancestors[@]+"${ancestors[@]}"} < /dev/null 2> /dev/null)" || return 1
-  [ "$out" = boundary-ok ]
+  (
+    exec timeout -k 2 "$secs" "${PRT_RUNNER_BOUNDARY_ARGS[@]}" env -i "PATH=$PATH" sh -c \
+      'for a; do
+         p="${a%%:*}"
+         if ( : < "/proc/$p/environ" ) 2> /dev/null; then
+           s="$(sed "s/^.*) //" "/proc/$p/stat" 2> /dev/null)"
+           set -- $s
+           if [ -z "$s" ] || [ "${20:-}" = "${a##*:}" ]; then exit 1; fi
+         fi
+       done
+       [ "$(sed -n "s/^CapEff:[[:space:]]*//p" /proc/self/status)" = 0000000000000000 ] || exit 1
+       echo boundary-ok' sh \
+      "${ancestors[@]}" < /dev/null > "$out_file" 2> /dev/null
+  ) &
+  probe_pid=$!
+  wait "$probe_pid" || rc=$?
+  kill -KILL -- "-$probe_pid" 2> /dev/null || true
+  out="$(< "$out_file")"
+  rm -f "$out_file"
+  [ "$rc" -eq 0 ] && [ "$out" = boundary-ok ]
 }
 
 _prt_call_runner() {
