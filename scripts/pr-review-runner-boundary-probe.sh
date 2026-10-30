@@ -31,14 +31,15 @@ self="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]
 # report files: KEY=VALUE lines
 # ---------------------------------------------------------------------------------------
 get() { sed -n "s/^$2=//p" "$1" 2> /dev/null | head -1; }
-is_count() { [[ "${1:-}" =~ ^[0-9]+$ ]]; }
+# At most 9 digits: a longer string would make bash arithmetic comparisons error out.
+is_count() { [[ "${1:-}" =~ ^[0-9]{1,9}$ ]]; }
 is_caps() { [[ "${1:-}" =~ ^[0-9a-f]{16}$ ]]; }
 
 # ---------------------------------------------------------------------------------------
 # stub: what a runner could reach, written to $PRT_PROBE_REPORT, then a clean answer
 # ---------------------------------------------------------------------------------------
 probe_stub() {
-  local out="" req canary a p st f s n e mnt msg rc
+  local out="" req canary a p st f s n e mnt msg rc own_ns
   local anc_environ=0 anc_mem=0 hits=0 visible=0 fd_above2=0 mount_result=skipped
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -79,7 +80,11 @@ probe_stub() {
     fd_above2=$((fd_above2 + 1))
   done
   if [ "${PRT_PROBE_MOUNT:-skip}" = try ]; then
-    if [ -z "${PRT_PROBE_PARENT_MNT_NS:-}" ] || [ "$(readlink /proc/self/ns/mnt)" = "$PRT_PROBE_PARENT_MNT_NS" ]; then
+    # Both namespace names must have been read, and differ, before anything is mounted.
+    own_ns="$(readlink /proc/self/ns/mnt 2> /dev/null)" || own_ns=""
+    if [ -z "${PRT_PROBE_PARENT_MNT_NS:-}" ] || [ -z "$own_ns" ]; then
+      mount_result=untried:mount-namespace-unreadable
+    elif [ "$own_ns" = "$PRT_PROBE_PARENT_MNT_NS" ]; then
       mount_result=untried:shares-mount-namespace
     elif ! command -v mount > /dev/null 2>&1; then
       mount_result=untried:no-mount-command
@@ -90,7 +95,9 @@ probe_stub() {
       if [ "$rc" -eq 0 ]; then
         mount_result=succeeded
         umount "$mnt" > /dev/null 2>&1 || true
-      elif grep -qiE 'permission denied|not permitted|must be superuser|must be root' <<< "$msg"; then
+      elif { [ "$rc" -eq 32 ] || [ "$rc" -eq 1 ]; } &&
+        grep -qiE 'permission denied|not permitted|must be superuser|must be root' <<< "$msg"; then
+        # Only mount's own refusal (status 1 or 32) is a denial; 126 and 127 mean it never ran.
         mount_result=denied
       else
         mount_result="failed:$rc"
@@ -219,7 +226,11 @@ probe_run() {
   export PRT_REVIEW_MATERIAL_SHA256=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
   export PRT_PROBE_CANARY_FILE="$work/canary"
   export PRT_PROBE_ANCESTORS="${ancestors[*]}"
-  PRT_PROBE_PARENT_MNT_NS="$(readlink /proc/self/ns/mnt)"
+  PRT_PROBE_PARENT_MNT_NS="$(readlink /proc/self/ns/mnt 2> /dev/null)" || PRT_PROBE_PARENT_MNT_NS=""
+  if [ -z "$PRT_PROBE_PARENT_MNT_NS" ]; then
+    echo "probe: cannot read this process's mount namespace" >&2
+    return 4
+  fi
   export PRT_PROBE_PARENT_MNT_NS
   export PRT_ASSESS_RUNNER="$work/review-run"
   export PRT_ASSESS_RUNNER_BACKEND=probe
