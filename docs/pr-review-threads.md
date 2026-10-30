@@ -644,7 +644,9 @@ step is checked. A step that fails is a local fault that would lose findings, so
 `REVIEW_INCOMPLETE` (`the review findings could not be assembled`, `... could not be numbered`, `the
 assessed findings could not be assembled`), the affected chunk is not counted as reviewed and the
 `coverage:` line is not printed. A final count check marks the run incomplete when the assessed findings
-are fewer than the reviewed ones. Before this, a failed append emptied the accumulator and a large review
+are fewer than the reviewed ones. Each side of a count comparison (before and after numbering,
+assessed against reviewed) is queried on its own, and a failed query is a fault, never a value:
+two failed queries cannot read as equal, so the run is `REVIEW_INCOMPLETE`. Before this, a failed append emptied the accumulator and a large review
 read as a clean one.
 
 The join of the verdicts follows the same rule. `prt_join_assessment` returns 0 when it joined, 1 when

@@ -634,9 +634,8 @@ if [ "$chunk_idx" -ne "$chunk_count" ]; then
 fi
 
 # Ordinals/collisions assigned across the WHOLE run, not per chunk.
-findings_before_ordinals="$(jq 'length' <<< "$ALL_FINDINGS" 2>/dev/null || echo unknown)"
 if ! ordinal_findings="$(prt_assign_ordinals "$ALL_FINDINGS")" ||
-   [ "$(jq 'length' <<< "$ordinal_findings" 2>/dev/null || echo unknown)" != "$findings_before_ordinals" ]; then
+   ! prt_json_same_length "$ALL_FINDINGS" "$ordinal_findings"; then
   # Never carry on with an accumulator that lost rows: it would read as a
   # smaller (or clean) review.
   prt_mark_incomplete "the review findings could not be numbered (local fault); the review findings are not reported"
@@ -833,7 +832,7 @@ done
 # Whatever happened above, assessment must hand back every finding it was
 # given. A shortfall is a local fault, and the run must not read as clean.
 if [ "$assembly_fault" = false ] &&
-   [ "$(jq 'length' <<< "$ASSESSED" 2>/dev/null || echo unknown)" != "$(jq 'length' <<< "$ALL_FINDINGS" 2>/dev/null || echo unknown)" ]; then
+   ! prt_json_same_length "$ASSESSED" "$ALL_FINDINGS"; then
   prt_mark_incomplete "the assessed findings do not match the reviewed findings (local fault); the findings are not reported"
   assembly_fault=true
 fi

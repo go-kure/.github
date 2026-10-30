@@ -218,6 +218,48 @@ rm -rf "$prt_guard_dir"
 unset prt_guard_allow prt_guard_found prt_guard_unknown prt_guard_entry prt_guard_dir
 unset -f prt_guard_scan
 
+# ============================================================ fallback-value guard (class: a failure turned into a value)
+# `$(jq ... || echo unknown)` turns a failed query into a word. Two failed queries then compare
+# equal and a comparison of two counts reads as "covered", so a fault passes as success. A query
+# whose failure matters is checked on its own status (prt_json_same_length, or `if ! x="$(jq ...)"`).
+# A fallback of the empty string (a response that did not parse) is a different, deliberate shape
+# and is not matched. This guard fails on a command substitution that falls back to a non-empty word.
+prt_fallback_scan() { # FILE... -> FILE:LINE for each substitution that falls back to a word
+  local f
+  for f in "$@"; do
+    grep -nE -e '\|\| *(echo|printf) +[A-Za-z0-9_]+[^;]*\)' "$f" | grep -vE '^[0-9]+:[[:space:]]*#' |
+      sed -E -e "s|^([0-9]+):.*|$(basename "$f"):\\1|"
+  done
+}
+assert_eq "fallback guard: no pipeline script turns a failed query into a word" "" \
+  "$(prt_fallback_scan "$ROOT/scripts/pr-review-threads.sh" "$LIB"/*.sh "$ROOT/scripts/eval/review-adapter.sh" | tr '\n' ' ')"
+prt_fallback_dir="$(mktemp -d)"
+cat > "$prt_fallback_dir/probe.sh" <<'PROBE'
+n="$(jq 'length' <<< "$x" 2>/dev/null || echo unknown)"
+[ "$(jq 'length' <<< "$y" 2>/dev/null || echo none)" != "$n" ]
+p="$(jq -c '.' <<< "$raw" 2>/dev/null || echo '')"
+# n="$(jq 'length' <<< "$x" || echo unknown)" is a comment
+PROBE
+assert_eq "fallback guard: the scanner reports both word fallbacks, not the empty one or the comment" \
+  "probe.sh:1 probe.sh:2" "$(prt_fallback_scan "$prt_fallback_dir/probe.sh" | tr '\n' ' ' | sed 's/ $//')"
+rm -rf "$prt_fallback_dir"
+unset prt_fallback_dir
+unset -f prt_fallback_scan
+
+# prt_json_same_length A B: 0 same length, 1 different, 3 when either query failed or gave no
+# number (so two failures never compare equal).
+assert_eq "same_length: equal arrays -> 0" "0" "$(prt_json_same_length '[1,2]' '[3,4]' >/dev/null 2>&1; echo $?)"
+assert_eq "same_length: different arrays -> 1" "1" "$(prt_json_same_length '[1,2]' '[3]' >/dev/null 2>&1; echo $?)"
+assert_eq "same_length: empty input is no number -> 3" "3" "$(prt_json_same_length '' '[]' >/dev/null 2>&1; echo $?)"
+assert_eq "same_length: both inputs empty -> 3, not equal" "3" "$(prt_json_same_length '' '' >/dev/null 2>&1; echo $?)"
+assert_eq "same_length: invalid JSON on both sides -> 3, not equal" "3" "$(prt_json_same_length '{x' '{y' >/dev/null 2>&1; echo $?)"
+assert_eq "same_length: both queries failing (a local jq fault) -> 3, not equal" "3" "$(
+  # shellcheck disable=SC2329,SC2317
+  jq() { return 5; }
+  prt_json_same_length '[1]' '[1]' >/dev/null 2>&1
+  echo $?
+)"
+
 # ============================================================ fingerprint
 assert_eq "fp_base is deterministic across calls" \
   "$(prt_fp_base "a/b.go" "nil-deref")" "$(prt_fp_base "a/b.go" "nil-deref")"
@@ -3606,6 +3648,54 @@ assert_eq "orchestrator: all-malformed then clean on retry -> no REVIEW_INCOMPLE
 assert_eq "orchestrator: all-malformed then clean on retry -> stderr carries the recovered line with retried=true" \
   "true" "$(grep -q 'review recovered (retried=true salvaged=false)' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 PRT_TEST_MODEL_RESPONSE_MODE=clean
+
+# ---- Count comparisons: two failed queries must not compare equal. The run compares finding
+# counts twice: before and after numbering (call 1 reads the input, call 2 the output), and
+# between the assessed and the reviewed findings (calls 3 and 4). Seam: an exported jq shim,
+# inherited by the orchestrator, fails `jq length` only when prt_json_same_length runs it, by
+# its running call number. Before the fix there was no such helper, so no fault is injected and
+# every run below exits 0.
+t_len_countfile="$(mktemp)"
+t_len_run() { # t_len_run FIRST_FAIL LAST_FAIL -> orchestrator exit code (calls FIRST..LAST fail)
+  echo 0 > "$t_len_countfile"
+  (
+    # Invoked indirectly by the orchestrator.
+    # shellcheck disable=SC2329,SC2317
+    jq() {
+      local c
+      if [ "$*" = length ] && [ "${FUNCNAME[1]:-}" = prt_json_same_length ]; then
+        c="$(_prt_test_bump "$PRT_TEST_LEN_COUNTFILE")"
+        { [ "$c" -ge "$PRT_TEST_LEN_FIRST" ] && [ "$c" -le "$PRT_TEST_LEN_LAST" ]; } && return 5
+      fi
+      command jq "$@"
+    }
+    export -f jq
+    export PRT_TEST_LEN_COUNTFILE="$t_len_countfile" PRT_TEST_LEN_FIRST="$1" PRT_TEST_LEN_LAST="$2"
+    run_orchestrator advisory 0 0 0
+  )
+}
+rc="$(t_len_run 99 99)"
+assert_eq "orchestrator: count comparisons, no fault injected -> exits 0, four length queries ran" \
+  "0 4" "$rc $(cat "$t_len_countfile")"
+rc="$(t_len_run 1 2)"
+assert_eq "orchestrator: both queries of the numbering comparison fail -> exits 1, not read as covered" "1" "$rc"
+assert_eq "orchestrator: both queries of the numbering comparison fail -> the numbering fault is reported" \
+  "true" "$(grep -qF 'REVIEW_INCOMPLETE: the review findings could not be numbered' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+rc="$(t_len_run 1 1)"
+assert_eq "orchestrator: the first query of the numbering comparison fails alone -> exits 1" "1" "$rc"
+rc="$(t_len_run 2 2)"
+assert_eq "orchestrator: the second query of the numbering comparison fails alone -> exits 1" "1" "$rc"
+rc="$(t_len_run 3 4)"
+assert_eq "orchestrator: both queries of the assessed/reviewed comparison fail -> exits 1, not read as covered" "1" "$rc"
+assert_eq "orchestrator: both queries of the assessed/reviewed comparison fail -> the mismatch is reported" \
+  "true" "$(grep -qF 'REVIEW_INCOMPLETE: the assessed findings do not match the reviewed findings' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+rc="$(t_len_run 3 3)"
+assert_eq "orchestrator: the first query of the assessed/reviewed comparison fails alone -> exits 1" "1" "$rc"
+rc="$(t_len_run 4 4)"
+assert_eq "orchestrator: the second query of the assessed/reviewed comparison fails alone -> exits 1" "1" "$rc"
+rm -f "$t_len_countfile"
+unset t_len_countfile
+unset -f t_len_run
 
 # ---- Cases iv-viii: assessment-call resilience (assess-resilience
 # workstream) — prt_model_assess's exit-status check, and the identical
