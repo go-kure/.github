@@ -6864,6 +6864,8 @@ case "${PRT_TEST_RUNNER_PROV:-}" in
   base) p_base=0000000000000000000000000000000000000000 ;;
   material) p_mat=0000000000000000000000000000000000000000000000000000000000000000 ;;
   input) in_sha=0000000000000000000000000000000000000000000000000000000000000000 ;;
+  input_empty) in_sha="" ;;
+  input_short) in_sha=abc ;;
   format) p_format=review-run-v0 ;;
   outcome) p_outcome=incomplete ;;
   git)
@@ -7091,6 +7093,38 @@ PRT_TEST_RUNNER_PROV=""
 rm -f "$PRT_TEST_RUNNER_LOG".*
 rc="$(run_orchestrator advisory 0 0 0)"
 assert_eq "assess runner provenance, faithful record: accepted, not degraded" "0 1 false" "$rc $(prt_ar_calls) $(grep -qF "[provenance-mismatch]" "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+
+# The digest of the request sent is a trust input: if computing it fails it is not a value. A failed
+# sha256sum leaves it empty (or short), and a record that carries the same empty or short string must
+# not match it. The faulty digest is injected into the orchestrator only; the stub keeps the real one.
+prt_ar_sha_case() { # label prov-mode sha-fault(empty|short)
+  rm -f "$PRT_TEST_RUNNER_LOG".*
+  PRT_TEST_RUNNER_PROV="$2"
+  rc="$(
+    # Defined from a string so that the other sha256sum calls in this file are not read as calls
+    # of this shim (shellcheck follows function names); the orchestrator invokes it.
+    eval 'sha256sum() {
+      if [ "${FUNCNAME[1]:-}" = _prt_call_runner ]; then
+        case "$PRT_TEST_SHA_FAULT" in
+          empty) return 1 ;;
+          short) printf "abc  -\n"; return 0 ;;
+        esac
+      fi
+      command sha256sum "$@"
+    }'
+    export -f sha256sum
+    export PRT_TEST_SHA_FAULT="$3"
+    run_orchestrator advisory 0 0 0
+  )"
+  assert_eq "assess runner digest fault, $1: exits 0 (degraded, not fatal), one call" "0 1" "$rc $(prt_ar_calls)"
+  assert_eq "assess runner digest fault, $1: refused as provenance-mismatch" \
+    "true" "$(grep -qF '[provenance-mismatch]' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+  assert_eq "assess runner digest fault, $1: the verdicts are not used" \
+    "false" "$(grep -qE 'coverage: [0-9]+/[0-9]+ chunks review\+assess ok' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+}
+prt_ar_sha_case "failed digest, record input_sha256 empty" input_empty empty
+prt_ar_sha_case "short digest, record carries the same short string" input_short short
+PRT_TEST_RUNNER_PROV=""
 # The stub above copies the caller's identity into its record, so it cannot catch a wrong root, a
 # base the checkout lacks or a merge-commit checkout. This one derives the identity from a real
 # repository, as the runner does, and the expected values below are derived apart from it: the head
