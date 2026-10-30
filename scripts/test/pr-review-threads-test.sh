@@ -6624,6 +6624,12 @@ case "$mode" in
     if [ -e /proc/self/fd/9 ]; then fd_hits="$(grep -c 'sentinel-fd-secret' /proc/self/fd/9 2>/dev/null)"; fi
     echo "$env_hits $fd_hits" > "$log.probe"
     mode=clean ;;
+  # heartbeat: hangs, with a helper that rewrites a counter file every 0.1 s, so a test can tell
+  # from outside whether anything of the runner's tree is still alive (its pids are not
+  # visible from outside a PID namespace).
+  heartbeat)
+    ( while :; do date +%s%N > "$log.hb"; sleep 0.1; done ) &
+    sleep 300; exit 0 ;;
   garbage_then_exit4) if [ "$n" -ge 2 ]; then exit 4; fi; mode=garbage ;;
   garbage_then_clean) if [ "$n" -ge 2 ]; then mode=clean; else mode=garbage; fi ;;
 esac
@@ -7207,6 +7213,49 @@ fi
 rm -f "$prt_ar_fdfile"
 PRT_TEST_ASSESS_RUNNER_BOUNDARY=""
 PRT_TEST_ASSESS_RUNNER_BOUNDARY_CMD=""
+
+# Lifetime. Behind the default boundary the runner's pids are not visible from outside, so the
+# proof that nothing of its tree outlives the call is a heartbeat file that stops advancing.
+# prt_ar_hb_stopped needs the file to exist (the helper ran) and to stay unchanged for a second.
+prt_ar_hb_stopped() {
+  local a b
+  [ -s "$PRT_TEST_RUNNER_LOG.hb" ] || { echo false; return; }
+  a="$(cat "$PRT_TEST_RUNNER_LOG.hb")"; sleep 1; b="$(cat "$PRT_TEST_RUNNER_LOG.hb")"
+  [ "$a" = "$b" ] && echo true || echo false
+}
+if prt_ar_pidns_ok; then
+  PRT_TEST_RUNNER_MODE=heartbeat
+  PRT_TEST_MODEL_BUDGET_SECONDS=12
+  rm -f "$PRT_TEST_RUNNER_LOG".*
+  prt_ar_t0=$SECONDS
+  rc="$(PRT_MODEL_TIMEOUT_FLOOR=1 run_orchestrator advisory 0 0 0)"
+  prt_ar_elapsed=$((SECONDS - prt_ar_t0))
+  assert_eq "assess runner hangs behind the default boundary: one call, ends inside the 12s deadline, degraded as runner-timeout" \
+    "0 1 true true" "$rc $(prt_ar_calls) $([ "$prt_ar_elapsed" -lt 12 ] && echo true || echo false) $(prt_ar_reason runner-timeout)"
+  assert_eq "assess runner hangs behind the default boundary: nothing of its tree is left running" "true" "$(prt_ar_hb_stopped)"
+  PRT_TEST_MODEL_BUDGET_SECONDS=""
+  PRT_TEST_RUNNER_MODE=probe
+
+  # The boundary command dying takes the namespace with it (--kill-child), so a runner cannot
+  # outlive the process that holds it. The call is not involved here; the command is the built one.
+  _prt_runner_boundary_build
+  prt_ar_hb="$prt_ar_dir/hb-direct"
+  rm -f "$prt_ar_hb"
+  # shellcheck disable=SC2016 # the loop is the child shell's program, not an expansion here
+  "${PRT_RUNNER_BOUNDARY_ARGS[@]}" sh -c 'while :; do date +%s%N > "$1"; sleep 0.1; done' sh "$prt_ar_hb" > /dev/null 2>&1 &
+  prt_ar_bpid=$!
+  sleep 1
+  prt_ar_a="$(cat "$prt_ar_hb" 2>/dev/null)"; sleep 0.5; prt_ar_b="$(cat "$prt_ar_hb" 2>/dev/null)"
+  assert_eq "boundary command, control: the heartbeat advances while the command lives" \
+    "true" "$([ -n "$prt_ar_a" ] && [ "$prt_ar_a" != "$prt_ar_b" ] && echo true || echo false)"
+  kill -KILL "$prt_ar_bpid" 2>/dev/null
+  wait "$prt_ar_bpid" 2>/dev/null
+  sleep 1
+  prt_ar_a="$(cat "$prt_ar_hb" 2>/dev/null)"; sleep 1; prt_ar_b="$(cat "$prt_ar_hb" 2>/dev/null)"
+  assert_eq "boundary command killed: nothing it started keeps running" \
+    "true" "$([ -n "$prt_ar_a" ] && [ "$prt_ar_a" = "$prt_ar_b" ] && echo true || echo false)"
+  rm -f "$prt_ar_hb"
+fi
 
 # A boundary that cannot be established refuses the call and keeps the finding unverdicted
 # (REVIEW_DEGRADED, still gating); it never falls back to running the runner unbounded.
