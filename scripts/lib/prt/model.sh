@@ -703,6 +703,17 @@ ${chunk_diff}
   esac
 }
 
+# _prt_runner_clock_read — sets `now` (a local of the caller) to the epoch seconds, or returns 1
+# when the clock cannot be read as a whole number: an empty or odd value is never a time.
+_prt_runner_clock_read() {
+  local t
+  if ! t="$(date +%s)" || ! [[ "$t" =~ ^[0-9]+$ ]]; then
+    echo "prt_model: the clock cannot be read before the runner call — refusing call" >&2
+    return 1
+  fi
+  now="$t"
+}
+
 # _prt_call_runner REQUEST — the assess call served by a review-run process
 # (PRT_ASSESS_BACKEND=runner) instead of the proxy. Prints the answer body
 # review-run returned, verbatim, so the caller's parse, salvage, retry and join
@@ -735,7 +746,8 @@ ${chunk_diff}
 # that cannot be read), runner-empty (review.md holds nothing), provenance-mismatch
 # (provider.json does not tie the answer to this head, base, material and request,
 # or the digest of the request is not 64 hex characters),
-# deadline-exhausted (the run's model deadline leaves too little time).
+# deadline-exhausted (the run's model deadline leaves too little time, or the clock
+# cannot be read as a whole number).
 # _prt_runner_env_build — fills PRT_RUNNER_ENV_ARGS with NAME=value words for
 # `env -i`. The runner reads untrusted PR text and runs without a sandbox, so it
 # gets PATH, HOME, TMPDIR, LANG, LC_ALL and the names listed in
@@ -916,8 +928,13 @@ _prt_call_runner() {
   # chunks cannot eat the time reserved for posting the findings. Read before the
   # boundary preflight, which costs time too: an expired budget spends none of it.
   # The runner's own TERM-to-KILL grace (6 s, see below) must fit as well.
+  # Every read of the clock is checked: a failed `date` is not 0, which would make the time left the
+  # whole epoch and let the refusals below pass. It is refused as deadline-exhausted.
   local now budget_left
-  now="$(date +%s)"
+  if ! _prt_runner_clock_read; then
+    _prt_set_model_failure "deadline-exhausted"
+    return 1
+  fi
   budget_left=$(( ${PRT_MODEL_DEADLINE_EPOCH:-$((now + 300))} - now ))
   : "${PRT_MODEL_TIMEOUT_FLOOR:=30}"
   if [ "$budget_left" -lt "$PRT_MODEL_TIMEOUT_FLOOR" ] || [ "$budget_left" -lt 6 ]; then
@@ -936,7 +953,10 @@ _prt_call_runner() {
     _prt_set_model_failure "runner-boundary"
     return 1
   fi
-  now="$(date +%s)"
+  if ! _prt_runner_clock_read; then
+    _prt_set_model_failure "deadline-exhausted"
+    return 1
+  fi
   budget_left=$(( ${PRT_MODEL_DEADLINE_EPOCH:-$((now + 300))} - now ))
   if [ "$seconds" -gt "$budget_left" ]; then
     seconds="$budget_left"
@@ -961,7 +981,11 @@ _prt_call_runner() {
   # budget is read again here (the request was written since the check above); a call
   # whose TERM-to-KILL grace no longer fits in it is refused, never run past the deadline.
   local outer runner_pid
-  now="$(date +%s)"
+  if ! _prt_runner_clock_read; then
+    rm -rf "$tmp"
+    _prt_set_model_failure "deadline-exhausted"
+    return 1
+  fi
   budget_left=$(( ${PRT_MODEL_DEADLINE_EPOCH:-$((now + 300))} - now ))
   if [ "$budget_left" -lt 6 ]; then
     echo "prt_model: run deadline leaves no room for the runner call and its kill grace (${budget_left}s left) — refusing call" >&2
