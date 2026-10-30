@@ -795,7 +795,15 @@ for ((i = 0; i < chunk_idx; i++)); do
   # degrade, log the failure explicitly, append with an explicit
   # verdict:null/reasoning:null (not the rejected $joined shape), and skip
   # the good-path marker below.
-  if ! joined="$(prt_join_assessment "$chunk_findings" "$assess_json")"; then
+  joined="$(prt_join_assessment "$chunk_findings" "$assess_json")"
+  join_rc=$?
+  # Status 2 is a local fault while joining (not a bad assessment response):
+  # fail closed like every other assembly fault, never an unverdicted success.
+  if [ "$join_rc" -eq 2 ]; then
+    assessed_fault "$i"
+    continue
+  fi
+  if [ "$join_rc" -ne 0 ]; then
     prt_mark_degraded "chunk $i: .assessments missing/null/non-array"
     prt_log "chunk $i: review ok, assess FAILED (.assessments missing/null/non-array)"
     assessed_append_unverdicted "$i" "$chunk_findings" || continue
@@ -1291,7 +1299,7 @@ prt_post_maint_failure() {
   fi
   reply="$(prt_render_reply_maint_failure "$reason" "$stale")"
   if ! prt_gh_rest POST "/repos/${PRT_REPO}/pulls/${PRT_PR_NUMBER}/comments" \
-    "$(jq -n --arg b "$reply" --argjson r "$db_id" '{body:$b, in_reply_to:$r}')" >/dev/null; then
+    "$(prt_json_body_payload "$reply" --argjson in_reply_to "$db_id")" >/dev/null; then
     prt_mark_incomplete "${context}: the MAINT_FAILURE reply recording stale stamp ${stale} failed; the next absence at a new head may resolve this thread on one absence"
   fi
 }
@@ -1352,7 +1360,7 @@ prt_persist_owned_collision() {
   [ "$flag" = false ] && write=(prt_gh_rest_fresh_open "$(jq -r '.thread_id' <<< "$row")")
   prt_retry 3 "${write[@]}" PATCH "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA" \
     "/repos/${PRT_REPO}/pulls/comments/${db_id}" \
-    "$(jq -n --arg b "$new_body" '{body:$b}')" >/dev/null
+    "$(prt_json_body_payload "$new_body")" >/dev/null
   rc=$?
   if [ "$rc" -eq 4 ]; then
     prt_log "${context}: thread was resolved after the inventory snapshot, not lifted"
@@ -1380,7 +1388,7 @@ if [ "$PRT_MODE" = advisory ]; then
   advisory_degraded_reasons=""
   prt_is_degraded && advisory_degraded_reasons="$(prt_degraded_reasons)"
   body="$(prt_render_advisory_comment "$advisory_findings" "$advisory_incomplete_reasons" "$advisory_degraded_reasons" "$EXCLUDED_FILES")"
-  payload="$(jq -n --arg b "$body" '{body:$b}')"
+  payload="$(prt_json_body_payload "$body")"
   if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
     prt_gh_rest POST "/repos/${PRT_REPO}/issues/${PRT_PR_NUMBER}/comments" "$payload" >/dev/null || \
       prt_mark_incomplete "failed to post advisory comment (HTTP ${PRT_LAST_HTTP_STATUS:-unknown})"
@@ -1634,14 +1642,16 @@ else
         quarantine_reason="$collision_source"
         persisted_only_flag=false
         [ "$quarantine_reason" = persisted ] && persisted_only_flag=true
-        QUARANTINED="$(jq -c --argjson f "$f" --argjson g "$gating_flag" --argjson p "$persisted_only_flag" --arg r "$quarantine_reason" \
-          '. + [$f + {gating: $g, persisted_only: $p, quarantine_reason: $r}]' <<< "$QUARANTINED")"
+        # The finding $f travels on stdin with the list: it can hold a body of
+        # multi-byte text past the kernel's 128 KiB cap on one argument.
+        QUARANTINED="$(printf '%s\n%s\n' "$QUARANTINED" "$f" | jq -cs --argjson g "$gating_flag" --argjson p "$persisted_only_flag" --arg r "$quarantine_reason" \
+          '.[0] + [.[1] + {gating: $g, persisted_only: $p, quarantine_reason: $r}]')"
         ;;
       SUPPRESS)
         SUPPRESSED_COUNT=$((SUPPRESSED_COUNT + 1))
-        SUPPRESSED="$(jq -c --argjson f "$f" '. + [$f]' <<< "$SUPPRESSED")"
+        SUPPRESSED="$(printf '%s\n%s\n' "$SUPPRESSED" "$f" | jq -cs '.[0] + [.[1]]')"
         ;;
-      OVERFLOW) OVERFLOW="$(jq -c --argjson f "$f" '. + [$f]' <<< "$OVERFLOW")" ;;
+      OVERFLOW) OVERFLOW="$(printf '%s\n%s\n' "$OVERFLOW" "$f" | jq -cs '.[0] + [.[1]]')" ;;
       REPLY_RESOLVE)
         prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA" || { prt_handle_freshness_rc "$?" "fp=$fp: reply+resolve"; continue; }
         can_resolve="$(jq -r '.viewer_can_resolve' <<< "$owned_match")"
@@ -1729,7 +1739,7 @@ else
           if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
             reasoning="$(jq -r '.reasoning // "no reasoning provided"' <<< "$f")"
             reply="$(prt_render_reply_false_positive "$reasoning")"
-            reply_payload="$(jq -n --arg b "$reply" --argjson r "$db_id" '{body:$b, in_reply_to:$r}')"
+            reply_payload="$(prt_json_body_payload "$reply" --argjson in_reply_to "$db_id")"
             prt_gh_rest POST "/repos/${PRT_REPO}/pulls/${PRT_PR_NUMBER}/comments" "$reply_payload" >/dev/null || \
               prt_mark_incomplete "fp=$fp: resolveReviewThread succeeded but the explanatory reply failed"
           else
@@ -1757,7 +1767,7 @@ else
           # (codex round-2 confirm finding, go-kure/.github#99).
           if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
             reply="$(prt_render_reply_recurrence)"
-            reply_payload="$(jq -n --arg b "$reply" --argjson r "$db_id" '{body:$b, in_reply_to:$r}')"
+            reply_payload="$(prt_json_body_payload "$reply" --argjson in_reply_to "$db_id")"
             prt_gh_rest POST "/repos/${PRT_REPO}/pulls/${PRT_PR_NUMBER}/comments" "$reply_payload" >/dev/null || \
               prt_mark_incomplete "fp=$fp: unresolveReviewThread succeeded but the explanatory reply failed"
           else
@@ -1783,11 +1793,11 @@ else
         fi
         create_payload=""
         if [ "$anchored" = true ]; then
-          create_payload="$(jq -n --arg b "$body" --arg sha "$PRT_HEAD_SHA" --arg path "$file" --argjson l "$line" \
-            '{body:$b, commit_id:$sha, path:$path, line:$l, side:"RIGHT"}')"
+          create_payload="$(prt_json_body_payload "$body" --arg commit_id "$PRT_HEAD_SHA" --arg path "$file" \
+            --argjson line "$line" --arg side RIGHT)"
         else
-          create_payload="$(jq -n --arg b "$body" --arg sha "$PRT_HEAD_SHA" --arg path "$file" \
-            '{body:$b, commit_id:$sha, path:$path, subject_type:"file"}')"
+          create_payload="$(prt_json_body_payload "$body" --arg commit_id "$PRT_HEAD_SHA" --arg path "$file" \
+            --arg subject_type file)"
         fi
         if prt_gh_rest POST "/repos/${PRT_REPO}/pulls/${PRT_PR_NUMBER}/comments" "$create_payload" >/dev/null; then
           THREADS_WRITTEN=$((THREADS_WRITTEN + 1))
@@ -1803,8 +1813,8 @@ else
             # fall back to a file-level thread once. Recheck freshness
             # immediately before this second write.
             if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
-              fallback_payload="$(jq -n --arg b "$body" --arg sha "$PRT_HEAD_SHA" --arg path "$file" \
-                '{body:$b, commit_id:$sha, path:$path, subject_type:"file"}')"
+              fallback_payload="$(prt_json_body_payload "$body" --arg commit_id "$PRT_HEAD_SHA" --arg path "$file" \
+                --arg subject_type file)"
               if prt_gh_rest POST "/repos/${PRT_REPO}/pulls/${PRT_PR_NUMBER}/comments" "$fallback_payload" >/dev/null; then
                 THREADS_WRITTEN=$((THREADS_WRITTEN + 1))
               else
@@ -1926,7 +1936,7 @@ if [ "$PRT_MODE" = enforce ]; then
         new_body="$(prt_marker_replace "$cur_body" "$new_marker")"
         prt_retry 3 prt_gh_rest_fresh PATCH "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA" \
           "/repos/${PRT_REPO}/pulls/comments/${first_comment_db_id}" \
-          "$(jq -n --arg b "$new_body" '{body:$b}')" >/dev/null
+          "$(prt_json_body_payload "$new_body")" >/dev/null
         retry_rc=$?
         [ "$retry_rc" -eq 0 ] || prt_handle_freshness_rc "$retry_rc" "fp=$fp: setting first_absent_sha (after up to 3 retries)"
         ;;
@@ -1951,7 +1961,7 @@ if [ "$PRT_MODE" = enforce ]; then
         new_body="$(prt_marker_replace "$cur_body" "$new_marker")"
         prt_retry 3 prt_gh_rest_fresh PATCH "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA" \
           "/repos/${PRT_REPO}/pulls/comments/${first_comment_db_id}" \
-          "$(jq -n --arg b "$new_body" '{body:$b}')" >/dev/null
+          "$(prt_json_body_payload "$new_body")" >/dev/null
         retry_rc=$?
         if [ "$retry_rc" -ne 0 ]; then
           prt_handle_freshness_rc "$retry_rc" "fp=$fp: clearing the absence marker (after up to 3 retries)"
@@ -1997,7 +2007,7 @@ if [ "$PRT_MODE" = enforce ]; then
           if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
             reply="$(prt_render_reply_absent_resolved)"
             prt_gh_rest POST "/repos/${PRT_REPO}/pulls/${PRT_PR_NUMBER}/comments" \
-              "$(jq -n --arg b "$reply" --argjson r "$first_comment_db_id" '{body:$b, in_reply_to:$r}')" >/dev/null || \
+              "$(prt_json_body_payload "$reply" --argjson in_reply_to "$first_comment_db_id")" >/dev/null || \
               prt_mark_incomplete "fp=$fp: absence resolveReviewThread succeeded but the explanatory reply failed"
           else
             prt_mark_incomplete "fp=$fp: absence resolveReviewThread succeeded but the post-mutation freshness re-check did not pass (head moved, or the check itself failed) — mutation already applied and will not be redone by a superseding run, reply permanently skipped"
@@ -2030,7 +2040,7 @@ if [ "$PRT_MODE" = enforce ] && { [ "$(jq 'length' <<< "$OVERFLOW")" -gt 0 ] || 
     # not author-based) and would make a quarantined/overflow body a merge
     # blocker instead of the advisory it's meant to be.
     prt_gh_rest POST "/repos/${PRT_REPO}/issues/${PRT_PR_NUMBER}/comments" \
-      "$(jq -n --arg b "$overflow_body" '{body:$b}')" >/dev/null || \
+      "$(prt_json_body_payload "$overflow_body")" >/dev/null || \
       { prt_mark_incomplete "failed to post overflow comment (HTTP ${PRT_LAST_HTTP_STATUS:-unknown})"; OVERFLOW_COMMENT_POSTED=false; }
   else
     prt_handle_freshness_rc "$?" "overflow comment"

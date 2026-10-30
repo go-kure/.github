@@ -39,6 +39,18 @@ PRT_LAST_HTTP_STATUS=""
 prt_gh_rest() {
   local method="$1" path="$2" data="${3:-}"
   local tmp hdrs status
+  # A write with no payload is a local fault (a payload that failed to build),
+  # never a request to send: refuse it before any call is made.
+  case "$method" in
+    POST | PATCH | PUT)
+      if [ -z "$data" ]; then
+        echo "prt_gh_rest: refusing $method $path with an empty payload (a payload failed to build)" >&2
+        PRT_LAST_HTTP_STATUS=""
+        return 1
+      fi
+      ;;
+    *) ;;
+  esac
   tmp="$(mktemp)"
   hdrs="$(mktemp)"
   local -a args=(-sS -o "$tmp" -D "$hdrs" -w '%{http_code}' -X "$method"
@@ -46,8 +58,11 @@ prt_gh_rest() {
     -H "Authorization: Bearer ${PRT_GH_TOKEN:?PRT_GH_TOKEN not set}"
     -H "Accept: application/vnd.github+json"
     -H "Content-Type: application/json")
+  # The payload goes to curl over stdin: as a `-d` value it would be one argv
+  # entry, which the kernel caps at 128 KiB, and a comment body of multi-byte
+  # characters can pass that while staying under GitHub's own 65,536-character cap.
   if [ -n "$data" ]; then
-    args+=(-d "$data")
+    args+=(--data-binary @-)
   fi
   # Reset before the call, not just on success: a curl transport failure
   # below returns before these are ever (re)assigned from this call's own
@@ -61,7 +76,7 @@ prt_gh_rest() {
   PRT_LAST_RATELIMIT_REMAINING=""
   PRT_LAST_RETRY_AFTER=""
   PRT_LAST_HTTP_STATUS=""
-  status="$("$PRT_CURL" "${args[@]}" "${PRT_API_BASE}${path}")" || {
+  status="$(printf '%s' "$data" | "$PRT_CURL" "${args[@]}" "${PRT_API_BASE}${path}")" || {
     echo "prt_gh_rest: curl transport failure for $method $path" >&2
     rm -f "$tmp" "$hdrs"
     return 1
@@ -429,7 +444,7 @@ prt_find_marked_comment() {
 prt_upsert_issue_comment() {
   local repo="$1" pr_number="$2" body="$3" existing_id="${4:-}"
   local payload
-  payload="$(jq -n --arg b "$body" '{body:$b}')"
+  payload="$(prt_json_body_payload "$body")"
   if [ -n "$existing_id" ]; then
     prt_gh_rest PATCH "/repos/${repo}/issues/comments/${existing_id}" "$payload" >/dev/null
   else
