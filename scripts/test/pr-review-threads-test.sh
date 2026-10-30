@@ -172,6 +172,7 @@ gh.sh:thread_id gh.sh:variables \
 json.sh:index json.sh:kind \
 model.sh:idx model.sh:max_tokens model.sh:model model.sh:n \
 model.sh:PRT_HEAD_SHA model.sh:PRT_REVIEW_BASE_SHA model.sh:PRT_REVIEW_MATERIAL_SHA256 \
+model.sh:req_sha \
 reconcile.sh:2 reconcile.sh:cap reconcile.sh:fp reconcile.sh:rank reconcile.sh:sev_rank \
 reconcile.sh:this_cfp \
 review-adapter.sh:chunk_count review-adapter.sh:n_chunk_failed review-adapter.sh:n_chunk_ok \
