@@ -117,18 +117,20 @@ printf 'canary-for-the-test' > "$dir/canary"
 stub_run() { # stub_run REPORT [env words...] — descriptor 300 is open when PRT_TEST_FD300 is set
   local report="$1"; shift
   rm -f "$report"
-  if [ -n "${PRT_TEST_FD300:-}" ]; then
-    (
-      exec 300< /dev/null
-      env -i PATH="$PATH" PRT_PROBE_REPORT="$report" PRT_PROBE_CANARY_FILE="$dir/canary" PRT_PROBE_ANCESTORS="" \
-        PRT_HEAD_SHA=marker-for-the-test-1234 PRT_REVIEW_BASE_SHA=b PRT_REVIEW_MATERIAL_SHA256=c "$@" \
-        bash "$PROBE" stub --out "$dir/out.$$" < /dev/null > /dev/null 2>&1
-    )
-  else
+  (
+    # The probe counts every descriptor above 2 it inherits, so start it from a shell that has closed
+    # the ones its own caller (a CI step, a harness) handed down: "none is open" is then the test's
+    # premise, not the environment's.
+    for p in /proc/self/fd/*; do
+      n="${p##*/}"
+      [ "$n" -gt 2 ] 2> /dev/null || continue
+      eval "exec $n>&-" 2> /dev/null || true
+    done
+    if [ -n "${PRT_TEST_FD300:-}" ]; then exec 300< /dev/null; fi
     env -i PATH="$PATH" PRT_PROBE_REPORT="$report" PRT_PROBE_CANARY_FILE="$dir/canary" PRT_PROBE_ANCESTORS="" \
       PRT_HEAD_SHA=marker-for-the-test-1234 PRT_REVIEW_BASE_SHA=b PRT_REVIEW_MATERIAL_SHA256=c "$@" \
       bash "$PROBE" stub --out "$dir/out.$$" < /dev/null > /dev/null 2>&1
-  fi
+  )
   rm -rf "$dir/out.$$"
 }
 field() { sed -n "s/^$2=//p" "$1" 2> /dev/null | head -1; }
