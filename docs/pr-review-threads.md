@@ -515,23 +515,35 @@ unless that boundary has been established and checked for that call. There is no
 runs the runner without one. Every file descriptor above 2 is also closed in the process that
 starts it, because `env -i` and a namespace both leave them open, and a descriptor the orchestrator
 holds (a credential file, a pipe) would be readable to the runner.
-- `pidns` (default): the runner is started under `unshare --pid --fork --mount-proc --kill-child`,
-  with `--user --map-current-user` added when not root (the files it reads keep their owner). Its
-  `/proc` then lists only its own namespace: the orchestrator and every other ancestor are not
-  there, and killing the namespace's first process ends all of it. The check runs a probe behind
-  that command with the pids of this process and all its ancestors and requires that none has a
-  readable `/proc/<pid>/environ`; a command that starts but hides nothing fails it.
+- `pidns` (default): the runner is started under
+  `unshare --user --map-current-user --pid --fork --mount-proc --kill-child` (the files it reads
+  keep their owner). Its `/proc` then lists only its own namespace: the orchestrator and every
+  other ancestor are not there, and killing the namespace's first process ends all of it. As root
+  the runner would keep the user namespace's capabilities across `exec` and could unmount the fresh
+  `/proc` to see the host's again, so a root orchestrator adds
+  `setpriv --no-new-privs --bounding-set=-all --inh-caps=-all`; any other user has no capability
+  after `exec`.
 - `cmd`: the command in `PRT_ASSESS_RUNNER_BOUNDARY_CMD` is put in front of the runner, for a host
   where a namespace is not allowed, for instance one that switches to another user. It is workflow
-  configuration, never PR content. Only that it starts is checked; that it isolates is the
-  operator's claim.
+  configuration, never PR content, and its claim to isolate counts for nothing: it passes the same
+  check as `pidns` or the call is refused.
+
+The check runs for every call, whichever form: a probe is started behind the boundary with every
+process from this one up to pid 1, each named by pid and start time, and it must find that none
+has a readable `/proc/<pid>/environ` (a pid that belongs to a neighbour inside a namespace is told
+apart by its start time) and that its own capability set is empty. A command that starts but hides
+nothing, or leaves the runner able to undo it, fails. The probe is bounded as a whole: it runs under
+`timeout` with a kill after the first signal and writes to a file, so a prefix that ignores
+`TERM`, or leaves a helper holding the probe's output, cannot hold the check. If the ancestors
+cannot be listed the call is refused, never checked against fewer.
 Lifetime: when the boundary command dies, `--kill-child` takes the namespace with it, and the
 outer time bound ends it when the call overruns. If the orchestrator itself is killed outright, the
 runner's tree is not signalled by it and runs until that outer bound fires (at most the call's
 seconds plus 30, within the run's deadline).
 
 Hosts that forbid an unprivileged user namespace (for example Ubuntu 24.04 with its AppArmor
-restriction) cannot establish `pidns` as a non-root user; those calls are refused until the
+restriction, or a container whose seccomp profile blocks `unshare`) cannot establish `pidns`,
+for root too; those calls are refused until the
 operator supplies a `cmd` or relaxes the host. Separate-user isolation is a documented follow-up
 that this repository does not build.
 
@@ -577,8 +589,9 @@ usual cases first) and `local-tempdir`. A malformed answer is salvaged and retri
   host the tests run on. That the posting token is unreadable to the runner on the real runner
   host and image (its kernel, its container's namespace and seccomp rules, its checkout and
   credential files) can only be shown by the acceptance run on that image; nothing on a
-  development host proves it. A `cmd` boundary is the operator's claim and is checked only for
-  starting. A descendant that escapes the namespace through a kernel flaw is out of scope.
+  development host proves it. The check shows that the ancestors' environments cannot be opened
+  from behind the boundary and that no capability is held, not that nothing else of the
+  orchestrator's user is reachable. A descendant that escapes the namespace through a kernel flaw is out of scope.
   No measurement yet of any backend as an assessor, or of per-chunk latency and
   cost. Pointed at the backend that wrote the findings, a model grades its own
   output. The GitLab review is a separate script and is not covered.
