@@ -715,8 +715,13 @@ ${chunk_diff}
 #   PRT_HEAD_SHA, PRT_REVIEW_MATERIAL_SHA256   the identity its record must carry (required)
 #   PRT_ASSESS_RUNNER_ENV        extra variable names the runner may inherit (the model
 #                                key); it runs under `env -i`, see _prt_runner_env_build
+#   PRT_ASSESS_RUNNER_BOUNDARY   pidns (default) | cmd, with PRT_ASSESS_RUNNER_BOUNDARY_CMD
+#                                the words of the command put in front of the runner;
+#                                see _prt_runner_boundary_build
 # Every refusal returns 1 with a closed-vocabulary reason in the failure file:
 # backend-config (an input this mode needs is not set), local-tempdir,
+# runner-boundary (the process boundary in front of the runner cannot be
+# established or fails its check; see _prt_runner_boundary_build),
 # runner-incomplete (review-run exit 2), runner-quota (3), runner-launch (4),
 # runner-usage (64, includes an input over its ceiling), runner-timeout (the outer
 # bound on the whole process tree fired; see the call below), runner-failed (any other
@@ -767,6 +772,68 @@ _prt_runner_env_build() {
   done
 }
 
+# _prt_runner_boundary_build — fills PRT_RUNNER_BOUNDARY_ARGS with the command words
+# placed in front of the runner, and nothing else may start it. The runner reads
+# untrusted PR text and `env -i` scrubs only its own environment: a same-user
+# process can still read an ancestor's /proc/<pid>/environ, where the posting
+# token lives. PRT_ASSESS_RUNNER_BOUNDARY picks the form:
+#   pidns (the default, also when empty): a PID namespace of its own, so the
+#     orchestrator and every other ancestor are not in the runner's /proc.
+#     Unprivileged it also takes a user namespace that maps the current user to
+#     itself (the files it reads keep their owner); as root it needs none.
+#   cmd: the words of PRT_ASSESS_RUNNER_BOUNDARY_CMD, a command the operator
+#     supplies (for instance one that switches to another user). Trusted
+#     configuration, never PR content. The orchestrator checks only that it
+#     starts; that it isolates is the operator's claim.
+# There is no form that runs the runner without one. Returns 1, with the reason
+# in PRT_RUNNER_BOUNDARY_ERROR, for an unknown value or a cmd form with no words.
+# shellcheck disable=SC2034 # PRT_RUNNER_BOUNDARY_ERROR is read by pr-review-threads.sh at start, not within this file
+_prt_runner_boundary_build() {
+  local IFS=$' \t\n'
+  PRT_RUNNER_BOUNDARY_ARGS=()
+  PRT_RUNNER_BOUNDARY_ERROR=""
+  case "${PRT_ASSESS_RUNNER_BOUNDARY:-pidns}" in
+    pidns)
+      if [ "$(id -u)" = 0 ]; then
+        PRT_RUNNER_BOUNDARY_ARGS=(unshare --pid --fork --mount-proc --kill-child)
+      else
+        PRT_RUNNER_BOUNDARY_ARGS=(unshare --user --map-current-user --pid --fork --mount-proc --kill-child)
+      fi ;;
+    cmd)
+      read -rd '' -a PRT_RUNNER_BOUNDARY_ARGS <<< "${PRT_ASSESS_RUNNER_BOUNDARY_CMD:-}" || true
+      if [ "${#PRT_RUNNER_BOUNDARY_ARGS[@]}" -eq 0 ]; then
+        PRT_RUNNER_BOUNDARY_ERROR="PRT_ASSESS_RUNNER_BOUNDARY_CMD is required when PRT_ASSESS_RUNNER_BOUNDARY=cmd"
+        return 1
+      fi ;;
+    *)
+      PRT_RUNNER_BOUNDARY_ERROR="PRT_ASSESS_RUNNER_BOUNDARY must be pidns or cmd, got '${PRT_ASSESS_RUNNER_BOUNDARY}'"
+      return 1 ;;
+  esac
+}
+
+# _prt_runner_boundary_check — proves, before the runner is started, that the
+# boundary built above starts here and, for pidns, that it does its job: a probe
+# program run behind it must find none of this process's ancestors readable under
+# /proc (a boundary that starts but hides nothing fails). Run for every call, so
+# nothing depends on a result cached from another host or another moment.
+_prt_runner_boundary_check() {
+  local ancestors=() q="$BASHPID" ppid out
+  if [ "${PRT_ASSESS_RUNNER_BOUNDARY:-pidns}" = pidns ]; then
+    while [ "$q" -gt 1 ]; do
+      ancestors+=("$q")
+      read -r _ ppid < <(sed 's/^.*) //' "/proc/$q/stat" 2>/dev/null) || break
+      q="${ppid:-0}"
+    done
+    [ "${#ancestors[@]}" -gt 0 ] || return 1
+  fi
+  command -v "${PRT_RUNNER_BOUNDARY_ARGS[0]}" > /dev/null 2>&1 || return 1
+  # shellcheck disable=SC2016 # the probe is the child shell's program, not an expansion here
+  out="$(timeout 10 "${PRT_RUNNER_BOUNDARY_ARGS[@]}" env -i "PATH=$PATH" sh -c \
+    'for p; do if [ -r "/proc/$p/environ" ]; then exit 1; fi; done; echo boundary-ok' sh \
+    ${ancestors[@]+"${ancestors[@]}"} < /dev/null 2> /dev/null)" || return 1
+  [ "$out" = boundary-ok ]
+}
+
 _prt_call_runner() {
   local request="$1" runner backend root seconds tmp out req_sha rc=0
   _prt_set_model_failure ""
@@ -789,6 +856,13 @@ _prt_call_runner() {
   seconds=$(( 10#$seconds ))
   if [ "$seconds" -lt 1 ]; then
     _prt_set_model_failure "backend-config"
+    return 1
+  fi
+  # Never run the runner unbounded: with no boundary that is established and
+  # checked now, the call is refused and its findings keep no verdict.
+  if ! _prt_runner_boundary_build || ! _prt_runner_boundary_check; then
+    echo "prt_model: the runner's process boundary cannot be established here (PRT_ASSESS_RUNNER_BOUNDARY=${PRT_ASSESS_RUNNER_BOUNDARY:-pidns}) — refusing call" >&2
+    _prt_set_model_failure "runner-boundary"
     return 1
   fi
   # Same run deadline as the proxy calls (_prt_call_proxy): a call that cannot
@@ -841,7 +915,7 @@ _prt_call_runner() {
   # In the background so the group can be cleaned after `timeout` is done: it leads its
   # own process group (pgid = its pid) but stops watching once its direct child has
   # exited, so a child that ignored the TERM would otherwise outlive the call.
-  timeout --kill-after=5 "$outer" env -i "${PRT_RUNNER_ENV_ARGS[@]}" \
+  timeout --kill-after=5 "$outer" "${PRT_RUNNER_BOUNDARY_ARGS[@]}" env -i "${PRT_RUNNER_ENV_ARGS[@]}" \
     "$runner" --backend "$backend" --root "$root" --base "$PRT_REVIEW_BASE_SHA" \
     --seconds "$seconds" --sandbox none --out "$out" \
     -- "Perform the assessment described on the standard input. Answer with only the JSON object it asks for." \

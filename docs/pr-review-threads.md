@@ -467,7 +467,7 @@ made inside the orchestrator, per chunk, because a finding's fingerprint is assi
 every chunk is reviewed and the answer must echo it, so it cannot be a pre-built file. Everything
 after the call (salvage, one retry, join by fingerprint, degrade) is the proxy path's own code.
 
-The default stays the proxy, and nothing in this repository sets the runner backend for a caller. Do not enable it on any consumer, in any mode, until the runner has a process boundary (see "What it does not solve" below): `advisory` has the same exposure, and `enforce` refuses it at start.
+The default stays the proxy, and nothing in this repository sets the runner backend for a caller. Every runner call runs behind a process boundary (see "Process boundary") or is refused. Do not enable the backend on any consumer, in any mode, until that boundary has been shown to hold on the runner image (see "What it does not solve" below): `advisory` has the same exposure, and `enforce` refuses it at start.
 
 Inputs, all from the environment:
 
@@ -478,6 +478,7 @@ Inputs, all from the environment:
 | `PRT_ASSESS_RUNNER_ROOT` | The checkout it reads (default: the working directory). |
 | `PRT_ASSESS_RUNNER_SECONDS` | Its deadline per call (default 600), clamped to what is left of the run's model deadline (`PRT_MODEL_DEADLINE_EPOCH`, the same one the proxy calls use). A call is refused as `deadline-exhausted` when less than the 30-second floor remains. Must be a whole number of seconds, at most nine digits and read as decimal (`060` is 60). It bounds the runner's own timed run; a separate outer bound covers the whole process tree (see "Outer time bound"). |
 | `PRT_ASSESS_RUNNER_ENV` | Variable names the runner may inherit, separated by any whitespace, newlines included (action input `assess-runner-env`), typically the metered model key. Every listed name must be set in the step, or the run fails at start naming it. |
+| `PRT_ASSESS_RUNNER_BOUNDARY`, `PRT_ASSESS_RUNNER_BOUNDARY_CMD` | The process boundary (action inputs `assess-runner-boundary`, `assess-runner-boundary-cmd`): `pidns` (the default, also when empty) or `cmd` with the command words in the second variable. Any other value, or `cmd` with no words, is refused at start. See "Process boundary". |
 | `PRT_HEAD_SHA`, `PRT_REVIEW_BASE_SHA`, `PRT_REVIEW_MATERIAL_SHA256` | The identity the runner's record must carry; the last two are defined under "Review from a findings file". All required: a missing one fails the run at start. |
 
 **The request.** System and user text are written to a temporary file and reach the runner on
@@ -495,6 +496,26 @@ than being dropped. The calling workflow's checkout also has to leave no credent
 `.git/config` (`persist-credentials: false`, as `pr-review.yml` sets), because the runner reads the
 checkout.
 
+**Process boundary.** `env -i` scrubs only the runner's own environment. A process of the same
+user can still read an ancestor's `/proc/<pid>/environ`, where the posting token is. So every call
+puts a boundary in front of the runner, and the call is refused as `runner-boundary` (findings stay unverdicted and still gate)
+unless that boundary has been established and checked for that call. There is no setting that
+runs the runner without one.
+- `pidns` (default): the runner is started under `unshare --pid --fork --mount-proc --kill-child`,
+  with `--user --map-current-user` added when not root (the files it reads keep their owner). Its
+  `/proc` then lists only its own namespace: the orchestrator and every other ancestor are not
+  there, and killing the namespace's first process ends all of it. The check runs a probe behind
+  that command with the pids of this process and all its ancestors and requires that none has a
+  readable `/proc/<pid>/environ`; a command that starts but hides nothing fails it.
+- `cmd`: the command in `PRT_ASSESS_RUNNER_BOUNDARY_CMD` is put in front of the runner, for a host
+  where a namespace is not allowed, for instance one that switches to another user. It is workflow
+  configuration, never PR content. Only that it starts is checked; that it isolates is the
+  operator's claim.
+Hosts that forbid an unprivileged user namespace (for example Ubuntu 24.04 with its AppArmor
+restriction) cannot establish `pidns` as a non-root user; those calls are refused until the
+operator supplies a `cmd` or relaxes the host. Separate-user isolation is a documented follow-up
+that this repository does not build.
+
 **Provenance.** A call that exits 0 is still refused unless its `provider.json` has format
 `review-run-v1`, `outcome` `completed`, and `identity.head`, `identity.base`,
 `identity.material_sha256` equal to the three variables above and `identity.input_sha256` equal to
@@ -509,7 +530,9 @@ process that ignores the first signal is killed 5 seconds later. A call is refus
 `deadline-exhausted` when less than 6 seconds of the deadline remain at launch, because the margin
 would not fit. A hit is `runner-timeout`. When the call ends, whatever its exit, the whole process
 group is killed, so a child that ignored the signal does not outlive it. A descendant that leaves
-the process group (for example with `setsid`) is not reached; only a process boundary closes that.
+the process group (for example with `setsid`) is not reached by the group signal; the default
+`pidns` boundary closes that, since ending the namespace's first process ends every member (a `cmd`
+boundary does so only if the command does).
 The group is signalled after the shell has already reaped `timeout`. With no member left, the group
 id is free, and the signal could reach an unrelated group only if that id were allocated again as a
 group leader within microseconds, which takes a full wrap of the pid space; a surviving member pins
@@ -517,7 +540,8 @@ the id, so the case the signal exists for is unaffected. This window is accepted
 
 **Failures degrade, never abort.** Each ends as an assessment transport failure
 (`REVIEW_DEGRADED`, findings keep `verdict: null` and still gate, as `reconcile.sh` counts a null
-verdict like `VALID`), with the cause in brackets: `runner-incomplete` (exit 2), `runner-quota`
+verdict like `VALID`), with the cause in brackets: `runner-boundary` (the process boundary could not
+be established or failed its check; the runner was not started), `runner-incomplete` (exit 2), `runner-quota`
 (3), `runner-launch` (4), `runner-usage` (64, which includes an input over the runner's size
 limit), `runner-timeout` (the outer bound below fired), `runner-failed` (any other non-zero exit), `runner-no-output` (no `review.md`),
 `runner-empty`, `provenance-mismatch`, `deadline-exhausted`, `backend-config` (a required
@@ -527,15 +551,16 @@ usual cases first) and `local-tempdir`. A malformed answer is salvaged and retri
 - **Proxy URL.** With the review also from a findings file, the run needs no `PRT_PROXY_URL`
   when assessment is on. With the proxy review, the URL is still required.
 - **Not in `enforce`.** `PRT_ASSESS_BACKEND=runner` is refused at start in `enforce` mode, whatever
-  else is set, until the runner has a process boundary (see the next bullet) and a test on the
-  runner image shows the runner cannot read the posting token. `advisory` accepts it, but is no
-  safe place for it either (see the first paragraph of this section).
-- **What it does not solve.** The scrub keeps the token out of the runner's own environment, no
-  more. The runner is the same user, started without a sandbox, as a child of the process that
-  holds the token, so on a host that lets a process read a same-user process's `/proc/<pid>/environ`
-  it could still recover the token from an ancestor. Closing that needs a process boundary the
-  runner cannot cross (a separate user, or a sandbox with its own PID namespace); this mode does
-  not provide one. No measurement yet of any backend as an assessor, or of per-chunk latency and
+  else is set, until a test on the runner image shows that the process boundary holds there and
+  the runner cannot read the posting token. `advisory` accepts it only behind the boundary, and no
+  consumer should enable it there either before that test (see the first paragraph of this section).
+- **What it does not solve.** The scrub and the boundary are checked here with a stub runner, on the
+  host the tests run on. That the posting token is unreadable to the runner on the real runner
+  host and image (its kernel, its container's namespace and seccomp rules, its checkout and
+  credential files) can only be shown by the acceptance run on that image; nothing on a
+  development host proves it. A `cmd` boundary is the operator's claim and is checked only for
+  starting. A descendant that escapes the namespace through a kernel flaw is out of scope.
+  No measurement yet of any backend as an assessor, or of per-chunk latency and
   cost. Pointed at the backend that wrote the findings, a model grades its own
   output. The GitLab review is a separate script and is not covered.
 
