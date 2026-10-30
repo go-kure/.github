@@ -145,6 +145,7 @@ unset json_big_payload json_out
 # Each entry is FILE:VARIABLE with its bound:
 #   fp-like     16 hex characters (plus an ordinal suffix)         sha-like   40 or 64 hex characters
 #   number      an index, a count, a line number or a database id  flag       the word true or false
+#               (a line is rebuilt at normalization as an integer below 10^9, or null: no long spelling)
 #   id-like     a login, owner, repo name or GraphQL node id or cursor (GitHub caps each far below 4 KiB)
 #   const       a fixed string the script itself defines
 #   config      operator configuration (a model name, a token budget, the severity rank map)
@@ -348,6 +349,91 @@ assert_eq "normalize: a local fault while rebuilding the list returns rc 3 with 
 n="$(prt_assign_ordinals "$single_finding" 2>/dev/null)"
 rc=$?
 assert_eq "ordinals: a local fault while rebuilding the list fails with no output" "1 " "$rc $n"
+# The shape query tests the type first, so a failure of it is a fault (rc 3, never the
+# retried rc 1), while a response that really has the wrong shape stays rc 1.
+PRT_TEST_JQ_FAIL='(.findings | type) == "array"'
+n="$(prt_normalize_findings "$good_raw" 2>/dev/null)"
+rc=$?
+assert_eq "normalize: a failed shape query returns rc 3 with no output (not the retried rc 1)" "3 " "$rc $n"
+PRT_TEST_JQ_FAIL='(.assessments | type) == "array"'
+n="$(prt_join_assessment "$single_finding" '{"assessments":[]}' 2>/dev/null)"
+rc=$?
+assert_eq "join: a failed shape query returns rc 2 with no output (not the degraded rc 1)" "2 " "$rc $n"
+unset PRT_TEST_JQ_FAIL
+n="$(prt_normalize_findings '[1,2]' 2>/dev/null)"
+rc=$?
+assert_eq "normalize: a top-level array is an unusable response (rc 1), not a fault" "1" "$rc"
+n="$(prt_join_assessment "$single_finding" '[1]' 2>/dev/null)"
+rc=$?
+assert_eq "join: a top-level array is an unusable assessment (rc 1), not a fault" "1" "$rc"
+
+# Render functions run every jq before printing: a failure returns 1 with no output, so a
+# table that failed to build is never posted as an empty one (the quarantine table was).
+render_q='[{"severity":"High","category":"race","file":"a.go","line":1,"issue":"i","fix":"f","gating":false}]'
+render_f='[{"fp":"abcd1234abcd1234","severity":"High","category":"race","file":"a.go","line":1,"verdict":"VALID","issue":"i","fix":"f"}]'
+render_x='[{"path":"big.lock","added":1,"removed":2,"reason":"lockfile"}]'
+PRT_TEST_JQ_FAIL='def collision_cell'
+n="$(prt_render_overflow_comment '[]' "$render_q" 2>/dev/null)"
+rc=$?
+assert_eq "render: a failed quarantine table returns 1 with no output" "1 " "$rc $n"
+PRT_TEST_JQ_FAIL='def first_line'
+n="$(prt_render_summary enforce abc 1 '[]' 1 '' '' "$render_f" '[]' 2>/dev/null)"
+rc=$?
+assert_eq "render: a failed suppressed table returns 1 with no output" "1 " "$rc $n"
+PRT_TEST_JQ_FAIL='.[] | "| `\(.fp)`'
+n="$(prt_render_summary enforce abc 1 "$render_f" 0 '' '' '[]' '[]' 2>/dev/null)"
+rc=$?
+assert_eq "render: a failed findings table returns 1 with no output" "1 " "$rc $n"
+PRT_TEST_JQ_FAIL='| \(.fix|esc) |"'
+n="$(prt_render_advisory_comment "$render_f" '' '' '[]' 2>/dev/null)"
+rc=$?
+assert_eq "render: a failed advisory table returns 1 with no output" "1 " "$rc $n"
+PRT_TEST_JQ_FAIL='def shown'
+n="$(prt_render_clean_comment abc model 1 "$render_x" 2>/dev/null)"
+rc=$?
+assert_eq "render: a failed excluded section fails the clean comment with no output" "1 " "$rc $n"
+n="$(prt_render_summary enforce abc 1 '[]' 0 '' '' '[]' "$render_x" 2>/dev/null)"
+rc=$?
+assert_eq "render: a failed excluded section fails the summary with no output" "1 " "$rc $n"
+PRT_TEST_JQ_FAIL='.severity'
+n="$(prt_render_finding_body '{"severity":"High","category":"race","issue":"i","fix":"f"}' 'MARK' 2>/dev/null)"
+rc=$?
+assert_eq "render: an unreadable finding field fails the body with no output" "1 " "$rc $n"
+# The job summary: a render fault appends nothing, marks the run incomplete, names why.
+render_state="$(mktemp -d)"
+PRT_INCOMPLETE_FILE="$render_state/incomplete"
+: > "$PRT_INCOMPLETE_FILE"
+PRT_TEST_JQ_FAIL='.[] | "| `\(.fp)`'
+GITHUB_STEP_SUMMARY="$render_state/summary"
+: > "$GITHUB_STEP_SUMMARY"
+prt_write_summary enforce abc 1 "$render_f" 0 'earlier reason' '' '[]' '[]' >/dev/null 2>&1
+rc=$?
+assert_eq "write_summary: a render fault returns 1, appends nothing and marks the run incomplete" \
+  "1 0 true" "$rc $(wc -c < "$GITHUB_STEP_SUMMARY") $(grep -qF 'job summary could not be rendered' "$PRT_INCOMPLETE_FILE" && echo true || echo false)"
+unset PRT_TEST_JQ_FAIL
+prt_write_summary enforce abc 1 "$render_f" 0 '' '' '[]' '[]' >/dev/null 2>&1
+rc=$?
+assert_eq "write_summary: the same call without the fault appends the summary" \
+  "0 true" "$rc $(grep -qF 'Findings: 1' "$GITHUB_STEP_SUMMARY" && echo true || echo false)"
+unset PRT_INCOMPLETE_FILE GITHUB_STEP_SUMMARY
+find "$render_state" -delete
+unset render_q render_f render_x render_state
+
+# A numeric line is canonicalized at ingress to a bounded integer; anything else is no line
+# (the finding becomes a file-level one). A jq 1.7 literal keeps its spelling, so 1. followed
+# by 140000 zeros would otherwise reach --argjson as one oversized argument.
+printf -v line_zeros '%*s' 140000 ''
+line_zeros="${line_zeros// /0}"
+unset PRT_TEST_JQ_FAIL
+line_out=""
+for line_spelling in "7" "7.0" "1.${line_zeros}" "1.5" "1e400" "-3" "12345678901" "\"7\""; do
+  n="$(prt_normalize_findings "{\"findings\":[{\"file\":\"a.go\",\"category\":\"race\",\"line\":$line_spelling,\"severity\":\"High\",\"issue\":\"i\",\"fix\":\"f\"}]}" 2>/dev/null)"
+  line_out="$line_out$(jq -c '.[0].line' <<< "$n" | cut -c1-12) "
+done
+assert_eq "normalize: a numeric line is a bounded integer or null, never a long spelling" \
+  "7 7 1 null null -3 null null " "$line_out"
+unset line_zeros line_out line_spelling
+
 PRT_TEST_JQ_FAIL='no-such-program-text'
 n="$(prt_normalize_findings "$good_raw" 2>/dev/null)"
 rc=$?
@@ -4566,6 +4652,40 @@ assert_eq "orchestrator: fingerprint-collided run -> no accounting-mismatch REVI
 # labels unconditionally).
 assert_eq "orchestrator: fingerprint-collided run (THIS-run multiplicity, no owned thread) -> Collision cell reads 'this run', not 'persisted'" \
   "true" "$(grep -qF '| this run |' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && ! grep -qF '| persisted (earlier run) |' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && echo true || echo false)"
+# A jq fault while rendering the withheld-findings table: the three quarantined findings must
+# not be posted as an empty or partial comment and read as a clean run. The run exits nonzero,
+# is incomplete, and posts nothing. The fault is a `jq` on PATH that fails on that program only.
+prt_orch_shim="$(mktemp -d)"
+cat > "$prt_orch_shim/jq" <<'SHIM'
+#!/usr/bin/env bash
+for a in "$@"; do
+  case "$a" in *"$JQ_FAIL_MATCH"*) exit 5 ;; esac
+done
+exec "$REAL_JQ" "$@"
+SHIM
+chmod +x "$prt_orch_shim/jq"
+prt_orch_real_jq="$(command -v jq)"
+rc="$(PATH="$prt_orch_shim:$PATH" REAL_JQ="$prt_orch_real_jq" JQ_FAIL_MATCH='def collision_cell' run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator: a failed quarantine table -> exits 1 (not 0), nothing posted" \
+  "1 0" "$rc $(cat "$PRT_TEST_ISSUE_COMMENT_COUNTFILE" 2>/dev/null || echo 0)"
+assert_eq "orchestrator: a failed quarantine table -> the body is not posted and the run names the render fault" \
+  "false true" "$(grep -qF 'Withheld AI Review Findings' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && echo true || echo false) $(grep -qF 'overflow comment could not be rendered' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator: a failed quarantine table -> the done line is not incomplete=0" \
+  "false" "$(grep -qE 'done:.*incomplete=0 ' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+rc="$(PATH="$prt_orch_shim:$PATH" REAL_JQ="$prt_orch_real_jq" JQ_FAIL_MATCH='no-such-program-text' run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator: the same run through a pass-through shim posts the table and exits 0" \
+  "0 true" "$rc $(grep -qF 'Withheld AI Review Findings' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && echo true || echo false)"
+# The first normalization query failing on a populated chunk, while the other chunk is clean,
+# is a local fault (status 3): the run is incomplete and exits nonzero, never a degraded 0.
+PRT_TEST_TWO_FILE_DIFF=1
+rc="$(PATH="$prt_orch_shim:$PATH" REAL_JQ="$prt_orch_real_jq" JQ_FAIL_MATCH='(.findings | type) == "array"' run_orchestrator enforce 0 0 0 100)"
+assert_eq "orchestrator: a failed shape query on every chunk -> exits nonzero, never a degraded 0" \
+  "true" "$([ "$rc" != 0 ] && echo true || echo false)"
+assert_eq "orchestrator: a failed shape query is reported as a local fault, not a retried unusable response" \
+  "true" "$(grep -qF 'local fault reading the response shape' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_TWO_FILE_DIFF=0
+find "$prt_orch_shim" -delete
+unset prt_orch_shim prt_orch_real_jq
 PRT_TEST_MODEL_RESPONSE_MODE=clean
 rm -f "$PRT_TEST_ISSUE_COMMENT_BODY_FILE"
 unset PRT_TEST_ISSUE_COMMENT_BODY_FILE

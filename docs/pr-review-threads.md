@@ -659,6 +659,28 @@ treats it as an assembly fault (`REVIEW_INCOMPLETE`, the chunk is not reviewed);
 chunk as failed and never as ok, so a run whose every chunk lost its findings exits 1 (no signal) instead
 of printing an empty review. `prt_assign_ordinals` and the adapter's merges fail the same way.
 
+The shape query that decides between status 1 and the rest is a fault source of its own. It tests the
+type first (`type == "object" and (.findings | type) == "array"`), so it cannot fail on valid JSON of
+any shape. A failure of the query itself is therefore status 3, never the retried status 1, and a
+top-level array stays an unusable response. `prt_join_assessment` does the same for `.assessments`
+(status 2 on a failed query, status 1 on a wrong shape), and its count of outside-chunk verdicts is
+checked instead of defaulting to 0.
+
+A `line` that is a number is canonicalized at normalization: an integer below 10^9 in absolute value is
+kept as that integer, and anything else (a fraction, an exponent form, a longer spelling such as `1.`
+followed by 140,000 zeros) becomes no line, so the finding is posted at file level. `jq` 1.7 keeps the
+spelling of a number literal that passes through unchanged, which is why it is rebuilt rather than
+passed on. The value then reaches `--argjson` as a short integer.
+
+**Render faults.** Every `jq` in `render.sh` runs, checked, before anything is printed, and a render
+function that cannot build a table returns 1 with no output. The orchestrator checks that status at each
+post: an advisory, overflow or clean-verdict comment that did not render is not posted, a finding whose
+body did not render opens no thread, and each of those marks the run `REVIEW_INCOMPLETE`, so the exit is
+nonzero. `prt_write_summary` does the same for the job summary: a render fault appends nothing, marks the
+run incomplete and prints the incomplete reasons on stderr, since the summary that would have carried them
+does not exist. A count that feeds a decision (the overflow and withheld counts, the accounting check and
+the clean-verdict count) is read the same way, never defaulted to an empty or zero value.
+
 **The class: no unbounded value on a command-line argument, and no unchecked `jq`.** A finding of
 multi-byte text can pass the 131072-byte argument cap on its own (50,000 three-byte characters are
 150,000 bytes while GitHub's limit is 65,536 characters). Any value that can grow with a finding, a
