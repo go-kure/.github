@@ -573,7 +573,9 @@ run them cannot pass by skipping.
 **Provenance.** A call that exits 0 is still refused unless its `provider.json` has format
 `review-run-v1`, `outcome` `completed`, and `identity.head`, `identity.base`,
 `identity.material_sha256` equal to the three variables above and `identity.input_sha256` equal to
-the sha256 of the exact request bytes sent. The same caveat as for a findings file applies: copying
+the sha256 of the exact request bytes sent. If the orchestrator cannot compute that digest as 64
+hex characters, the call is refused as `provenance-mismatch`: an empty or short digest never
+matches a record. The same caveat as for a findings file applies: copying
 the base and digest out of the record into the environment binds nothing.
 
 **Outer time bound.** The runner also snapshots the checkout before and after its timed run, so
@@ -597,7 +599,7 @@ the id, so the case the signal exists for is unaffected. This window is accepted
 verdict like `VALID`), with the cause in brackets: `runner-boundary` (the process boundary could not
 be established or failed its check; the runner was not started), `runner-incomplete` (exit 2), `runner-quota`
 (3), `runner-launch` (4), `runner-usage` (64, which includes an input over the runner's size
-limit), `runner-timeout` (the outer bound below fired), `runner-failed` (any other non-zero exit), `runner-no-output` (no `review.md`),
+limit), `runner-timeout` (the outer bound below fired), `runner-failed` (any other non-zero exit), `runner-no-output` (no `review.md`, or one that cannot be read),
 `runner-empty`, `provenance-mismatch`, `deadline-exhausted`, `backend-config` (a required
 variable is unset or `PRT_ASSESS_RUNNER_SECONDS` is not a whole number; the start checks catch the
 usual cases first) and `local-tempdir`. A malformed answer is salvaged and retried once like a proxy answer.
