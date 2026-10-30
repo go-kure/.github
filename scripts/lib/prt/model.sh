@@ -1037,6 +1037,11 @@ _prt_call_runner() {
     _prt_set_model_failure "provenance-mismatch"
     return 1
   fi
-  cat "$out/review.md"
+  # The status of the read is the status of the call: the cleanup after it must not decide it.
+  if ! cat "$out/review.md"; then
+    rm -rf "$tmp"
+    _prt_set_model_failure "runner-no-output"
+    return 1
+  fi
   rm -rf "$tmp"
 }
