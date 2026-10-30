@@ -7125,6 +7125,27 @@ prt_ar_sha_case() { # label prov-mode sha-fault(empty|short)
 prt_ar_sha_case "failed digest, record input_sha256 empty" input_empty empty
 prt_ar_sha_case "short digest, record carries the same short string" input_short short
 PRT_TEST_RUNNER_PROV=""
+
+# A review.md that was there for the size check but cannot be read afterwards is no output, not an
+# empty answer that reads as success (the cleanup after it must not decide the status).
+rm -f "$PRT_TEST_RUNNER_LOG".*
+rc="$(
+  # Invoked indirectly by the orchestrator.
+  # shellcheck disable=SC2329,SC2317
+  cat() {
+    if [ "${FUNCNAME[1]:-}" = _prt_call_runner ]; then
+      case "$*" in */review.md) return 1 ;; esac
+    fi
+    command cat "$@"
+  }
+  export -f cat
+  run_orchestrator advisory 0 0 0
+)"
+assert_eq "assess runner unreadable review.md: exits 0 (degraded, not fatal), one call" "0 1" "$rc $(prt_ar_calls)"
+assert_eq "assess runner unreadable review.md: the failure reason is runner-no-output" \
+  "true" "$(grep -qF '[runner-no-output]' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "assess runner unreadable review.md: the verdicts are not used" \
+  "false" "$(grep -qE 'coverage: [0-9]+/[0-9]+ chunks review\+assess ok' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 # The stub above copies the caller's identity into its record, so it cannot catch a wrong root, a
 # base the checkout lacks or a merge-commit checkout. This one derives the identity from a real
 # repository, as the runner does, and the expected values below are derived apart from it: the head
