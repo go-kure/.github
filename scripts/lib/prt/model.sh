@@ -786,7 +786,14 @@ _prt_call_runner() {
     _prt_set_model_failure "backend-config"
     return 1
   fi
-  if ! _prt_runner_env_build || ! [[ "$seconds" =~ ^[0-9]+$ ]] || [ "$seconds" -lt 1 ]; then
+  # Up to nine digits, read as decimal: "08" is 8 (bash arithmetic would call it a bad
+  # octal number) and "060" is 60, and a longer string is no sane number of seconds.
+  if ! _prt_runner_env_build || ! [[ "$seconds" =~ ^[0-9]{1,9}$ ]]; then
+    _prt_set_model_failure "backend-config"
+    return 1
+  fi
+  seconds=$(( 10#$seconds ))
+  if [ "$seconds" -lt 1 ]; then
     _prt_set_model_failure "backend-config"
     return 1
   fi
@@ -821,23 +828,34 @@ _prt_call_runner() {
   # time reserved for posting. This outer bound covers the whole process tree
   # (`timeout` runs it in its own process group and signals the group), gives the
   # runner 30 s beyond --seconds for that work, and never reaches past the run
-  # deadline: the KILL follows 5 s after the TERM, so the TERM leaves that margin.
-  local outer
+  # deadline: the KILL follows 5 s after the TERM, so the TERM leaves that margin. The
+  # budget is read again here (the request was written since the check above); a call
+  # whose TERM-to-KILL grace no longer fits in it is refused, never run past the deadline.
+  local outer runner_pid
   now="$(date +%s)"
   budget_left=$(( ${PRT_MODEL_DEADLINE_EPOCH:-$((now + 300))} - now ))
+  if [ "$budget_left" -lt 6 ]; then
+    echo "prt_model: run deadline leaves no room for the runner call and its kill grace (${budget_left}s left) — refusing call" >&2
+    rm -rf "$tmp"
+    _prt_set_model_failure "deadline-exhausted"
+    return 1
+  fi
   outer=$(( seconds + 30 ))
   if [ "$outer" -gt $(( budget_left - 5 )) ]; then
     outer=$(( budget_left - 5 ))
   fi
-  # timeout 0 means no limit.
-  if [ "$outer" -lt 1 ]; then
-    outer=1
-  fi
+  # In the background so the group can be cleaned after `timeout` is done: it leads its
+  # own process group (pgid = its pid) but stops watching once its direct child has
+  # exited, so a child that ignored the TERM would otherwise outlive the call.
   timeout --kill-after=5 "$outer" env -i "${PRT_RUNNER_ENV_ARGS[@]}" \
     "$runner" --backend "$backend" --root "$root" --base "$PRT_REVIEW_BASE_SHA" \
     --seconds "$seconds" --sandbox none --out "$out" \
     -- "Perform the assessment described on the standard input. Answer with only the JSON object it asks for." \
-    < "$tmp/request" > /dev/null || rc=$?
+    < "$tmp/request" > /dev/null &
+  runner_pid=$!
+  wait "$runner_pid" || rc=$?
+  # Nothing in the group survives the call, whatever its exit; no member left is fine.
+  kill -KILL -- "-$runner_pid" 2>/dev/null || true
   if [ "$rc" -ne 0 ]; then
     rm -rf "$tmp"
     case "$rc" in

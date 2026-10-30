@@ -6781,7 +6781,13 @@ if [ -e "$out/review.md" ] || { [ -d "$out" ] && [ -n "$(ls -A "$out")" ]; }; th
 case "$mode" in
   exit[0-9]*) exit "${mode#exit}" ;;
   # Outlives any limit, with a child of its own that must go with it.
-  hang) sleep 300 & echo "$!" > "$log.child"; sleep 300; exit 0 ;;
+  # hang_stubborn: the child ignores TERM while the runner itself exits on it.
+  # The stat file is the proof that the child started.
+  hang|hang_stubborn)
+    if [ "$mode" = hang_stubborn ]; then ( trap '' TERM; exec sleep 300 ) & else sleep 300 & fi
+    echo "$!" > "$log.child"
+    ps -o stat= -p "$!" > "$log.child.stat" 2>/dev/null
+    sleep 300; exit 0 ;;
   garbage_then_exit4) if [ "$n" -ge 2 ]; then exit 4; fi; mode=garbage ;;
   garbage_then_clean) if [ "$n" -ge 2 ]; then mode=clean; else mode=garbage; fi ;;
 esac
@@ -7222,22 +7228,68 @@ assert_eq "assess runner deadline, budget below the floor: degraded as deadline-
 # --seconds bounds only the runner's timed run (it also snapshots the checkout around it), so an
 # outer bound covers the whole process tree and never reaches past the run deadline. The stub
 # hangs, with a child of its own; the 600s default would otherwise let it run for the full 300s.
-rm -f "$PRT_TEST_RUNNER_LOG".*
-PRT_TEST_MODEL_BUDGET_SECONDS=12
-PRT_TEST_RUNNER_MODE=hang
-prt_ar_t0=$SECONDS
-rc="$(PRT_MODEL_TIMEOUT_FLOOR=1 run_orchestrator advisory 0 0 0)"
-prt_ar_elapsed=$((SECONDS - prt_ar_t0))
-assert_eq "assess runner hangs: the run still exits 0 after one runner call" "0 1" "$rc $(prt_ar_calls)"
-assert_eq "assess runner hangs: the whole call ends inside the run deadline (12s budget)" \
-  "true" "$([ "$prt_ar_elapsed" -lt 12 ] && echo true || echo false)"
-assert_eq "assess runner hangs: degraded as runner-timeout" \
-  "true" "$(grep -qF '[runner-timeout]' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
-# A zombie still answers kill -0, so read the process state instead.
-prt_ar_child_state="$(ps -o stat= -p "$(cat "$PRT_TEST_RUNNER_LOG.child")" 2>/dev/null | tr -d ' ')"
-assert_eq "assess runner hangs: the runner's own child is gone with it" \
-  "true" "$({ [ -z "$prt_ar_child_state" ] || [[ "$prt_ar_child_state" == Z* ]]; } && echo true || echo false)"
+# The child check needs a recorded child that was seen running: a missing or invalid pid, or one
+# that never started, fails it instead of reading as "gone". A zombie still answers kill -0, so the
+# process state is read instead.
+prt_ar_child_gone() { # label
+  local pid started state gone=false
+  pid="$(cat "$PRT_TEST_RUNNER_LOG.child" 2>/dev/null)"
+  started="$(tr -d ' \n' < "$PRT_TEST_RUNNER_LOG.child.stat" 2>/dev/null)"
+  assert_eq "$1: the stub recorded a child pid and saw it running" \
+    "true" "$({ [[ "$pid" =~ ^[0-9]+$ ]] && [ -n "$started" ] && [[ "$started" != Z* ]]; } && echo true || echo false)"
+  if [[ "$pid" =~ ^[0-9]+$ ]]; then
+    state="$(ps -o stat= -p "$pid" 2>/dev/null | tr -d ' ')"
+    if [ -z "$state" ] || [[ "$state" == Z* ]]; then gone=true; fi
+  fi
+  assert_eq "$1: the runner's own child is gone with it" "true" "$gone"
+}
+prt_ar_hang_case() { # mode label
+  rm -f "$PRT_TEST_RUNNER_LOG".*
+  PRT_TEST_MODEL_BUDGET_SECONDS=12
+  PRT_TEST_RUNNER_MODE="$1"
+  prt_ar_t0=$SECONDS
+  rc="$(PRT_MODEL_TIMEOUT_FLOOR=1 run_orchestrator advisory 0 0 0)"
+  prt_ar_elapsed=$((SECONDS - prt_ar_t0))
+  assert_eq "$2: the run still exits 0 after one runner call" "0 1" "$rc $(prt_ar_calls)"
+  assert_eq "$2: the whole call ends inside the run deadline (12s budget)" \
+    "true" "$([ "$prt_ar_elapsed" -lt 12 ] && echo true || echo false)"
+  assert_eq "$2: degraded as runner-timeout" \
+    "true" "$(grep -qF '[runner-timeout]' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+  prt_ar_child_gone "$2"
+}
+prt_ar_hang_case hang "assess runner hangs"
+# The runner exits on TERM but its child ignores it: timeout sees its own child gone and stops, so
+# the group needs its own KILL.
+prt_ar_hang_case hang_stubborn "assess runner hangs, its child ignores TERM"
 PRT_TEST_RUNNER_MODE=clean
+
+# The outer bound adds 30 s to a whole-number --seconds, so the value is read as decimal: "08" is
+# not an octal error and "060" is 60, not 48. The runner is handed the normalized value, and a value
+# too long to be a sane number of seconds is a configuration error.
+prt_ar_seconds_case() { # value want-argv-seconds
+  rm -f "$PRT_TEST_RUNNER_LOG".*
+  PRT_TEST_ASSESS_RUNNER_SECONDS="$1"
+  rc="$(run_orchestrator advisory 0 0 0)"
+  assert_eq "assess runner, PRT_ASSESS_RUNNER_SECONDS=$1: one call, the runner gets --seconds $2" \
+    "0 1 $2" "$rc $(prt_ar_calls) $(prt_ar_seconds 1)"
+}
+PRT_TEST_MODEL_BUDGET_SECONDS=""
+prt_ar_seconds_case 08 8
+prt_ar_seconds_case 060 60
+rm -f "$PRT_TEST_RUNNER_LOG".*
+PRT_TEST_ASSESS_RUNNER_SECONDS=99999999999999999999
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "assess runner, an absurdly long PRT_ASSESS_RUNNER_SECONDS: no runner call, degraded as backend-config" \
+  "0 0 true" "$rc $(prt_ar_calls) $(grep -qF '[backend-config]' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_ASSESS_RUNNER_SECONDS=""
+
+# The TERM-to-KILL grace must fit in what is left of the deadline: with a lowered floor and 4 s
+# left there is no room for it, so the call is refused rather than run on past the deadline.
+rm -f "$PRT_TEST_RUNNER_LOG".*
+PRT_TEST_MODEL_BUDGET_SECONDS=4
+rc="$(PRT_MODEL_TIMEOUT_FLOOR=1 run_orchestrator advisory 0 0 0)"
+assert_eq "assess runner, no room for the kill grace: no runner call, degraded as deadline-exhausted" \
+  "0 0 true" "$rc $(prt_ar_calls) $(grep -qF '[deadline-exhausted]' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 rm -f "$PRT_TEST_RUNNER_LOG".*
 PRT_TEST_MODEL_BUDGET_SECONDS=""
 PRT_TEST_ASSESS_RUNNER_SECONDS=soon
