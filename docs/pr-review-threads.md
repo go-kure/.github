@@ -525,6 +525,11 @@ holds (a credential file, a pipe) would be readable to the runner.
   where a namespace is not allowed, for instance one that switches to another user. It is workflow
   configuration, never PR content. Only that it starts is checked; that it isolates is the
   operator's claim.
+Lifetime: when the boundary command dies, `--kill-child` takes the namespace with it, and the
+outer time bound ends it when the call overruns. If the orchestrator itself is killed outright, the
+runner's tree is not signalled by it and runs until that outer bound fires (at most the call's
+seconds plus 30, within the run's deadline).
+
 Hosts that forbid an unprivileged user namespace (for example Ubuntu 24.04 with its AppArmor
 restriction) cannot establish `pidns` as a non-root user; those calls are refused until the
 operator supplies a `cmd` or relaxes the host. Separate-user isolation is a documented follow-up
