@@ -239,7 +239,8 @@ esac
 # token). Every call now runs behind a PID namespace of its own (or an operator
 # supplied command) that is checked first and refuses the call if it fails. Enforce
 # stays refused until a test on the runner image has shown that boundary to hold
-# there: that is the S7 acceptance run, and nothing on a development host proves it.
+# there: that is the manual probe run on the review runner image (go-kure/.github#308), and
+# nothing on a development host proves it.
 if [ "${PRT_ASSESS_BACKEND:-}" = runner ] && [ "$PRT_MODE" = enforce ]; then
   echo "ERROR: PRT_ASSESS_BACKEND=runner is not allowed in enforce mode: the runner's process boundary has not been shown to hold on the runner image yet" >&2
   exit 1
