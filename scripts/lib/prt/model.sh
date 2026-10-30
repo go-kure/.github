@@ -849,6 +849,12 @@ _prt_call_runner() {
   runner_pid=$!
   wait "$runner_pid" || rc=$?
   # Nothing in the group survives the call, whatever its exit; no member left is fine.
+  # Known window: bash has already reaped `timeout` (its SIGCHLD handler does, before
+  # `wait` runs), so with no member left the group id is free, and this signal would
+  # reach an unrelated group only if that exact id were allocated again as a group
+  # leader in the microseconds between the reap and this line. Ids are handed out
+  # sequentially, so that takes a full wrap of the pid space. While any member lives
+  # (the case this line exists for) the id is pinned and cannot be reused.
   kill -KILL -- "-$runner_pid" 2>/dev/null || true
   if [ "$rc" -ne 0 ]; then
     rm -rf "$tmp"
