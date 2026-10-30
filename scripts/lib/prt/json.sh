@@ -126,3 +126,19 @@ prt_json_append_thread_comments() {
       end
     ' 2>/dev/null
 }
+
+# prt_json_same_length A B
+# Compares the element counts of two JSON values. Each count is queried on its
+# own, so a failed query is never read as a value: returns 0 when the counts
+# are equal, 1 when they differ, 3 when either query fails or is not a number
+# (two failed queries are never "equal").
+prt_json_same_length() {
+  local len_a len_b
+  len_a="$(jq 'length' <<< "$1" 2>/dev/null)" || return 3
+  len_b="$(jq 'length' <<< "$2" 2>/dev/null)" || return 3
+  case "$len_a$len_b" in
+    '' | *[!0-9]*) return 3 ;;
+  esac
+  [ -n "$len_a" ] && [ -n "$len_b" ] || return 3
+  [ "$len_a" = "$len_b" ]
+}
