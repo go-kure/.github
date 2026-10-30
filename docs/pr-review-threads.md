@@ -430,7 +430,9 @@ Refusals return 1 with one of these reasons in `PRT_LAST_MODEL_FAILURE_FILE`, wh
 orchestrator reports like a proxy failure: `backend-config` (an unknown backend value, or file
 mode without a findings path, chunk directory, chunk index or one of the three variables above),
 `findings-file-missing`, `findings-file-malformed` (not JSON, wrong `format`, `findings` not an
-array, a finding without a `file`, or a `line` that is neither a number nor `null`), and
+array, a finding whose `file` is missing, empty or over 4096 bytes, a `line` that is neither a number
+nor `null`, or a `severity`, `category`, `issue` or `fix` that is not a string; every field is checked
+before any chunk is served, so one malformed row refuses the whole run), and
 `provenance-mismatch`; and, for a local fault while building the answer, `local-tempdir` (no
 temporary directory) and `payload-build` (the answer could not be assembled). The orchestrator hands
 the chunk directory to the call as

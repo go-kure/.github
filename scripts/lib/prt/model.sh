@@ -547,10 +547,16 @@ _prt_call_file() {
     _prt_set_model_failure "findings-file-missing"
     return 1
   fi
+  # Every field the normalizer (prt_normalize_findings) needs is checked here, for every
+  # chunk's call and before any chunk is served: a row it would drop must refuse the run, not
+  # vanish while another chunk's empty answer reads as success.
   if ! jq -e '
         .format == "review-findings-v1" and (.findings | type) == "array"
         and all(.findings[]; type == "object" and (.file | type) == "string" and (.file | length) > 0
-                             and (.line == null or (.line | type) == "number"))
+                             and (.file | utf8bytelength) <= 4096
+                             and (.line == null or (.line | type) == "number")
+                             and (.severity | type) == "string" and (.category | type) == "string"
+                             and (.issue | type) == "string" and (.fix | type) == "string")
       ' "$findings_file" >/dev/null 2>&1; then
     _prt_set_model_failure "findings-file-malformed"
     return 1

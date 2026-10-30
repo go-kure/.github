@@ -6211,6 +6211,23 @@ prt_fb_restore
 jq -c '.findings[0] |= del(.file)' "$prt_fb_dir/art/findings.all" > "$prt_fb_dir/art/findings.json"
 prt_fb_refuse "a finding without a file" "findings-file-malformed"
 prt_fb_restore
+# Every field the normalizer needs is checked before any chunk is served: a row the normalizer
+# would drop must refuse the run, not vanish while another chunk's empty answer reads as success.
+jq -c '.findings[0] = {file:"a.go", line:2}' "$prt_fb_dir/art/findings.all" > "$prt_fb_dir/art/findings.json"
+prt_fb_refuse "a finding with only a file and a line" "findings-file-malformed"
+prt_fb_restore
+for prt_fb_field in severity category issue fix; do
+  jq -c --arg k "$prt_fb_field" '.findings[0] |= del(.[$k])' "$prt_fb_dir/art/findings.all" > "$prt_fb_dir/art/findings.json"
+  prt_fb_refuse "a finding without $prt_fb_field" "findings-file-malformed"
+  prt_fb_restore
+  jq -c --arg k "$prt_fb_field" '.findings[0][$k] = 5' "$prt_fb_dir/art/findings.all" > "$prt_fb_dir/art/findings.json"
+  prt_fb_refuse "a finding whose $prt_fb_field is a number" "findings-file-malformed"
+  prt_fb_restore
+done
+unset prt_fb_field
+jq -c '.findings[0].file = ("a" * 4097)' "$prt_fb_dir/art/findings.all" > "$prt_fb_dir/art/findings.json"
+prt_fb_refuse "a finding whose file name is longer than 4096 bytes" "findings-file-malformed"
+prt_fb_restore
 rm -f "$prt_fb_dir/art/provider.json"
 prt_fb_refuse "provenance record missing" "provenance-mismatch"
 prt_fb_restore
@@ -6278,8 +6295,20 @@ assert_eq "file backend, orchestrator: no chunk refused (no REVIEW_INCOMPLETE, n
   "false false" "$(grep -qF 'REVIEW_INCOMPLETE:' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(grep -qF 'REVIEW_DEGRADED:' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 assert_eq "file backend, orchestrator: each chunk's own finding became a thread (one for x.go, one for y.go)" \
   "true true" "$(grep -qF 'issue-for-x' "$PRT_TEST_CREATE_BODY_LOG" && echo true || echo false) $(grep -qF 'issue-for-y' "$PRT_TEST_CREATE_BODY_LOG" && echo true || echo false)"
+# A malformed row must not vanish behind an empty second chunk: the file holds one row naming
+# only a file and a line (the normalizer would drop it) and nothing for the second chunk, which
+# then answers an empty review. Both chunks refuse, so the run fails closed.
+cp "$prt_fo_dir/findings.json" "$prt_fo_dir/findings.good"
+printf '%s' '{"format":"review-findings-v1","findings":[{"file":"x.go","line":1}]}' > "$prt_fo_dir/findings.json"
+rc="$(run_orchestrator enforce 0 0 0 150)"
+assert_eq "file backend, orchestrator: a malformed row plus an empty second chunk fails closed -> exits 1" "1" "$rc"
+assert_eq "file backend, orchestrator: the refusal names findings-file-malformed" \
+  "true" "$(grep -qF 'findings-file-malformed' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "file backend, orchestrator: it is not read as a degraded review" \
+  "false" "$(grep -qF 'REVIEW_DEGRADED:' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+cp "$prt_fo_dir/findings.good" "$prt_fo_dir/findings.json"
 # A record for another run refuses every chunk, and the refusal is the reason, not a proxy error.
-jq '.identity.head = "9999999999999999999999999999999999999999"' "$prt_fo_dir/provider.json" > "$prt_fo_dir/provider.tmp" && mv "$prt_fo_dir/provider.tmp" "$prt_fo_dir/provider.json"
+jq '.identity.head ="9999999999999999999999999999999999999999"' "$prt_fo_dir/provider.json" > "$prt_fo_dir/provider.tmp" && mv "$prt_fo_dir/provider.tmp" "$prt_fo_dir/provider.json"
 rc="$(run_orchestrator enforce 0 0 0 150)"
 assert_eq "file backend, orchestrator: a record for another head fails closed -> exits 1" "1" "$rc"
 assert_eq "file backend, orchestrator: the refusal names provenance-mismatch" \
