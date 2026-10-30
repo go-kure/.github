@@ -915,11 +915,21 @@ _prt_call_runner() {
   # In the background so the group can be cleaned after `timeout` is done: it leads its
   # own process group (pgid = its pid) but stops watching once its direct child has
   # exited, so a child that ignored the TERM would otherwise outlive the call.
-  timeout --kill-after=5 "$outer" "${PRT_RUNNER_BOUNDARY_ARGS[@]}" env -i "${PRT_RUNNER_ENV_ARGS[@]}" \
-    "$runner" --backend "$backend" --root "$root" --base "$PRT_REVIEW_BASE_SHA" \
-    --seconds "$seconds" --sandbox none --out "$out" \
-    -- "Perform the assessment described on the standard input. Answer with only the JSON object it asks for." \
-    < "$tmp/request" > /dev/null &
+  # The subshell closes every descriptor above 2 first: `env -i` and a namespace leave
+  # them open, and one the orchestrator holds (a credential file, a pipe) would be
+  # readable to the runner. `exec` keeps the subshell's pid, so $! is still the
+  # `timeout` that leads the process group.
+  (
+    for prt_fd_path in /proc/self/fd/*; do
+      prt_fd="${prt_fd_path##*/}"
+      if [ "$prt_fd" -gt 2 ] 2>/dev/null; then eval "exec $prt_fd>&-"; fi
+    done
+    exec timeout --kill-after=5 "$outer" "${PRT_RUNNER_BOUNDARY_ARGS[@]}" env -i "${PRT_RUNNER_ENV_ARGS[@]}" \
+      "$runner" --backend "$backend" --root "$root" --base "$PRT_REVIEW_BASE_SHA" \
+      --seconds "$seconds" --sandbox none --out "$out" \
+      -- "Perform the assessment described on the standard input. Answer with only the JSON object it asks for." \
+      < "$tmp/request" > /dev/null
+  ) &
   runner_pid=$!
   wait "$runner_pid" || rc=$?
   # Nothing in the group survives the call, whatever its exit; no member left is fine.
