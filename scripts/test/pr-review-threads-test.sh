@@ -6737,15 +6737,20 @@ PRT_TEST_ASSESS_BACKEND="runner"
 PRT_TEST_RUNNER_MODE=clean
 PRT_TEST_ISSUE_COMMENT_BODY_FILE="$(mktemp)"; export PRT_TEST_ISSUE_COMMENT_BODY_FILE
 prt_ar_ns=true
-if ! prt_ar_ns_raw; then
+# PRT_TEST_FORCE_NO_NAMESPACE=1 behaves as a host without the namespace, to show that the cases
+# that need none still run there.
+if [ -n "${PRT_TEST_FORCE_NO_NAMESPACE:-}" ] || ! prt_ar_ns_raw; then
   prt_ar_ns=false
   echo "NOTE: this host forbids the PID namespace the default boundary needs: the cases that need one are skipped; a CI lane that can run them is required for acceptance"
   assert_eq "no PID namespace here: PRT_TEST_REQUIRE_NAMESPACE is not set (acceptance needs a lane that runs the positive isolation cases)" \
     "" "${PRT_TEST_REQUIRE_NAMESPACE:-}"
-  rm -f "$PRT_TEST_RUNNER_LOG".*
-  rc="$(run_orchestrator advisory 0 0 0)"
-  assert_eq "assess runner, default boundary unavailable on this host: no runner call, degraded as runner-boundary" \
-    "0 0 true" "$rc $(prt_ar_calls) $(grep -qF '[runner-boundary]' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+  # Only a host that really lacks the namespace can show the refusal; the forced switch cannot.
+  if ! prt_ar_ns_raw; then
+    rm -f "$PRT_TEST_RUNNER_LOG".*
+    rc="$(run_orchestrator advisory 0 0 0)"
+    assert_eq "assess runner, default boundary unavailable on this host: no runner call, degraded as runner-boundary" \
+      "0 0 true" "$rc $(prt_ar_calls) $(grep -qF '[runner-boundary]' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+  fi
 else
   assert_eq "raw unshare works here, so the production prefix must start too" "true" "$(prt_ar_pidns_ok && echo true || echo false)"
 fi
@@ -6957,6 +6962,9 @@ prt_ar_fx_case "base is main's moved tip, not the merge base" "$prt_ar_dir/wt-he
 prt_ar_fx_case "base the checkout does not hold (shallow clone)" "$prt_ar_dir/shallow" "$prt_ar_base" "$prt_ar_mat" runner-failed
 prt_ar_fx_case "material hashed without the fixed flags" "$prt_ar_dir/wt-head" "$prt_ar_base" \
   "$(prt_ar_git diff "$prt_ar_base" "$prt_ar_head" | sha256sum | cut -d' ' -f1)" provenance-mismatch
+fi
+# The configuration refusals below need no namespace: they fail before any call, so they run on
+# every host. Only the cases that start a runner stay inside a guard.
 PRT_TEST_RUNNER_PROV=""
 PRT_TEST_ASSESS_RUNNER_ROOT=""
 PRT_TEST_HEAD_SHA=""
@@ -6989,6 +6997,7 @@ PRT_TEST_GH_TOKEN="sentinel-posting-token"
 export GITHUB_TOKEN="sentinel-github-token" GH_TOKEN="sentinel-gh-token" \
   OPENAI_API_KEY="sentinel-model-key" PRT_AR_UNRELATED="sentinel-unrelated"
 PRT_TEST_ASSESS_RUNNER_ENV="$PRT_TEST_ASSESS_RUNNER_ENV OPENAI_API_KEY"
+if $prt_ar_ns; then
 rm -f "$PRT_TEST_RUNNER_LOG".*
 rc="$(run_orchestrator advisory 0 0 0)"
 assert_eq "assess runner scrub: the run succeeds with the scrubbed environment" "0 1" "$rc $(prt_ar_calls)"
@@ -7010,6 +7019,7 @@ assert_eq "assess runner request: argv carries no findings and stays small" \
   "true" "$(! grep -qF 'FINDINGS' "$PRT_TEST_RUNNER_LOG.argv.1" && [ "$(wc -c < "$PRT_TEST_RUNNER_LOG.argv.1")" -lt 600 ] && echo true || echo false)"
 assert_eq "assess runner request: backend, base and no-sandbox flags are passed" \
   "1 1 1" "$(grep -cxF codex "$PRT_TEST_RUNNER_LOG.argv.1") $(grep -cxF "$PRT_TEST_REVIEW_BASE_SHA" "$PRT_TEST_RUNNER_LOG.argv.1") $(grep -cxF none "$PRT_TEST_RUNNER_LOG.argv.1")"
+fi
 
 # A pass-through list that names a posting token is refused at start, before any call.
 for prt_ar_name in GITHUB_TOKEN GH_TOKEN PRT_GH_TOKEN; do
@@ -7058,6 +7068,7 @@ for prt_ar_loc in C C.utf8 en_GB.utf8; do
     "true" "$(grep -qF 'not a plain variable name' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 done
 unset prt_ar_loc
+if $prt_ar_ns; then
 export PRT_AR_SECOND="sentinel-second-line"
 rm -f "$PRT_TEST_RUNNER_LOG".*
 PRT_TEST_ASSESS_RUNNER_ENV=$'OPENAI_API_KEY\nPRT_AR_SECOND PRT_TEST_RUNNER_LOG PRT_TEST_RUNNER_MODE PRT_TEST_RUNNER_PROV PRT_HEAD_SHA PRT_REVIEW_BASE_SHA PRT_REVIEW_MATERIAL_SHA256'
@@ -7065,6 +7076,7 @@ rc="$(run_orchestrator advisory 0 0 0)"
 assert_eq "assess runner scrub, names on several lines: the run works and the second line's name reaches the runner" \
   "0 1 1" "$rc $(prt_ar_calls) $(grep -c '^PRT_AR_SECOND=sentinel-second-line$' "$PRT_TEST_RUNNER_LOG.env.1")"
 unset PRT_AR_SECOND
+fi
 # A listed name that is not set in the orchestrator is a configuration error naming
 # that variable, not a silent skip that surfaces later as an opaque runner failure.
 rm -f "$PRT_TEST_RUNNER_LOG".*
@@ -7076,7 +7088,6 @@ assert_eq "assess runner scrub, a listed name that is unset: the error names the
   "true" "$(grep -qF 'PRT_AR_NEVER_SET' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 PRT_TEST_ASSESS_RUNNER_ENV="PRT_TEST_RUNNER_LOG PRT_TEST_RUNNER_MODE PRT_TEST_RUNNER_PROV PRT_HEAD_SHA PRT_REVIEW_BASE_SHA PRT_REVIEW_MATERIAL_SHA256"
 unset GITHUB_TOKEN GH_TOKEN OPENAI_API_KEY PRT_AR_UNRELATED PRT_TEST_GH_TOKEN prt_ar_name
-fi
 
 # PRT_MODE=off stays the escape hatch whatever this says.
 PRT_TEST_ASSESS_BACKEND="carrier-pigeon"

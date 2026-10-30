@@ -538,6 +538,14 @@ outer time bound ends it when the call overruns. If the orchestrator itself is k
 runner's tree is not signalled by it and runs until that outer bound fires (at most the call's
 seconds plus 30, within the run's deadline).
 
+Known limit: that cleanup holds against a cooperative runner and against a SIGKILL of the namespace
+launcher, nothing more. The runner is PID 1 of its namespace, so a hostile runner can clear its
+parent-death signal and start a new session; killing the launcher or the timeout process group then
+does not stop it, and it can outlive its call. The posting token stays unreadable, so this is a
+lifetime problem, not a token leak. The only outer bound for such a runner is the job timeout. A
+protected supervisor, or an external lifetime mechanism the runner cannot leave, is the follow-up
+(go-kure/.github#304).
+
 Hosts that forbid an unprivileged user namespace (for example Ubuntu 24.04 with its AppArmor
 restriction, or a container whose seccomp profile blocks `unshare`) cannot establish `pidns`,
 for root too; those calls are refused until the
