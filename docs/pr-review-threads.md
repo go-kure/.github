@@ -516,7 +516,11 @@ holds (a credential file, a pipe) would be readable to the runner.
   configuration, never PR content, and its claim to isolate counts for nothing: it passes the same
   check as `pidns` or the call is refused. That includes the capability test: a command that runs
   the runner as root with capabilities (for instance `unshare` as root without dropping them) is
-  refused, because the runner could undo the boundary.
+  refused, because the runner could undo the boundary. The command is operator-supplied and the
+  probe does not make an arbitrary one trustworthy: it shows that ancestors are hidden and that no
+  capability is held, nothing about what else the command does. The command itself is started under
+  `env -i` with only `PATH` (no `HOME`, no token), so a wrapper that stays resident while it waits
+  for the runner does not keep the posting token in its own environment.
 
 The check runs for every call, whichever form: a probe is started behind the boundary with every
 process from this one up to pid 1, each named by pid and start time, and it must find that none
@@ -525,7 +529,10 @@ apart by its start time) and that its own capability set is empty. A command tha
 nothing, or leaves the runner able to undo it, fails. The probe is bounded as a whole: it runs under
 `timeout` with a kill after the first signal and writes to a file, so a prefix that ignores
 `TERM`, or leaves a helper holding the probe's output, cannot hold the check. If the ancestors
-cannot be listed the call is refused, never checked against fewer.
+cannot be listed the call is refused, never checked against fewer. The run's remaining budget is
+read before the check, not after: a call the deadline has no room for is refused as
+`deadline-exhausted` without spending the check, and the check is cut to what the budget leaves
+after the runner's own kill grace.
 Lifetime: when the boundary command dies, `--kill-child` takes the namespace with it, and the
 outer time bound ends it when the call overruns. If the orchestrator itself is killed outright, the
 runner's tree is not signalled by it and runs until that outer bound fires (at most the call's
@@ -536,6 +543,12 @@ restriction, or a container whose seccomp profile blocks `unshare`) cannot estab
 for root too; those calls are refused until the
 operator supplies a `cmd` or relaxes the host. Separate-user isolation is a documented follow-up
 that this repository does not build.
+
+Acceptance needs a CI lane that can run the positive isolation cases. On a host without a PID
+namespace the test suite skips the cases that need one (and says so) but still runs the ones that do
+not: invalid configuration, a prefix that isolates nothing, the check's deadline and the enforce
+refusal. Setting `PRT_TEST_REQUIRE_NAMESPACE=1` turns that skip into a failure, so a lane that must
+run them cannot pass by skipping.
 
 **Provenance.** A call that exits 0 is still refused unless its `provider.json` has format
 `review-run-v1`, `outcome` `completed`, and `identity.head`, `identity.base`,
