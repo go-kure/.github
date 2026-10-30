@@ -1,0 +1,31 @@
+name: PR Review Runner Boundary Probe
+
+# Acceptance run for the runner's process boundary (docs/pr-review-threads.md,
+# "Process boundary"). Manual only: it runs on the self-hosted runner image that the
+# review job uses, because only that image shows whether the boundary holds there.
+# It holds no secret and calls no model: a made-up canary stands in for the posting
+# token and a stub for the runner. A red run is a result, not a flake.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: probe
+    runs-on: autops-kube-kure
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Positive isolation cases of the suite
+        env:
+          PRT_TEST_REQUIRE_NAMESPACE: "1"
+        run: bash scripts/test/pr-review-threads-test.sh .
+
+      - name: Canary probe behind the default boundary
+        run: bash scripts/pr-review-runner-boundary-probe.sh
