@@ -646,7 +646,9 @@ assessed findings could not be assembled`), the affected chunk is not counted as
 `coverage:` line is not printed. A final count check marks the run incomplete when the assessed findings
 are fewer than the reviewed ones. Each side of a count comparison (before and after numbering,
 assessed against reviewed) is queried on its own, and a failed query is a fault, never a value:
-two failed queries cannot read as equal, so the run is `REVIEW_INCOMPLETE`. Before this, a failed append emptied the accumulator and a large review
+two failed queries cannot read as equal, so the run is `REVIEW_INCOMPLETE`. The same holds for the
+GraphQL `errors[]` check: a response whose `errors[]` could not be read is a failure, never a response
+with no errors. A guard test lists every `|| true` after a `jq` or `gh` call and fails on a new one. Before this, a failed append emptied the accumulator and a large review
 read as a clean one.
 
 The join of the verdicts follows the same rule. `prt_join_assessment` returns 0 when it joined, 1 when

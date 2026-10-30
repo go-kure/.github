@@ -120,7 +120,12 @@ prt_gh_graphql() {
   fi
   body="$(cat "$tmp")"
   rm -f "$tmp"
-  errors="$(jq -c '.errors // empty' <<< "$body" 2>/dev/null || true)"
+  # The query's own status is checked: a failed jq is not "no errors", and the .data below could
+  # otherwise succeed on a body that carries a populated errors[].
+  if ! errors="$(jq -c '.errors // empty' <<< "$body" 2>/dev/null)"; then
+    echo "prt_gh_graphql: the response body could not be checked for errors[]" >&2
+    return 1
+  fi
   if [ -n "$errors" ]; then
     echo "prt_gh_graphql: errors[] in response body: $errors" >&2
     return 1
