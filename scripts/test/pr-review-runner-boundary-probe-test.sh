@@ -147,7 +147,48 @@ assert_eq "stub: the mount experiment will not run in the caller's mount namespa
   untried:shares-mount-namespace "$(field "$dir/s3" proc_mount)"
 stub_run "$dir/s4" PRT_PROBE_MOUNT=try
 assert_eq "stub: the mount experiment will not run without the caller's mount namespace" \
-  untried:shares-mount-namespace "$(field "$dir/s4" proc_mount)"
+  untried:mount-namespace-unreadable "$(field "$dir/s4" proc_mount)"
+
+# A stand-in `mount` and `readlink` first on the stub's PATH: no real mount is ever tried. The
+# stub sees a parent namespace that differs from its own, so the experiment is allowed to run.
+mkdir "$dir/fakebin"
+cat > "$dir/fakebin/mount" <<'EOF'
+#!/bin/sh
+echo "$FAKE_MOUNT_MSG" >&2
+exit "$FAKE_MOUNT_RC"
+EOF
+cat > "$dir/fakebin/readlink-empty" <<'EOF'
+#!/bin/sh
+exit 1
+EOF
+chmod 755 "$dir/fakebin/mount" "$dir/fakebin/readlink-empty"
+mount_case() { # mount_case REPORT RC MESSAGE
+  stub_run "$1" PATH="$dir/fakebin:$PATH" PRT_PROBE_MOUNT=try PRT_PROBE_PARENT_MNT_NS=mnt:[1] \
+    FAKE_MOUNT_RC="$2" FAKE_MOUNT_MSG="$3"
+  field "$1" proc_mount
+}
+assert_eq "stub: a refusal by mount itself is a denial" denied \
+  "$(mount_case "$dir/t1" 32 'mount: /x: must be superuser to use mount.')"
+assert_eq "stub: a mount tool that cannot be executed (126) is not a denial" failed:126 \
+  "$(mount_case "$dir/t2" 126 'mount: Permission denied')"
+assert_eq "stub: a missing mount tool (127) is not a denial" failed:127 \
+  "$(mount_case "$dir/t3" 127 'mount: not found')"
+assert_eq "stub: an unrelated mount failure is not a denial" failed:32 \
+  "$(mount_case "$dir/t4" 32 'mount: /x: unknown filesystem type proc.')"
+cp "$dir/fakebin/readlink-empty" "$dir/fakebin/readlink"
+assert_eq "stub: an unreadable own mount namespace does not run the experiment" untried:mount-namespace-unreadable \
+  "$(mount_case "$dir/t5" 32 'mount: /x: must be superuser to use mount.')"
+rm -f "$dir/fakebin/readlink"
+
+# A number too big for bash arithmetic must not slip past the comparisons.
+write_report "$dir/n1" boundary canary_hits=18446744073709551616
+assert_eq "judge: an oversized boundary count is inconclusive" 3 "$(judge_rc "$dir/n1" "$dir/c")"
+write_report "$dir/n2" control canary_hits=18446744073709551616
+assert_eq "judge: an oversized control count is inconclusive" 3 "$(judge_rc "$dir/b" "$dir/n2")"
+write_report "$dir/n3" boundary uid=99999999999999999999
+assert_eq "judge: an oversized uid is inconclusive" 3 "$(judge_rc "$dir/n3" "$dir/c")"
+assert_eq "judge: an oversized count raises no arithmetic error" "" \
+  "$(bash "$PROBE" judge "$dir/n1" "$dir/c" 2>&1 >/dev/null)"
 
 echo "passed: $pass_count, failed: $failures"
 [ "$failures" -eq 0 ]

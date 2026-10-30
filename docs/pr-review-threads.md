@@ -611,8 +611,9 @@ is named by pid and start time), every descriptor above 2 it holds apart from it
 sets and whether the `procfs` mount was denied. The boundary must show no canary, no readable
 ancestor, no descriptor, no capability and a denied mount. The run without it must show the canary
 through an ancestor, with numeric counts of at least 1: a missing, empty or malformed control report
-voids the result. A mount that could not be tried (no `mount` command, same mount namespace, no
-directory) is not a denial.
+voids the result, and so does a count of more than 9 digits. Only a refusal by `mount` itself is a
+denial. A mount that could not be tried (no `mount` command, one that cannot be executed, an
+unreadable or shared mount namespace, no directory) is not.
 Exit codes: 0 holds, 1 leaks, 2 the boundary cannot be established on that lane, 3 inconclusive (the
 control, a field or the mount result gave no usable answer, so no pass can be claimed), 4 the probe
 could not set itself up. It does not show the lifetime limit above, what else of the user's files the runner can read, or anything
