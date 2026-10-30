@@ -34,13 +34,15 @@ get() { sed -n "s/^$2=//p" "$1" 2> /dev/null | head -1; }
 # At most 9 digits: a longer string would make bash arithmetic comparisons error out.
 is_count() { [[ "${1:-}" =~ ^[0-9]{1,9}$ ]]; }
 is_caps() { [[ "${1:-}" =~ ^[0-9a-f]{16}$ ]]; }
+# environ_has FILE VALUE: does the NUL-separated environ FILE hold VALUE? Errors read as "no".
+environ_has() { { tr '\0' '\n' < "$1"; } 2> /dev/null | grep -qF -- "$2"; }
 
 # ---------------------------------------------------------------------------------------
 # stub: what a runner could reach, written to $PRT_PROBE_REPORT, then a clean answer
 # ---------------------------------------------------------------------------------------
 probe_stub() {
   local out="" req canary a p st f s n e mnt msg rc own_ns
-  local anc_environ=0 anc_mem=0 hits=0 visible=0 fd_above2=0 mount_result=skipped
+  local anc_environ=0 anc_mem=0 hits=0 visible=0 fd_above2=0 mount_result=skipped own_open=0 own_marker=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --out) out="$2"; shift 2 ;;
@@ -53,8 +55,13 @@ probe_stub() {
   canary="$(cat "$PRT_PROBE_CANARY_FILE")"
   for e in /proc/[0-9]*/environ; do
     visible=$((visible + 1))
-    if { tr '\0' '\n' < "$e"; } 2> /dev/null | grep -qF -- "$canary"; then hits=$((hits + 1)); fi
+    if environ_has "$e" "$canary"; then hits=$((hits + 1)); fi
   done
+  # The scan above only means something if it can find a known value. Look for a non-secret
+  # one (the head SHA) in this process's own environment with the very same scan, so a scan
+  # that fails inside the boundary (a missing tr or grep, an unreadable /proc) reads as blind.
+  if ( : < "/proc/$$/environ" ) 2> /dev/null; then own_open=1; fi
+  if [ -n "${PRT_HEAD_SHA:-}" ] && environ_has "/proc/$$/environ" "$PRT_HEAD_SHA"; then own_marker=1; fi
   for a in ${PRT_PROBE_ANCESTORS:-}; do
     p="${a%%:*}"; st="${a##*:}"
     for f in environ mem; do
@@ -116,6 +123,8 @@ probe_stub() {
     echo "no_new_privs=$(sed -n 's/^NoNewPrivs:[[:space:]]*//p' /proc/self/status)"
     echo "proc_mount=$mount_result"
     echo "pids_visible=$visible"
+    echo "own_environ_open=$own_open"
+    echo "own_environ_marker=$own_marker"
     echo "own_env_names=$(compgen -e | sort | tr '\n' ' ')"
   } > "$PRT_PROBE_REPORT.tmp" && mv "$PRT_PROBE_REPORT.tmp" "$PRT_PROBE_REPORT"
   mkdir -p "$out"
@@ -148,6 +157,14 @@ probe_judge() {
       v="$(get "$b" "$k")"
       if ! is_count "$v"; then unusable+=("boundary: $k is '${v:-empty}', not a number")
       elif [ "$k" != uid ] && [ "$v" -ne 0 ]; then leaks+=("boundary: $k is $v")
+      fi
+    done
+    # A scan that found nothing counts only if it could have found something: inside the
+    # boundary it must see a process, open its own environ and find a known value in it.
+    for k in pids_visible own_environ_open own_environ_marker; do
+      v="$(get "$b" "$k")"
+      if ! is_count "$v"; then unusable+=("boundary: $k is '${v:-empty}', not a number")
+      elif [ "$v" -lt 1 ]; then unusable+=("boundary: $k is $v, so the scan inside the boundary may be blind")
       fi
     done
     uid="$(get "$b" uid)"
