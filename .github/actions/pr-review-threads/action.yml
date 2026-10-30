@@ -46,9 +46,10 @@ inputs:
     description: >-
       Who answers the assessment call. Empty (default) is the proxy. "runner"
       runs a review-run process per chunk instead, so the run needs no proxy
-      URL when the review also comes from a findings file. Do not enable it on
-      a consumer, in any mode, until the runner has a process boundary;
-      enforce refuses it. Needs
+      URL when the review also comes from a findings file. Every call runs
+      behind a process boundary (assess-runner-boundary) or is refused. Do not
+      enable it on a consumer, in any mode, until that boundary has been shown
+      to hold on the runner image; enforce refuses it. Needs
       assess-runner-backend, and PRT_REVIEW_BASE_SHA and
       PRT_REVIEW_MATERIAL_SHA256 in the calling step's env, as for a findings
       file. Any other value fails the run.
@@ -68,6 +69,23 @@ inputs:
       runner starts under env -i with only PATH, HOME, TMPDIR, LANG, LC_ALL and
       these names; a token name (PRT_GH_TOKEN, GITHUB_TOKEN, GH_TOKEN, the
       enterprise and Actions runtime tokens) here fails the run.
+    required: false
+    default: ""
+  assess-runner-boundary:
+    description: >-
+      The process boundary every runner call starts behind: "pidns" (default,
+      also when empty), a PID namespace of its own, or "cmd", the command in
+      assess-runner-boundary-cmd. A call whose boundary cannot be established
+      here is refused and its findings stay unverdicted. There is no way to
+      run the runner without one.
+    required: false
+    default: ""
+  assess-runner-boundary-cmd:
+    description: >-
+      With assess-runner-boundary "cmd": the command (words separated by
+      whitespace) placed in front of the runner, for instance one that switches
+      to another user. Trusted workflow configuration, never PR content; only
+      that it starts is checked.
     required: false
     default: ""
   bot-login:
@@ -160,6 +178,8 @@ runs:
         PRT_ASSESS_BACKEND: ${{ inputs.assess-backend }}
         PRT_ASSESS_RUNNER_BACKEND: ${{ inputs.assess-runner-backend }}
         PRT_ASSESS_RUNNER_ENV: ${{ inputs.assess-runner-env }}
+        PRT_ASSESS_RUNNER_BOUNDARY: ${{ inputs.assess-runner-boundary }}
+        PRT_ASSESS_RUNNER_BOUNDARY_CMD: ${{ inputs.assess-runner-boundary-cmd }}
         PRT_MAX_DIFF_CHARS: ${{ inputs.max-diff-chars }}
         PRT_MAX_FINDINGS_TOTAL: ${{ inputs.max-findings-total }}
         PRT_PROJECT_CONTEXT: ${{ inputs.project-context }}

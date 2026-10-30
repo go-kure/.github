@@ -3574,6 +3574,8 @@ run_orchestrator() {
     PRT_ASSESS_RUNNER_ENV="${PRT_TEST_ASSESS_RUNNER_ENV:-}" \
     PRT_MODEL_BUDGET_SECONDS="${PRT_TEST_MODEL_BUDGET_SECONDS:-}" \
     PRT_ASSESS_RUNNER_SECONDS="${PRT_TEST_ASSESS_RUNNER_SECONDS:-}" \
+    PRT_ASSESS_RUNNER_BOUNDARY="${PRT_TEST_ASSESS_RUNNER_BOUNDARY:-}" \
+    PRT_ASSESS_RUNNER_BOUNDARY_CMD="${PRT_TEST_ASSESS_RUNNER_BOUNDARY_CMD:-}" \
     PRT_MAX_DIFF_CHARS="$max_diff_chars" \
     PRT_GH_TOKEN="${PRT_TEST_GH_TOKEN:-x}" PRT_REPO=owner/repo PRT_PR_NUMBER=1 \
     PRT_ASSESS_RUNNER_ROOT="${PRT_TEST_ASSESS_RUNNER_ROOT:-}" \
@@ -6788,6 +6790,23 @@ case "$mode" in
     echo "$!" > "$log.child"
     ps -o stat= -p "$!" > "$log.child.stat" 2>/dev/null
     sleep 300; exit 0 ;;
+  # probe: what a hostile runner could reach. Walks its ancestors and counts those whose
+  # /proc/<pid>/environ holds the orchestrator's posting token, and counts the bytes of a
+  # secret readable through an inherited fd 9. Then answers like a clean run.
+  probe)
+    env_hits=0
+    q=$$
+    while [ "$q" -gt 1 ]; do
+      # shellcheck disable=SC2046 # the stat fields after the command name are plain words
+      set -- $(sed 's/^.*) //' "/proc/$q/stat" 2>/dev/null)
+      q="${2:-0}"
+      [ "$q" -gt 1 ] || break
+      env_hits=$((env_hits + $(tr '\0' '\n' < "/proc/$q/environ" 2>/dev/null | grep -c '^PRT_GH_TOKEN=sentinel-ancestor-token$')))
+    done
+    fd_hits=0
+    if [ -e /proc/self/fd/9 ]; then fd_hits="$(grep -c 'sentinel-fd-secret' /proc/self/fd/9 2>/dev/null)"; fi
+    echo "$env_hits $fd_hits" > "$log.probe"
+    mode=clean ;;
   garbage_then_exit4) if [ "$n" -ge 2 ]; then exit 4; fi; mode=garbage ;;
   garbage_then_clean) if [ "$n" -ge 2 ]; then mode=clean; else mode=garbage; fi ;;
 esac
@@ -6832,6 +6851,14 @@ jq -n --arg f "$p_format" --arg o "$p_outcome" --arg h "$p_head" --arg b "$p_bas
 exit 0
 ARSTUB
 chmod 755 "$prt_ar_dir/review-run"
+# The cases below that are about the stub's behaviour, not about the process boundary, run it
+# behind a boundary command that adds no isolation (the operator-supplied form), because the
+# default boundary changes what process ids and the filesystem look like. The boundary cases
+# further down use the real default.
+printf '#!/bin/sh\nexec "$@"\n' > "$prt_ar_dir/boundary-pass"
+chmod 755 "$prt_ar_dir/boundary-pass"
+PRT_TEST_ASSESS_RUNNER_BOUNDARY=cmd
+PRT_TEST_ASSESS_RUNNER_BOUNDARY_CMD="$prt_ar_dir/boundary-pass"
 PRT_TEST_RUNNER_LOG="$prt_ar_dir/log"
 PRT_TEST_ASSESS_RUNNER="$prt_ar_dir/review-run"
 PRT_TEST_ASSESS_RUNNER_BACKEND="codex"
@@ -7298,6 +7325,101 @@ assert_eq "assess runner, non-numeric PRT_ASSESS_RUNNER_SECONDS: no runner call,
   "0 0 true" "$rc $(prt_ar_calls) $(grep -qF '[backend-config]' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 PRT_TEST_ASSESS_RUNNER_SECONDS=""
 
+# ---- the process boundary (go-kure/.github#303 review, srgvg/claude-dotfiles#179)
+# The scrub keeps the token out of the runner's own environment, not out of an ancestor's
+# /proc/<pid>/environ, which a same-user process can read. So every call runs behind a boundary the
+# orchestrator establishes and checks first; if it cannot, the call is refused as runner-boundary
+# and the findings stay unverdicted. The default boundary is a PID namespace of its own.
+#
+# The probe stub walks its ancestors and counts the ones whose environment holds the posting token.
+# The control proves the probe can see a leak at all: behind a boundary command that adds no
+# isolation it finds the token, so a zero behind the real boundary is not a vacuous zero.
+prt_ar_pidns_ok() { unshare --user --map-current-user --pid --fork --mount-proc --kill-child true > /dev/null 2>&1; }
+prt_ar_reason() { grep -qF "[$1]" "$PRT_TEST_STDERR_FILE" && echo true || echo false; }
+prt_ar_probe_env() { cut -d' ' -f1 "$PRT_TEST_RUNNER_LOG.probe" 2>/dev/null || echo missing; }
+PRT_TEST_GH_TOKEN=sentinel-ancestor-token
+PRT_TEST_RUNNER_MODE=probe
+rm -f "$PRT_TEST_RUNNER_LOG".*
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "assess runner, control (a boundary command that adds no isolation): the probe finds the posting token in an ancestor" \
+  "0 1 true" "$rc $(prt_ar_calls) $([ "$(prt_ar_probe_env)" != missing ] && [ "$(prt_ar_probe_env)" -ge 1 ] && echo true || echo false)"
+
+PRT_TEST_ASSESS_RUNNER_BOUNDARY=""
+PRT_TEST_ASSESS_RUNNER_BOUNDARY_CMD=""
+rm -f "$PRT_TEST_RUNNER_LOG".*
+rc="$(run_orchestrator advisory 0 0 0)"
+if prt_ar_pidns_ok; then
+  assert_eq "assess runner, default boundary: the call ran and no ancestor's environment shows the token" \
+    "0 1 0" "$rc $(prt_ar_calls) $(prt_ar_probe_env)"
+else
+  echo "NOTE: this host forbids an unprivileged PID namespace; the default boundary cannot be established here, so the isolation case is replaced by the refusal case"
+  assert_eq "assess runner, default boundary unavailable on this host: no runner call, degraded as runner-boundary" \
+    "0 0 true" "$rc $(prt_ar_calls) $(prt_ar_reason runner-boundary)"
+fi
+
+# A boundary that cannot be established refuses the call and keeps the finding unverdicted
+# (REVIEW_DEGRADED, still gating); it never falls back to running the runner unbounded.
+prt_ar_fake="$(mktemp -d)"
+printf '#!/bin/sh\nexit 1\n' > "$prt_ar_fake/unshare"
+chmod 755 "$prt_ar_fake/unshare"
+rm -f "$PRT_TEST_RUNNER_LOG".*
+rc="$(PATH="$prt_ar_fake:$PATH" run_orchestrator advisory 0 0 0)"
+assert_eq "assess runner, default boundary fails to start: no runner call, degraded as runner-boundary" \
+  "0 0 true" "$rc $(prt_ar_calls) $(prt_ar_reason runner-boundary)"
+assert_eq "assess runner, default boundary fails to start: the run is degraded, the finding stays unverdicted" \
+  "true" "$(grep -qF 'REVIEW_DEGRADED:' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+# A boundary that starts but isolates nothing must fail the check, not just the start.
+# shellcheck disable=SC2016 # script text for the fake, not an expansion
+printf '#!/bin/sh\nwhile [ $# -gt 0 ]; do case "$1" in -*) shift ;; *) break ;; esac; done\nexec "$@"\n' > "$prt_ar_fake/unshare"
+rm -f "$PRT_TEST_RUNNER_LOG".*
+rc="$(PATH="$prt_ar_fake:$PATH" run_orchestrator advisory 0 0 0)"
+assert_eq "assess runner, a boundary that starts but hides no ancestor: no runner call, degraded as runner-boundary" \
+  "0 0 true" "$rc $(prt_ar_calls) $(prt_ar_reason runner-boundary)"
+rm -rf "$prt_ar_fake"
+
+# The operator-supplied form: a command placed in front of the runner. A prefix that does not
+# start refuses the call; one that works is really in front of the runner.
+PRT_TEST_ASSESS_RUNNER_BOUNDARY=cmd
+PRT_TEST_ASSESS_RUNNER_BOUNDARY_CMD="$prt_ar_dir/no-such-prefix"
+rm -f "$PRT_TEST_RUNNER_LOG".*
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "assess runner, boundary command that does not exist: no runner call, degraded as runner-boundary" \
+  "0 0 true" "$rc $(prt_ar_calls) $(prt_ar_reason runner-boundary)"
+PRT_TEST_ASSESS_RUNNER_BOUNDARY_CMD="false"
+rm -f "$PRT_TEST_RUNNER_LOG".*
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "assess runner, boundary command that exits non-zero: no runner call, degraded as runner-boundary" \
+  "0 0 true" "$rc $(prt_ar_calls) $(prt_ar_reason runner-boundary)"
+# shellcheck disable=SC2016 # script text for the prefix, not an expansion
+printf '#!/bin/sh\ncase "$*" in *--backend*) : > "$PRT_TEST_RUNNER_LOG.prefixed" ;; esac\nexec "$@"\n' > "$prt_ar_dir/boundary-mark"
+chmod 755 "$prt_ar_dir/boundary-mark"
+PRT_TEST_ASSESS_RUNNER_BOUNDARY_CMD="$prt_ar_dir/boundary-mark"
+PRT_TEST_RUNNER_MODE=clean
+rm -f "$PRT_TEST_RUNNER_LOG".*
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "assess runner, boundary command: the runner is started through it" \
+  "0 1 true" "$rc $(prt_ar_calls) $([ -e "$PRT_TEST_RUNNER_LOG.prefixed" ] && echo true || echo false)"
+
+# Misconfiguration is caught at start, like the other runner settings.
+PRT_TEST_ASSESS_RUNNER_BOUNDARY_CMD=""
+rm -f "$PRT_TEST_RUNNER_LOG".*
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "assess runner, boundary 'cmd' with no command: refused at start, before any call" "1 0" "$rc $(prt_ar_calls)"
+assert_eq "assess runner, boundary 'cmd' with no command: the error names PRT_ASSESS_RUNNER_BOUNDARY_CMD" \
+  "true" "$(grep -qF 'PRT_ASSESS_RUNNER_BOUNDARY_CMD' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_ASSESS_RUNNER_BOUNDARY=none
+rm -f "$PRT_TEST_RUNNER_LOG".*
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "assess runner, an unknown boundary value: refused at start, before any call" "1 0" "$rc $(prt_ar_calls)"
+assert_eq "assess runner, an unknown boundary value: the error names PRT_ASSESS_RUNNER_BOUNDARY" \
+  "true" "$(grep -qF 'PRT_ASSESS_RUNNER_BOUNDARY must be' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+
+# Back to the pass-through boundary for the cases that follow.
+PRT_TEST_ASSESS_RUNNER_BOUNDARY=cmd
+PRT_TEST_ASSESS_RUNNER_BOUNDARY_CMD="$prt_ar_dir/boundary-pass"
+PRT_TEST_RUNNER_MODE=clean
+PRT_TEST_GH_TOKEN=x
+
 # The review still needs the proxy when it is not a findings file.
 PRT_TEST_REVIEW_BACKEND=""
 rc="$(run_orchestrator advisory 0 0 0 150)"
@@ -7334,7 +7456,8 @@ rm -rf "$prt_ar_ff"
 
 unset PRT_TEST_ASSESS_BACKEND PRT_TEST_ASSESS_RUNNER PRT_TEST_ASSESS_RUNNER_BACKEND PRT_TEST_RUNNER_MODE PRT_TEST_RUNNER_LOG \
   PRT_TEST_REVIEW_BASE_SHA PRT_TEST_REVIEW_MATERIAL_SHA256 PRT_TEST_RUNNER_PROV PRT_TEST_ASSESS_RUNNER_ENV \
-  PRT_TEST_MODEL_BUDGET_SECONDS PRT_TEST_ASSESS_RUNNER_SECONDS
+  PRT_TEST_MODEL_BUDGET_SECONDS PRT_TEST_ASSESS_RUNNER_SECONDS \
+  PRT_TEST_ASSESS_RUNNER_BOUNDARY PRT_TEST_ASSESS_RUNNER_BOUNDARY_CMD PRT_TEST_GH_TOKEN
 rm -f "$PRT_TEST_ISSUE_COMMENT_BODY_FILE"
 unset PRT_TEST_ISSUE_COMMENT_BODY_FILE
 PRT_TEST_MODEL_RESPONSE_MODE=clean
