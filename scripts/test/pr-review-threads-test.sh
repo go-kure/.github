@@ -6883,11 +6883,22 @@ ARSTUB
 chmod 755 "$prt_ar_dir/review-run"
 # Every case below runs the stub behind the boundary a consumer gets: the default, a PID namespace
 # of its own. No case switches the boundary check off. A host that forbids that namespace cannot
-# establish the boundary, and there the whole group is replaced by one asserted refusal. This
-# helper builds the production prefix, for root and non-root alike, and starts it.
+# establish the boundary: the cases that need one are skipped there (with a NOTE) and the cases
+# that do not (invalid configuration, a prefix that isolates nothing, the preflight deadline, the
+# enforce refusal) still run. A CI lane that can run the positive isolation cases is required for
+# acceptance: PRT_TEST_REQUIRE_NAMESPACE=1 turns a skip into a failure.
+# The availability probe is a literal raw `unshare`, never the production builder, so a broken
+# builder cannot pass for an unavailable host; where raw unshare works the production prefix must too.
+prt_ar_ns_raw() { unshare --user --map-current-user --pid --fork --mount-proc true > /dev/null 2>&1; }
+# The production prefix (for root and non-root alike), started.
 prt_ar_pidns_ok() {
   ( unset PRT_ASSESS_RUNNER_BOUNDARY PRT_ASSESS_RUNNER_BOUNDARY_CMD
     _prt_runner_boundary_build && "${PRT_RUNNER_BOUNDARY_ARGS[@]}" true ) > /dev/null 2>&1
+}
+# The production prefix as words, for a cmd fixture that must be as strict as the default.
+prt_ar_prod_prefix() {
+  ( unset PRT_ASSESS_RUNNER_BOUNDARY PRT_ASSESS_RUNNER_BOUNDARY_CMD
+    _prt_runner_boundary_build && printf '%s ' "${PRT_RUNNER_BOUNDARY_ARGS[@]}" )
 }
 PRT_TEST_ASSESS_RUNNER_BOUNDARY=""
 PRT_TEST_ASSESS_RUNNER_BOUNDARY_CMD=""
@@ -6908,14 +6919,20 @@ prt_ar_found() { local n; n="$(sed -n "s/.*advisory mode — \([0-9]*\) finding.
 PRT_TEST_ASSESS_BACKEND="runner"
 PRT_TEST_RUNNER_MODE=clean
 PRT_TEST_ISSUE_COMMENT_BODY_FILE="$(mktemp)"; export PRT_TEST_ISSUE_COMMENT_BODY_FILE
-if ! prt_ar_pidns_ok; then
-echo "NOTE: this host forbids the PID namespace the default boundary needs, so no runner case can run here; the group is replaced by the refusal case"
-rm -f "$PRT_TEST_RUNNER_LOG".*
-rc="$(run_orchestrator advisory 0 0 0)"
-assert_eq "assess runner, default boundary unavailable on this host: no runner call, degraded as runner-boundary" \
-  "0 0 true" "$rc $(prt_ar_calls) $(grep -qF '[runner-boundary]' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+prt_ar_ns=true
+if ! prt_ar_ns_raw; then
+  prt_ar_ns=false
+  echo "NOTE: this host forbids the PID namespace the default boundary needs: the cases that need one are skipped; a CI lane that can run them is required for acceptance"
+  assert_eq "no PID namespace here: PRT_TEST_REQUIRE_NAMESPACE is not set (acceptance needs a lane that runs the positive isolation cases)" \
+    "" "${PRT_TEST_REQUIRE_NAMESPACE:-}"
+  rm -f "$PRT_TEST_RUNNER_LOG".*
+  rc="$(run_orchestrator advisory 0 0 0)"
+  assert_eq "assess runner, default boundary unavailable on this host: no runner call, degraded as runner-boundary" \
+    "0 0 true" "$rc $(prt_ar_calls) $(grep -qF '[runner-boundary]' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 else
-# ---- (this branch is the whole runner group; it is closed after the boundary cases)
+  assert_eq "raw unshare works here, so the production prefix must start too" "true" "$(prt_ar_pidns_ok && echo true || echo false)"
+fi
+if $prt_ar_ns; then
 # A VALID verdict from the runner: the finding gets its thread, the proxy never assesses.
 rm -f "$PRT_TEST_RUNNER_LOG".*
 rc="$(run_orchestrator advisory 0 0 0)"
@@ -6935,7 +6952,9 @@ rc="$(run_orchestrator advisory 0 0 0)"
 assert_eq "assess runner, FALSE_POSITIVE: exits 0, no finding reported" \
   "0 0" "$rc $(prt_ar_found)"
 assert_eq "assess runner, FALSE_POSITIVE: still no proxy assess call" "1 0" "$(prt_ar_calls) $(cat "$PRT_TEST_ASSESS_COUNTFILE")"
+fi
 
+# Invalid configuration is caught at start and needs no namespace: these run on every host.
 # Unset keeps the proxy: the runner is never called.
 rm -f "$PRT_TEST_RUNNER_LOG".*
 PRT_TEST_ASSESS_BACKEND=""
@@ -6966,6 +6985,7 @@ assert_eq "assess runner without PRT_ASSESS_RUNNER_BACKEND: the error names it" 
 # is degraded, never fatal, and the findings stay unverdicted (still blocking).
 PRT_TEST_ASSESS_BACKEND="runner"
 PRT_TEST_ASSESS_RUNNER_BACKEND="codex"
+if $prt_ar_ns; then
 prt_ar_failure_case() { # label mode expected-exit expected-reason
   rm -f "$PRT_TEST_RUNNER_LOG".*
   PRT_TEST_RUNNER_MODE="$2"
@@ -7239,6 +7259,7 @@ assert_eq "assess runner scrub, a listed name that is unset: the error names the
   "true" "$(grep -qF 'PRT_AR_NEVER_SET' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 PRT_TEST_ASSESS_RUNNER_ENV="PRT_TEST_RUNNER_LOG PRT_TEST_RUNNER_MODE PRT_TEST_RUNNER_PROV PRT_HEAD_SHA PRT_REVIEW_BASE_SHA PRT_REVIEW_MATERIAL_SHA256"
 unset GITHUB_TOKEN GH_TOKEN OPENAI_API_KEY PRT_AR_UNRELATED PRT_TEST_GH_TOKEN prt_ar_name
+fi
 
 # PRT_MODE=off stays the escape hatch whatever this says.
 PRT_TEST_ASSESS_BACKEND="carrier-pigeon"
@@ -7263,6 +7284,7 @@ PRT_TEST_PROXY_URL=""
 PRT_TEST_ASSESS_BACKEND="runner"
 PRT_TEST_ASSESS_RUNNER_BACKEND="codex"
 PRT_TEST_RUNNER_MODE=clean
+if $prt_ar_ns; then
 rm -f "$PRT_TEST_RUNNER_LOG".*
 rc="$(run_orchestrator advisory 0 0 0 150)"
 assert_eq "advisory, file review, runner assess, no proxy URL: exits 0" "0" "$rc"
@@ -7363,6 +7385,7 @@ rc="$(run_orchestrator advisory 0 0 0 150)"
 assert_eq "assess runner, non-numeric PRT_ASSESS_RUNNER_SECONDS: no runner call, degraded as backend-config" \
   "0 0 true" "$rc $(prt_ar_calls) $(grep -qF '[backend-config]' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 PRT_TEST_ASSESS_RUNNER_SECONDS=""
+fi
 
 # ---- the process boundary (go-kure/.github#303 review, srgvg/claude-dotfiles#179)
 # The scrub keeps the token out of the runner's own environment, not out of an ancestor's
@@ -7388,6 +7411,9 @@ prt_ar_write_pids() {
   done
   printf '%s' "$out" > "$PRT_TEST_RUNNER_LOG.pids"
 }
+PRT_TEST_GH_TOKEN=sentinel-ancestor-token
+PRT_TEST_RUNNER_MODE=probe
+if $prt_ar_ns; then
 rm -f "$PRT_TEST_RUNNER_LOG".*
 prt_ar_write_pids
 PRT_GH_TOKEN=sentinel-ancestor-token PRT_TEST_RUNNER_LOG="$PRT_TEST_RUNNER_LOG" PRT_TEST_RUNNER_MODE=probe \
@@ -7427,7 +7453,6 @@ rm -f "$prt_ar_fdfile"
 
 # Lifetime: the proof that nothing of the runner's tree outlives the call is a heartbeat file that
 # stops advancing (prt_ar_hb_stopped, above).
-if prt_ar_pidns_ok; then
   PRT_TEST_RUNNER_MODE=heartbeat
   PRT_TEST_MODEL_BUDGET_SECONDS=12
   rm -f "$PRT_TEST_RUNNER_LOG".*
@@ -7464,6 +7489,7 @@ fi
 # A helper that ignores TERM and sits in a session of its own is reached by no process group of the
 # runner. Control: started directly, it outlives the stub that started it. Behind the default
 # boundary it must be gone after the call: the namespace dies with the runner.
+if $prt_ar_ns; then
 prt_ar_hb_advancing() {
   local a b
   a="$(cat "$PRT_TEST_RUNNER_LOG.hb" 2>/dev/null)"; sleep 0.5; b="$(cat "$PRT_TEST_RUNNER_LOG.hb" 2>/dev/null)"
@@ -7484,6 +7510,7 @@ assert_eq "assess runner, detached TERM-resistant helper, default boundary: the 
 sleep 0.5
 assert_eq "assess runner, detached TERM-resistant helper, default boundary: nothing of it is left running" "true" "$(prt_ar_hb_stopped)"
 PRT_TEST_RUNNER_MODE=probe
+fi
 
 # The check walks every ancestor, not only its own process. The probe it runs behind the prefix is
 # handed those pids (a prefix that logs its arguments shows which), and a prefix that hides only the
@@ -7494,7 +7521,7 @@ prt_ar_check() { # args: the boundary command words; prints the check's exit cod
     _prt_runner_boundary_build && _prt_runner_boundary_check > /dev/null 2>&1; echo $? )
 }
 # shellcheck disable=SC2016 # script text for the prefix, not an expansion
-printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "$PRT_TEST_RUNNER_LOG.probeargs"\nexec "$@"\n' > "$prt_ar_dir/boundary-log"
+printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "%s.probeargs"\nexec "$@"\n' "$PRT_TEST_RUNNER_LOG" > "$prt_ar_dir/boundary-log"
 chmod 755 "$prt_ar_dir/boundary-log"
 rm -f "$PRT_TEST_RUNNER_LOG".*
 prt_ar_check "$prt_ar_dir/boundary-log" > /dev/null
@@ -7517,13 +7544,21 @@ prt_ar_rc="$(PRT_BOUNDARY_CHECK_SECONDS=2 prt_ar_check "$prt_ar_dir/boundary-ter
 prt_ar_elapsed=$((SECONDS - prt_ar_t0))
 assert_eq "boundary check: a prefix that ignores TERM is refused, and the check ends within its deadline plus the kill grace" \
   "1 true" "$prt_ar_rc $([ "$prt_ar_elapsed" -lt 10 ] && echo true || echo false)"
-printf '#!/bin/sh\nsetsid sleep 15 &\nexec unshare --user --map-current-user --pid --fork --mount-proc --kill-child "$@"\n' > "$prt_ar_dir/boundary-hold-stdout"
+if $prt_ar_ns; then
+printf '#!/bin/sh\nsetsid sleep 15 &\nexec %s "$@"\n' "$(prt_ar_prod_prefix)" > "$prt_ar_dir/boundary-hold-stdout"
 chmod 755 "$prt_ar_dir/boundary-hold-stdout"
 prt_ar_t0=$SECONDS
 prt_ar_rc="$(PRT_BOUNDARY_CHECK_SECONDS=2 prt_ar_check "$prt_ar_dir/boundary-hold-stdout")"
 prt_ar_elapsed=$((SECONDS - prt_ar_t0))
 assert_eq "boundary check: a helper holding the probe's output does not hold the check; a prefix that does isolate is accepted" \
   "0 true" "$prt_ar_rc $([ "$prt_ar_elapsed" -lt 8 ] && echo true || echo false)"
+
+# A raw privileged prefix (root of a user namespace, every capability) is refused, with the
+# availability of the namespace proven by the control: the production prefix is accepted.
+assert_eq "boundary check, control: the production prefix is accepted" "0" "$(prt_ar_check "$(prt_ar_prod_prefix)")"
+assert_eq "boundary check: a raw prefix that maps root and keeps every capability is refused" \
+  "1" "$(prt_ar_check unshare --user --map-root-user --pid --fork --mount-proc --kill-child)"
+fi
 
 # Root. A runner with the capabilities of a user namespace's root could unmount the fresh /proc and
 # see the host's, so the boundary must also leave it no capability. A non-root test host cannot be
@@ -7581,13 +7616,43 @@ rm -f "$PRT_TEST_RUNNER_LOG".*
 rc="$(run_orchestrator advisory 0 0 0)"
 assert_eq "assess runner, boundary command that starts but hides no ancestor: no runner call, degraded as runner-boundary" \
   "0 0 true" "$rc $(prt_ar_calls) $(prt_ar_reason runner-boundary)"
-PRT_TEST_ASSESS_RUNNER_BOUNDARY_CMD="unshare --user --map-current-user --pid --fork --mount-proc --kill-child"
+if $prt_ar_ns; then
+# Positive cmd fixtures use the production prefix, which also leaves the runner no capability: a
+# raw prefix that isolates but keeps the namespace's root capabilities is refused (below).
+PRT_TEST_ASSESS_RUNNER_BOUNDARY_CMD="$(prt_ar_prod_prefix)"
 PRT_TEST_RUNNER_MODE=probe
 rm -f "$PRT_TEST_RUNNER_LOG".*
 prt_ar_write_pids
 rc="$(run_orchestrator advisory 0 0 0)"
 assert_eq "assess runner, boundary command that isolates: the call ran and the probe reaches no ancestor" \
   "0 1 0 0" "$rc $(prt_ar_calls) $(prt_ar_probe_env) $(prt_ar_probe_field 3)"
+PRT_TEST_ASSESS_RUNNER_BOUNDARY_CMD="unshare --user --map-root-user --pid --fork --mount-proc --kill-child"
+PRT_TEST_RUNNER_MODE=clean
+rm -f "$PRT_TEST_RUNNER_LOG".*
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "assess runner, raw privileged boundary command (maps root, keeps every capability): no runner call, degraded as runner-boundary" \
+  "0 0 true" "$rc $(prt_ar_calls) $(prt_ar_reason runner-boundary)"
+
+# A prefix that stays resident (it runs the rest as a child and waits) must not hold the posting
+# token: the prefix is started under `env -i`, so its own /proc/<pid>/environ has none. The control
+# runs the same wrapper directly with the token in its environment and it does see it.
+# shellcheck disable=SC2016 # script text for the prefix, not an expansion
+printf '#!/bin/sh\ntr "\\0" "\\n" < /proc/$$/environ | grep -c "^PRT_GH_TOKEN=" >> "%s"\n"$@"; rc=$?; exit $rc\n' "$prt_ar_dir/supervised" > "$prt_ar_dir/boundary-supervise"
+chmod 755 "$prt_ar_dir/boundary-supervise"
+rm -f "$prt_ar_dir/supervised"
+PRT_GH_TOKEN=sentinel-ancestor-token "$prt_ar_dir/boundary-supervise" true
+assert_eq "supervising boundary prefix, control (token in its environment): it sees the token" "1" "$(cat "$prt_ar_dir/supervised" 2>/dev/null)"
+rm -f "$prt_ar_dir/supervised"
+PRT_TEST_ASSESS_RUNNER_BOUNDARY_CMD="$prt_ar_dir/boundary-supervise $(prt_ar_prod_prefix)"
+PRT_TEST_RUNNER_MODE=clean
+rm -f "$PRT_TEST_RUNNER_LOG".*
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "assess runner, supervising boundary prefix: the call ran (preflight and launch both went through it)" \
+  "0 1 2" "$rc $(prt_ar_calls) $(wc -l < "$prt_ar_dir/supervised" 2> /dev/null || echo 0)"
+assert_eq "assess runner, supervising boundary prefix: its own environment never held the posting token" \
+  "0 0" "$(sed -n '1p' "$prt_ar_dir/supervised") $(sed -n '2p' "$prt_ar_dir/supervised")"
+rm -f "$prt_ar_dir/supervised"
+fi
 PRT_TEST_RUNNER_MODE=clean
 PRT_TEST_ASSESS_RUNNER_BOUNDARY_CMD="$prt_ar_dir/no-such-prefix"
 rm -f "$PRT_TEST_RUNNER_LOG".*
@@ -7600,14 +7665,39 @@ rc="$(run_orchestrator advisory 0 0 0)"
 assert_eq "assess runner, boundary command that exits non-zero: no runner call, degraded as runner-boundary" \
   "0 0 true" "$rc $(prt_ar_calls) $(prt_ar_reason runner-boundary)"
 # shellcheck disable=SC2016 # script text for the prefix, not an expansion
-printf '#!/bin/sh\ncase "$*" in *--backend*) : > "$PRT_TEST_RUNNER_LOG.prefixed" ;; esac\nexec "$@"\n' > "$prt_ar_dir/boundary-mark"
+printf '#!/bin/sh\ncase "$*" in *--backend*) : > "%s.prefixed" ;; esac\nexec "$@"\n' "$PRT_TEST_RUNNER_LOG" > "$prt_ar_dir/boundary-mark"
 chmod 755 "$prt_ar_dir/boundary-mark"
-PRT_TEST_ASSESS_RUNNER_BOUNDARY_CMD="$prt_ar_dir/boundary-mark unshare --user --map-current-user --pid --fork --mount-proc --kill-child"
+if $prt_ar_ns; then
+PRT_TEST_ASSESS_RUNNER_BOUNDARY_CMD="$prt_ar_dir/boundary-mark $(prt_ar_prod_prefix)"
 PRT_TEST_RUNNER_MODE=clean
 rm -f "$PRT_TEST_RUNNER_LOG".*
 rc="$(run_orchestrator advisory 0 0 0)"
 assert_eq "assess runner, boundary command: the runner is started through it" \
   "0 1 true" "$rc $(prt_ar_calls) $([ -e "$PRT_TEST_RUNNER_LOG.prefixed" ] && echo true || echo false)"
+fi
+
+# The run budget is read before the preflight, not after it: a call the deadline has no room for
+# must not first spend the preflight (a prefix that records being started shows whether it ran),
+# and the preflight is cut to what the budget leaves after the runner's own kill grace.
+printf '#!/bin/sh\n: > "%s"\nexec "$@"\n' "$prt_ar_dir/preflighted" > "$prt_ar_dir/boundary-spend"
+chmod 755 "$prt_ar_dir/boundary-spend"
+PRT_TEST_ASSESS_RUNNER_BOUNDARY_CMD="$prt_ar_dir/boundary-spend"
+rm -f "$PRT_TEST_RUNNER_LOG".* "$prt_ar_dir/preflighted"
+PRT_TEST_MODEL_BUDGET_SECONDS=4
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "assess runner, run budget spent: refused as deadline-exhausted before the boundary preflight ran" \
+  "0 0 true false" "$rc $(prt_ar_calls) $(prt_ar_reason deadline-exhausted) $([ -e "$prt_ar_dir/preflighted" ] && echo true || echo false)"
+printf '#!/bin/sh\nexec sleep 100\n' > "$prt_ar_dir/boundary-hang"
+chmod 755 "$prt_ar_dir/boundary-hang"
+PRT_TEST_ASSESS_RUNNER_BOUNDARY_CMD="$prt_ar_dir/boundary-hang"
+PRT_TEST_MODEL_BUDGET_SECONDS=14
+rm -f "$PRT_TEST_RUNNER_LOG".*
+prt_ar_t0=$SECONDS
+rc="$(PRT_MODEL_TIMEOUT_FLOOR=1 PRT_BOUNDARY_CHECK_SECONDS=30 run_orchestrator advisory 0 0 0)"
+prt_ar_elapsed=$((SECONDS - prt_ar_t0))
+assert_eq "assess runner, hanging boundary preflight with 14s of budget: cut short, ends inside the budget, degraded as runner-boundary" \
+  "0 0 true true" "$rc $(prt_ar_calls) $([ "$prt_ar_elapsed" -lt 14 ] && echo true || echo false) $(prt_ar_reason runner-boundary)"
+PRT_TEST_MODEL_BUDGET_SECONDS=""
 
 # Misconfiguration is caught at start, like the other runner settings.
 PRT_TEST_ASSESS_RUNNER_BOUNDARY_CMD=""
@@ -7647,9 +7737,11 @@ assert_eq "enforce with the runner assess: refused at start, before any call" \
   "1 0 0 0" "$rc $(cat "$PRT_TEST_MODEL_COUNTFILE") $(cat "$PRT_TEST_ASSESS_COUNTFILE") $(prt_ar_calls)"
 assert_eq "enforce with the runner assess: the error names the missing process boundary" \
   "true" "$(grep -qF 'PRT_ASSESS_BACKEND=runner is not allowed in enforce mode' "$PRT_TEST_STDERR_FILE" && grep -qF 'process boundary' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+if $prt_ar_ns; then
 rm -f "$PRT_TEST_RUNNER_LOG".*
 rc="$(run_orchestrator advisory 0 0 0 150)"
 assert_eq "advisory with the runner assess and a proxy URL: still runs" "0 2" "$rc $(prt_ar_calls)"
+fi
 PRT_TEST_PROXY_URL=""
 
 # And the assessment needs it when it stays on the proxy.
@@ -7662,9 +7754,8 @@ assert_eq "enforce, file review, proxy assess, no proxy URL: the error names PRT
 PRT_TEST_TWO_FILE_DIFF=0
 unset PRT_TEST_REVIEW_BACKEND PRT_TEST_FINDINGS_FILE PRT_TEST_PROXY_URL
 rm -rf "$prt_ar_ff"
-fi
 
-unset PRT_TEST_ASSESS_BACKEND PRT_TEST_ASSESS_RUNNERPRT_TEST_ASSESS_RUNNER_BACKEND PRT_TEST_RUNNER_MODE PRT_TEST_RUNNER_LOG \
+unset PRT_TEST_ASSESS_BACKEND PRT_TEST_ASSESS_RUNNER PRT_TEST_ASSESS_RUNNER_BACKEND PRT_TEST_RUNNER_MODE PRT_TEST_RUNNER_LOG \
   PRT_TEST_REVIEW_BASE_SHA PRT_TEST_REVIEW_MATERIAL_SHA256 PRT_TEST_RUNNER_PROV PRT_TEST_ASSESS_RUNNER_ENV \
   PRT_TEST_MODEL_BUDGET_SECONDS PRT_TEST_ASSESS_RUNNER_SECONDS \
   PRT_TEST_ASSESS_RUNNER_BOUNDARY PRT_TEST_ASSESS_RUNNER_BOUNDARY_CMD PRT_TEST_GH_TOKEN

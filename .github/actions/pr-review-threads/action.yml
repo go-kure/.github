@@ -87,6 +87,8 @@ inputs:
       to another user. Trusted workflow configuration, never PR content. It is
       held to the same check as "pidns": a command behind which the runner can
       still open an ancestor's environment, or holds a capability, is refused.
+      The check does not make an arbitrary command trustworthy. The command is
+      started with only PATH in its environment.
     required: false
     default: ""
   bot-login:
