@@ -591,6 +591,21 @@ not: invalid configuration, a prefix that isolates nothing, the check's deadline
 refusal. Setting `PRT_TEST_REQUIRE_NAMESPACE=1` turns that skip into a failure, so a lane that must
 run them cannot pass by skipping.
 
+**Acceptance run.** `scripts/pr-review-runner-boundary-probe.sh`, started by the manual workflow
+`PR Review Runner Boundary Probe` on the runner image the review job uses, shows whether the default
+boundary holds on that image. It uses a made-up canary in place of the posting token (placed in the
+script's own environment when it starts, where the token sits for the orchestrator) and a stub in
+place of the runner: no secret, no model call, no forge access, `/proc` reads only. The stub runs
+twice, both times behind the same environment scrub and descriptor closing: once through the
+production call (the default boundary, checked and bounded) and once with `env -i` only. Its report
+lists whether the canary is in any readable `/proc/<pid>/environ`, whether an ancestor's `environ` or
+`mem` can be opened (an ancestor is named by pid and start time), the descriptors above 2, the
+capability sets and whether a `procfs` can be mounted. The boundary must show none of them, and the
+run without it must show the canary: if it does not, the probe is blind and the result is void.
+Exit codes: 0 holds, 1 leaks, 2 the boundary cannot be established on that lane, 3 blind. It does
+not show the lifetime limit above, what else of the user's files the runner can read, or anything
+about a real runner or model key, and it says nothing about a later image.
+
 **Provenance.** A call that exits 0 is still refused unless its `provider.json` has format
 `review-run-v1`, `outcome` `completed`, and `identity.head`, `identity.base`,
 `identity.material_sha256` equal to the three variables above and `identity.input_sha256` equal to
