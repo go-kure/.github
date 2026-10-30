@@ -7357,6 +7357,40 @@ else
     "0 0 true" "$rc $(prt_ar_calls) $(prt_ar_reason runner-boundary)"
 fi
 
+# File descriptors survive `env -i` and a namespace: a secret the orchestrator holds open on any
+# descriptor above 2 would be readable to the runner. The probe reads descriptor 9. The control
+# starts the stub directly with 9 open, so a zero below cannot be a probe that sees nothing.
+prt_ar_probe_fd() { cut -d' ' -f2 "$PRT_TEST_RUNNER_LOG.probe" 2>/dev/null || echo missing; }
+prt_ar_fdfile="$(mktemp)"
+printf 'sentinel-fd-secret\n' > "$prt_ar_fdfile"
+rm -f "$PRT_TEST_RUNNER_LOG".*
+( exec 9< "$prt_ar_fdfile"
+  env -i PATH="$PATH" PRT_TEST_RUNNER_LOG="$PRT_TEST_RUNNER_LOG" PRT_TEST_RUNNER_MODE=probe \
+    "$prt_ar_dir/review-run" --out "$prt_ar_dir/fd-control-out" --root . --base x -- p < /dev/null > /dev/null 2>&1 )
+assert_eq "assess runner, fd control: a runner started directly with descriptor 9 open can read the secret" "1" "$(prt_ar_probe_fd)"
+rm -rf "$prt_ar_dir/fd-control-out"
+PRT_TEST_ASSESS_RUNNER_BOUNDARY=cmd
+PRT_TEST_ASSESS_RUNNER_BOUNDARY_CMD="$prt_ar_dir/boundary-pass"
+rm -f "$PRT_TEST_RUNNER_LOG".*
+exec 9< "$prt_ar_fdfile"
+rc="$(run_orchestrator advisory 0 0 0)"
+exec 9<&-
+assert_eq "assess runner, descriptor 9 open in the orchestrator, pass-through boundary: the runner cannot read it" \
+  "0 1 0" "$rc $(prt_ar_calls) $(prt_ar_probe_fd)"
+if prt_ar_pidns_ok; then
+  PRT_TEST_ASSESS_RUNNER_BOUNDARY=""
+  PRT_TEST_ASSESS_RUNNER_BOUNDARY_CMD=""
+  rm -f "$PRT_TEST_RUNNER_LOG".*
+  exec 9< "$prt_ar_fdfile"
+  rc="$(run_orchestrator advisory 0 0 0)"
+  exec 9<&-
+  assert_eq "assess runner, descriptor 9 open in the orchestrator, default boundary: the runner cannot read it" \
+    "0 1 0" "$rc $(prt_ar_calls) $(prt_ar_probe_fd)"
+fi
+rm -f "$prt_ar_fdfile"
+PRT_TEST_ASSESS_RUNNER_BOUNDARY=""
+PRT_TEST_ASSESS_RUNNER_BOUNDARY_CMD=""
+
 # A boundary that cannot be established refuses the call and keeps the finding unverdicted
 # (REVIEW_DEGRADED, still gating); it never falls back to running the runner unbounded.
 prt_ar_fake="$(mktemp -d)"
