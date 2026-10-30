@@ -488,7 +488,7 @@ Inputs, all from the environment:
 | `PRT_ASSESS_RUNNER_BACKEND` | The runner's `--backend` value (action input `assess-runner-backend`). Required; its absence is refused at start. |
 | `PRT_ASSESS_RUNNER` | The runner executable (default `review-run`, found on `PATH`). |
 | `PRT_ASSESS_RUNNER_ROOT` | The checkout it reads (default: the working directory). |
-| `PRT_ASSESS_RUNNER_SECONDS` | Its deadline per call (default 600), clamped to what is left of the run's model deadline (`PRT_MODEL_DEADLINE_EPOCH`, the same one the proxy calls use). A call is refused as `deadline-exhausted` when less than the 30-second floor remains. Must be a whole number of seconds. It bounds the runner's own timed run; a separate outer bound covers the whole process tree (see "Outer time bound"). |
+| `PRT_ASSESS_RUNNER_SECONDS` | Its deadline per call (default 600), clamped to what is left of the run's model deadline (`PRT_MODEL_DEADLINE_EPOCH`, the same one the proxy calls use). A call is refused as `deadline-exhausted` when less than the 30-second floor remains. Must be a whole number of seconds, at most nine digits and read as decimal (`060` is 60). It bounds the runner's own timed run; a separate outer bound covers the whole process tree (see "Outer time bound"). |
 | `PRT_ASSESS_RUNNER_ENV` | Variable names the runner may inherit, separated by any whitespace, newlines included (action input `assess-runner-env`), typically the metered model key. Every listed name must be set in the step, or the run fails at start naming it. |
 | `PRT_HEAD_SHA`, `PRT_REVIEW_BASE_SHA`, `PRT_REVIEW_MATERIAL_SHA256` | The identity the runner's record must carry; the last two are defined under "Review from a findings file". All required: a missing one fails the run at start. |
 
@@ -517,9 +517,11 @@ the base and digest out of the record into the environment binds nothing.
 `PRT_ASSESS_RUNNER_SECONDS` alone does not bound the call. The orchestrator runs the whole runner
 under `timeout`, which signals the runner's process group: the limit is the call's seconds (as
 clamped to the run) plus 30 for the snapshots, never beyond the run's model deadline less a 5-second margin, and a
-process that ignores the first signal is killed 5 seconds later. A hit is `runner-timeout`. A
-descendant that leaves the process group (for example with `setsid`) is not reached; only a process
-boundary closes that.
+process that ignores the first signal is killed 5 seconds later. A call is refused as
+`deadline-exhausted` when less than 6 seconds of the deadline remain at launch, because the margin
+would not fit. A hit is `runner-timeout`. When the call ends, whatever its exit, the whole process
+group is killed, so a child that ignored the signal does not outlive it. A descendant that leaves
+the process group (for example with `setsid`) is not reached; only a process boundary closes that.
 
 **Failures degrade, never abort.** Each ends as an assessment transport failure
 (`REVIEW_DEGRADED`, findings keep `verdict: null` and still gate, as `reconcile.sh` counts a null
