@@ -491,6 +491,7 @@ Inputs, all from the environment:
 | `PRT_ASSESS_RUNNER_SECONDS` | Its deadline per call (default 600), clamped to what is left of the run's model deadline (`PRT_MODEL_DEADLINE_EPOCH`, the same one the proxy calls use). A call is refused as `deadline-exhausted` when less than the 30-second floor remains. Must be a whole number of seconds, at most nine digits and read as decimal (`060` is 60). It bounds the runner's own timed run; a separate outer bound covers the whole process tree (see "Outer time bound"). |
 | `PRT_ASSESS_RUNNER_ENV` | Variable names the runner may inherit, separated by any whitespace, newlines included (action input `assess-runner-env`), typically the metered model key. Every listed name must be set in the step, or the run fails at start naming it. |
 | `PRT_ASSESS_RUNNER_BOUNDARY`, `PRT_ASSESS_RUNNER_BOUNDARY_CMD` | The process boundary (action inputs `assess-runner-boundary`, `assess-runner-boundary-cmd`): `pidns` (the default, also when empty) or `cmd` with the command words in the second variable. Any other value, or `cmd` with no words, is refused at start. See "Process boundary". |
+| `PRT_BOUNDARY_CHECK_SECONDS` | The most seconds the boundary's check may run before each call (default 10), further cut to what the run's model deadline leaves after the runner's own time. A check that does not finish is a failed check: the call is refused as `runner-boundary`. |
 | `PRT_HEAD_SHA`, `PRT_REVIEW_BASE_SHA`, `PRT_REVIEW_MATERIAL_SHA256` | The identity the runner's record must carry; the last two are defined under "Review from a findings file". All required: a missing one fails the run at start. |
 
 **The request.** System and user text are written to a temporary file and reach the runner on
@@ -584,7 +585,8 @@ under `timeout`, which signals the runner's process group: the limit is the call
 clamped to the run) plus 30 for the snapshots, never beyond the run's model deadline less a 5-second margin, and a
 process that ignores the first signal is killed 5 seconds later. A call is refused as
 `deadline-exhausted` when less than 6 seconds of the deadline remain at launch, because the margin
-would not fit. A hit is `runner-timeout`. When the call ends, whatever its exit, the whole process
+would not fit; so is a call made when the clock cannot be read as a whole number, since the time left
+cannot then be known. A hit is `runner-timeout`. When the call ends, whatever its exit, the whole process
 group is killed, so a child that ignored the signal does not outlive it. A descendant that leaves
 the process group (for example with `setsid`) is not reached by the group signal; the default
 `pidns` boundary closes that, since ending the namespace's first process ends every member (a `cmd`

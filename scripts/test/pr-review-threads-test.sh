@@ -7165,6 +7165,38 @@ assert_eq "assess runner failed cleanup after a good answer: the verdicts are us
   "true" "$(grep -qE 'coverage: [0-9]+/[0-9]+ chunks review\+assess ok' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 assert_eq "assess runner failed cleanup after a good answer: no runner failure reason" \
   "false" "$(grep -qE '\[(runner-[a-z]+|provenance-mismatch|local-tempdir)\]' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+
+# The clock is a trust input of the deadline: a failed `date` is not "0", which would make the time
+# left the whole epoch and let the floor and the kill-grace refusals pass. The call is refused as
+# deadline-exhausted, whichever of its three reads of the clock fails, and the runner is not started.
+prt_ar_clock_case() { # nth-read-that-fails
+  rm -f "$PRT_TEST_RUNNER_LOG".* "$prt_ar_dir/date-count"
+  rc="$(
+    # Defined from a string so that the other date calls in this file are not read as calls of this
+    # shim; the orchestrator invokes it. It counts the clock reads made inside the runner call only.
+    eval 'date() {
+      case " ${FUNCNAME[*]} " in
+        *" _prt_call_runner "*)
+          local n=0
+          [ ! -f "$PRT_TEST_DATE_COUNT" ] || n="$(command cat "$PRT_TEST_DATE_COUNT")"
+          n=$((n + 1))
+          printf "%s" "$n" > "$PRT_TEST_DATE_COUNT"
+          if [ "$n" = "$PRT_TEST_DATE_FAIL" ]; then return 1; fi
+          ;;
+      esac
+      command date "$@"
+    }'
+    export -f date
+    export PRT_TEST_DATE_COUNT="$prt_ar_dir/date-count" PRT_TEST_DATE_FAIL="$1"
+    run_orchestrator advisory 0 0 0
+  )"
+  assert_eq "assess runner clock read $1 fails: exits 0 (degraded, not fatal), runner not started" "0 0" "$rc $(prt_ar_calls)"
+  assert_eq "assess runner clock read $1 fails: refused as deadline-exhausted" \
+    "true" "$(grep -qF '[deadline-exhausted]' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+}
+prt_ar_clock_case 1
+prt_ar_clock_case 2
+prt_ar_clock_case 3
 # The stub above copies the caller's identity into its record, so it cannot catch a wrong root, a
 # base the checkout lacks or a merge-commit checkout. This one derives the identity from a real
 # repository, as the runner does, and the expected values below are derived apart from it: the head
@@ -7812,9 +7844,9 @@ assert_eq "advisory, proxy review, runner assess, no proxy URL: fails closed on 
 assert_eq "advisory, proxy review, runner assess, no proxy URL: the error names PRT_PROXY_URL" \
   "true" "$(grep -qF 'PRT_PROXY_URL is required' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 
-# The runner has no process boundary yet (it runs with no sandbox, as the same
-# user as the orchestrator), so enforce refuses it at start, whatever else is
-# configured: it cannot be switched on by accident before the boundary exists.
+# Every runner call runs behind a process boundary that is checked first, but that boundary has not
+# been shown to hold on the runner image (the manual probe, go-kure/.github#308), so enforce refuses
+# the runner assess at start, whatever else is configured.
 rm -f "$PRT_TEST_RUNNER_LOG".*
 PRT_TEST_REVIEW_BACKEND="file"
 PRT_TEST_PROXY_URL="http://proxy.invalid"
