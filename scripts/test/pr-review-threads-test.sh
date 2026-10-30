@@ -259,6 +259,31 @@ joined="$(prt_join_assessment "$findings_with_fp" "$plain_fp" 2>/dev/null)"
 assert_eq "join: a FALSE_POSITIVE with its own reasoning is kept" \
   "FALSE_POSITIVE" "$(jq -r '.[] | select(.fp=="aaaa") | .verdict' <<< "$joined")"
 
+# A contradiction must not hide behind the outside-chunk filter: two rows for
+# one fp are dropped as a pair, whatever either says, so the ordinary verdict
+# cannot be accepted on its own once its outside-chunk twin has been filtered.
+outside_dup_fp='{"assessments":[{"fp":"aaaa","verdict":"FALSE_POSITIVE","reasoning":"depends on code outside this chunk: the caller is in y.go"},{"fp":"aaaa","verdict":"FALSE_POSITIVE","reasoning":"The guard on line 3 makes this unreachable"}]}'
+joined="$(prt_join_assessment "$findings_with_fp" "$outside_dup_fp" 2>/dev/null)"
+assert_eq "join: {outside-chunk FALSE_POSITIVE, ordinary FALSE_POSITIVE} for one fp leaves it unverdicted" \
+  "null" "$(jq -r '.[] | select(.fp=="aaaa") | .verdict' <<< "$joined")"
+outside_dup_valid='{"assessments":[{"fp":"aaaa","verdict":"VALID","reasoning":"the diff shows the bug"},{"fp":"aaaa","verdict":"FALSE_POSITIVE","reasoning":"depends on code not shown in this chunk"}]}'
+joined="$(prt_join_assessment "$findings_with_fp" "$outside_dup_valid" 2>/dev/null)"
+assert_eq "join: {VALID, outside-chunk FALSE_POSITIVE} for one fp leaves it unverdicted" \
+  "null" "$(jq -r '.[] | select(.fp=="aaaa") | .verdict' <<< "$joined")"
+assert_eq "join: both findings are kept after the contradiction" "2" "$(jq 'length' <<< "$joined")"
+
+# A local failure in any step of the join is not an unverdicted success: the
+# join returns 2 with no output, so the caller can fail closed. Each step is
+# failed in turn by shadowing jq for the one program that names it.
+for join_step in '[.[].fp]' 'index($f)' 'group_by(.fp)' '$matched_fps'; do
+  jq() { case "$*" in *"$join_step"*) return 5 ;; esac; command jq "$@"; }
+  join_out="$(prt_join_assessment "$findings_with_fp" "$one_verdict" 2>/dev/null)"
+  join_rc=$?
+  unset -f jq
+  assert_eq "join: a local failure in the step using '$join_step' returns 2" "2" "$join_rc"
+  assert_eq "join: a local failure in the step using '$join_step' prints no findings" "" "$join_out"
+done
+
 # Verdicts whose reasoning together outgrow one kernel argument (128 KiB) are
 # still joined: the verdict rows travel over stdin, not as a jq argument.
 join_big_reasoning="$(head -c 70000 /dev/zero | tr '\0' 'r')"
@@ -2365,6 +2390,13 @@ _prt_test_recheck_response() {
 export -f _prt_test_paged_threads_response _prt_test_paginated_comments_response \
   _prt_test_malformed_threads_response _prt_test_recheck_response
 
+# _prt_test_payload_ok DATA — true when DATA is a JSON object whose `.body` is
+# a non-empty string: the only shape a comment write may carry. An empty or
+# truncated payload must fail the request, never read as a delivered comment.
+_prt_test_payload_ok() {
+  jq -e '(.body | type) == "string" and (.body | length) > 0' <<< "$1" > /dev/null 2>&1
+}
+
 fake_curl_orchestrator() {
   local args=("$@") out="" accept="" url="" method="" data="" h req_body=""
   local i n=${#args[@]}
@@ -2373,6 +2405,8 @@ fake_curl_orchestrator() {
       -o) out="${args[$((i + 1))]}" ;;
       -X) method="${args[$((i + 1))]}" ;;
       -d) data="${args[$((i + 1))]}" ;;
+      # prt_gh_rest sends its payload over stdin (`--data-binary @-`).
+      --data-binary) [ "${args[$((i + 1))]}" = "@-" ] && data="$(cat)" ;;
       -H)
         h="${args[$((i + 1))]}"
         case "$h" in
@@ -2783,6 +2817,10 @@ fake_curl_orchestrator() {
       esac
       ;;
     */issues/*/comments)
+      if ! _prt_test_payload_ok "$data"; then
+        echo "mock: rejected an empty or non-JSON comment payload for $method $url" >&2
+        : > "$out"; echo 422; return 0
+      fi
       _prt_test_bump "${PRT_TEST_ISSUE_COMMENT_COUNTFILE:?}" >/dev/null
       # Capture the posted body verbatim when a caller wants to assert on its
       # rendered content (e.g. the advisory-comment degraded-banner test
@@ -2988,6 +3026,11 @@ fake_curl_orchestrator() {
       if [ "$method" = POST ]; then
         case "$url" in
           */pulls/*/comments)
+            # A comment write must carry a JSON object with a non-empty string body.
+            if ! _prt_test_payload_ok "$data"; then
+              echo "mock: rejected an empty or non-JSON comment payload for POST $url" >&2
+              : > "$out"; echo 422; return 0
+            fi
             case "$data" in
               *in_reply_to*)
                 # PRT_TEST_REPLY_FAIL=1 answers every reply POST 500, uncounted.
@@ -3073,7 +3116,7 @@ _prt_test_bump() {
   echo "$c" > "$f"
   echo "$c"
 }
-export -f fake_curl_orchestrator _prt_test_bump
+export -f fake_curl_orchestrator _prt_test_bump _prt_test_payload_ok
 
 # run_orchestrator MODE DIFF_FAIL_TIMES META_FAIL_TIMES MODEL_ALWAYS_FAIL [MAX_DIFF_CHARS] —
 # prints the subprocess exit code; countfiles are left behind in the paths
@@ -5953,15 +5996,89 @@ PRT_TEST_REVIEW_BACKEND="file"
 PRT_TEST_FINDINGS_FILE="$prt_fo_dir/findings.json"
 PRT_TEST_REVIEW_BASE_SHA="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 PRT_TEST_REVIEW_MATERIAL_SHA256="cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+PRT_TEST_CREATE_BODY_LOG="$(mktemp)"
+PRT_TEST_ISSUE_COMMENT_BODY_FILE="$(mktemp)"
 rc="$(run_orchestrator enforce 0 0 0)"
 assert_eq "file backend, orchestrator: 6 findings over the argv limit still finish the run -> exits 0" "0" "$rc"
 assert_eq "file backend, orchestrator: all 6 findings reach the report (none lost to an oversized argument)" \
   "true" "$(grep -qF 'done: findings=6 ' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 assert_eq "file backend, orchestrator: the chunk is logged with all 6 findings" \
   "true" "$(grep -qF 'review ok (6 findings)' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+# The delivered payloads, not just the run's own log, must carry every finding:
+# five become threads, the sixth is in the overflow comment. A zero-length or
+# truncated payload (the mock now refuses those) cannot satisfy this.
+assert_eq "file backend, orchestrator: every one of the 6 findings is in a delivered comment payload" \
+  "6" "$(cat "$PRT_TEST_CREATE_BODY_LOG" "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" | grep -o 'many-findings-[0-9]' | sort -u | wc -l | tr -d ' ')"
+assert_eq "file backend, orchestrator: the delivered payloads hold all the finding text (>= 6 x 24000 bytes)" \
+  "true" "$([ "$(cat "$PRT_TEST_CREATE_BODY_LOG" "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" | wc -c)" -ge 144000 ] && echo true || echo false)"
+assert_eq "file backend, orchestrator: the mock refused no comment payload" \
+  "false" "$(grep -qF 'mock: rejected' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+rm -f "$PRT_TEST_CREATE_BODY_LOG" "$PRT_TEST_ISSUE_COMMENT_BODY_FILE"
+unset PRT_TEST_CREATE_BODY_LOG PRT_TEST_ISSUE_COMMENT_BODY_FILE
 unset PRT_TEST_REVIEW_BACKEND PRT_TEST_FINDINGS_FILE PRT_TEST_REVIEW_BASE_SHA PRT_TEST_REVIEW_MATERIAL_SHA256
 rm -rf "$prt_fo_dir"
 # (end of the many-findings case)
+
+# A comment body of multi-byte characters can pass the kernel's 128 KiB limit
+# on one argument while staying under GitHub's 65,536-character cap: 50,000
+# three-byte characters are 150,000 bytes. Such a body must reach the thread
+# intact, not be lost to a payload that failed to build.
+prt_fo_dir="$(mktemp -d)"
+jq -n '{format:"review-findings-v1", findings:[{file:"x.go", line:1, severity:"high", category:"logic-error", issue:("multibyte-marker " + ("漢" * 50000)), fix:"fix", klass:"blocking", claim:"cm"}]}' \
+  > "$prt_fo_dir/findings.json"
+jq -n '{format:"review-run-v1", outcome:"completed", backend:"x", identity:{root:"/r", head:"1111111111111111111111111111111111111111", base:"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", material_sha256:"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", input_sha256:"d", add_dirs:[]}}' \
+  > "$prt_fo_dir/provider.json"
+PRT_TEST_REVIEW_BACKEND="file"
+PRT_TEST_FINDINGS_FILE="$prt_fo_dir/findings.json"
+PRT_TEST_REVIEW_BASE_SHA="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+PRT_TEST_REVIEW_MATERIAL_SHA256="cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+PRT_TEST_CREATE_BODY_LOG="$(mktemp)"
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "multi-byte body over the argv limit: the run exits 0" "0" "$rc"
+assert_eq "multi-byte body over the argv limit: the thread payload carries the finding" \
+  "true" "$(grep -qF 'multibyte-marker' "$PRT_TEST_CREATE_BODY_LOG" && echo true || echo false)"
+assert_eq "multi-byte body over the argv limit: all 50,000 characters are delivered" \
+  "true" "$([ "$(LC_ALL=C.UTF-8 wc -m < "$PRT_TEST_CREATE_BODY_LOG")" -ge 50000 ] && echo true || echo false)"
+assert_eq "multi-byte body over the argv limit: the mock refused no comment payload" \
+  "false" "$(grep -qF 'mock: rejected' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+rm -f "$PRT_TEST_CREATE_BODY_LOG"
+unset PRT_TEST_CREATE_BODY_LOG PRT_TEST_REVIEW_BACKEND PRT_TEST_FINDINGS_FILE PRT_TEST_REVIEW_BASE_SHA PRT_TEST_REVIEW_MATERIAL_SHA256
+rm -rf "$prt_fo_dir"
+# (end of the multi-byte body case)
+
+# A local failure while joining the verdicts must fail the run closed: the
+# findings are not reported as an unverdicted success, REVIEW_INCOMPLETE is
+# raised and no full-coverage line is logged. The failure is injected by a jq
+# on PATH that fails for the join's duplicate-fp program only.
+prt_fo_dir="$(mktemp -d)"
+cat > "$prt_fo_dir/findings.json" <<'FOFINDINGS'
+{"format":"review-findings-v1","findings":[
+ {"file":"x.go","line":1,"severity":"high","category":"logic-error","issue":"issue-for-x","fix":"fix-x","klass":"blocking","claim":"cx"}
+]}
+FOFINDINGS
+jq -n '{format:"review-run-v1", outcome:"completed", backend:"x", identity:{root:"/r", head:"1111111111111111111111111111111111111111", base:"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", material_sha256:"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", input_sha256:"d", add_dirs:[]}}' \
+  > "$prt_fo_dir/provider.json"
+mkdir "$prt_fo_dir/bin"
+prt_fo_real_jq="$(command -v jq)"
+printf '%s\n' '#!/bin/bash' \
+  "case \"\$*\" in *'group_by(.fp)'*) exit 5 ;; esac" \
+  "exec \"$prt_fo_real_jq\" \"\$@\"" > "$prt_fo_dir/bin/jq"
+chmod +x "$prt_fo_dir/bin/jq"
+PRT_TEST_REVIEW_BACKEND="file"
+PRT_TEST_FINDINGS_FILE="$prt_fo_dir/findings.json"
+PRT_TEST_REVIEW_BASE_SHA="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+PRT_TEST_REVIEW_MATERIAL_SHA256="cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+rc="$(PATH="$prt_fo_dir/bin:$PATH" run_orchestrator enforce 0 0 0)"
+assert_eq "join fault injected: the run fails closed -> exits 1" "1" "$rc"
+assert_eq "join fault injected: the failing step is the join's verdict check" \
+  "true" "$(grep -qF 'prt_join_assessment: local fault checking the verdicts' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "join fault injected: REVIEW_INCOMPLETE is raised" \
+  "true" "$(grep -qF 'REVIEW_INCOMPLETE:' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "join fault injected: no full-coverage line is logged" \
+  "false" "$(grep -qF 'coverage:' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+unset PRT_TEST_REVIEW_BACKEND PRT_TEST_FINDINGS_FILE PRT_TEST_REVIEW_BASE_SHA PRT_TEST_REVIEW_MATERIAL_SHA256
+rm -rf "$prt_fo_dir"
+# (end of the join fault case)
 
 # A finding the file-backend review assigned to one chunk can rest on code in
 # another chunk (here x.go's caller is in y.go). The assessor sees only its own

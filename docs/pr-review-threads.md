@@ -621,7 +621,9 @@ assessments, not to call it `FALSE_POSITIVE`. As a backstop, `prt_join_assessmen
 code not shown in this chunk" (the first is the wording an earlier prompt asked for), and names the
 count on stderr. The finding keeps
 `verdict: null`, stays open and gating, is never suppressed, and an existing thread it matches is never
-resolved on that verdict.
+resolved on that verdict. The duplicate check runs first: two rows for one finding are a contradiction
+whatever their wording, so `{outside-chunk FALSE_POSITIVE, VALID}` leaves that finding unverdicted
+rather than keeping the `VALID`; only a row that stands alone is dropped by the backstop.
 
 **A local fault while assembling findings fails closed (go-kure/.github#299).** The findings of a
 whole run can outgrow one command-line argument (131072 bytes), so the orchestrator joins and selects
@@ -632,6 +634,22 @@ assessed findings could not be assembled`), the affected chunk is not counted as
 `coverage:` line is not printed. A final count check marks the run incomplete when the assessed findings
 are fewer than the reviewed ones. Before this, a failed append emptied the accumulator and a large review
 read as a clean one.
+
+The join of the verdicts follows the same rule. `prt_join_assessment` returns 0 when it joined, 1 when
+the response's `.assessments` is unusable (the findings are echoed unverdicted and the chunk is
+`REVIEW_DEGRADED`), and 2 when one of its own `jq` steps failed. Status 2 prints no findings. The
+orchestrator treats it like any other assembly fault: `REVIEW_INCOMPLETE` (`the assessed findings could
+not be assembled`), the chunk is not counted as reviewed and no `coverage:` line is printed. It never
+reads the empty output as a join. The evaluation adapter, which has no run to fail, marks the chunk
+degraded and keeps the unverdicted findings it already holds. A finding of multi-byte text can pass the 131072-byte argument cap on its own
+(50,000 three-byte characters are 150,000 bytes while GitHub's limit is 65,536 characters), so findings
+are appended to the accumulators over stdin, never as `--argjson`.
+
+Comment payloads follow the same bound. The body goes to `jq` over stdin (`prt_json_body_payload`) and
+the payload reaches `curl` as `--data-binary @-`, never as a `-d` value. `prt_gh_rest` refuses a `POST`,
+`PATCH` or `PUT` with an empty payload before any call: a payload that failed to build is a local
+fault, not a request to send. The test mock refuses an empty or non-JSON comment payload the same way,
+and the large-body tests assert the payload the mock received, not only the run's exit status.
 
 Both are covered by the unit suite, including an explicit assertion that neither `prt_response_class`
 nor `prt_response_shape` ever echoes any part of the response, and that every emitted class is a

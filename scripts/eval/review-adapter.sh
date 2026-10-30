@@ -290,8 +290,15 @@ for chunk_file in "$chunk_dir"/chunk-*.diff; do
                     || prt_mark_degraded "chunk $chunk_idx: unparseable assess response after retry"
             else
                 # prt_join_assessment returns the findings unchanged (rc 1) on a bad
-                # `.assessments` shape, so its output is usable either way.
-                chunk_findings=$(prt_join_assessment "$chunk_findings" "$assess_json") || true
+                # `.assessments` shape, so its output is usable either way. rc 2 is a
+                # local fault with no output: keep the unverdicted findings and say so.
+                joined_findings=$(prt_join_assessment "$chunk_findings" "$assess_json")
+                join_rc=$?
+                if [ "$join_rc" -eq 2 ]; then
+                    prt_mark_degraded "chunk $chunk_idx: local fault joining the verdicts; findings stay unverdicted"
+                else
+                    chunk_findings=$joined_findings
+                fi
             fi
         fi
     fi
