@@ -18,7 +18,7 @@
 # (backend-config, local-tempdir, payload-build, findings-file-missing,
 # findings-file-malformed, provenance-mismatch; PRT_REVIEW_BACKEND=file) or
 # _prt_call_runner produced (backend-config, local-tempdir, deadline-exhausted,
-# runner-incomplete, runner-quota, runner-launch, runner-usage, runner-failed,
+# runner-incomplete, runner-quota, runner-launch, runner-usage, runner-timeout, runner-failed,
 # runner-no-output, runner-empty, provenance-mismatch; PRT_ASSESS_BACKEND=runner). Read by callers in
 # pr-review-threads.sh to annotate a bare "exit 1" with which of several
 # unrelated causes actually fired — same cross-file pattern as
@@ -718,7 +718,8 @@ ${chunk_diff}
 # Every refusal returns 1 with a closed-vocabulary reason in the failure file:
 # backend-config (an input this mode needs is not set), local-tempdir,
 # runner-incomplete (review-run exit 2), runner-quota (3), runner-launch (4),
-# runner-usage (64, includes an input over its ceiling), runner-failed (any other
+# runner-usage (64, includes an input over its ceiling), runner-timeout (the outer
+# bound on the whole process tree fired; see the call below), runner-failed (any other
 # non-zero exit), runner-no-output (it exited 0 and left no review.md),
 # runner-empty (review.md holds nothing), provenance-mismatch (provider.json
 # does not tie the answer to this head, base, material and request),
@@ -809,7 +810,24 @@ _prt_call_runner() {
     return 1
   fi
   out="$tmp/out"
-  env -i "${PRT_RUNNER_ENV_ARGS[@]}" \
+  # --seconds bounds only the runner's timed backend run: it also snapshots the
+  # checkout before and after, so slow filesystem work can outlast it and eat the
+  # time reserved for posting. This outer bound covers the whole process tree
+  # (`timeout` runs it in its own process group and signals the group), gives the
+  # runner 30 s beyond --seconds for that work, and never reaches past the run
+  # deadline: the KILL follows 5 s after the TERM, so the TERM leaves that margin.
+  local outer
+  now="$(date +%s)"
+  budget_left=$(( ${PRT_MODEL_DEADLINE_EPOCH:-$((now + 300))} - now ))
+  outer=$(( seconds + 30 ))
+  if [ "$outer" -gt $(( budget_left - 5 )) ]; then
+    outer=$(( budget_left - 5 ))
+  fi
+  # timeout 0 means no limit.
+  if [ "$outer" -lt 1 ]; then
+    outer=1
+  fi
+  timeout --kill-after=5 "$outer" env -i "${PRT_RUNNER_ENV_ARGS[@]}" \
     "$runner" --backend "$backend" --root "$root" --base "$PRT_REVIEW_BASE_SHA" \
     --seconds "$seconds" --sandbox none --out "$out" \
     -- "Perform the assessment described on the standard input. Answer with only the JSON object it asks for." \
@@ -821,6 +839,7 @@ _prt_call_runner() {
       3) _prt_set_model_failure "runner-quota" ;;
       4) _prt_set_model_failure "runner-launch" ;;
       64) _prt_set_model_failure "runner-usage" ;;
+      124|137) _prt_set_model_failure "runner-timeout" ;;
       *) _prt_set_model_failure "runner-failed" ;;
     esac
     return 1

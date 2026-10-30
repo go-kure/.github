@@ -3490,7 +3490,8 @@ run_orchestrator() {
     PRT_ASSESS_RUNNER_SECONDS="${PRT_TEST_ASSESS_RUNNER_SECONDS:-}" \
     PRT_MAX_DIFF_CHARS="$max_diff_chars" \
     PRT_GH_TOKEN="${PRT_TEST_GH_TOKEN:-x}" PRT_REPO=owner/repo PRT_PR_NUMBER=1 \
-    PRT_HEAD_SHA=1111111111111111111111111111111111111111 \
+    PRT_ASSESS_RUNNER_ROOT="${PRT_TEST_ASSESS_RUNNER_ROOT:-}" \
+    PRT_HEAD_SHA="${PRT_TEST_HEAD_SHA:-1111111111111111111111111111111111111111}" \
     PRT_BOT_LOGIN="test-bot[bot]" PRT_PROXY_URL="${PRT_TEST_PROXY_URL-http://proxy.invalid}" \
     PRT_ASSESS_ENABLED="${PRT_TEST_ASSESS_ENABLED:-}" \
     PRT_MODE="$mode" GITHUB_STEP_SUMMARY="$summary" \
@@ -6573,8 +6574,10 @@ out=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --out) out="$2"; shift 2 ;;
+    --root) root="$2"; shift 2 ;;
+    --base) base_arg="$2"; shift 2 ;;
     --) shift; break ;;
-    --backend|--root|--base|--seconds|--sandbox|--effort|--add-dir) shift 2 ;;
+    --backend|--seconds|--sandbox|--effort|--add-dir) shift 2 ;;
     *) shift ;;
   esac
 done
@@ -6585,10 +6588,17 @@ printf '%s\n' "${args[@]}" > "$log.argv.$n"
 printf '%s' "$req" > "$log.stdin.$n"
 env > "$log.env.$n"
 mode="${PRT_TEST_RUNNER_MODE:-clean}"
+# PROV=git: like the real runner, take the identity from the checkout it is pointed at, not from the
+# caller's variables. A base the checkout does not hold is a failure before any answer.
+if [ "${PRT_TEST_RUNNER_PROV:-}" = git ]; then
+  git -C "$root" rev-parse --verify --quiet "${base_arg}^{commit}" > /dev/null || exit 1
+fi
 # The real runner refuses an output directory that already holds a result.
 if [ -e "$out/review.md" ] || { [ -d "$out" ] && [ -n "$(ls -A "$out")" ]; }; then exit 64; fi
 case "$mode" in
   exit[0-9]*) exit "${mode#exit}" ;;
+  # Outlives any limit, with a child of its own that must go with it.
+  hang) sleep 300 & echo "$!" > "$log.child"; sleep 300; exit 0 ;;
   garbage_then_exit4) if [ "$n" -ge 2 ]; then exit 4; fi; mode=garbage ;;
   garbage_then_clean) if [ "$n" -ge 2 ]; then mode=clean; else mode=garbage; fi ;;
 esac
@@ -6617,6 +6627,14 @@ case "${PRT_TEST_RUNNER_PROV:-}" in
   input) in_sha=0000000000000000000000000000000000000000000000000000000000000000 ;;
   format) p_format=review-run-v0 ;;
   outcome) p_outcome=incomplete ;;
+  git)
+    p_head="$(git -C "$root" rev-parse HEAD)"
+    p_base="$(git -C "$root" rev-parse --verify "${base_arg}^{commit}")"
+    p_mat="$(git -C "$root" -c core.quotePath=false -c diff.suppressBlankEmpty=false diff \
+      --no-color --no-ext-diff --no-textconv --no-renames --full-index --binary \
+      --src-prefix=a/ --dst-prefix=b/ --unified=3 --inter-hunk-context=0 --diff-algorithm=myers \
+      --indent-heuristic --no-relative --submodule=short --ignore-submodules=none -O/dev/null \
+      "$p_base" "$p_head" -- | sha256sum | cut -d' ' -f1)" ;;
 esac
 if [ "${PRT_TEST_RUNNER_PROV:-}" = missing ]; then exit 0; fi
 if [ "${PRT_TEST_RUNNER_PROV:-}" = malformed ]; then printf 'not json' > "$out/provider.json"; exit 0; fi
@@ -6791,6 +6809,67 @@ PRT_TEST_RUNNER_PROV=""
 rm -f "$PRT_TEST_RUNNER_LOG".*
 rc="$(run_orchestrator advisory 0 0 0)"
 assert_eq "assess runner provenance, faithful record: accepted, not degraded" "0 1 false" "$rc $(prt_ar_calls) $(grep -qF "[provenance-mismatch]" "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+# The stub above copies the caller's identity into its record, so it cannot catch a wrong root, a
+# base the checkout lacks or a merge-commit checkout. This one derives the identity from a real
+# repository, as the runner does, and the expected values below are derived apart from it: the head
+# by ref name, the base by merge-base, the material by the documented diff. PR head H adds a file
+# whose name needs quoting; main moves on after the branch point; M is H merged with main's tip, the
+# commit a pull_request checkout lands on by default.
+prt_ar_fx="$prt_ar_dir/fx"
+git init -q -b main "$prt_ar_fx"
+prt_ar_git() { git -C "$prt_ar_fx" -c user.name=t -c user.email=t@example.invalid -c commit.gpgsign=false "$@"; }
+printf 'one\n' > "$prt_ar_fx/a.txt"
+prt_ar_git add a.txt && prt_ar_git commit -q -m base
+prt_ar_git checkout -q -b pr
+printf 'one\ntwo\n' > "$prt_ar_fx/a.txt"
+printf 'x\n' > "$prt_ar_fx/dé.txt"
+prt_ar_git add a.txt dé.txt && prt_ar_git commit -q -m head
+prt_ar_git checkout -q main
+printf 'c\n' > "$prt_ar_fx/c.txt"
+prt_ar_git add c.txt && prt_ar_git commit -q -m "main moves on"
+prt_ar_git worktree add -q --detach "$prt_ar_dir/wt-head" pr
+prt_ar_git worktree add -q --detach "$prt_ar_dir/wt-merge" pr
+prt_ar_git -C "$prt_ar_dir/wt-merge" merge -q --no-edit main
+prt_ar_head="$(prt_ar_git rev-parse refs/heads/pr)"
+prt_ar_base="$(prt_ar_git merge-base refs/heads/main refs/heads/pr)"
+prt_ar_tip="$(prt_ar_git rev-parse refs/heads/main)"
+prt_ar_canon() { # base head
+  prt_ar_git -c core.quotePath=false -c diff.suppressBlankEmpty=false diff \
+    --no-color --no-ext-diff --no-textconv --no-renames --full-index --binary \
+    --src-prefix=a/ --dst-prefix=b/ --unified=3 --inter-hunk-context=0 --diff-algorithm=myers \
+    --indent-heuristic --no-relative --submodule=short --ignore-submodules=none -O/dev/null \
+    "$1" "$2" -- | sha256sum | cut -d' ' -f1
+}
+prt_ar_mat="$(prt_ar_canon "$prt_ar_base" "$prt_ar_head")"
+git clone -q --depth 1 --branch pr "file://$prt_ar_fx" "$prt_ar_dir/shallow" 2>/dev/null
+export PRT_TEST_HEAD_SHA PRT_TEST_ASSESS_RUNNER_ROOT
+PRT_TEST_RUNNER_PROV=git
+prt_ar_fx_case() { # label root base material want-calls want-reason-or-empty
+  rm -f "$PRT_TEST_RUNNER_LOG".*
+  PRT_TEST_ASSESS_RUNNER_ROOT="$2"; PRT_TEST_REVIEW_BASE_SHA="$3"; PRT_TEST_REVIEW_MATERIAL_SHA256="$4"
+  PRT_TEST_HEAD_SHA="$prt_ar_head"
+  rc="$(run_orchestrator advisory 0 0 0)"
+  assert_eq "assess runner identity from git, $1: exits 0, one runner call" "0 1" "$rc $(prt_ar_calls)"
+  if [ -z "$5" ]; then
+    assert_eq "assess runner identity from git, $1: accepted, not degraded" \
+      "true" "$(grep -qE 'coverage: [0-9]+/[0-9]+ chunks review\+assess ok' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+  else
+    assert_eq "assess runner identity from git, $1: degraded as $5" \
+      "true" "$(grep -qF "[$5]" "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+  fi
+}
+prt_ar_fx_case "checkout at the PR head" "$prt_ar_dir/wt-head" "$prt_ar_base" "$prt_ar_mat" ""
+prt_ar_fx_case "merge-commit checkout (the default pull_request ref)" "$prt_ar_dir/wt-merge" "$prt_ar_base" "$prt_ar_mat" provenance-mismatch
+prt_ar_fx_case "base is main's moved tip, not the merge base" "$prt_ar_dir/wt-head" "$prt_ar_tip" "$prt_ar_mat" provenance-mismatch
+prt_ar_fx_case "base the checkout does not hold (shallow clone)" "$prt_ar_dir/shallow" "$prt_ar_base" "$prt_ar_mat" runner-failed
+prt_ar_fx_case "material hashed without the fixed flags" "$prt_ar_dir/wt-head" "$prt_ar_base" \
+  "$(prt_ar_git diff "$prt_ar_base" "$prt_ar_head" | sha256sum | cut -d' ' -f1)" provenance-mismatch
+PRT_TEST_RUNNER_PROV=""
+PRT_TEST_ASSESS_RUNNER_ROOT=""
+PRT_TEST_HEAD_SHA=""
+PRT_TEST_REVIEW_BASE_SHA="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+PRT_TEST_REVIEW_MATERIAL_SHA256="cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+
 # The identity the record must carry is checked at start: a missing input fails the
 # run before any call, never degrades every chunk one by one.
 rm -f "$PRT_TEST_RUNNER_LOG".*
@@ -6957,6 +7036,25 @@ rc="$(run_orchestrator advisory 0 0 0 150)"
 assert_eq "assess runner deadline, budget below the floor: no runner call, run still exits 0" "0 0" "$rc $(prt_ar_calls)"
 assert_eq "assess runner deadline, budget below the floor: degraded as deadline-exhausted" \
   "true" "$(grep -qF '[deadline-exhausted]' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+# --seconds bounds only the runner's timed run (it also snapshots the checkout around it), so an
+# outer bound covers the whole process tree and never reaches past the run deadline. The stub
+# hangs, with a child of its own; the 600s default would otherwise let it run for the full 300s.
+rm -f "$PRT_TEST_RUNNER_LOG".*
+PRT_TEST_MODEL_BUDGET_SECONDS=12
+PRT_TEST_RUNNER_MODE=hang
+prt_ar_t0=$SECONDS
+rc="$(PRT_MODEL_TIMEOUT_FLOOR=1 run_orchestrator advisory 0 0 0)"
+prt_ar_elapsed=$((SECONDS - prt_ar_t0))
+assert_eq "assess runner hangs: the run still exits 0 after one runner call" "0 1" "$rc $(prt_ar_calls)"
+assert_eq "assess runner hangs: the whole call ends inside the run deadline (12s budget)" \
+  "true" "$([ "$prt_ar_elapsed" -lt 12 ] && echo true || echo false)"
+assert_eq "assess runner hangs: degraded as runner-timeout" \
+  "true" "$(grep -qF '[runner-timeout]' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+# A zombie still answers kill -0, so read the process state instead.
+prt_ar_child_state="$(ps -o stat= -p "$(cat "$PRT_TEST_RUNNER_LOG.child")" 2>/dev/null | tr -d ' ')"
+assert_eq "assess runner hangs: the runner's own child is gone with it" \
+  "true" "$({ [ -z "$prt_ar_child_state" ] || [[ "$prt_ar_child_state" == Z* ]]; } && echo true || echo false)"
+PRT_TEST_RUNNER_MODE=clean
 rm -f "$PRT_TEST_RUNNER_LOG".*
 PRT_TEST_MODEL_BUDGET_SECONDS=""
 PRT_TEST_ASSESS_RUNNER_SECONDS=soon
