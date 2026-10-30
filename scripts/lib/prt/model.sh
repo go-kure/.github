@@ -731,9 +731,10 @@ ${chunk_diff}
 # runner-incomplete (review-run exit 2), runner-quota (3), runner-launch (4),
 # runner-usage (64, includes an input over its ceiling), runner-timeout (the outer
 # bound on the whole process tree fired; see the call below), runner-failed (any other
-# non-zero exit), runner-no-output (it exited 0 and left no review.md),
-# runner-empty (review.md holds nothing), provenance-mismatch (provider.json
-# does not tie the answer to this head, base, material and request),
+# non-zero exit), runner-no-output (it exited 0 and left no review.md, or left one
+# that cannot be read), runner-empty (review.md holds nothing), provenance-mismatch
+# (provider.json does not tie the answer to this head, base, material and request,
+# or the digest of the request is not 64 hex characters),
 # deadline-exhausted (the run's model deadline leaves too little time).
 # _prt_runner_env_build — fills PRT_RUNNER_ENV_ARGS with NAME=value words for
 # `env -i`. The runner reads untrusted PR text and runs without a sandbox, so it
