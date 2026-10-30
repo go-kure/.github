@@ -562,15 +562,21 @@ run them cannot pass by skipping.
 `PR Review Runner Boundary Probe` on the runner image the review job uses, shows whether the default
 boundary holds on that image. It uses a made-up canary in place of the posting token (placed in the
 script's own environment when it starts, where the token sits for the orchestrator) and a stub in
-place of the runner: no secret, no model call, no forge access, `/proc` reads only. The stub runs
-twice, both times behind the same environment scrub and descriptor closing: once through the
-production call (the default boundary, checked and bounded) and once with `env -i` only. Its report
-lists whether the canary is in any readable `/proc/<pid>/environ`, whether an ancestor's `environ` or
-`mem` can be opened (an ancestor is named by pid and start time), the descriptors above 2, the
-capability sets and whether a `procfs` can be mounted. The boundary must show none of them, and the
-run without it must show the canary: if it does not, the probe is blind and the result is void.
-Exit codes: 0 holds, 1 leaks, 2 the boundary cannot be established on that lane, 3 blind. It does
-not show the lifetime limit above, what else of the user's files the runner can read, or anything
+place of the runner: no secret, no model call, no forge access. The stub reads `/proc` and makes one
+attempt to mount a `procfs`, and only inside the boundary's own mount namespace: it refuses to try in
+any other, so nothing it does outlives it. The stub runs twice, both times behind the same
+environment scrub and descriptor closing: once through the production call (the default boundary,
+checked and bounded) and once with `env -i` only. Its report lists whether the canary is in any
+readable `/proc/<pid>/environ`, whether an ancestor's `environ` or `mem` can be opened (an ancestor
+is named by pid and start time), every descriptor above 2 it holds apart from its own, the capability
+sets and whether the `procfs` mount was denied. The boundary must show no canary, no readable
+ancestor, no descriptor, no capability and a denied mount. The run without it must show the canary
+through an ancestor, with numeric counts of at least 1: a missing, empty or malformed control report
+voids the result. A mount that could not be tried (no `mount` command, same mount namespace, no
+directory) is not a denial.
+Exit codes: 0 holds, 1 leaks, 2 the boundary cannot be established on that lane, 3 inconclusive (the
+control, a field or the mount result gave no usable answer, so no pass can be claimed), 4 the probe
+could not set itself up. It does not show the lifetime limit above, what else of the user's files the runner can read, or anything
 about a real runner or model key, and it says nothing about a later image.
 
 **Provenance.** A call that exits 0 is still refused unless its `provider.json` has format
