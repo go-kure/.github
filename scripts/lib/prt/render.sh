@@ -16,7 +16,9 @@ set -uo pipefail
 prt_chunk_label() {
   local idx
   [ "$2" -gt 1 ] 2>/dev/null || return 0
-  idx="$(jq -r '._chunk // empty' <<< "$1" 2>/dev/null)"
+  # A jq failure is a fault (return 1), not "no chunk index": the caller must
+  # not post a body whose label was silently lost.
+  idx="$(jq -r '._chunk // empty' <<< "$1" 2>/dev/null)" || return 1
   [[ "$idx" =~ ^[0-9]+$ ]] || return 0
   printf 'chunk %s/%s' "$((idx + 1))" "$2"
 }
@@ -27,12 +29,14 @@ prt_chunk_label() {
 prt_render_finding_body() {
   local finding="$1" marker="$2" chunk_label="${3:-}"
   local severity category issue fix source="Automated review finding"
-  severity="$(jq -r '.severity' <<< "$finding")"
-  category="$(jq -r '.category' <<< "$finding")"
-  issue="$(jq -r '.issue' <<< "$finding")"
-  fix="$(jq -r '.fix' <<< "$finding")"
-  issue="$(prt_marker_neutralize "$issue")"
-  fix="$(prt_marker_neutralize "$fix")"
+  # Returns 1 with no output when a field cannot be read: a body missing its
+  # severity or issue text must never be posted.
+  severity="$(jq -r '.severity' <<< "$finding" 2>/dev/null)" || return 1
+  category="$(jq -r '.category' <<< "$finding" 2>/dev/null)" || return 1
+  issue="$(jq -r '.issue' <<< "$finding" 2>/dev/null)" || return 1
+  fix="$(jq -r '.fix' <<< "$finding" 2>/dev/null)" || return 1
+  issue="$(prt_marker_neutralize "$issue")" || return 1
+  fix="$(prt_marker_neutralize "$fix")" || return 1
   [ -n "$chunk_label" ] && source="Automated review finding from ${chunk_label} of the diff (the reviewer saw only that chunk)"
   cat <<EOF
 $marker
@@ -166,6 +170,32 @@ EOF
 # kept out of the review, rendered by prt_render_excluded_section.
 prt_render_summary() {
   local mode="$1" sha="$2" chunk_count="$3" findings="$4" suppressed_count="$5" incomplete_reasons="$6" degraded_reasons="${7:-}" suppressed="${8:-[]}" excluded="${9:-[]}"
+  local findings_len suppressed_len excluded_len findings_rows="" suppressed_rows="" excluded_section=""
+  # Every jq runs, checked, before anything is printed: a fault returns 1 with
+  # no output, so a table that failed to build can never be written as an empty
+  # one. The esc filter keeps model-derived text inside its table cell: a
+  # newline would end the row, a pipe would split it, and raw HTML (a
+  # `</table>`) would close the table, so `&`, `<` and `>` are entity-encoded
+  # (#183 review).
+  findings_len="$(jq 'length' <<< "$findings" 2>/dev/null)" || return 1
+  suppressed_len="$(jq 'length' <<< "$suppressed" 2>/dev/null)" || return 1
+  excluded_len="$(jq 'length' <<< "$excluded" 2>/dev/null)" || return 1
+  if [ "$findings_len" -gt 0 ]; then
+    findings_rows="$(jq -r '
+      def esc: tostring | gsub("\r\n"; " ") | gsub("[\n\r]"; " ") | gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;") | gsub("\\|"; "\\|");
+      .[] | "| `\(.fp)` | \(.severity|esc) | \(.category|esc) | \(.file|esc) | \((.line // "n/a")|esc) | \((.verdict // "n/a")|esc) |"
+    ' <<< "$findings" 2>/dev/null)" || return 1
+  fi
+  if [ "$suppressed_len" -gt 0 ]; then
+    suppressed_rows="$(jq -r '
+      def esc: tostring | gsub("\r\n"; " ") | gsub("[\n\r]"; " ") | gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;") | gsub("\\|"; "\\|");
+      def first_line: tostring | split("\n") | map(select(test("[^[:space:]]"))) | (.[0] // "");
+      .[] | "| `\(.fp)` | \(.severity|esc) | \(.file|esc) | \((.line // "n/a")|esc) | \((.issue // "")|first_line|esc) | \((.reasoning // "")|first_line|esc) |"
+    ' <<< "$suppressed" 2>/dev/null)" || return 1
+  fi
+  if [ "$excluded_len" -gt 0 ]; then
+    excluded_section="$(prt_render_excluded_section "$excluded")" || return 1
+  fi
   {
     printf '## PR Review Threads (%s mode)\n\n' "$mode"
     printf -- '- Source SHA: %s\n' "$sha"
@@ -176,33 +206,23 @@ prt_render_summary() {
     # (deliberately not -e), silently drops just that one summary line
     # rather than aborting (dot-github#50 gmr finding iter5-codex #2).
     printf -- '- Diff chunks reviewed: %s\n' "$chunk_count"
-    printf -- '- Findings: %s\n' "$(jq 'length' <<< "$findings")"
+    printf -- '- Findings: %s\n' "$findings_len"
     printf -- '- Suppressed (FALSE POSITIVE, no thread created): %s\n\n' "$suppressed_count"
-    # esc keeps model-derived text inside its table cell: a newline would end
-    # the row, a pipe would split it, and raw HTML (a `</table>`) would close
-    # the table, so `&`, `<` and `>` are entity-encoded (#183 review).
-    if [ "$(jq 'length' <<< "$findings")" -gt 0 ]; then
+    if [ "$findings_len" -gt 0 ]; then
       printf '| fp | Severity | Category | File | Line | Verdict |\n'
       printf '|----|----------|----------|------|------|---------|\n'
-      jq -r '
-        def esc: tostring | gsub("\r\n"; " ") | gsub("[\n\r]"; " ") | gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;") | gsub("\\|"; "\\|");
-        .[] | "| `\(.fp)` | \(.severity|esc) | \(.category|esc) | \(.file|esc) | \((.line // "n/a")|esc) | \((.verdict // "n/a")|esc) |"
-      ' <<< "$findings"
+      printf '%s\n' "$findings_rows"
     fi
-    if [ "$(jq 'length' <<< "$suppressed")" -gt 0 ]; then
+    if [ "$suppressed_len" -gt 0 ]; then
       printf '\n### Suppressed findings (FALSE POSITIVE, no thread created)\n\n'
       printf 'The assessor judged these false positives and no thread existed, so nothing was posted.\n\n'
       printf '| fp | Severity | File | Line | Issue | Assessor reasoning |\n'
       printf '|----|----------|------|------|-------|--------------------|\n'
-      jq -r '
-        def esc: tostring | gsub("\r\n"; " ") | gsub("[\n\r]"; " ") | gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;") | gsub("\\|"; "\\|");
-        def first_line: tostring | split("\n") | map(select(test("[^[:space:]]"))) | (.[0] // "");
-        .[] | "| `\(.fp)` | \(.severity|esc) | \(.file|esc) | \((.line // "n/a")|esc) | \((.issue // "")|first_line|esc) | \((.reasoning // "")|first_line|esc) |"
-      ' <<< "$suppressed"
+      printf '%s\n' "$suppressed_rows"
     fi
-    if [ "$(jq 'length' <<< "$excluded")" -gt 0 ]; then
+    if [ "$excluded_len" -gt 0 ]; then
       printf '\n'
-      prt_render_excluded_section "$excluded"
+      printf '%s\n' "$excluded_section"
     fi
     if [ -n "$incomplete_reasons" ]; then
       printf '\n### REVIEW_INCOMPLETE\n\n'
@@ -213,6 +233,21 @@ prt_render_summary() {
       printf '%s\n' "$degraded_reasons" | sed 's/^/- /'
     fi
   }
+}
+
+# prt_write_summary ARGS... — prt_render_summary appended to the job summary.
+# A render fault writes nothing (never a half-built table), marks the run
+# incomplete so the exit is nonzero, and prints the incomplete reasons on
+# stderr, since the summary that would have carried them does not exist.
+prt_write_summary() {
+  local out
+  if ! out="$(prt_render_summary "$@")"; then
+    prt_mark_incomplete "the job summary could not be rendered (local fault)"
+    echo "ERROR: the job summary could not be rendered (local fault)." >&2
+    [ -z "${6:-}" ] || printf '%s\n' "$6" | sed 's/^/ERROR: incomplete: /' >&2
+    return 1
+  fi
+  printf '%s\n' "$out" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
 }
 
 # prt_render_overflow_comment FINDINGS_JSON [QUARANTINED_JSON] — FINDINGS_JSON
@@ -226,10 +261,46 @@ prt_render_summary() {
 # for overflow and quarantine, never for the whole review.
 prt_render_overflow_comment() {
   local findings="$1" quarantined="${2:-[]}"
-  local count qcount has_gating_row
-  count="$(jq 'length' <<< "$findings")"
-  qcount="$(jq 'length' <<< "$quarantined")"
-  has_gating_row="$(jq 'any(.[]; .gating == true)' <<< "$quarantined")"
+  local count qcount has_gating_row overflow_rows="" quarantine_rows=""
+  # Every jq runs, checked, before anything is printed: a fault returns 1 with
+  # no output, so a table that failed to build is never posted as an empty one.
+  count="$(jq 'length' <<< "$findings" 2>/dev/null)" || return 1
+  qcount="$(jq 'length' <<< "$quarantined" 2>/dev/null)" || return 1
+  has_gating_row="$(jq 'any(.[]; .gating == true)' <<< "$quarantined" 2>/dev/null)" || return 1
+  if [ "$count" -gt 0 ]; then
+    # gsub("<!-- gokure-pr-review"; ...) neutralizes marker syntax in
+    # model-generated prose, matching prt_marker_neutralize (marker.sh) —
+    # this comment is posted by the same bot login prt_find_marked_comment
+    # scans, so a finding whose issue text happens to quote the exact clean
+    # marker (e.g. a self-review of marker.sh itself) must not make this
+    # comment eligible to be matched and later overwritten by a clean-verdict
+    # upsert (gmr dot-github#88 round 1).
+    overflow_rows="$(jq -r '
+      def esc: tostring | gsub("\r\n"; " ") | gsub("[\n\r]"; " ") | gsub("\\|"; "\\|") | gsub("<!-- gokure-pr-review"; "&lt;!-- gokure-pr-review");
+      .[] | "| \(.severity|esc) | \(.category|esc) | \(.file|esc) | \((.line // "n/a")|esc) | \(.issue|esc) |"
+    ' <<< "$findings" 2>/dev/null)" || return 1
+  fi
+  if [ "$qcount" -gt 0 ]; then
+    # Same esc filter, verbatim, as the overflow table — a quarantined finding
+    # is model-generated prose posted by the same bot login and carries the
+    # identical marker-collision hazard.
+    #
+    # quarantine_reason (go-kure/.github#196) is the authoritative source
+    # when present; persisted_only alone is kept as the fallback for
+    # fixtures/tests predating that field (go-kure/.github#180) so their
+    # binary this-run/persisted distinction still renders unchanged.
+    quarantine_rows="$(jq -r '
+      def esc: tostring | gsub("\r\n"; " ") | gsub("[\n\r]"; " ") | gsub("\\|"; "\\|") | gsub("<!-- gokure-pr-review"; "&lt;!-- gokure-pr-review");
+      def collision_cell:
+        if .quarantine_reason == "content_mismatch" then "content changed (recurring defect)"
+        elif .quarantine_reason == "persisted" then "persisted (earlier run)"
+        elif .quarantine_reason == "this_run" then "this run"
+        elif .persisted_only == true then "persisted (earlier run)"
+        else "this run"
+        end;
+      .[] | "| \(.severity|esc) | \(.category|esc) | \(.file|esc) | \((.line // "n/a")|esc) | \(.issue|esc) | \(.fix|esc) | \(collision_cell) | \(if .gating == true then "yes (existing thread)" else "no" end) |"
+    ' <<< "$quarantined" 2>/dev/null)" || return 1
+  fi
   {
     if [ "$count" -gt 0 ]; then
       printf '## Additional AI Review Findings (advisory — beyond the gating cap)\n\n'
@@ -237,17 +308,7 @@ prt_render_overflow_comment() {
       printf 'but are worth a look:\n\n'
       printf '| Severity | Category | File | Line | Issue |\n'
       printf '|----------|----------|------|------|-------|\n'
-      # gsub("<!-- gokure-pr-review"; ...) neutralizes marker syntax in
-      # model-generated prose, matching prt_marker_neutralize (marker.sh) —
-      # this comment is posted by the same bot login prt_find_marked_comment
-      # scans, so a finding whose issue text happens to quote the exact clean
-      # marker (e.g. a self-review of marker.sh itself) must not make this
-      # comment eligible to be matched and later overwritten by a clean-verdict
-      # upsert (gmr dot-github#88 round 1).
-      jq -r '
-        def esc: tostring | gsub("\r\n"; " ") | gsub("[\n\r]"; " ") | gsub("\\|"; "\\|") | gsub("<!-- gokure-pr-review"; "&lt;!-- gokure-pr-review");
-        .[] | "| \(.severity|esc) | \(.category|esc) | \(.file|esc) | \((.line // "n/a")|esc) | \(.issue|esc) |"
-      ' <<< "$findings"
+      printf '%s\n' "$overflow_rows"
       printf '\n'
     fi
     if [ "$qcount" -gt 0 ]; then
@@ -271,25 +332,7 @@ prt_render_overflow_comment() {
       printf 'blocking:\n\n'
       printf '| Severity | Category | File | Line | Issue | Fix | Collision | Gating |\n'
       printf '|----------|----------|------|------|-------|-----|-----------|--------|\n'
-      # Same esc filter, verbatim, as the overflow table above — a
-      # quarantined finding is model-generated prose posted by the same bot
-      # login and carries the identical marker-collision hazard.
-      #
-      # quarantine_reason (go-kure/.github#196) is the authoritative source
-      # when present; persisted_only alone is kept as the fallback for
-      # fixtures/tests predating that field (go-kure/.github#180) so their
-      # binary this-run/persisted distinction still renders unchanged.
-      jq -r '
-        def esc: tostring | gsub("\r\n"; " ") | gsub("[\n\r]"; " ") | gsub("\\|"; "\\|") | gsub("<!-- gokure-pr-review"; "&lt;!-- gokure-pr-review");
-        def collision_cell:
-          if .quarantine_reason == "content_mismatch" then "content changed (recurring defect)"
-          elif .quarantine_reason == "persisted" then "persisted (earlier run)"
-          elif .quarantine_reason == "this_run" then "this run"
-          elif .persisted_only == true then "persisted (earlier run)"
-          else "this run"
-          end;
-        .[] | "| \(.severity|esc) | \(.category|esc) | \(.file|esc) | \((.line // "n/a")|esc) | \(.issue|esc) | \(.fix|esc) | \(collision_cell) | \(if .gating == true then "yes (existing thread)" else "no" end) |"
-      ' <<< "$quarantined"
+      printf '%s\n' "$quarantine_rows"
       printf '\n'
     fi
     printf -- '---\n'
@@ -352,8 +395,28 @@ prt_render_overflow_comment() {
 # this run excluded; prt_render_excluded_section puts them above the footer.
 prt_render_advisory_comment() {
   local findings="$1" incomplete_reasons="${2:-}" degraded_reasons="${3:-}" excluded="${4:-[]}"
-  local count
-  count="$(jq 'length' <<< "$findings")"
+  local count excluded_len rows="" excluded_section=""
+  # Every jq runs, checked, before anything is printed (see prt_render_summary).
+  count="$(jq 'length' <<< "$findings" 2>/dev/null)" || return 1
+  excluded_len="$(jq 'length' <<< "$excluded" 2>/dev/null)" || return 1
+  if [ "$count" -gt 0 ]; then
+    # A `|` or embedded newline in model-generated issue/fix text breaks
+    # table structure — a bare `|` adds a phantom column, and a `\n` ends
+    # the row outright, dropping every finding after it into loose prose
+    # (dot-github#50 gmr findings C7/R4, folded into one shared escape
+    # here since both defects live in the exact same interpolation). The
+    # marker gsub neutralizes any literal quote of the clean-verdict
+    # marker in issue/fix text, matching prt_marker_neutralize — this
+    # comment is posted by the same bot login prt_find_marked_comment
+    # scans (gmr dot-github#88 round 1).
+    rows="$(jq -r '
+      def esc: tostring | gsub("\r\n"; " ") | gsub("[\n\r]"; " ") | gsub("\\|"; "\\|") | gsub("<!-- gokure-pr-review"; "&lt;!-- gokure-pr-review");
+      .[] | "| \(.severity|esc) | \(.category|esc) | \(.file|esc) | \((.line // "n/a")|esc) | \(.issue|esc) | \(.fix|esc) |"
+    ' <<< "$findings" 2>/dev/null)" || return 1
+  fi
+  if [ "$excluded_len" -gt 0 ]; then
+    excluded_section="$(prt_render_excluded_section "$excluded")" || return 1
+  fi
   {
     printf '## AI Code Review (advisory mode — %s finding(s))\n\n' "$count"
     if [ -n "$incomplete_reasons" ]; then
@@ -381,23 +444,11 @@ prt_render_advisory_comment() {
     else
       printf '| Severity | Category | File | Line | Issue | Fix |\n'
       printf '|----------|----------|------|------|-------|-----|\n'
-      # A `|` or embedded newline in model-generated issue/fix text breaks
-      # table structure — a bare `|` adds a phantom column, and a `\n` ends
-      # the row outright, dropping every finding after it into loose prose
-      # (dot-github#50 gmr findings C7/R4, folded into one shared escape
-      # here since both defects live in the exact same interpolation). The
-      # marker gsub neutralizes any literal quote of the clean-verdict
-      # marker in issue/fix text, matching prt_marker_neutralize — this
-      # comment is posted by the same bot login prt_find_marked_comment
-      # scans (gmr dot-github#88 round 1).
-      jq -r '
-        def esc: tostring | gsub("\r\n"; " ") | gsub("[\n\r]"; " ") | gsub("\\|"; "\\|") | gsub("<!-- gokure-pr-review"; "&lt;!-- gokure-pr-review");
-        .[] | "| \(.severity|esc) | \(.category|esc) | \(.file|esc) | \((.line // "n/a")|esc) | \(.issue|esc) | \(.fix|esc) |"
-      ' <<< "$findings"
+      printf '%s\n' "$rows"
     fi
-    if [ "$(jq 'length' <<< "$excluded")" -gt 0 ]; then
+    if [ "$excluded_len" -gt 0 ]; then
       printf '\n'
-      prt_render_excluded_section "$excluded"
+      printf '%s\n' "$excluded_section"
     fi
     printf '\n---\n*Automated review — advisory only (PR_REVIEW_THREADS_MODE=advisory). '
     printf 'No threads were created or resolved.*\n'
@@ -421,9 +472,12 @@ prt_render_advisory_comment() {
 # Neither adds a second `commit` or `chunks` row, the advisory footer or a
 # banner, which a consumer parsing this verdict would read as malformed.
 prt_render_clean_comment() {
-  local sha="$1" model="$2" chunk_count="$3" excluded="${4:-[]}" excluded_count excluded_row=""
-  excluded_count="$(jq 'length' <<< "$excluded")"
-  [ "$excluded_count" -gt 0 ] && excluded_row="| excluded | ${excluded_count} |"$'\n'
+  local sha="$1" model="$2" chunk_count="$3" excluded="${4:-[]}" excluded_count excluded_row="" excluded_section=""
+  excluded_count="$(jq 'length' <<< "$excluded" 2>/dev/null)" || return 1
+  if [ "$excluded_count" -gt 0 ]; then
+    excluded_row="| excluded | ${excluded_count} |"$'\n'
+    excluded_section="$(prt_render_excluded_section "$excluded")" || return 1
+  fi
   cat <<EOF
 ## AI Code Review — Reviewed, no findings
 
@@ -437,7 +491,7 @@ The review ran to completion and reported nothing.
 
 EOF
   if [ "$excluded_count" -gt 0 ]; then
-    prt_render_excluded_section "$excluded"
+    printf '%s\n' "$excluded_section"
     printf '\n'
   fi
   cat <<EOF
@@ -638,9 +692,17 @@ EOF
 # syntax (`!`, `[`, a backtick, `\`, `|`, `<`, a leading space). Non-ASCII
 # characters pass unchanged; none of them is markup.
 prt_render_excluded_section() {
-  local excluded="$1" count
-  count="$(jq 'length' <<< "$excluded")"
+  local excluded="$1" count rows
+  count="$(jq 'length' <<< "$excluded" 2>/dev/null)" || return 1
   [ "$count" -gt 0 ] || return 0
+  rows="$(jq -r '
+    def esc: tostring | gsub("\r\n"; " ") | gsub("[\n\r]"; " ") | gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;") | gsub("\\|"; "\\|");
+    def lit: tostring | explode | map(
+      if (. >= 48 and . <= 57) or (. >= 65 and . <= 90) or (. >= 97 and . <= 122) or . >= 128
+      then [.] | implode else "&#\(.);" end) | join("");
+    def shown: if test("^[A-Za-z0-9._/@+=,~-]+$") then "`\(.)`" else lit end;
+    .[] | "| \(.path | shown) | +\(.added) | -\(.removed) | not reviewed | \(.reason | esc) |"
+  ' <<< "$excluded" 2>/dev/null)" || return 1
   printf '### Excluded from review\n\n'
   printf 'These %s file(s) were not sent to the reviewer: dependency lockfiles by name, and\n' "$count"
   # shellcheck disable=SC2016 # the backticks are markdown code spans, not command substitution
@@ -648,12 +710,5 @@ prt_render_excluded_section() {
   printf 'was not looked for.\n\n'
   printf '| File | Added | Removed | Review | Why |\n'
   printf '|------|-------|---------|--------|-----|\n'
-  jq -r '
-    def esc: tostring | gsub("\r\n"; " ") | gsub("[\n\r]"; " ") | gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;") | gsub("\\|"; "\\|");
-    def lit: tostring | explode | map(
-      if (. >= 48 and . <= 57) or (. >= 65 and . <= 90) or (. >= 97 and . <= 122) or . >= 128
-      then [.] | implode else "&#\(.);" end) | join("");
-    def shown: if test("^[A-Za-z0-9._/@+=,~-]+$") then "`\(.)`" else lit end;
-    .[] | "| \(.path | shown) | +\(.added) | -\(.removed) | not reviewed | \(.reason | esc) |"
-  ' <<< "$excluded"
+  printf '%s\n' "$rows"
 }

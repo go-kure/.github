@@ -103,7 +103,12 @@ prt_normalize_category() {
 prt_normalize_findings() {
   local raw_json="$1"
   local kind
-  kind="$(jq -r 'if (.findings | type) == "array" then "array" else "bad" end' <<< "$raw_json" 2>/dev/null || echo bad)"
+  # The query tests the type first, so it cannot fail on valid JSON of any shape:
+  # a failure is a local fault (status 3, no retry), not an unusable response.
+  if ! kind="$(jq -r 'if type == "object" and (.findings | type) == "array" then "array" else "bad" end' <<< "$raw_json" 2>/dev/null)"; then
+    echo "prt_normalize_findings: local fault reading the response shape" >&2
+    return 3
+  fi
   if [ "$kind" != "array" ]; then
     echo "prt_normalize_findings: .findings missing/null/non-array" >&2
     printf '[]'
@@ -136,7 +141,7 @@ prt_normalize_findings() {
       | {
           file: .file,
           category: .category,
-          line: (if (.line? | type) == "number" then .line else null end),
+          line: (if (.line? | type) == "number" and .line == (.line | floor) and (.line | fabs) < 1e9 then (.line | floor) else null end),
           severity: .severity,
           issue: .issue,
           fix: .fix
@@ -275,10 +280,15 @@ prt_assign_ordinals() {
 prt_join_assessment() {
   local findings_json="$1" assessment_raw="$2"
   local assess_kind
-  assess_kind="$(jq -r 'if (.assessments | type) == "array" then "array" else "bad" end' <<< "$assessment_raw" 2>/dev/null || echo bad)"
+  # The query itself cannot fail on valid JSON of any shape (it tests the type
+  # first), so a failure here is a local fault (status 2), never "unusable".
+  if ! assess_kind="$(jq -r 'if type == "object" and (.assessments | type) == "array" then "array" else "bad" end' <<< "$assessment_raw" 2>/dev/null)"; then
+    echo "prt_join_assessment: local fault reading the assessment; the chunk's findings are not reported" >&2
+    return 2
+  fi
   if [ "$assess_kind" != "array" ]; then
     echo "prt_join_assessment: .assessments missing/null/non-array; all findings stay unverdicted" >&2
-    jq -c '.' <<< "$findings_json"
+    jq -c '.' <<< "$findings_json" || return 2
     return 1
   fi
 
@@ -302,11 +312,14 @@ prt_join_assessment() {
   # {outside-chunk FALSE_POSITIVE, ordinary verdict} for one fp leaves the fp
   # unverdicted.
   local outside_marker='^\s*depends on code (outside|not shown in) this chunk' outside_n
-  outside_n="$(jq -r --arg m "$outside_marker" '
+  if ! outside_n="$(jq -r --arg m "$outside_marker" '
     [ .assessments[]? | select(type == "object")
       | select(.verdict == "FALSE_POSITIVE" and (.reasoning? | type) == "string" and (.reasoning | test($m; "i"))) ] | length
-  ' <<< "$assessment_raw" 2>/dev/null || echo 0)"
-  if [ "${outside_n:-0}" -gt 0 ]; then
+  ' <<< "$assessment_raw" 2>/dev/null)"; then
+    echo "prt_join_assessment: local fault reading the verdicts; the chunk's findings are not reported" >&2
+    return 2
+  fi
+  if [ "$outside_n" -gt 0 ]; then
     echo "prt_join_assessment: $outside_n FALSE_POSITIVE verdict(s) depend on code outside this chunk; those findings stay unverdicted" >&2
   fi
 

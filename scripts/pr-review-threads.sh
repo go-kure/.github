@@ -1025,11 +1025,9 @@ fi
 
 if [ "$inventory_failed" = 1 ]; then
   prt_mark_incomplete "review thread inventory failed at $inventory_failure_stage"
-  {
-    # 0, not $SUPPRESSED_COUNT: this abort happens before loop 1 (which
-    # increments it) ever runs, so nothing has been suppressed yet.
-    prt_render_summary "$PRT_MODE" "$PRT_HEAD_SHA" "$chunk_idx" "$ALL_FINDINGS" 0 "$(prt_incomplete_reasons)" "$(prt_degraded_reasons)" '[]' "$EXCLUDED_FILES"
-  } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+  # 0, not $SUPPRESSED_COUNT: this abort happens before loop 1 (which
+  # increments it) ever runs, so nothing has been suppressed yet.
+  prt_write_summary "$PRT_MODE" "$PRT_HEAD_SHA" "$chunk_idx" "$ALL_FINDINGS" 0 "$(prt_incomplete_reasons)" "$(prt_degraded_reasons)" '[]' "$EXCLUDED_FILES" || true
   prt_report_degraded_annotations
   exit 1
 fi
@@ -1221,9 +1219,7 @@ if [ "$inventory_failed" != 1 ]; then
 fi
 if [ "$inventory_failed" = 1 ]; then
   prt_mark_incomplete "review thread inventory failed at $inventory_failure_stage"
-  {
-    prt_render_summary "$PRT_MODE" "$PRT_HEAD_SHA" "$chunk_idx" "$ALL_FINDINGS" 0 "$(prt_incomplete_reasons)" "$(prt_degraded_reasons)" '[]' "$EXCLUDED_FILES"
-  } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+  prt_write_summary "$PRT_MODE" "$PRT_HEAD_SHA" "$chunk_idx" "$ALL_FINDINGS" 0 "$(prt_incomplete_reasons)" "$(prt_degraded_reasons)" '[]' "$EXCLUDED_FILES" || true
   prt_report_degraded_annotations
   exit 1
 fi
@@ -1273,9 +1269,7 @@ if ! cap_foreign="$(prt_cap_foreign_rows "$FOREIGN" "$ALL_FINDINGS")" ||
   ! capped_findings="$(prt_apply_cap "$PRT_MAX_FINDINGS_TOTAL" "$cap_threads" "$ALL_FINDINGS" 2>/dev/null)"; then
   echo "ERROR: review inventory cap evaluation failed; aborting before any write." >&2
   prt_mark_incomplete "review inventory cap evaluation failed"
-  {
-    prt_render_summary "$PRT_MODE" "$PRT_HEAD_SHA" "$chunk_idx" "$ALL_FINDINGS" 0 "$(prt_incomplete_reasons)" "$(prt_degraded_reasons)" '[]' "$EXCLUDED_FILES"
-  } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+  prt_write_summary "$PRT_MODE" "$PRT_HEAD_SHA" "$chunk_idx" "$ALL_FINDINGS" 0 "$(prt_incomplete_reasons)" "$(prt_degraded_reasons)" '[]' "$EXCLUDED_FILES" || true
   prt_report_degraded_annotations
   exit 1
 fi
@@ -1408,9 +1402,16 @@ if [ "$PRT_MODE" = advisory ]; then
   prt_is_incomplete && advisory_incomplete_reasons="$(prt_incomplete_reasons)"
   advisory_degraded_reasons=""
   prt_is_degraded && advisory_degraded_reasons="$(prt_degraded_reasons)"
-  body="$(prt_render_advisory_comment "$advisory_findings" "$advisory_incomplete_reasons" "$advisory_degraded_reasons" "$EXCLUDED_FILES")"
-  payload="$(prt_json_body_payload "$body")"
-  if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
+  # A render or payload fault must not post a half-built table: nothing is posted.
+  payload=""
+  if ! body="$(prt_render_advisory_comment "$advisory_findings" "$advisory_incomplete_reasons" "$advisory_degraded_reasons" "$EXCLUDED_FILES")" ||
+     ! payload="$(prt_json_body_payload "$body")" || [ -z "$payload" ]; then
+    prt_mark_incomplete "the advisory comment could not be rendered (local fault); nothing was posted"
+    payload=""
+  fi
+  if [ -z "$payload" ]; then
+    :
+  elif prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
     prt_gh_rest POST "/repos/${PRT_REPO}/issues/${PRT_PR_NUMBER}/comments" "$payload" >/dev/null || \
       prt_mark_incomplete "failed to post advisory comment (HTTP ${PRT_LAST_HTTP_STATUS:-unknown})"
   else
@@ -1845,7 +1846,11 @@ else
         # brand-new thread — the only site that computes a NEW content_fp
         # rather than carrying an existing one forward unchanged.
         marker="$(prt_marker_build "$fp" "$collision" "" "$content_fp")"
-        body="$(prt_render_finding_body "$f" "$marker" "$(prt_chunk_label "$f" "$chunk_count")")"
+        if ! chunk_label="$(prt_chunk_label "$f" "$chunk_count")" ||
+           ! body="$(prt_render_finding_body "$f" "$marker" "$chunk_label")"; then
+          prt_mark_incomplete "fp=$fp: the finding body could not be rendered (local fault); no thread was opened"
+          continue
+        fi
         # FILE is at most 4096 bytes (prt_normalize_findings drops longer paths) and LINE
         # is a number, so both are safe as arguments here and in the payload below.
         if ! file="$(jq -r '.file' <<< "$f" 2>/dev/null)" || ! line="$(jq -r '.line' <<< "$f" 2>/dev/null)"; then
@@ -1915,8 +1920,15 @@ fi
 # meaningful in enforce mode: advisory posts every finding in one comment
 # unconditionally, with no per-finding accounting to check.
 if [ "$PRT_MODE" = enforce ]; then
-  n_findings_total="$(jq 'length' <<< "$ALL_FINDINGS")"
-  accounted=$((THREADS_WRITTEN + NONE_ANCHORED_COUNT + SUPPRESSED_COUNT + $(jq 'length' <<< "$OVERFLOW") + $(jq 'length' <<< "$QUARANTINED")))
+  if ! n_findings_total="$(jq 'length' <<< "$ALL_FINDINGS" 2>/dev/null)" ||
+     ! n_overflow="$(jq 'length' <<< "$OVERFLOW" 2>/dev/null)" ||
+     ! n_quarantined="$(jq 'length' <<< "$QUARANTINED" 2>/dev/null)"; then
+    prt_mark_incomplete "the findings accounting could not be computed (local fault)"
+    n_findings_total=0
+    n_overflow=0
+    n_quarantined=0
+  fi
+  accounted=$((THREADS_WRITTEN + NONE_ANCHORED_COUNT + SUPPRESSED_COUNT + n_overflow + n_quarantined))
   if [ "$accounted" -lt "$n_findings_total" ]; then
     prt_mark_degraded "accounting mismatch: findings=$n_findings_total but only $accounted ended in an observable state (thread/comment/withheld) — $((n_findings_total - accounted)) finding(s) may have been silently lost this run (go-kure/.github#155 invariant)"
   fi
@@ -2101,16 +2113,35 @@ fi
 # accounting invariant above (:1181-1187) only sees array lengths, computed
 # before this POST is even attempted, so it cannot see a later failure here.
 OVERFLOW_COMMENT_POSTED=true
-if [ "$PRT_MODE" = enforce ] && { [ "$(jq 'length' <<< "$OVERFLOW")" -gt 0 ] || [ "$(jq 'length' <<< "$QUARANTINED")" -gt 0 ]; }; then
+overflow_len=0
+quarantined_len=0
+if [ "$PRT_MODE" = enforce ] &&
+   { ! overflow_len="$(jq 'length' <<< "$OVERFLOW" 2>/dev/null)" || ! quarantined_len="$(jq 'length' <<< "$QUARANTINED" 2>/dev/null)"; }; then
+  # An unreadable list must not read as an empty one: nothing is posted, the run is incomplete.
+  prt_mark_incomplete "the overflow and withheld findings could not be counted (local fault); nothing was posted"
+  OVERFLOW_COMMENT_POSTED=false
+  overflow_len=0
+  quarantined_len=0
+fi
+if [ "$PRT_MODE" = enforce ] && { [ "$overflow_len" -gt 0 ] || [ "$quarantined_len" -gt 0 ]; }; then
   if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
-    overflow_body="$(prt_render_overflow_comment "$OVERFLOW" "$QUARANTINED")"
-    # issues/{n}/comments deliberately, not pulls/{n}/comments: the latter
-    # posts a review thread reply, which sets has_human_reply (content-based,
-    # not author-based) and would make a quarantined/overflow body a merge
-    # blocker instead of the advisory it's meant to be.
-    prt_gh_rest POST "/repos/${PRT_REPO}/issues/${PRT_PR_NUMBER}/comments" \
-      "$(prt_json_body_payload "$overflow_body")" >/dev/null || \
-      { prt_mark_incomplete "failed to post overflow comment (HTTP ${PRT_LAST_HTTP_STATUS:-unknown})"; OVERFLOW_COMMENT_POSTED=false; }
+    # A render or payload fault posts nothing: an incomplete table (for example
+    # a quarantine table that failed to build) must never be written as if it
+    # were the whole withheld list.
+    overflow_payload=""
+    if ! overflow_body="$(prt_render_overflow_comment "$OVERFLOW" "$QUARANTINED")" ||
+       ! overflow_payload="$(prt_json_body_payload "$overflow_body")" || [ -z "$overflow_payload" ]; then
+      prt_mark_incomplete "the overflow comment could not be rendered (local fault); nothing was posted"
+      OVERFLOW_COMMENT_POSTED=false
+    else
+      # issues/{n}/comments deliberately, not pulls/{n}/comments: the latter
+      # posts a review thread reply, which sets has_human_reply (content-based,
+      # not author-based) and would make a quarantined/overflow body a merge
+      # blocker instead of the advisory it's meant to be.
+      prt_gh_rest POST "/repos/${PRT_REPO}/issues/${PRT_PR_NUMBER}/comments" \
+        "$overflow_payload" >/dev/null || \
+        { prt_mark_incomplete "failed to post overflow comment (HTTP ${PRT_LAST_HTTP_STATUS:-unknown})"; OVERFLOW_COMMENT_POSTED=false; }
+    fi
   else
     prt_handle_freshness_rc "$?" "overflow comment"
     OVERFLOW_COMMENT_POSTED=false
@@ -2150,7 +2181,11 @@ if [ "$PRT_MODE" = enforce ]; then
   : > "$FOREIGN_COMMENTS_FILE"
   FOREIGN_COMMENTS_UNREAD=false
   FOREIGN_COMMENTS_SCANNED=false
-  total_findings_this_run="$(jq 'length' <<< "$ALL_FINDINGS")"
+  if ! total_findings_this_run="$(jq 'length' <<< "$ALL_FINDINGS" 2>/dev/null)"; then
+    # -1 matches neither branch below: no clean verdict, no supersede, and the run is incomplete.
+    prt_mark_incomplete "the findings could not be counted for the clean-verdict decision (local fault)"
+    total_findings_this_run=-1
+  fi
   review_parse_failed_this_run=false
   prt_degraded_reasons | grep -q 'review-parse-failed' && review_parse_failed_this_run=true
   if [ "$total_findings_this_run" -eq 0 ] && ! prt_is_incomplete && ! "$review_parse_failed_this_run"; then
@@ -2163,9 +2198,12 @@ if [ "$PRT_MODE" = enforce ]; then
         # wall-clock spans the pagination, so a check taken before it started
         # does not cover a write landing after the head has since moved.
         if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
-          clean_body="$(prt_render_clean_comment "$PRT_HEAD_SHA" "$PRT_MODEL" "$chunk_idx" "$EXCLUDED_FILES")"
-          prt_upsert_issue_comment "$PRT_REPO" "$PRT_PR_NUMBER" "$clean_body" "$clean_id" || \
-            prt_mark_incomplete "failed to upsert clean-verdict comment (HTTP ${PRT_LAST_HTTP_STATUS:-unknown})"
+          if ! clean_body="$(prt_render_clean_comment "$PRT_HEAD_SHA" "$PRT_MODEL" "$chunk_idx" "$EXCLUDED_FILES")"; then
+            prt_mark_incomplete "the clean-verdict comment could not be rendered (local fault); nothing was posted"
+          else
+            prt_upsert_issue_comment "$PRT_REPO" "$PRT_PR_NUMBER" "$clean_body" "$clean_id" || \
+              prt_mark_incomplete "failed to upsert clean-verdict comment (HTTP ${PRT_LAST_HTTP_STATUS:-unknown})"
+          fi
         else
           prt_handle_freshness_rc "$?" "clean-verdict comment upsert"
         fi
@@ -2200,8 +2238,8 @@ if [ "$PRT_MODE" = enforce ]; then
             # claiming "see the advisory comment on this PR" for a comment
             # that was never written (go-kure/.github#180 codex review, this
             # round).
-            superseded_overflow_arg="$(jq 'length' <<< "$OVERFLOW")"
-            superseded_quarantined_arg="$(jq 'length' <<< "$QUARANTINED")"
+            superseded_overflow_arg="$overflow_len"
+            superseded_quarantined_arg="$quarantined_len"
             if [ "$OVERFLOW_COMMENT_POSTED" != true ]; then
               superseded_overflow_arg=0
               superseded_quarantined_arg=0
@@ -2341,9 +2379,8 @@ if [ "$PRT_MODE" = enforce ]; then
   fi
 fi
 
-{
-  prt_render_summary "$PRT_MODE" "$PRT_HEAD_SHA" "$chunk_idx" "$ALL_FINDINGS" "$SUPPRESSED_COUNT" "$(prt_incomplete_reasons)" "$(prt_degraded_reasons)" "$SUPPRESSED" "$EXCLUDED_FILES"
-} >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+# A render fault marks the run incomplete here, before the exit decision below.
+prt_write_summary "$PRT_MODE" "$PRT_HEAD_SHA" "$chunk_idx" "$ALL_FINDINGS" "$SUPPRESSED_COUNT" "$(prt_incomplete_reasons)" "$(prt_degraded_reasons)" "$SUPPRESSED" "$EXCLUDED_FILES" || true
 
 incomplete_count=0
 prt_is_incomplete && incomplete_count="$(prt_incomplete_reasons | grep -c . || true)"
