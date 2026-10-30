@@ -512,7 +512,9 @@ checkout.
 user can still read an ancestor's `/proc/<pid>/environ`, where the posting token is. So every call
 puts a boundary in front of the runner, and the call is refused as `runner-boundary` (findings stay unverdicted and still gate)
 unless that boundary has been established and checked for that call. There is no setting that
-runs the runner without one.
+runs the runner without one. Every file descriptor above 2 is also closed in the process that
+starts it, because `env -i` and a namespace both leave them open, and a descriptor the orchestrator
+holds (a credential file, a pipe) would be readable to the runner.
 - `pidns` (default): the runner is started under `unshare --pid --fork --mount-proc --kill-child`,
   with `--user --map-current-user` added when not root (the files it reads keep their owner). Its
   `/proc` then lists only its own namespace: the orchestrator and every other ancestor are not
