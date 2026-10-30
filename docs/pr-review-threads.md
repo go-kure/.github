@@ -526,7 +526,9 @@ holds (a credential file, a pipe) would be readable to the runner.
 - `cmd`: the command in `PRT_ASSESS_RUNNER_BOUNDARY_CMD` is put in front of the runner, for a host
   where a namespace is not allowed, for instance one that switches to another user. It is workflow
   configuration, never PR content, and its claim to isolate counts for nothing: it passes the same
-  check as `pidns` or the call is refused.
+  check as `pidns` or the call is refused. That includes the capability test: a command that runs
+  the runner as root with capabilities (for instance `unshare` as root without dropping them) is
+  refused, because the runner could undo the boundary.
 
 The check runs for every call, whichever form: a probe is started behind the boundary with every
 process from this one up to pid 1, each named by pid and start time, and it must find that none
