@@ -7,12 +7,6 @@ name: PR Review Runner Boundary Probe
 # token and a stub for the runner. A red run is a result, not a flake.
 on:
   workflow_dispatch:
-  # TEMPORARY: one run of the probe on the draft PR, because a manual dispatch needs this
-  # file on the default branch. Removed in the next commit, before the PR leaves draft.
-  pull_request:
-    paths:
-      - .github/workflows/pr-review-runner-boundary-probe.yml
-      - scripts/pr-review-runner-boundary-probe.sh
 
 permissions:
   contents: read
@@ -34,7 +28,4 @@ jobs:
         run: bash scripts/test/pr-review-threads-test.sh .
 
       - name: Canary probe behind the default boundary
-        # TEMPORARY with the trigger above: run it even when the suite step fails, so the
-        # lane's own answer is on record. The next commit restores the default.
-        if: always()
         run: bash scripts/pr-review-runner-boundary-probe.sh
