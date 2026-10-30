@@ -7454,7 +7454,7 @@ assert_eq "assess runner, non-numeric PRT_ASSESS_RUNNER_SECONDS: no runner call,
 PRT_TEST_ASSESS_RUNNER_SECONDS=""
 fi
 
-# ---- the process boundary (go-kure/.github#303 review, srgvg/claude-dotfiles#179)
+# ---- the process boundary (the review of the runner backend, go-kure/.github#311)
 # The scrub keeps the token out of the runner's own environment, not out of an ancestor's
 # /proc/<pid>/environ, which a same-user process can read. So every call runs behind a boundary the
 # orchestrator establishes and checks first; if it cannot, the call is refused as runner-boundary
