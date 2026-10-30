@@ -102,6 +102,121 @@ assert_eq "json concat: merges payloads above the kernel single-argument limit" 
   "$(jq -r 'length as $n | [$n, (.[0]|length), (.[1]|length)] | join(" ")' <<< "$json_big_merged")"
 unset json_big_payload json_big_left json_big_right json_big_merged
 
+# prt_json_append_item validates both operands: a bare `.[0] + [.[1]]` would turn an empty
+# item into [null] and succeed, which is a lost row recorded as an appended one.
+json_list='[{"id":1}]'
+json_one="$(prt_json_append_item "$json_list" '{"id":2}')"
+assert_eq "json append_item: appends one object" "1 2" "$(jq -r '[.[].id] | join(" ")' <<< "$json_one")"
+for json_bad_item in '' 'null' '[1]' '"text"' '{not json'; do
+  json_out="$(prt_json_append_item "$json_list" "$json_bad_item")"
+  json_bad_rc=$?
+  assert_eq "json append_item: refuses the item [$json_bad_item] with no output" \
+    "fail-empty" "$([ "$json_bad_rc" -ne 0 ] && [ -z "$json_out" ] && echo fail-empty || echo "rc=$json_bad_rc out=$json_out")"
+done
+for json_bad_list in '' 'null' '{"a":1}' '[1'; do
+  json_out="$(prt_json_append_item "$json_bad_list" '{"id":2}')"
+  json_bad_rc=$?
+  assert_eq "json append_item: refuses the list [$json_bad_list] with no output" \
+    "fail-empty" "$([ "$json_bad_rc" -ne 0 ] && [ -z "$json_out" ] && echo fail-empty || echo "rc=$json_bad_rc out=$json_out")"
+done
+printf -v json_big_payload '%*s' 180000 ''
+json_big_payload="${json_big_payload// /x}"
+json_out="$(prt_json_append_item '[]' "{\"big\":\"$json_big_payload\"}")"
+assert_eq "json append_item: accepts an item above the kernel single-argument limit" "180000" \
+  "$(jq -r '.[0].big | length' <<< "$json_out")"
+unset json_list json_one json_bad_item json_bad_list json_out json_bad_rc json_big_payload
+
+# prt_json_body_payload: the body travels on stdin, so a body above the limit still builds.
+printf -v json_big_payload '%*s' 180000 ''
+json_big_payload="${json_big_payload// /y}"
+json_out="$(prt_json_body_payload "$json_big_payload" --arg in_reply_to_marker x)"
+assert_eq "json body_payload: builds a payload from a body above the kernel single-argument limit" \
+  "180000 x" "$(jq -r '[(.body | length), .in_reply_to_marker] | join(" ")' <<< "$json_out")"
+unset json_big_payload json_out
+
+# ============================================================ argv guard (class: unbounded value on argv)
+# Linux caps ONE argument at 131072 bytes, so any `jq --arg/--argjson NAME "$var"` whose
+# value can grow with a finding, a chunk, a comment body or an API response can make jq fail
+# to exec on a large but legal input. Such values must travel on stdin (prt_json_* helpers,
+# or a two-document `jq -s`). This guard scans the pipeline's scripts for every argument
+# bound from a variable and fails on a variable that is not in the allow-list below. Adding
+# a name to the list is the review step: state the measure that bounds it.
+#
+# Each entry is FILE:VARIABLE with its bound:
+#   fp-like     16 hex characters (plus an ordinal suffix)         sha-like   40 or 64 hex characters
+#   number      an index, a count, a line number or a database id  flag       the word true or false
+#   id-like     a login, owner, repo name or GraphQL node id or cursor (GitHub caps each far below 4 KiB)
+#   const       a fixed string the script itself defines
+#   config      operator configuration (a model name, a token budget, the severity rank map)
+#   file        a repository path: dropped at ingress above 4096 bytes (prt_normalize_findings)
+#   severity    a severity word: a value past 64 characters is reset before use
+prt_guard_allow=" \
+pr-review-threads.sh:chunk_idx pr-review-threads.sh:ci pr-review-threads.sh:ti pr-review-threads.sh:tpi \
+pr-review-threads.sh:i pr-review-threads.sh:line pr-review-threads.sh:db_id \
+pr-review-threads.sh:first_comment_db_id pr-review-threads.sh:PRT_PR_NUMBER \
+pr-review-threads.sh:collision pr-review-threads.sh:gating_flag pr-review-threads.sh:has_human_reply \
+pr-review-threads.sh:persisted_only_flag pr-review-threads.sh:quarantine_reason \
+pr-review-threads.sh:content_fp pr-review-threads.sh:foreign_cfp pr-review-threads.sh:foreign_fp \
+pr-review-threads.sh:fp pr-review-threads.sh:gating_fp_base \
+pr-review-threads.sh:first_absent_sha pr-review-threads.sh:mf_sha pr-review-threads.sh:stale \
+pr-review-threads.sh:PRT_HEAD_SHA \
+pr-review-threads.sh:cursor pr-review-threads.sh:tcursor pr-review-threads.sh:thread_id \
+pr-review-threads.sh:tid_pg pr-review-threads.sh:foreign_login pr-review-threads.sh:OWNER \
+pr-review-threads.sh:REPO_NAME pr-review-threads.sh:PRT_BOT_LOGIN_GQL \
+pr-review-threads.sh:file pr-review-threads.sh:owned_severity \
+diff.sh:added diff.sh:removed diff.sh:path diff.sh:reason \
+finding.sh:cat finding.sh:fp_base finding.sh:outside_marker \
+gh.sh:bot_login gh.sh:ci gh.sh:cursor gh.sh:marker gh.sh:query gh.sh:superseded \
+gh.sh:thread_id gh.sh:variables \
+json.sh:index json.sh:kind \
+model.sh:idx model.sh:max_tokens model.sh:model model.sh:n \
+model.sh:PRT_HEAD_SHA model.sh:PRT_REVIEW_BASE_SHA model.sh:PRT_REVIEW_MATERIAL_SHA256 \
+reconcile.sh:2 reconcile.sh:cap reconcile.sh:fp reconcile.sh:rank reconcile.sh:sev_rank \
+reconcile.sh:this_cfp \
+review-adapter.sh:chunk_count review-adapter.sh:n_chunk_failed review-adapter.sh:n_chunk_ok \
+"
+
+# prt_guard_scan FILE... — prints FILE:VARIABLE for each `--arg|--argjson NAME "$VAR"` bound
+# from a variable; a command substitution prints as FILE:$( and comment lines are skipped.
+prt_guard_scan() {
+  local f
+  for f in "$@"; do
+    grep -vE '^[[:space:]]*#' "$f" |
+      grep -oE -e '--(arg|argjson) +[A-Za-z_0-9]+ +"\$(\{|\()?[A-Za-z_0-9]*' |
+      sed -E -e 's/.*"\$\(.*/$(/' -e 's/.*"\$\{?//' |
+      sort -u | sed "s|^|$(basename "$f"):|"
+  done
+}
+
+prt_guard_found="$(prt_guard_scan "$ROOT/scripts/pr-review-threads.sh" "$LIB"/*.sh "$ROOT/scripts/eval/review-adapter.sh")"
+prt_guard_unknown=""
+while IFS= read -r prt_guard_entry; do
+  [ -z "$prt_guard_entry" ] && continue
+  case "$prt_guard_allow" in
+    *" $prt_guard_entry "*) ;;
+    *) prt_guard_unknown="$prt_guard_unknown $prt_guard_entry" ;;
+  esac
+done <<< "$prt_guard_found"
+assert_eq "argv guard: every variable bound with --arg/--argjson is on the allow-list (a new one needs its bound stated)" \
+  "" "${prt_guard_unknown# }"
+assert_eq "argv guard: the scan finds the sites (not a vacuous pass)" \
+  "true" "$([ "$(wc -l <<< "$prt_guard_found")" -ge 50 ] && echo true || echo false)"
+
+# The scanner itself: a restored `--argjson item "$item"`, a `${var}` form and a command
+# substitution are each reported, and a comment mentioning the pattern is not.
+prt_guard_dir="$(mktemp -d)"
+cat > "$prt_guard_dir/probe.sh" <<'PROBE'
+# jq --argjson in_a_comment "$ignored" is not code
+jq -c --argjson item "$item" '. + [$item]' <<< "$list"
+jq -c --arg body "${body}" '.' <<< "$x"
+jq -c --argjson add "$(printf x)" '.' <<< "$x"
+PROBE
+assert_eq "argv guard: the scanner reports a restored variable argument, a braced one and a command substitution" \
+  'probe.sh:$( probe.sh:body probe.sh:item' "$(prt_guard_scan "$prt_guard_dir/probe.sh" | tr '\n' ' ' | sed 's/ $//')"
+rm -rf "$prt_guard_dir"
+unset prt_guard_allow prt_guard_found prt_guard_unknown prt_guard_entry prt_guard_dir
+unset -f prt_guard_scan
+
 # ============================================================ fingerprint
 assert_eq "fp_base is deterministic across calls" \
   "$(prt_fp_base "a/b.go" "nil-deref")" "$(prt_fp_base "a/b.go" "nil-deref")"
@@ -202,6 +317,44 @@ assert_eq "normalize: empty-string file is dropped (not == \"\" trap avoided)" "
 object_file='{"findings":[{"file":{"nested":true},"category":"race","severity":"High","issue":"i","fix":"f"}]}'
 n="$(prt_normalize_findings "$object_file" 2>/dev/null)"
 assert_eq "normalize: object .file (not string) is dropped, not misread as truthy" "0" "$(jq 'length' <<< "$n")"
+
+# A .file over 4096 bytes is dropped at ingress: it is the one finding field later passed to
+# jq as an argument, and a git path never exceeds PATH_MAX.
+printf -v long_file '%*s' 5000 ''
+long_file="${long_file// /d}"
+long_file_raw="{\"findings\":[{\"file\":\"$long_file\",\"category\":\"race\",\"line\":1,\"severity\":\"High\",\"issue\":\"i\",\"fix\":\"f\"},{\"file\":\"ok.go\",\"category\":\"race\",\"line\":1,\"severity\":\"High\",\"issue\":\"i\",\"fix\":\"f\"}]}"
+n="$(prt_normalize_findings "$long_file_raw" 2>/dev/null)"
+rc=$?
+assert_eq "normalize: a .file over 4096 bytes is dropped (rc 2) and the other row survives" \
+  "2 ok.go" "$rc $(jq -r '[.[].file] | join(" ")' <<< "$n")"
+unset long_file long_file_raw
+
+# A local jq fault (as opposed to a bad response) is rc 3 with no output and no retry. The
+# fault is injected by a `jq` function that fails when the program holds PRT_TEST_JQ_FAIL.
+prt_test_fault_jq() {
+  local a
+  if [ -n "${PRT_TEST_JQ_FAIL:-}" ]; then
+    for a in "$@"; do
+      case "$a" in *"$PRT_TEST_JQ_FAIL"*) return 5 ;; esac
+    done
+  fi
+  command jq "$@"
+}
+jq() { prt_test_fault_jq "$@"; }
+PRT_TEST_JQ_FAIL='expected an array and one object'
+n="$(prt_normalize_findings "$good_raw" 2>/dev/null)"
+rc=$?
+assert_eq "normalize: a local fault while rebuilding the list returns rc 3 with no output" "3 " "$rc $n"
+n="$(prt_assign_ordinals "$single_finding" 2>/dev/null)"
+rc=$?
+assert_eq "ordinals: a local fault while rebuilding the list fails with no output" "1 " "$rc $n"
+PRT_TEST_JQ_FAIL='no-such-program-text'
+n="$(prt_normalize_findings "$good_raw" 2>/dev/null)"
+rc=$?
+assert_eq "normalize: with a pass-through jq the same input is rc 0 again (the fault was injected)" \
+  "0 1" "$rc $(jq 'length' <<< "$n")"
+unset PRT_TEST_JQ_FAIL
+unset -f jq prt_test_fault_jq
 
 partial_drop_mixed='{"findings":[{"file":"a.go","category":"race","line":1,"severity":"High","issue":"i","fix":"f"},{"file":"","category":"race","severity":"High","issue":"bad","fix":"f"}]}'
 n="$(prt_normalize_findings "$partial_drop_mixed" 2>/dev/null)"
@@ -2422,6 +2575,19 @@ fake_curl_orchestrator() {
     esac
   done
 
+  # Every comment write, POST or PATCH, on an issue or a review thread, must carry a
+  # JSON object with a non-empty string body. The check runs before any arm below
+  # (logging, failure injection, counting), so no write path can record an empty or
+  # truncated payload as a delivered comment.
+  case "$method:$url" in
+    POST:*/issues/*/comments|PATCH:*/issues/comments/*|POST:*/pulls/*/comments|PATCH:*/pulls/comments/*)
+      if ! _prt_test_payload_ok "$data"; then
+        echo "mock: rejected an empty or non-JSON comment payload for $method $url" >&2
+        : > "$out"; echo 422; return 0
+      fi
+      ;;
+  esac
+
   # Opt-in issue-comment log (go-kure/.github#151): only when a caller sets
   # PRT_TEST_ISSUE_COMMENT_LOG, so every other fixture keeps its existing
   # behavior. The listing GET serves PRT_TEST_ISSUE_COMMENTS_LIST (default
@@ -3165,7 +3331,7 @@ run_orchestrator() {
     [ -n "${PRT_TEST_STANDARDS_FILE+set}" ] && export PRT_STANDARDS_FILE="$PRT_TEST_STANDARDS_FILE"
     [ -n "${PRT_TEST_STANDARDS_SOURCE+set}" ] && export PRT_STANDARDS_SOURCE="$PRT_TEST_STANDARDS_SOURCE"
     cd "$scratch" && \
-    PRT_CURL=fake_curl_orchestrator \
+    PRT_CURL="${PRT_TEST_CURL:-fake_curl_orchestrator}" \
     PRT_TEST_DIFF_COUNTFILE="$PRT_TEST_DIFF_COUNTFILE" \
     PRT_TEST_META_COUNTFILE="$PRT_TEST_META_COUNTFILE" \
     PRT_TEST_MODEL_COUNTFILE="$PRT_TEST_MODEL_COUNTFILE" \
@@ -6053,8 +6219,20 @@ PRT_TEST_FINDINGS_FILE="$prt_fo_dir/findings.json"
 PRT_TEST_REVIEW_BASE_SHA="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 PRT_TEST_REVIEW_MATERIAL_SHA256="cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 PRT_TEST_CREATE_BODY_LOG="$(mktemp)"
+# The curl stand-in MUST be an executable on disk (see the model.sh E2BIG case below): a
+# shell function is never execve'd, so it would accept a payload restored to argv (`-d "$payload"`)
+# and make this case vacuous. The wrapper hands the request to the exported mock function.
+cat > "$prt_fo_dir/curl" <<'EXECCURL'
+#!/usr/bin/env bash
+fake_curl_orchestrator "$@"
+EXECCURL
+chmod +x "$prt_fo_dir/curl"
+PRT_TEST_CURL="$prt_fo_dir/curl"
 rc="$(run_orchestrator enforce 0 0 0)"
+unset PRT_TEST_CURL
 assert_eq "multi-byte body over the argv limit: the run exits 0" "0" "$rc"
+assert_eq "multi-byte body over the argv limit: no request failed to exec" \
+  "false" "$(grep -qiE 'argument list too long|cannot execute' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 assert_eq "multi-byte body over the argv limit: the thread payload carries the finding" \
   "true" "$(grep -qF 'multibyte-marker' "$PRT_TEST_CREATE_BODY_LOG" && echo true || echo false)"
 assert_eq "multi-byte body over the argv limit: all 50,000 characters are delivered" \

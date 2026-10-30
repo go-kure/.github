@@ -85,6 +85,24 @@ prt_json_body_payload() {
   printf '%s' "$body" | jq -Rsc "$@" '{body: .} + $ARGS.named' 2>/dev/null
 }
 
+# prt_json_append_item LIST ITEM -> LIST with ITEM appended
+# Both operands travel on stdin: one finding can hold text past the kernel's
+# 128 KiB cap on a single argument. Unlike a bare `.[0] + [.[1]]`, which turns an
+# empty ITEM into [null] and succeeds, both operands are validated: LIST must be
+# a JSON array and ITEM a non-empty JSON object. Returns nonzero with no output
+# otherwise, so a caller can never mistake a lost row for an appended one.
+prt_json_append_item() {
+  local list="$1" item="$2"
+  printf '%s\n%s\n' "$list" "$item" |
+    jq -ces '
+      if length == 2 and (.[0] | type) == "array" and (.[1] | type) == "object" then
+        .[0] + [.[1]]
+      else
+        error("expected an array and one object")
+      end
+    ' 2>/dev/null
+}
+
 # prt_json_append_thread_comments THREADS INDEX EXTRA_COMMENTS
 # Appends EXTRA_COMMENTS to THREADS[INDEX].comments.nodes. Both unbounded
 # arrays use stdin; INDEX remains a bounded scalar argv value. Returns nonzero

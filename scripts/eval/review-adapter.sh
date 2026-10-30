@@ -108,6 +108,8 @@ done
 . "$lib_dir/model.sh"
 # shellcheck source=/dev/null
 . "$lib_dir/finding.sh"
+# shellcheck source=/dev/null
+. "$lib_dir/json.sh"
 
 : "${PRT_MODEL:=claude-opus-4}"
 : "${PRT_MAX_TOKENS:=1500}"
@@ -223,16 +225,27 @@ for chunk_file in "$chunk_dir"/chunk-*.diff; do
     # variance the noise floor is meant to measure. The assessment call below DOES retry, and
     # the asymmetry is argued there: losing a review response lowers recall visibly, losing an
     # assessment response raises it invisibly.
-    if [ "$parse_rc" -eq 1 ] || [ "$norm_rc" -eq 1 ]; then
+    if [ "$parse_rc" -eq 1 ] || [ "$norm_rc" -eq 1 ] || [ "$norm_rc" -eq 3 ]; then
         log "chunk $chunk_idx: no usable findings (parse_rc=$parse_rc norm_rc=$norm_rc)"
-        prt_mark_degraded "chunk $chunk_idx: unusable review response"
+        # rc 3 is a local fault, not a bad response: say so, and never count the chunk as ok.
+        if [ "$norm_rc" -eq 3 ]; then
+            prt_mark_degraded "chunk $chunk_idx: local fault assembling the review findings"
+        else
+            prt_mark_degraded "chunk $chunk_idx: unusable review response"
+        fi
         n_chunk_failed=$((n_chunk_failed + 1))
         chunk_idx=$((chunk_idx + 1))
         continue
     fi
     [ "$norm_rc" -eq 2 ] && prt_mark_degraded "chunk $chunk_idx: some findings malformed and dropped"
 
-    chunk_findings=$(prt_assign_ordinals "$normalized")
+    if ! chunk_findings=$(prt_assign_ordinals "$normalized"); then
+        log "chunk $chunk_idx: local fault assigning fingerprints"
+        prt_mark_degraded "chunk $chunk_idx: local fault assigning fingerprints"
+        n_chunk_failed=$((n_chunk_failed + 1))
+        chunk_idx=$((chunk_idx + 1))
+        continue
+    fi
 
     if [ "$do_assess" = true ] && [ "$(jq 'length' <<<"$chunk_findings")" != "0" ]; then
         assess_rc=0
@@ -303,7 +316,16 @@ for chunk_file in "$chunk_dir"/chunk-*.diff; do
         fi
     fi
 
-    all_findings=$(jq -c --argjson add "$chunk_findings" '. + $add' <<<"$all_findings")
+    # Both arrays travel on stdin (a chunk's findings can pass the 128 KiB single-argument
+    # cap), and a fault keeps the old accumulator and does not count the chunk as ok.
+    if ! merged=$(prt_json_concat_arrays "$all_findings" "$chunk_findings"); then
+        log "chunk $chunk_idx: local fault merging findings"
+        prt_mark_degraded "chunk $chunk_idx: local fault merging the review findings"
+        n_chunk_failed=$((n_chunk_failed + 1))
+        chunk_idx=$((chunk_idx + 1))
+        continue
+    fi
+    all_findings=$merged
     n_chunk_ok=$((n_chunk_ok + 1))
     chunk_idx=$((chunk_idx + 1))
 done
@@ -340,7 +362,9 @@ fi
 # Dropping fp/collision first is what makes this a re-assignment rather than a no-op: the
 # function recomputes fp_base from file and category and re-groups, so it is safe to re-run,
 # and any verdict joined in above rides along on the row untouched.
-all_findings=$(prt_assign_ordinals "$(jq -c 'map(del(.fp, .collision))' <<<"$all_findings")") \
+stripped_findings=$(jq -c 'map(del(.fp, .collision))' <<<"$all_findings") \
+    || die "cannot strip fingerprints from the aggregated review"
+all_findings=$(prt_assign_ordinals "$stripped_findings") \
     || die "cannot assign fingerprints across the aggregated review"
 
 to_json_array() {
@@ -360,17 +384,19 @@ degraded=$(to_json_array "${PRT_DEGRADED_FILE:-/dev/null}")
 # not run, not a reviewer that missed something, and scoring it as a miss biases recall down by
 # exactly the failure rate the harness exists to tolerate. Exiting 1 here would be wrong the
 # other way: the findings from the chunks that DID succeed are real, and the caller decides.
-result=$(jq -n \
+# The findings and the two note lists are unbounded, so they travel on stdin as three
+# documents; only the four counters and the engine name are arguments.
+result=$(printf '%s\n%s\n%s\n' "$all_findings" "$incomplete" "$degraded" |
+    jq -cs \
     --arg engine chat \
     --argjson chunks "$chunk_count" \
     --argjson chunks_ok "$n_chunk_ok" \
     --argjson chunks_failed "$n_chunk_failed" \
-    --argjson findings "$all_findings" \
-    --argjson incomplete "$incomplete" \
-    --argjson degraded "$degraded" \
-    '{engine: $engine, chunks: $chunks, chunks_ok: $chunks_ok,
-      chunks_failed: $chunks_failed, findings: $findings,
-      incomplete: $incomplete, degraded: $degraded}') \
+    'if length == 3 and all(.[]; type == "array") then
+       {engine: $engine, chunks: $chunks, chunks_ok: $chunks_ok,
+        chunks_failed: $chunks_failed, findings: .[0],
+        incomplete: .[1], degraded: .[2]}
+     else error("expected three arrays") end') \
     || die "cannot build result JSON"
 
 if [ -n "$out_file" ]; then

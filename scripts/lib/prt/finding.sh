@@ -87,6 +87,9 @@ prt_normalize_category() {
 #       so the caller treats this as REVIEW_DEGRADED (non-fatal), not
 #       REVIEW_INCOMPLETE — distinct from rc=1 above, which covers both "no
 #       rows at all" and "rows present but none survived".
+#   3 — a local step failed (a jq run, or building the result) and nothing is
+#       printed. Not a property of the response, so the caller must not retry
+#       it or count it as an unusable response: it fails closed.
 #
 # Guards, each independently necessary (an array of scalars passes a bare
 # "is array" check; a `.file != ""` check passes a non-string `.file`,
@@ -108,15 +111,24 @@ prt_normalize_findings() {
   fi
 
   local raw_count filtered_count
-  raw_count="$(jq '.findings | length' <<< "$raw_json")"
+  if ! raw_count="$(jq '.findings | length' <<< "$raw_json" 2>/dev/null)"; then
+    echo "prt_normalize_findings: local fault counting the findings" >&2
+    return 3
+  fi
 
   local objects
-  objects="$(jq -c '[.findings[] | select(type=="object")]' <<< "$raw_json")"
+  if ! objects="$(jq -c '[.findings[] | select(type=="object")]' <<< "$raw_json" 2>/dev/null)"; then
+    echo "prt_normalize_findings: local fault selecting the finding objects" >&2
+    return 3
+  fi
 
+  # A file path longer than PATH_MAX (4096 bytes) cannot name a file in the diff.
+  # Such a row is malformed, which also bounds every later use of the path as a
+  # command-line argument far below the kernel's 128 KiB cap.
   local normalized
-  normalized="$(jq -c '
+  if ! normalized="$(jq -c '
     [ .[]
-      | select((.file? | type) == "string" and (.file | length) > 0)
+      | select((.file? | type) == "string" and (.file | length) > 0 and (.file | utf8bytelength) <= 4096)
       | select((.category? | type) == "string")
       | select((.severity? | type) == "string")
       | select((.issue? | type) == "string")
@@ -129,9 +141,15 @@ prt_normalize_findings() {
           issue: .issue,
           fix: .fix
         }
-    ]' <<< "$objects")"
+    ]' <<< "$objects" 2>/dev/null)"; then
+    echo "prt_normalize_findings: local fault normalizing the findings" >&2
+    return 3
+  fi
 
-  filtered_count="$(jq 'length' <<< "$normalized")"
+  if ! filtered_count="$(jq 'length' <<< "$normalized" 2>/dev/null)"; then
+    echo "prt_normalize_findings: local fault counting the normalized findings" >&2
+    return 3
+  fi
   local dropped=0
   if [ "$filtered_count" != "$raw_count" ]; then
     dropped=$((raw_count - filtered_count))
@@ -142,15 +160,22 @@ prt_normalize_findings() {
   # this is a second pass over the already-shape-valid array).
   local clamped='[]'
   local i n item category cat
-  n="$(jq 'length' <<< "$normalized")"
+  # Every step is checked: an unchecked failure here used to leave an empty item
+  # that the append turned into a null row. CAT is a closed-enum member, so it is
+  # safe as an argument; the finding itself never is, and travels on stdin.
+  if ! n="$(jq 'length' <<< "$normalized" 2>/dev/null)"; then
+    echo "prt_normalize_findings: local fault counting the normalized findings" >&2
+    return 3
+  fi
   for ((i = 0; i < n; i++)); do
-    item="$(jq -c ".[$i]" <<< "$normalized")"
-    category="$(jq -r '.category' <<< "$item")"
-    cat="$(prt_normalize_category "$category")"
-    item="$(jq -c --arg cat "$cat" '.category = $cat' <<< "$item")"
-    # Both operands travel on stdin: one finding of multi-byte text can pass the
-    # kernel's 128 KiB cap on a single argument, which `--argjson item` would hit.
-    clamped="$(printf '%s\n%s\n' "$clamped" "$item" | jq -cs '.[0] + [.[1]]')"
+    if ! item="$(jq -ce ".[$i] | select(type == \"object\")" <<< "$normalized" 2>/dev/null)" ||
+       ! category="$(jq -r '.category' <<< "$item" 2>/dev/null)" ||
+       ! cat="$(prt_normalize_category "$category")" ||
+       ! item="$(jq -ce --arg cat "$cat" '.category = $cat' <<< "$item" 2>/dev/null)" ||
+       ! clamped="$(prt_json_append_item "$clamped" "$item")"; then
+      echo "prt_normalize_findings: local fault clamping finding $i" >&2
+      return 3
+    fi
   done
 
   printf '%s' "$clamped"
@@ -195,17 +220,20 @@ prt_normalize_findings() {
 prt_assign_ordinals() {
   local findings_json="$1"
   local n i item file category fp_base
-  n="$(jq 'length' <<< "$findings_json")"
+  # Every step is checked and the result is validated: a failed step returns 1 with
+  # no output, which the caller treats as a local fault. FPB is 16 hex characters,
+  # so it is safe as an argument; the finding itself travels on stdin.
+  n="$(jq -r 'if type == "array" then length else error("not an array") end' <<< "$findings_json" 2>/dev/null)" || return 1
 
   # Pass 1: compute fp_base per element, stash as a parallel array.
   local with_base='[]'
   for ((i = 0; i < n; i++)); do
-    item="$(jq -c ".[$i]" <<< "$findings_json")"
-    file="$(jq -r '.file' <<< "$item")"
-    category="$(jq -r '.category' <<< "$item")"
-    fp_base="$(prt_fp_base "$file" "$category")"
-    item="$(jq -c --arg fpb "$fp_base" '. + {fp_base: $fpb}' <<< "$item")"
-    with_base="$(printf '%s\n%s\n' "$with_base" "$item" | jq -cs '.[0] + [.[1]]')"
+    item="$(jq -ce ".[$i] | select(type == \"object\")" <<< "$findings_json" 2>/dev/null)" || return 1
+    file="$(jq -r '.file' <<< "$item" 2>/dev/null)" || return 1
+    category="$(jq -r '.category' <<< "$item" 2>/dev/null)" || return 1
+    fp_base="$(prt_fp_base "$file" "$category")" || return 1
+    item="$(jq -ce --arg fpb "$fp_base" '. + {fp_base: $fpb}' <<< "$item" 2>/dev/null)" || return 1
+    with_base="$(prt_json_append_item "$with_base" "$item")" || return 1
   done
 
   # Pass 2: group by fp_base, sort each group by line (nulls last), assign
@@ -225,7 +253,7 @@ prt_assign_ordinals() {
           )
       )
     | flatten
-  ' <<< "$with_base"
+  ' <<< "$with_base" 2>/dev/null
 }
 
 # prt_join_assessment FINDINGS_JSON ASSESSMENT_RAW_JSON — joins by `fp`, NOT

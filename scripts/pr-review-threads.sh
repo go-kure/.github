@@ -536,6 +536,18 @@ for chunk_file in "$CHUNK_DIR"/chunk-*.diff; do
     continue
   fi
 
+  if [ "$norm_rc" -eq 3 ]; then
+    # A local step failed while normalizing: not a property of the response, so no
+    # retry and no "unusable response" bookkeeping. The chunk's findings are lost,
+    # so the run fails closed like every other assembly fault.
+    prt_mark_incomplete "chunk $chunk_idx: the review findings could not be assembled (local fault); the chunk is not reviewed"
+    prt_log "chunk $chunk_idx: review FAILED (findings could not be assembled)"
+    assembly_fault=true
+    CHUNK_REVIEW_FAILED[$chunk_idx]=1
+    chunk_idx=$((chunk_idx + 1))
+    continue
+  fi
+
   if [ "$norm_rc" -eq 1 ]; then
     # go-kure/.github#95: nothing usable came out of this chunk even after
     # the retry above — either .findings itself was missing/null/non-array,
@@ -1162,12 +1174,21 @@ for ((ti = 0; ti < n_threads; ti++)); do
   # go-kure/.github#268: the severity the thread states, which the cap walk
   # ranks it by while its finding is absent this run ("" when the body has
   # none in the rendered shape: ranked as the lowest known severity).
-  if ! owned_severity="$(prt_finding_body_severity "$first_body")" \
-    || ! ownership_row="$(jq -ce --arg fp "$fp" --arg collision "$collision" \
+  # The severity is read from a comment body line, so it has no natural bound and travels
+  # as a jq argument below: a value past 64 characters is no severity word, and counts as
+  # "none stated" (the lowest rank) rather than reaching argv.
+  severity_ok=true
+  owned_severity="$(prt_finding_body_severity "$first_body")" || severity_ok=false
+  [ "${#owned_severity}" -gt 64 ] && owned_severity=""
+  if [ "$severity_ok" != true ] \
+    || ! ownership_row="$(printf '%s\n%s\n' "$th" "$maint_failure_shas" | jq -cse --arg fp "$fp" --arg collision "$collision" \
     --arg fas "$first_absent_sha" --arg bot "$PRT_BOT_LOGIN_GQL" \
     --arg cfp "$content_fp" --argjson hhr "$has_human_reply" \
-    --argjson mfs "$maint_failure_shas" --arg sev "$owned_severity" '
-      {
+    --arg sev "$owned_severity" '
+      if length != 2 or (.[1] | type) != "array" then error("expected a thread and a list") else . end
+      | .[1] as $mfs
+      | .[0]
+      | {
         fp:$fp,
         collision:($collision == "true"),
         first_absent_sha:$fas,
@@ -1183,7 +1204,7 @@ for ((ti = 0; ti < n_threads; ti++)); do
         viewer_can_resolve:.viewerCanResolve,
         viewer_can_unresolve:.viewerCanUnresolve
       }
-    ' <<< "$th" 2>/dev/null)"; then
+    ' 2>/dev/null)"; then
     prt_inventory_fail "ownership-row construction at thread index $ti"
     break
   fi
@@ -1396,21 +1417,35 @@ if [ "$PRT_MODE" = advisory ]; then
     prt_handle_freshness_rc "$?" "advisory comment"
   fi
 else
-  n_findings="$(jq 'length' <<< "$ALL_FINDINGS")"
+  if ! n_findings="$(jq -r 'if type == "array" then length else error("not an array") end' <<< "$ALL_FINDINGS" 2>/dev/null)"; then
+    prt_mark_incomplete "the findings could not be counted (local fault); the findings are not reported"
+    n_findings=0
+  fi
   for ((fi = 0; fi < n_findings; fi++)); do
-    f="$(jq -c ".[$fi]" <<< "$ALL_FINDINGS")"
-    fp="$(jq -r '.fp' <<< "$f")"
-    collision="$(jq -r '.collision' <<< "$f")"
-    verdict="$(jq -r '.verdict // "NONE"' <<< "$f")"
-    within_cap="$(jq -r '.within_cap' <<< "$f")"
+    # A failed read of one finding is a local fault that would drop it from the
+    # report: the run fails closed, and the finding is not acted on half-read.
+    # Every later field read is from this object, which is known to be valid JSON.
+    if ! f="$(jq -ce ".[$fi] | select(type == \"object\")" <<< "$ALL_FINDINGS" 2>/dev/null)" ||
+       ! fp="$(jq -r '.fp' <<< "$f" 2>/dev/null)" ||
+       ! collision="$(jq -r '.collision' <<< "$f" 2>/dev/null)" ||
+       ! verdict="$(jq -r '.verdict // "NONE"' <<< "$f" 2>/dev/null)" ||
+       ! within_cap="$(jq -r '.within_cap' <<< "$f" 2>/dev/null)" ||
+       ! fi_issue="$(jq -r '.issue' <<< "$f" 2>/dev/null)" ||
+       ! fi_fix="$(jq -r '.fix' <<< "$f" 2>/dev/null)"; then
+      prt_mark_incomplete "finding $fi: could not be read (local fault); it is not reported"
+      continue
+    fi
     # go-kure/.github#196: this finding's own content fingerprint, computed
     # fresh every run from its (possibly regenerated) issue+fix text —
     # compared below against whatever content_fp the matched OWNED thread's
     # marker carries, to catch a same-fp collision across runs that
     # prt_assign_ordinals (scoped to this run only) cannot see.
-    content_fp="$(prt_content_fp "$(jq -r '.issue' <<< "$f")" "$(jq -r '.fix' <<< "$f")")"
+    content_fp="$(prt_content_fp "$fi_issue" "$fi_fix")"
 
-    owned_match="$(jq -c --arg fp "$fp" 'map(select(.fp == $fp)) | .[0] // empty' <<< "$OWNED")"
+    if ! owned_match="$(jq -c --arg fp "$fp" 'map(select(.fp == $fp)) | .[0] // empty' <<< "$OWNED" 2>/dev/null)"; then
+      prt_mark_incomplete "fp=$fp: the open threads could not be searched (local fault); the finding is not acted on"
+      continue
+    fi
     # go-kure/.github#153: no own thread, but the fp appears on threads
     # another login opened. prt_foreign_action (reconcile.sh) picks ONE
     # decision for the finding, the same one the cap walk used: a foreign
@@ -1480,7 +1515,12 @@ else
       thread_resolved="$(jq -r '.resolved' <<< "$owned_match")"
       resolved_by_bot="$(jq -r '.resolved_by_bot' <<< "$owned_match")"
       has_human_reply="$(jq -r '.has_human_reply' <<< "$owned_match")"
-      MATCHED_FPS="$(jq -c --arg fp "$fp" '. + [$fp]' <<< "$MATCHED_FPS")"
+      # FP is 16 hex characters, optionally with a short "-N" ordinal.
+      if ! MATCHED_FPS_NEXT="$(jq -ce --arg fp "$fp" '. + [$fp]' <<< "$MATCHED_FPS" 2>/dev/null)"; then
+        prt_mark_incomplete "fp=$fp: the matched fingerprints could not be recorded (local fault); the finding is not acted on"
+        continue
+      fi
+      MATCHED_FPS="$MATCHED_FPS_NEXT"
 
       # Collision quarantine must be durable the moment multiplicity is
       # detected, even against a thread that predates the collision and is
@@ -1611,13 +1651,19 @@ else
         # different member's text — same mismatch class go-kure/.github#155
         # exists to close. Every member of the same fp_base group gets the identical
         # value instead (go-kure/.github#180 codex review, round 3).
-        gating_file="$(jq -r '.file' <<< "$f")"
-        gating_category="$(jq -r '.category' <<< "$f")"
-        gating_fp_base="$(prt_fp_base "$gating_file" "$gating_category")"
-        gating_owned_match="$(jq -c --arg fp "$gating_fp_base" 'map(select(.fp == $fp)) | .[0] // empty' <<< "$OWNED")"
+        if ! gating_file="$(jq -r '.file' <<< "$f" 2>/dev/null)" ||
+           ! gating_category="$(jq -r '.category' <<< "$f" 2>/dev/null)" ||
+           ! gating_fp_base="$(prt_fp_base "$gating_file" "$gating_category")" ||
+           ! gating_owned_match="$(jq -c --arg fp "$gating_fp_base" 'map(select(.fp == $fp)) | .[0] // empty' <<< "$OWNED" 2>/dev/null)"; then
+          prt_mark_incomplete "fp=$fp: the quarantined finding could not be classified (local fault); it is not reported"
+          continue
+        fi
         gating_flag=false
         if [ -n "$gating_owned_match" ]; then
-          gating_resolved="$(jq -r '.resolved' <<< "$gating_owned_match")"
+          if ! gating_resolved="$(jq -r '.resolved' <<< "$gating_owned_match" 2>/dev/null)"; then
+            prt_mark_incomplete "fp=$fp: the quarantined finding could not be classified (local fault); it is not reported"
+            continue
+          fi
           [ "$gating_resolved" != true ] && gating_flag=true
         fi
         # $collision is this finding's own this-run multiplicity
@@ -1642,16 +1688,32 @@ else
         quarantine_reason="$collision_source"
         persisted_only_flag=false
         [ "$quarantine_reason" = persisted ] && persisted_only_flag=true
-        # The finding $f travels on stdin with the list: it can hold a body of
-        # multi-byte text past the kernel's 128 KiB cap on one argument.
-        QUARANTINED="$(printf '%s\n%s\n' "$QUARANTINED" "$f" | jq -cs --argjson g "$gating_flag" --argjson p "$persisted_only_flag" --arg r "$quarantine_reason" \
-          '.[0] + [.[1] + {gating: $g, persisted_only: $p, quarantine_reason: $r}]')"
+        # The finding $f travels on stdin (prt_json_append_item): it can hold a body of
+        # multi-byte text past the kernel's 128 KiB cap on one argument. The flags are
+        # booleans and the reason one of three fixed words.
+        if ! quarantined_row="$(jq -ce --argjson g "$gating_flag" --argjson p "$persisted_only_flag" --arg r "$quarantine_reason" \
+             '. + {gating: $g, persisted_only: $p, quarantine_reason: $r}' <<< "$f" 2>/dev/null)" ||
+           ! QUARANTINED_NEXT="$(prt_json_append_item "$QUARANTINED" "$quarantined_row")"; then
+          prt_mark_incomplete "fp=$fp: the quarantined finding could not be recorded (local fault); it is not reported"
+          continue
+        fi
+        QUARANTINED="$QUARANTINED_NEXT"
         ;;
       SUPPRESS)
+        if ! SUPPRESSED_NEXT="$(prt_json_append_item "$SUPPRESSED" "$f")"; then
+          prt_mark_incomplete "fp=$fp: the suppressed finding could not be recorded (local fault); it is not reported"
+          continue
+        fi
+        SUPPRESSED="$SUPPRESSED_NEXT"
         SUPPRESSED_COUNT=$((SUPPRESSED_COUNT + 1))
-        SUPPRESSED="$(printf '%s\n%s\n' "$SUPPRESSED" "$f" | jq -cs '.[0] + [.[1]]')"
         ;;
-      OVERFLOW) OVERFLOW="$(printf '%s\n%s\n' "$OVERFLOW" "$f" | jq -cs '.[0] + [.[1]]')" ;;
+      OVERFLOW)
+        if ! OVERFLOW_NEXT="$(prt_json_append_item "$OVERFLOW" "$f")"; then
+          prt_mark_incomplete "fp=$fp: the overflow finding could not be recorded (local fault); it is not reported"
+          continue
+        fi
+        OVERFLOW="$OVERFLOW_NEXT"
+        ;;
       REPLY_RESOLVE)
         prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA" || { prt_handle_freshness_rc "$?" "fp=$fp: reply+resolve"; continue; }
         can_resolve="$(jq -r '.viewer_can_resolve' <<< "$owned_match")"
@@ -1784,11 +1846,18 @@ else
         # rather than carrying an existing one forward unchanged.
         marker="$(prt_marker_build "$fp" "$collision" "" "$content_fp")"
         body="$(prt_render_finding_body "$f" "$marker" "$(prt_chunk_label "$f" "$chunk_count")")"
-        file="$(jq -r '.file' <<< "$f")"
-        line="$(jq -r '.line' <<< "$f")"
+        # FILE is at most 4096 bytes (prt_normalize_findings drops longer paths) and LINE
+        # is a number, so both are safe as arguments here and in the payload below.
+        if ! file="$(jq -r '.file' <<< "$f" 2>/dev/null)" || ! line="$(jq -r '.line' <<< "$f" 2>/dev/null)"; then
+          prt_mark_incomplete "fp=$fp: the finding location could not be read (local fault); no thread was opened"
+          continue
+        fi
         anchored=false
         if [ "$line" != "null" ] && [ -n "$line" ]; then
-          in_index="$(jq --arg f "$file" --argjson l "$line" '(.[$f] // []) | index($l) != null' <<< "$LINE_INDEX")"
+          if ! in_index="$(jq --arg f "$file" --argjson l "$line" '(.[$f] // []) | index($l) != null' <<< "$LINE_INDEX" 2>/dev/null)"; then
+            prt_mark_incomplete "fp=$fp: the diff line index could not be read (local fault); no thread was opened"
+            continue
+          fi
           [ "$in_index" = true ] && anchored=true
         fi
         create_payload=""
