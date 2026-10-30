@@ -744,9 +744,10 @@ for ((i = 0; i < chunk_idx; i++)); do
   # as after an assess failure, but nothing degraded: this was asked for. The
   # chunk counts as reviewed, not as assessed (the coverage line says so).
   if [ "$PRT_ASSESS_ENABLED" = false ]; then
+    # Over stdin, never argv; a fault fails the chunk closed and it is not credited.
+    assessed_append_unverdicted "$i" "$chunk_findings" || continue
     [ -n "${CHUNK_PARTIAL_DROP[$i]:-}" ] || chunk_ok_count=$((chunk_ok_count + 1))
     prt_log "chunk $((i + 1))/$chunk_count: review ok, assess skipped (PRT_ASSESS_ENABLED=false)"
-    ASSESSED="$(jq -c -n --argjson a "$ASSESSED" --argjson b "$chunk_findings" '$a + ($b | map(. + {verdict: null, reasoning: null}))')"
     continue
   fi
   chunk_diff="$(cat "$chunk_file")"
