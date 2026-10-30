@@ -641,22 +641,54 @@ the response's `.assessments` is unusable (the findings are echoed unverdicted a
 orchestrator treats it like any other assembly fault: `REVIEW_INCOMPLETE` (`the assessed findings could
 not be assembled`), the chunk is not counted as reviewed and no `coverage:` line is printed. It never
 reads the empty output as a join. The evaluation adapter, which has no run to fail, marks the chunk
-degraded and keeps the unverdicted findings it already holds. A finding of multi-byte text can pass the 131072-byte argument cap on its own
-(50,000 three-byte characters are 150,000 bytes while GitHub's limit is 65,536 characters), so findings
-are appended to the accumulators over stdin, never as `--argjson`.
+degraded and keeps the unverdicted findings it already holds.
+
+`prt_normalize_findings` has the same fourth status: `3` is a local `jq` fault while rebuilding the list.
+It prints nothing and is never retried (a retry would only repeat a local fault). The orchestrator
+treats it as an assembly fault (`REVIEW_INCOMPLETE`, the chunk is not reviewed); the adapter counts the
+chunk as failed and never as ok, so a run whose every chunk lost its findings exits 1 (no signal) instead
+of printing an empty review. `prt_assign_ordinals` and the adapter's merges fail the same way.
+
+**The class: no unbounded value on a command-line argument, and no unchecked `jq`.** A finding of
+multi-byte text can pass the 131072-byte argument cap on its own (50,000 three-byte characters are
+150,000 bytes while GitHub's limit is 65,536 characters). Any value that can grow with a finding, a
+chunk, a comment body or an API response therefore reaches `jq` over stdin, never as `--arg` or
+`--argjson`:
+
+- `prt_json_append_item LIST ITEM` appends one finding or row. It validates both operands (LIST is an
+  array, ITEM a non-empty object) and fails with no output otherwise. A bare `.[0] + [.[1]]` would turn an
+  empty ITEM into `[null]` and succeed, which is a lost row recorded as an appended one.
+- `prt_json_concat_arrays` joins two arrays, and the ownership row, the released-fingerprint list and the
+  severity-rank input are read from stdin in the same way.
+- A finding's `file` is the one text field that stays an argument, because every later step keys on it. It
+  is bounded at ingress instead: `prt_normalize_findings` drops a row whose `file` exceeds 4096 bytes (a
+  git path never reaches that), reported as a partial drop (status 2). A severity read from a comment body
+  past 64 characters counts as "none stated".
+- The rest are bounded by their nature: fingerprints (16 hex), shas, numbers, flags, logins and node ids,
+  fixed strings the script defines, and operator configuration.
+
+A test guards the class. It scans the orchestrator, `scripts/lib/prt/*.sh` and the evaluation adapter for
+every `--arg` or `--argjson` bound from a variable, and fails on one that is not on an allow-list that
+states its bound. A new unbounded argument is therefore a failing test, and adding a name to the list is
+the review step. Every other script (the settings tooling, `eval/run.sh` and the rest) is outside this
+sweep.
 
 Comment payloads follow the same bound. The body goes to `jq` over stdin (`prt_json_body_payload`) and
 the payload reaches `curl` as `--data-binary @-`, never as a `-d` value. `prt_gh_rest` refuses a `POST`,
 `PATCH` or `PUT` with an empty payload before any call: a payload that failed to build is a local
-fault, not a request to send. The test mock refuses an empty or non-JSON comment payload the same way,
-and the large-body tests assert the payload the mock received, not only the run's exit status.
+fault, not a request to send. The test mock refuses an empty or non-JSON payload on every comment write
+(issue comments and review comments, `POST` and `PATCH`) before it logs or counts the write. The
+large-body test sends through an executable `curl` stand-in, because a shell function is never exec'd and
+would accept a payload restored to argv; it asserts the payload the mock received, not only the run's
+exit status.
 
 Both are covered by the unit suite, including an explicit assertion that neither `prt_response_class`
 nor `prt_response_shape` ever echoes any part of the response, and that every emitted class is a
 member of the declared enum.
 
 `prt_normalize_findings` (`finding.sh:85-161`) draws the same fatal/degraded line one level up, on
-the review call's own `.findings` field, via a three-way exit status (go-kure/.github#98): `0`
+the review call's own `.findings` field, via a three-way exit status (go-kure/.github#98; a fourth
+status, `3`, is the local fault described above, and is not about the response): `0`
 clean, `1` when `.findings` itself is missing/null/non-array, OR it was array-shaped but every
 element was malformed and dropped (a non-empty `.findings` array whose normalized result is empty
 is total loss, not partial degradation — go-kure/.github#98 round 1 codex finding P1) — either way
