@@ -267,9 +267,18 @@ prt_cap_foreign_rows() {
       NEW|NOMATCH) release="$(jq -c --arg fp "$fp" '. + [$fp]' <<< "$release" 2>/dev/null)" || return 1 ;;
     esac
   done <<< "$rows"
-  jq -c --argjson rel "$release" \
-    'map(. as $r | if any($rel[]; . == $r.fp) then . + {excludes: false} else . end)' \
-    <<< "$foreign" 2>/dev/null
+  # The released fingerprints and the foreign rows travel on stdin: the list grows
+  # with the number of findings, so it has no bound that fits a command-line argument.
+  printf '%s\n%s\n' "$foreign" "$release" |
+    jq -ces '
+      if length == 2 and all(.[]; type == "array") then
+        .[1] as $rel
+        | .[0]
+        | map(. as $r | if any($rel[]; . == $r.fp) then . + {excludes: false} else . end)
+      else
+        error("expected two arrays")
+      end
+    ' 2>/dev/null
 }
 
 # prt_decide_absent COLLISION HAS_HUMAN_REPLY THREAD_RESOLVED \
@@ -458,8 +467,11 @@ prt_thread_stays_gating() {
 # lists, not 99: it then never yields its slot to a new finding of that
 # lowest severity, only to a higher one (go-kure/.github#268).
 prt_severity_rank() {
-  jq -n --arg s "$1" --argjson rank "$2" '
-    if $s == "" then ([$rank[]] | max) else ($rank[$s | ascii_downcase] // 99) end
+  # The severity is model or marker text with no length bound, so it travels on
+  # stdin; the rank map is operator configuration (a handful of names).
+  printf '%s' "$1" | jq -Rs --argjson rank "$2" '
+    . as $s
+    | if $s == "" then ([$rank[]] | max) else ($rank[$s | ascii_downcase] // 99) end
   ' 2>/dev/null
 }
 
