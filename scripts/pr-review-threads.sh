@@ -407,6 +407,9 @@ review_parse_failures=()
 # index here lets that loop tell the two apart instead of crediting a
 # failed review as "ok".
 declare -A CHUNK_REVIEW_FAILED=()
+# A local fault while assembling the findings (never a model fault) loses
+# findings; the run fails closed, and no coverage line may claim a full review.
+assembly_fault=false
 # go-kure/.github#211: a chunk whose review response had a malformed row
 # dropped (norm_rc==2, "partial-drop" below) still appends its surviving
 # findings to ALL_FINDINGS and reaches the ordinary "review ok" log line —
@@ -583,8 +586,20 @@ for chunk_file in "$CHUNK_DIR"/chunk-*.diff; do
     CHUNK_PARTIAL_DROP[$chunk_idx]=1
   fi
 
-  tagged="$(jq -c --argjson idx "$chunk_idx" 'map(. + {_chunk: $idx})' <<< "$normalized")"
-  ALL_FINDINGS="$(jq -c -n --argjson a "$ALL_FINDINGS" --argjson b "$tagged" '$a + $b')"
+  # The findings of a whole run can outgrow a single argument (the kernel caps
+  # one at 128 KiB), so they travel over stdin and every step is checked: a
+  # failed append used to empty the accumulator and let a large review read as
+  # a clean one. A fault here is local and loses findings, so it fails closed.
+  if ! tagged="$(jq -ce --argjson idx "$chunk_idx" 'map(. + {_chunk: $idx})' <<< "$normalized")" ||
+     ! merged_findings="$(prt_json_concat_arrays "$ALL_FINDINGS" "$tagged")"; then
+    prt_mark_incomplete "chunk $chunk_idx: the review findings could not be assembled (local fault); the chunk is not reviewed"
+    prt_log "chunk $chunk_idx: review FAILED (findings could not be assembled)"
+    assembly_fault=true
+    CHUNK_REVIEW_FAILED[$chunk_idx]=1
+    chunk_idx=$((chunk_idx + 1))
+    continue
+  fi
+  ALL_FINDINGS="$merged_findings"
   prt_log "chunk $chunk_idx: review ok ($(jq 'length' <<< "$tagged") findings)"
   chunk_idx=$((chunk_idx + 1))
 done
@@ -607,7 +622,16 @@ if [ "$chunk_idx" -ne "$chunk_count" ]; then
 fi
 
 # Ordinals/collisions assigned across the WHOLE run, not per chunk.
-ALL_FINDINGS="$(prt_assign_ordinals "$ALL_FINDINGS")"
+findings_before_ordinals="$(jq 'length' <<< "$ALL_FINDINGS" 2>/dev/null || echo unknown)"
+if ! ordinal_findings="$(prt_assign_ordinals "$ALL_FINDINGS")" ||
+   [ "$(jq 'length' <<< "$ordinal_findings" 2>/dev/null || echo unknown)" != "$findings_before_ordinals" ]; then
+  # Never carry on with an accumulator that lost rows: it would read as a
+  # smaller (or clean) review.
+  prt_mark_incomplete "the review findings could not be numbered (local fault); the review findings are not reported"
+  assembly_fault=true
+  ordinal_findings='[]'
+fi
+ALL_FINDINGS="$ordinal_findings"
 
 # Assessment: per chunk, against that chunk's own diff, joined by fp.
 # go-kure/.github#176: chunk_ok_count is the numerator for the terminal
@@ -628,10 +652,45 @@ ALL_FINDINGS="$(prt_assign_ordinals "$ALL_FINDINGS")"
 # that never actually reviewed one of its chunks.
 ASSESSED='[]'
 chunk_ok_count=0
+
+# assessed_fault CHUNK_INDEX — a chunk's rows could not be added to ASSESSED.
+# That is a local fault which loses findings: fail closed, never credit the chunk.
+assessed_fault() {
+  prt_mark_incomplete "chunk $1: the assessed findings could not be assembled (local fault); the chunk's findings are not reported"
+  prt_log "chunk $1: assess FAILED (findings could not be assembled)"
+  assembly_fault=true
+  CHUNK_REVIEW_FAILED[$1]=1
+}
+
+# assessed_append CHUNK_INDEX ROWS_JSON — appends ROWS_JSON to ASSESSED over
+# stdin (never as a jq argument, which the kernel caps at 128 KiB).
+assessed_append() {
+  local merged
+  if ! merged="$(prt_json_concat_arrays "$ASSESSED" "$2")"; then
+    assessed_fault "$1"
+    return 1
+  fi
+  ASSESSED="$merged"
+}
+
+# assessed_append_unverdicted CHUNK_INDEX FINDINGS_JSON — the findings of a
+# chunk whose assessment failed or was unusable: kept open, verdict null.
+assessed_append_unverdicted() {
+  local rows
+  if ! rows="$(jq -ce 'map(. + {verdict: null, reasoning: null})' <<< "$2")"; then
+    assessed_fault "$1"
+    return 1
+  fi
+  assessed_append "$1" "$rows"
+}
+
 for ((i = 0; i < chunk_idx; i++)); do
   chunk_file="$CHUNK_DIR/chunk-$(printf '%03d' "$i").diff"
   [ -f "$chunk_file" ] || continue
-  chunk_findings="$(jq -c --argjson idx "$i" '[.[] | select(._chunk == $idx)]' <<< "$ALL_FINDINGS")"
+  if ! chunk_findings="$(jq -ce --argjson idx "$i" '[.[] | select(._chunk == $idx)]' <<< "$ALL_FINDINGS")"; then
+    assessed_fault "$i"
+    continue
+  fi
   if [ "$(jq 'length' <<< "$chunk_findings")" -eq 0 ]; then
     [ -n "${CHUNK_REVIEW_FAILED[$i]:-}" ] || chunk_ok_count=$((chunk_ok_count + 1))
     continue
@@ -659,7 +718,7 @@ for ((i = 0; i < chunk_idx; i++)); do
     # same as before this change; only the run's severity/exit code differs.
     prt_mark_degraded "chunk $i: assessment call failed (transport/proxy error, exit $assess_rc); findings stay unverdicted [${PRT_LAST_MODEL_FAILURE:-unknown}]"
     prt_log "chunk $i: review ok, assess FAILED (transport error, exit $assess_rc)"
-    ASSESSED="$(jq -c -n --argjson a "$ASSESSED" --argjson b "$chunk_findings" '$a + ($b | map(. + {verdict: null, reasoning: null}))')"
+    assessed_append_unverdicted "$i" "$chunk_findings" || continue
     continue
   fi
 
@@ -695,7 +754,7 @@ for ((i = 0; i < chunk_idx; i++)); do
       # retry.
       prt_mark_degraded "chunk $i: assessment call failed on retry (transport/proxy error, exit $assess_rc); findings stay unverdicted [${PRT_LAST_MODEL_FAILURE:-unknown}]"
       prt_log "chunk $i: review ok, assess FAILED (transport error on retry, exit $assess_rc)"
-      ASSESSED="$(jq -c -n --argjson a "$ASSESSED" --argjson b "$chunk_findings" '$a + ($b | map(. + {verdict: null, reasoning: null}))')"
+      assessed_append_unverdicted "$i" "$chunk_findings" || continue
       continue
     fi
     if [ -n "$assess_raw" ]; then
@@ -717,7 +776,7 @@ for ((i = 0; i < chunk_idx; i++)); do
     # above.
     prt_mark_degraded "chunk $i: assessment response was not valid JSON after retry=$assess_retried, salvage_attempted=true ($shape); findings stay unverdicted"
     prt_log "chunk $i: review ok, assess FAILED (invalid JSON, retried=$assess_retried)"
-    ASSESSED="$(jq -c -n --argjson a "$ASSESSED" --argjson b "$chunk_findings" '$a + ($b | map(. + {verdict: null, reasoning: null}))')"
+    assessed_append_unverdicted "$i" "$chunk_findings" || continue
     continue
   fi
   if [ "$assess_retried" = true ] || [ "$assess_salvaged" = true ]; then
@@ -739,7 +798,7 @@ for ((i = 0; i < chunk_idx; i++)); do
   if ! joined="$(prt_join_assessment "$chunk_findings" "$assess_json")"; then
     prt_mark_degraded "chunk $i: .assessments missing/null/non-array"
     prt_log "chunk $i: review ok, assess FAILED (.assessments missing/null/non-array)"
-    ASSESSED="$(jq -c -n --argjson a "$ASSESSED" --argjson b "$chunk_findings" '$a + ($b | map(. + {verdict: null, reasoning: null}))')"
+    assessed_append_unverdicted "$i" "$chunk_findings" || continue
     continue
   fi
   # go-kure/.github#211: a chunk flagged CHUNK_PARTIAL_DROP already lost a
@@ -747,15 +806,22 @@ for ((i = 0; i < chunk_idx; i++)); do
   # assess branch doesn't undo that loss, so it must not credit
   # chunk_ok_count either, or the terminal coverage line below could still
   # claim "M/M" with a row missing.
+  assessed_append "$i" "$joined" || continue
   [ -n "${CHUNK_PARTIAL_DROP[$i]:-}" ] || chunk_ok_count=$((chunk_ok_count + 1))
   prt_log "chunk $((i + 1))/$chunk_count: review ok, assess ok"
-  ASSESSED="$(jq -c -n --argjson a "$ASSESSED" --argjson b "$joined" '$a + $b')"
 done
+# Whatever happened above, assessment must hand back every finding it was
+# given. A shortfall is a local fault, and the run must not read as clean.
+if [ "$assembly_fault" = false ] &&
+   [ "$(jq 'length' <<< "$ASSESSED" 2>/dev/null || echo unknown)" != "$(jq 'length' <<< "$ALL_FINDINGS" 2>/dev/null || echo unknown)" ]; then
+  prt_mark_incomplete "the assessed findings do not match the reviewed findings (local fault); the findings are not reported"
+  assembly_fault=true
+fi
 # go-kure/.github#176: positive coverage marker, fully-good path only.
 # Guarding on chunk_count > 0 keeps a prt_split_diff failure (chunk_count=0,
 # chunk_ok_count=0) from vacuously satisfying an "M of M" consumer check —
 # the issue's "Zero-chunk" acceptance criterion.
-if [ "$chunk_count" -gt 0 ] && [ "$chunk_ok_count" -eq "$chunk_count" ]; then
+if [ "$chunk_count" -gt 0 ] && [ "$chunk_ok_count" -eq "$chunk_count" ] && [ "$assembly_fault" = false ]; then
   prt_log "coverage: $chunk_ok_count/$chunk_count chunks review+assess ok"
 fi
 ALL_FINDINGS="$ASSESSED"
