@@ -833,9 +833,21 @@ _prt_runner_boundary_build() {
 # The probe runs in the background under `timeout -k 2` and writes to a file, so
 # neither a prefix that ignores TERM nor a helper that keeps the probe's output
 # open can hold the check past its deadline (PRT_BOUNDARY_CHECK_SECONDS, default 10).
+#
+# The optional argument is the most seconds the probe may run (the caller's remaining run
+# budget less what the runner call itself needs); it only lowers the deadline. The probe's
+# launch chain starts under `env -i` with PATH alone, like the runner's: the prefix is a
+# process the operator supplies, and one that stays resident (a user-switch wrapper that
+# waits for its child) would otherwise keep the posting token in its own environment.
+# This check does not make an arbitrary prefix trustworthy: it shows that ancestors are
+# hidden and that no capability is held, nothing about what else the prefix does.
 _prt_runner_boundary_check() {
-  local ancestors=() q="$BASHPID" stat fields=() out out_file probe_pid rc=0 secs="${PRT_BOUNDARY_CHECK_SECONDS:-10}"
+  local ancestors=() q="$BASHPID" stat fields=() out out_file probe_pid rc=0 secs="${PRT_BOUNDARY_CHECK_SECONDS:-10}" cap="${1:-}"
   [[ "$secs" =~ ^[0-9]{1,3}$ ]] && [ "$secs" -ge 1 ] || secs=10
+  if [[ "$cap" =~ ^[0-9]+$ ]]; then
+    [ "$cap" -ge 1 ] || cap=1
+    [ "$secs" -le "$cap" ] || secs="$cap"
+  fi
   while [ "$q" -ge 1 ]; do
     [ "${#ancestors[@]}" -lt 256 ] || return 1
     # The command name is in parentheses and may hold spaces and parentheses, so the
@@ -853,7 +865,7 @@ _prt_runner_boundary_check() {
   out_file="$(mktemp)" || return 1
   # shellcheck disable=SC2016 # the probe is the child shell's program, not an expansion here
   (
-    exec timeout -k 2 "$secs" "${PRT_RUNNER_BOUNDARY_ARGS[@]}" env -i "PATH=$PATH" sh -c \
+    exec env -i "PATH=$PATH" timeout -k 2 "$secs" "${PRT_RUNNER_BOUNDARY_ARGS[@]}" env -i "PATH=$PATH" sh -c \
       'for a; do
          p="${a%%:*}"
          if ( : < "/proc/$p/environ" ) 2> /dev/null; then
@@ -898,25 +910,33 @@ _prt_call_runner() {
     _prt_set_model_failure "backend-config"
     return 1
   fi
-  # Never run the runner unbounded: with no boundary that is established and
-  # checked now, the call is refused and its findings keep no verdict.
-  if ! _prt_runner_boundary_build || ! _prt_runner_boundary_check; then
-    echo "prt_model: the runner's process boundary cannot be established here (PRT_ASSESS_RUNNER_BOUNDARY=${PRT_ASSESS_RUNNER_BOUNDARY:-pidns}) — refusing call" >&2
-    _prt_set_model_failure "runner-boundary"
-    return 1
-  fi
   # Same run deadline as the proxy calls (_prt_call_proxy): a call that cannot
   # finish in what is left is refused, and any other is clamped to it, so slow
-  # chunks cannot eat the time reserved for posting the findings.
+  # chunks cannot eat the time reserved for posting the findings. Read before the
+  # boundary preflight, which costs time too: an expired budget spends none of it.
+  # The runner's own TERM-to-KILL grace (6 s, see below) must fit as well.
   local now budget_left
   now="$(date +%s)"
   budget_left=$(( ${PRT_MODEL_DEADLINE_EPOCH:-$((now + 300))} - now ))
   : "${PRT_MODEL_TIMEOUT_FLOOR:=30}"
-  if [ "$budget_left" -lt "$PRT_MODEL_TIMEOUT_FLOOR" ]; then
+  if [ "$budget_left" -lt "$PRT_MODEL_TIMEOUT_FLOOR" ] || [ "$budget_left" -lt 6 ]; then
     echo "prt_model: run deadline exhausted before runner call (${budget_left}s left, floor ${PRT_MODEL_TIMEOUT_FLOOR}s) — refusing call" >&2
     _prt_set_model_failure "deadline-exhausted"
     return 1
   fi
+  # Never run the runner unbounded: with no boundary that is established and
+  # checked now, the call is refused and its findings keep no verdict. The
+  # preflight is cut to what the budget leaves after the runner's 6 s and the
+  # check's own 2 s kill grace.
+  local preflight_max=$(( budget_left - 8 ))
+  [ "$preflight_max" -ge 1 ] || preflight_max=1
+  if ! _prt_runner_boundary_build || ! _prt_runner_boundary_check "$preflight_max"; then
+    echo "prt_model: the runner's process boundary cannot be established here (PRT_ASSESS_RUNNER_BOUNDARY=${PRT_ASSESS_RUNNER_BOUNDARY:-pidns}) — refusing call" >&2
+    _prt_set_model_failure "runner-boundary"
+    return 1
+  fi
+  now="$(date +%s)"
+  budget_left=$(( ${PRT_MODEL_DEADLINE_EPOCH:-$((now + 300))} - now ))
   if [ "$seconds" -gt "$budget_left" ]; then
     seconds="$budget_left"
   fi
@@ -964,7 +984,7 @@ _prt_call_runner() {
       prt_fd="${prt_fd_path##*/}"
       if [ "$prt_fd" -gt 2 ] 2>/dev/null; then eval "exec $prt_fd>&-"; fi
     done
-    exec timeout --kill-after=5 "$outer" "${PRT_RUNNER_BOUNDARY_ARGS[@]}" env -i "${PRT_RUNNER_ENV_ARGS[@]}" \
+    exec env -i "PATH=$PATH" timeout --kill-after=5 "$outer" "${PRT_RUNNER_BOUNDARY_ARGS[@]}" env -i "${PRT_RUNNER_ENV_ARGS[@]}" \
       "$runner" --backend "$backend" --root "$root" --base "$PRT_REVIEW_BASE_SHA" \
       --seconds "$seconds" --sandbox none --out "$out" \
       -- "Perform the assessment described on the standard input. Answer with only the JSON object it asks for." \
