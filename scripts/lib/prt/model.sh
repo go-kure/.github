@@ -648,7 +648,9 @@ ${chunk_diff}
 #                   PR_TITLE PROJECT_CONTEXT PROJECT_AGENTS PROJECT_CLAUDE_MD PROJECT_STANDARDS \
 #                   [CHUNK_SCOPE]
 # CHUNK_SCOPE as for prt_model_review: a finding whose claim rests on code
-# outside the chunk broke the reviewer's rule and cannot be checked here.
+# outside the chunk cannot be checked here, neither confirmed nor refuted, so
+# the assessor leaves it out and it stays open (prt_join_assessment drops a
+# FALSE_POSITIVE that says it depends on code outside the chunk).
 prt_model_assess() {
   local proxy_url="$1" model="$2" max_tokens="$3" chunk_diff="$4" findings_json="$5" \
         pr_title="$6" project_context="$7" project_agents="$8" project_claude_md="$9" \
@@ -666,8 +668,9 @@ prt_model_assess() {
   # was always marked FALSE_POSITIVE. See docs/pr-review-threads.md.
   [ -n "$project_standards" ] && system="${system}"$'\n\nPROJECT STANDARDS:\n'"${project_standards}"
   [ -n "$chunk_scope" ] && scope_block="${chunk_scope}
-A finding whose claim depends on code that is not shown in this chunk cannot be verified from it:
-classify it FALSE_POSITIVE, with reasoning that starts \"depends on code outside this chunk\".
+A finding whose claim depends on code that is not shown in this chunk cannot be verified from it, and
+cannot be refuted from it either: leave it out of the assessments. Do not classify it FALSE_POSITIVE; it
+stays open for a person to judge.
 
 "
   user="Assess these findings against the actual diff chunk and project context.

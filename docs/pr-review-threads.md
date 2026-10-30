@@ -32,7 +32,8 @@ This is the design/operations reference the code cites but didn't yet have:
   pass that handles auto-resolve when an issue is fixed). When the diff splits into more than
   one chunk, both prompts of each chunk carry a scope block (`prt_chunk_scope`): the chunk's
   number, the files of the whole diff and of the chunk, and the rule that a claim depending on
-  code outside the chunk is omitted. The first comment of each thread a run opens names its
+  code outside the chunk is omitted (review) or left out of the verdicts (assessment, see
+  "Findings that depend on another chunk"). The first comment of each thread a run opens names its
   chunk in the footer ("from chunk i/N of the diff"); the overflow, advisory and quarantine
   tables do not
   (go-kure/.github#173).
@@ -620,6 +621,27 @@ path, same outcome) — means the chunk's review itself succeeded; only the verd
 four are `REVIEW_DEGRADED` (go-kure/.github#98), not `REVIEW_INCOMPLETE`: the run exits 0, with the
 verdict-less findings still surfaced rather than the whole run failing closed over a problem that
 didn't cost the review itself.
+
+**Findings that depend on another chunk (go-kure/.github#299).** A finding is assigned to one chunk by
+its location, but the assessor of that chunk sees only that chunk. A finding whose claim rests on code
+elsewhere in the diff (a caller in another file, a helper another chunk defines) can be neither
+confirmed nor refuted there, so the assess prompt tells the assessor to leave it out of the
+assessments, not to call it `FALSE_POSITIVE`. As a backstop, `prt_join_assessment` drops any
+`FALSE_POSITIVE` row whose reasoning starts with "depends on code outside this chunk" or "depends on
+code not shown in this chunk" (the first is the wording an earlier prompt asked for), and names the
+count on stderr. The finding keeps
+`verdict: null`, stays open and gating, is never suppressed, and an existing thread it matches is never
+resolved on that verdict.
+
+**A local fault while assembling findings fails closed (go-kure/.github#299).** The findings of a
+whole run can outgrow one command-line argument (131072 bytes), so the orchestrator joins and selects
+them over stdin (`prt_json_concat_arrays`), as `prt_join_assessment` does for the verdict rows. Every
+step is checked. A step that fails is a local fault that would lose findings, so it is
+`REVIEW_INCOMPLETE` (`the review findings could not be assembled`, `... could not be numbered`, `the
+assessed findings could not be assembled`), the affected chunk is not counted as reviewed and the
+`coverage:` line is not printed. A final count check marks the run incomplete when the assessed findings
+are fewer than the reviewed ones. Before this, a failed append emptied the accumulator and a large review
+read as a clean one.
 
 Both are covered by the unit suite, including an explicit assertion that neither `prt_response_class`
 nor `prt_response_shape` ever echoes any part of the response, and that every emitted class is a
