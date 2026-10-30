@@ -574,7 +574,15 @@ ancestor, no descriptor, no capability and a denied mount. The run without it mu
 through an ancestor, with numeric counts of at least 1: a missing, empty or malformed control report
 voids the result, and so does a count of more than 9 digits. Only a refusal by `mount` itself is a
 denial. A mount that could not be tried (no `mount` command, one that cannot be executed, an
-unreadable or shared mount namespace, no directory) is not.
+unreadable or shared mount namespace, no directory) is not. Inside the boundary the scan must also
+be able to find something: the stub looks for a known, non-secret value (the head SHA) in its own
+environment with the same scan, and a report where it does not, or where no process is visible, is
+inconclusive.
+Limits of the probe: it tests the default boundary and a canary placed in the environment (a token in
+an argument, a descriptor or a file is not covered); the control proves that `environ` of an ancestor
+is readable without the boundary, not `mem`; and `no_new_privs` and the bounding set are reported for a
+non-root orchestrator but not judged, because the default boundary sets no-new-privs only for root
+(go-kure/.github#309).
 Exit codes: 0 holds, 1 leaks, 2 the boundary cannot be established on that lane, 3 inconclusive (the
 control, a field or the mount result gave no usable answer, so no pass can be claimed), 4 the probe
 could not set itself up. It does not show the lifetime limit above, what else of the user's files the runner can read, or anything
