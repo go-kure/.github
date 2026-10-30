@@ -522,6 +522,10 @@ process that ignores the first signal is killed 5 seconds later. A call is refus
 would not fit. A hit is `runner-timeout`. When the call ends, whatever its exit, the whole process
 group is killed, so a child that ignored the signal does not outlive it. A descendant that leaves
 the process group (for example with `setsid`) is not reached; only a process boundary closes that.
+The group is signalled after the shell has already reaped `timeout`. With no member left, the group
+id is free, and the signal could reach an unrelated group only if that id were allocated again as a
+group leader within microseconds, which takes a full wrap of the pid space; a surviving member pins
+the id, so the case the signal exists for is unaffected. This window is accepted.
 
 **Failures degrade, never abort.** Each ends as an assessment transport failure
 (`REVIEW_DEGRADED`, findings keep `verdict: null` and still gate, as `reconcile.sh` counts a null
