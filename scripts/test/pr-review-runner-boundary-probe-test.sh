@@ -40,11 +40,11 @@ write_report() { # write_report FILE KIND [KEY=VALUE...]
   if [ "$kind" = boundary ]; then
     lines=(canary_hits=0 ancestor_environ_open=0 ancestor_mem_open=0 fd_above_2=0
       uid=1000 cap_eff=0000000000000000 cap_bnd=000001ffffffffff no_new_privs=0
-      proc_mount=denied pids_visible=1)
+      proc_mount=denied pids_visible=1 own_environ_open=1 own_environ_marker=1)
   else
     lines=(canary_hits=1 ancestor_environ_open=6 ancestor_mem_open=6 fd_above_2=0
       uid=1000 cap_eff=0000000000000000 cap_bnd=000001ffffffffff no_new_privs=0
-      proc_mount=skipped pids_visible=900)
+      proc_mount=skipped pids_visible=900 own_environ_open=1 own_environ_marker=1)
   fi
   : > "$file"
   for line in "${lines[@]}"; do
@@ -121,12 +121,12 @@ stub_run() { # stub_run REPORT [env words...] — descriptor 300 is open when PR
     (
       exec 300< /dev/null
       env -i PATH="$PATH" PRT_PROBE_REPORT="$report" PRT_PROBE_CANARY_FILE="$dir/canary" PRT_PROBE_ANCESTORS="" \
-        PRT_HEAD_SHA=a PRT_REVIEW_BASE_SHA=b PRT_REVIEW_MATERIAL_SHA256=c "$@" \
+        PRT_HEAD_SHA=marker-for-the-test-1234 PRT_REVIEW_BASE_SHA=b PRT_REVIEW_MATERIAL_SHA256=c "$@" \
         bash "$PROBE" stub --out "$dir/out.$$" < /dev/null > /dev/null 2>&1
     )
   else
     env -i PATH="$PATH" PRT_PROBE_REPORT="$report" PRT_PROBE_CANARY_FILE="$dir/canary" PRT_PROBE_ANCESTORS="" \
-      PRT_HEAD_SHA=a PRT_REVIEW_BASE_SHA=b PRT_REVIEW_MATERIAL_SHA256=c "$@" \
+      PRT_HEAD_SHA=marker-for-the-test-1234 PRT_REVIEW_BASE_SHA=b PRT_REVIEW_MATERIAL_SHA256=c "$@" \
       bash "$PROBE" stub --out "$dir/out.$$" < /dev/null > /dev/null 2>&1
   fi
   rm -rf "$dir/out.$$"
@@ -189,6 +189,47 @@ write_report "$dir/n3" boundary uid=99999999999999999999
 assert_eq "judge: an oversized uid is inconclusive" 3 "$(judge_rc "$dir/n3" "$dir/c")"
 assert_eq "judge: an oversized count raises no arithmetic error" "" \
   "$(bash "$PROBE" judge "$dir/n1" "$dir/c" 2>&1 >/dev/null)"
+
+# A scan that is blind inside the boundary must not read as "nothing found". The stub looks
+# for a known, non-secret marker (its own head SHA) in its own environment with the same scan.
+stub_run "$dir/k0"
+assert_eq "stub: the scan finds the marker in the stub's own environment" 1 "$(field "$dir/k0" own_environ_marker)"
+assert_eq "stub: the stub can open its own environ" 1 "$(field "$dir/k0" own_environ_open)"
+mkdir "$dir/shim"
+printf '#!/bin/sh\nexit 2\n' > "$dir/shim/grep"
+chmod 755 "$dir/shim/grep"
+stub_run "$dir/k1" PATH="$dir/shim:$PATH"
+assert_eq "stub: a grep that fails leaves the marker count at 0" 0 "$(field "$dir/k1" own_environ_marker)"
+printf '#!/bin/sh\nexit 1\n' > "$dir/shim/tr"
+chmod 755 "$dir/shim/tr"
+rm -f "$dir/shim/grep"
+stub_run "$dir/k2" PATH="$dir/shim:$PATH"
+assert_eq "stub: a tr that fails leaves the marker count at 0" 0 "$(field "$dir/k2" own_environ_marker)"
+write_report "$dir/k3" boundary own_environ_marker=0
+assert_eq "judge: a boundary scan that cannot find the marker is inconclusive" 3 "$(judge_rc "$dir/k3" "$dir/c")"
+write_report "$dir/k4" boundary own_environ_open=0
+assert_eq "judge: a boundary that cannot open its own environ is inconclusive" 3 "$(judge_rc "$dir/k4" "$dir/c")"
+write_report "$dir/k5" boundary own_environ_marker=@
+assert_eq "judge: a boundary report without the marker field is inconclusive" 3 "$(judge_rc "$dir/k5" "$dir/c")"
+write_report "$dir/k6" boundary pids_visible=0
+assert_eq "judge: a boundary that sees no process is inconclusive" 3 "$(judge_rc "$dir/k6" "$dir/c")"
+write_report "$dir/k7" boundary canary_hits=1 own_environ_marker=0
+assert_eq "judge: a leak is still a leak when the scan is blind" 1 "$(judge_rc "$dir/k7" "$dir/c")"
+
+# The whole run, with stand-ins that break one step. Only where this host can start the
+# boundary at all: elsewhere the run itself reports exit 2 and the cases would say nothing.
+run_rc() { # run_rc [env words...] -> exit code of a full run
+  env "$@" bash "$PROBE" run > /dev/null 2>&1
+  echo $?
+}
+if unshare --user --map-current-user --pid --fork --mount-proc true > /dev/null 2>&1; then
+  assert_eq "run: an unreadable own mount namespace is a setup failure" 4 \
+    "$(mkdir -p "$dir/rl" && printf '#!/bin/sh\nexit 1\n' > "$dir/rl/readlink" && chmod 755 "$dir/rl/readlink" && run_rc PATH="$dir/rl:$PATH")"
+  assert_eq "run: a boundary that cannot start is reported as not established" 2 \
+    "$(mkdir -p "$dir/un" && printf '#!/bin/sh\nexit 1\n' > "$dir/un/unshare" && chmod 755 "$dir/un/unshare" && run_rc PATH="$dir/un:$PATH")"
+  assert_eq "run: a call that fails after the boundary stands is a failure" 1 \
+    "$(mkdir -p "$dir/sh" && printf '#!/bin/sh\nexit 1\n' > "$dir/sh/mv" && chmod 755 "$dir/sh/mv" && run_rc PATH="$dir/sh:$PATH")"
+fi
 
 echo "passed: $pass_count, failed: $failures"
 [ "$failures" -eq 0 ]
