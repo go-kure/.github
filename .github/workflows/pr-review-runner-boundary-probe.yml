@@ -34,4 +34,7 @@ jobs:
         run: bash scripts/test/pr-review-threads-test.sh .
 
       - name: Canary probe behind the default boundary
+        # TEMPORARY with the trigger above: run it even when the suite step fails, so the
+        # lane's own answer is on record. The next commit restores the default.
+        if: always()
         run: bash scripts/pr-review-runner-boundary-probe.sh
