@@ -238,6 +238,35 @@ joined="$(prt_join_assessment "$findings_with_fp" "$bad_verdict")"
 assert_eq "join: verdict outside the closed 3-value enum is dropped" \
   "null" "$(jq -r '.[] | select(.fp=="aaaa") | .verdict' <<< "$joined")"
 
+# A chunk-scoped assessor cannot refute a finding whose claim rests on code it
+# was not shown. A FALSE_POSITIVE that says so is no verdict: the finding stays
+# open and unverdicted. Any other verdict, and any other FALSE_POSITIVE, is kept.
+outside_fp='{"assessments":[{"fp":"aaaa","verdict":"FALSE_POSITIVE","reasoning":"Depends on code outside this chunk: the caller is in y.go"}]}'
+joined="$(prt_join_assessment "$findings_with_fp" "$outside_fp" 2>/dev/null)"
+assert_eq "join: a FALSE_POSITIVE that depends on code outside the chunk leaves the finding unverdicted" \
+  "null" "$(jq -r '.[] | select(.fp=="aaaa") | .verdict' <<< "$joined")"
+assert_eq "join: that finding is kept, not dropped from the joined output" \
+  "2" "$(jq 'length' <<< "$joined")"
+outside_fp_note="$(prt_join_assessment "$findings_with_fp" "$outside_fp" 2>&1 >/dev/null)"
+assert_eq "join: the kept-open finding is named on stderr" \
+  "true" "$(case "$outside_fp_note" in *"outside this chunk"*) echo true ;; *) echo false ;; esac)"
+outside_valid='{"assessments":[{"fp":"aaaa","verdict":"VALID","reasoning":"depends on code outside this chunk, but the diff shows the bug"}]}'
+joined="$(prt_join_assessment "$findings_with_fp" "$outside_valid" 2>/dev/null)"
+assert_eq "join: a VALID verdict is kept whatever its reasoning says" \
+  "VALID" "$(jq -r '.[] | select(.fp=="aaaa") | .verdict' <<< "$joined")"
+plain_fp='{"assessments":[{"fp":"aaaa","verdict":"FALSE_POSITIVE","reasoning":"The guard on line 3 makes this unreachable, unlike the code outside this chunk"}]}'
+joined="$(prt_join_assessment "$findings_with_fp" "$plain_fp" 2>/dev/null)"
+assert_eq "join: a FALSE_POSITIVE with its own reasoning is kept" \
+  "FALSE_POSITIVE" "$(jq -r '.[] | select(.fp=="aaaa") | .verdict' <<< "$joined")"
+
+# Verdicts whose reasoning together outgrow one kernel argument (128 KiB) are
+# still joined: the verdict rows travel over stdin, not as a jq argument.
+join_big_reasoning="$(head -c 70000 /dev/zero | tr '\0' 'r')"
+join_big_raw="$(jq -cn --arg r "$join_big_reasoning" '{assessments:[{fp:"aaaa",verdict:"VALID",reasoning:$r},{fp:"bbbb",verdict:"PARTIALLY_VALID",reasoning:$r}]}')"
+joined="$(prt_join_assessment "$findings_with_fp" "$join_big_raw")"
+assert_eq "join: verdicts over the argument limit are still joined to both findings" \
+  "VALID PARTIALLY_VALID" "$(jq -r 'map(.verdict) | join(" ")' <<< "$joined")"
+
 # ============================================================ marker: build/parse round-trip
 m="$(prt_marker_build "abcdef0123456789" "" "")"
 parsed="$(prt_marker_parse "$m")"
@@ -2473,6 +2502,14 @@ fake_curl_orchestrator() {
               # unverdicted.
               printf '%s' "$(jq -n --arg fp "$(prt_fp_base x.go other)" \
                 '{choices:[{message:{content:({assessments:[{fp:$fp,verdict:"FALSE_POSITIVE",reasoning:"not a real issue"}]} | tojson)}}]}')" > "$out"
+              ;;
+            cross_chunk_fp)
+              # A chunk-scoped assessor that cannot see the code a finding
+              # rests on: FALSE_POSITIVE for x.go's file-backend finding
+              # (category logic-error), with the reasoning the assess prompt
+              # once told it to use. The finding is real; its caller is in y.go.
+              printf '%s' "$(jq -n --arg fp "$(prt_fp_base x.go logic-error)" \
+                '{choices:[{message:{content:({assessments:[{fp:$fp,verdict:"FALSE_POSITIVE",reasoning:"depends on code outside this chunk: the caller in y.go"}]} | tojson)}}]}')" > "$out"
               ;;
             valid_survivor)
               # go-kure/.github#153: the same real fp as false_positive_survivor,
@@ -5901,6 +5938,63 @@ assert_eq "file backend, orchestrator: the refusal names provenance-mismatch" \
 unset PRT_TEST_REVIEW_BACKEND PRT_TEST_FINDINGS_FILE PRT_TEST_REVIEW_BASE_SHA PRT_TEST_REVIEW_MATERIAL_SHA256 PRT_TEST_CREATE_BODY_LOG
 PRT_TEST_TWO_FILE_DIFF=0
 rm -rf "$prt_fo_dir"
+
+# A findings file whose findings together exceed the kernel's single-argument
+# limit (131072 bytes) must reach the report intact. 6 findings of ~24 KiB
+# each are ~144 KiB: before findings travelled over stdin the accumulator
+# append failed with "Argument list too long", the accumulator emptied, and
+# the run read as a clean review of the chunk.
+prt_fo_dir="$(mktemp -d)"
+jq -n '{format:"review-findings-v1", findings:[range(0;6) | {file:"x.go", line:1, severity:"high", category:"logic-error", issue:("many-findings-" + tostring + " " + ("y" * 24000)), fix:"fix", klass:"blocking", claim:("c" + tostring)}]}' \
+  > "$prt_fo_dir/findings.json"
+jq -n '{format:"review-run-v1", outcome:"completed", backend:"x", identity:{root:"/r", head:"1111111111111111111111111111111111111111", base:"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", material_sha256:"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", input_sha256:"d", add_dirs:[]}}' \
+  > "$prt_fo_dir/provider.json"
+PRT_TEST_REVIEW_BACKEND="file"
+PRT_TEST_FINDINGS_FILE="$prt_fo_dir/findings.json"
+PRT_TEST_REVIEW_BASE_SHA="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+PRT_TEST_REVIEW_MATERIAL_SHA256="cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "file backend, orchestrator: 6 findings over the argv limit still finish the run -> exits 0" "0" "$rc"
+assert_eq "file backend, orchestrator: all 6 findings reach the report (none lost to an oversized argument)" \
+  "true" "$(grep -qF 'done: findings=6 ' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "file backend, orchestrator: the chunk is logged with all 6 findings" \
+  "true" "$(grep -qF 'review ok (6 findings)' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+unset PRT_TEST_REVIEW_BACKEND PRT_TEST_FINDINGS_FILE PRT_TEST_REVIEW_BASE_SHA PRT_TEST_REVIEW_MATERIAL_SHA256
+rm -rf "$prt_fo_dir"
+# (end of the many-findings case)
+
+# A finding the file-backend review assigned to one chunk can rest on code in
+# another chunk (here x.go's caller is in y.go). The assessor sees only its own
+# chunk, so it cannot verify such a finding and must not refute it: the
+# finding stays open and unverdicted. A FALSE_POSITIVE that says it depends on
+# code outside the chunk would otherwise suppress the thread of a finding
+# nobody checked (or resolve the thread it already has).
+prt_fo_dir="$(mktemp -d)"
+cat > "$prt_fo_dir/findings.json" <<'FOFINDINGS'
+{"format":"review-findings-v1","findings":[
+ {"file":"x.go","line":1,"severity":"high","category":"logic-error","issue":"issue-for-x","fix":"fix-x","klass":"blocking","claim":"cx"},
+ {"file":"y.go","line":1,"severity":"high","category":"race","issue":"issue-for-y","fix":"fix-y","klass":"blocking","claim":"cy"}
+]}
+FOFINDINGS
+jq -n '{format:"review-run-v1", outcome:"completed", backend:"x", identity:{root:"/r", head:"1111111111111111111111111111111111111111", base:"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", material_sha256:"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", input_sha256:"d", add_dirs:[]}}' \
+  > "$prt_fo_dir/provider.json"
+PRT_TEST_REVIEW_BACKEND="file"
+PRT_TEST_FINDINGS_FILE="$prt_fo_dir/findings.json"
+PRT_TEST_REVIEW_BASE_SHA="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+PRT_TEST_REVIEW_MATERIAL_SHA256="cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+PRT_TEST_TWO_FILE_DIFF=1
+PRT_TEST_ASSESS_RESPONSE_MODE=cross_chunk_fp
+PRT_TEST_CREATE_BODY_LOG="$(mktemp)"
+rc="$(run_orchestrator enforce 0 0 0 150)"
+assert_eq "cross-chunk assessment: the run exits 0" "0" "$rc"
+assert_eq "cross-chunk assessment: both chunks were assessed" "2" "$(cat "$PRT_TEST_ASSESS_COUNTFILE")"
+assert_eq "cross-chunk assessment: a FALSE_POSITIVE that depends on code outside the chunk does not suppress the finding" \
+  "true true" "$(grep -qF 'issue-for-x' "$PRT_TEST_CREATE_BODY_LOG" && echo true || echo false) $(grep -qF 'issue-for-y' "$PRT_TEST_CREATE_BODY_LOG" && echo true || echo false)"
+PRT_TEST_ASSESS_RESPONSE_MODE=clean
+PRT_TEST_TWO_FILE_DIFF=0
+unset PRT_TEST_REVIEW_BACKEND PRT_TEST_FINDINGS_FILE PRT_TEST_REVIEW_BASE_SHA PRT_TEST_REVIEW_MATERIAL_SHA256 PRT_TEST_CREATE_BODY_LOG
+rm -rf "$prt_fo_dir"
+# (end of the cross-chunk assessment case)
 
 # ============================================================ model.sh: unparseable-response diagnostic (go-kure/.github#81)
 # Every PR in this repo went red with `len=57 leading=starts-with-prose` and

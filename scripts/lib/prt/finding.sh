@@ -254,13 +254,33 @@ prt_join_assessment() {
 
   # Shape-valid rows only: fp is a known string, verdict is one of the closed
   # three, reasoning is non-blank.
-  valid_rows="$(jq -c --argjson known "$known_fps" '
-    [ .assessments[]
+  # A chunk-scoped assessor sees only its own chunk, so it cannot refute a
+  # finding whose claim rests on code elsewhere in the diff. A FALSE_POSITIVE
+  # that says as much is not a verdict: its row is dropped, the finding keeps
+  # `verdict: null` and stays open (never suppressed, never resolved). The
+  # assess prompt asks for such findings to be left out; this is the backstop
+  # for an assessor that still uses the old wording.
+  local outside_marker='^\s*depends on code (outside|not shown in) this chunk' outside_n
+  outside_n="$(jq -r --arg m "$outside_marker" '
+    [ .assessments[]? | select(type == "object")
+      | select(.verdict == "FALSE_POSITIVE" and (.reasoning? | type) == "string" and (.reasoning | test($m; "i"))) ] | length
+  ' <<< "$assessment_raw" 2>/dev/null || echo 0)"
+  if [ "${outside_n:-0}" -gt 0 ]; then
+    echo "prt_join_assessment: $outside_n FALSE_POSITIVE verdict(s) depend on code outside this chunk; those findings stay unverdicted" >&2
+  fi
+
+  # The fingerprints and the response travel over stdin, never as jq
+  # arguments: the kernel caps one argument at 128 KiB, and a failed jq here
+  # would leave every verdict dropped without a word.
+  valid_rows="$(printf '%s\n%s\n' "$known_fps" "$assessment_raw" | jq -c -s --arg m "$outside_marker" '
+    .[0] as $known
+    | [ .[1].assessments[]
       | select(type == "object")
       | select((.fp? | type) == "string" and ((.fp) as $f | $known | index($f) != null))
       | select(.verdict == "VALID" or .verdict == "PARTIALLY_VALID" or .verdict == "FALSE_POSITIVE")
       | select((.reasoning? | type) == "string" and (.reasoning | test("[^[:space:]]")))
-    ]' <<< "$assessment_raw")"
+      | select((.verdict == "FALSE_POSITIVE" and (.reasoning | test($m; "i"))) | not)
+    ]')"
 
   # Drop every row sharing an fp that appears more than once among the
   # shape-valid rows — a contradiction within one response is not evidence
@@ -270,8 +290,10 @@ prt_join_assessment() {
     (group_by(.fp) | map(select(length == 1)) | flatten)
   ' <<< "$valid_rows")"
 
-  jq -c --argjson verdicts "$deduped" '
-    . as $findings
+  printf '%s\n%s\n' "$findings_json" "$deduped" | jq -c -s '
+    .[1] as $verdicts
+    | .[0]
+    | . as $findings
     | map(
         . as $f
         | ($verdicts[] | select(.fp == $f.fp)) as $v
@@ -286,5 +308,5 @@ prt_join_assessment() {
     # this silently dropped the finding from the joined output entirely.
     | ($findings | map(select((.fp | IN($matched_fps[])) | not) + {verdict: null, reasoning: null})) as $unmatched
     | $matched + $unmatched
-  ' <<< "$findings_json" 2>/dev/null || jq -c '.' <<< "$findings_json"
+  ' 2>/dev/null || jq -c '.' <<< "$findings_json"
 }
