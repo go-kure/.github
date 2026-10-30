@@ -72,6 +72,19 @@ prt_json_concat_arrays() {
     ' 2>/dev/null
 }
 
+# prt_json_body_payload BODY [--arg NAME VALUE | --argjson NAME JSON]... ->
+# compact JSON object {body: BODY, NAME: VALUE, ...} for a comment POST/PATCH.
+# BODY travels from the Bash builtin printf to jq over stdin: as a `--arg` it
+# would be one argv entry, which the kernel caps at 128 KiB (a 50,000-character
+# body of 3-byte characters is 150 KB and fits GitHub's 65,536-character cap).
+# The named extras are short scalars. Returns nonzero with no output on a
+# jq failure, which prt_gh_rest refuses to send as an empty request.
+prt_json_body_payload() {
+  local body="$1"
+  shift
+  printf '%s' "$body" | jq -Rsc "$@" '{body: .} + $ARGS.named' 2>/dev/null
+}
+
 # prt_json_append_thread_comments THREADS INDEX EXTRA_COMMENTS
 # Appends EXTRA_COMMENTS to THREADS[INDEX].comments.nodes. Both unbounded
 # arrays use stdin; INDEX remains a bounded scalar argv value. Returns nonzero

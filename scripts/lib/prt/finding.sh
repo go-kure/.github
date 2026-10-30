@@ -148,7 +148,9 @@ prt_normalize_findings() {
     category="$(jq -r '.category' <<< "$item")"
     cat="$(prt_normalize_category "$category")"
     item="$(jq -c --arg cat "$cat" '.category = $cat' <<< "$item")"
-    clamped="$(jq -c --argjson item "$item" '. + [$item]' <<< "$clamped")"
+    # Both operands travel on stdin: one finding of multi-byte text can pass the
+    # kernel's 128 KiB cap on a single argument, which `--argjson item` would hit.
+    clamped="$(printf '%s\n%s\n' "$clamped" "$item" | jq -cs '.[0] + [.[1]]')"
   done
 
   printf '%s' "$clamped"
@@ -203,7 +205,7 @@ prt_assign_ordinals() {
     category="$(jq -r '.category' <<< "$item")"
     fp_base="$(prt_fp_base "$file" "$category")"
     item="$(jq -c --arg fpb "$fp_base" '. + {fp_base: $fpb}' <<< "$item")"
-    with_base="$(jq -c --argjson item "$item" '. + [$item]' <<< "$with_base")"
+    with_base="$(printf '%s\n%s\n' "$with_base" "$item" | jq -cs '.[0] + [.[1]]')"
   done
 
   # Pass 2: group by fp_base, sort each group by line (nulls last), assign
@@ -239,6 +241,9 @@ prt_assign_ordinals() {
 # that `fp` is dropped, not arbitrarily one of them kept. A finding with no
 # matching (surviving) verdict row keeps `verdict: null` and stays open,
 # unreplied — reconcile.sh's VERDICT=NONE path.
+# Status: 0 joined; 1 the response's `.assessments` is unusable (findings are
+# echoed unverdicted); 2 a local step failed (no output; the caller must fail
+# closed, never read it as an unverdicted success).
 prt_join_assessment() {
   local findings_json="$1" assessment_raw="$2"
   local assess_kind
@@ -249,8 +254,13 @@ prt_join_assessment() {
     return 1
   fi
 
-  local known_fps valid_rows
-  known_fps="$(jq -c '[.[].fp]' <<< "$findings_json")"
+  # A failed local step below is not a verdict problem: it returns 2 with no
+  # output, so the caller fails closed instead of reading success.
+  local known_fps valid_rows deduped joined_out
+  if ! known_fps="$(jq -c '[.[].fp]' <<< "$findings_json" 2>/dev/null)"; then
+    echo "prt_join_assessment: local fault reading the findings; the chunk's findings are not reported" >&2
+    return 2
+  fi
 
   # Shape-valid rows only: fp is a known string, verdict is one of the closed
   # three, reasoning is non-blank.
@@ -259,7 +269,10 @@ prt_join_assessment() {
   # that says as much is not a verdict: its row is dropped, the finding keeps
   # `verdict: null` and stays open (never suppressed, never resolved). The
   # assess prompt asks for such findings to be left out; this is the backstop
-  # for an assessor that still uses the old wording.
+  # for an assessor that still uses the old wording. The duplicate-fp check
+  # below runs first, so an outside-chunk row cannot hide a contradiction:
+  # {outside-chunk FALSE_POSITIVE, ordinary verdict} for one fp leaves the fp
+  # unverdicted.
   local outside_marker='^\s*depends on code (outside|not shown in) this chunk' outside_n
   outside_n="$(jq -r --arg m "$outside_marker" '
     [ .assessments[]? | select(type == "object")
@@ -272,25 +285,31 @@ prt_join_assessment() {
   # The fingerprints and the response travel over stdin, never as jq
   # arguments: the kernel caps one argument at 128 KiB, and a failed jq here
   # would leave every verdict dropped without a word.
-  valid_rows="$(printf '%s\n%s\n' "$known_fps" "$assessment_raw" | jq -c -s --arg m "$outside_marker" '
+  if ! valid_rows="$(printf '%s\n%s\n' "$known_fps" "$assessment_raw" | jq -c -s '
     .[0] as $known
     | [ .[1].assessments[]
       | select(type == "object")
       | select((.fp? | type) == "string" and ((.fp) as $f | $known | index($f) != null))
       | select(.verdict == "VALID" or .verdict == "PARTIALLY_VALID" or .verdict == "FALSE_POSITIVE")
       | select((.reasoning? | type) == "string" and (.reasoning | test("[^[:space:]]")))
-      | select((.verdict == "FALSE_POSITIVE" and (.reasoning | test($m; "i"))) | not)
-    ]')"
+    ]' 2>/dev/null)"; then
+    echo "prt_join_assessment: local fault reading the verdicts; the chunk's findings are not reported" >&2
+    return 2
+  fi
 
   # Drop every row sharing an fp that appears more than once among the
   # shape-valid rows — a contradiction within one response is not evidence
-  # for either verdict.
-  local deduped
-  deduped="$(jq -c '
+  # for either verdict. Only then drop the outside-chunk FALSE_POSITIVE rows
+  # that stand alone.
+  if ! deduped="$(jq -c --arg m "$outside_marker" '
     (group_by(.fp) | map(select(length == 1)) | flatten)
-  ' <<< "$valid_rows")"
+    | map(select((.verdict == "FALSE_POSITIVE" and (.reasoning | test($m; "i"))) | not))
+  ' <<< "$valid_rows" 2>/dev/null)"; then
+    echo "prt_join_assessment: local fault checking the verdicts; the chunk's findings are not reported" >&2
+    return 2
+  fi
 
-  printf '%s\n%s\n' "$findings_json" "$deduped" | jq -c -s '
+  if ! joined_out="$(printf '%s\n%s\n' "$findings_json" "$deduped" | jq -c -s '
     .[1] as $verdicts
     | .[0]
     | . as $findings
@@ -308,5 +327,9 @@ prt_join_assessment() {
     # this silently dropped the finding from the joined output entirely.
     | ($findings | map(select((.fp | IN($matched_fps[])) | not) + {verdict: null, reasoning: null})) as $unmatched
     | $matched + $unmatched
-  ' 2>/dev/null || jq -c '.' <<< "$findings_json"
+  ' 2>/dev/null)"; then
+    echo "prt_join_assessment: local fault joining the verdicts; the chunk's findings are not reported" >&2
+    return 2
+  fi
+  printf '%s\n' "$joined_out"
 }
