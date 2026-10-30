@@ -84,8 +84,9 @@ inputs:
     description: >-
       With assess-runner-boundary "cmd": the command (words separated by
       whitespace) placed in front of the runner, for instance one that switches
-      to another user. Trusted workflow configuration, never PR content; only
-      that it starts is checked.
+      to another user. Trusted workflow configuration, never PR content. It is
+      held to the same check as "pidns": a command behind which the runner can
+      still open an ancestor's environment, or holds a capability, is refused.
     required: false
     default: ""
   bot-login:
