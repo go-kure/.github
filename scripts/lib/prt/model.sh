@@ -1023,8 +1023,10 @@ _prt_call_runner() {
   fi
   # The record must tie this answer to this head, base, material and the exact
   # request sent; a stale or foreign output directory fails here, not downstream.
+  # The digest is a trust input: a failed sha256sum leaves it empty, and a record that carries an
+  # empty (or short) input_sha256 must not match it. Anything but 64 hex characters is a mismatch.
   req_sha="$(sha256sum < "$tmp/request" | cut -d' ' -f1)"
-  if [ ! -f "$out/provider.json" ] || ! jq -e \
+  if ! [[ "$req_sha" =~ ^[0-9a-f]{64}$ ]] || [ ! -f "$out/provider.json" ] || ! jq -e \
         --arg head "$PRT_HEAD_SHA" --arg base "$PRT_REVIEW_BASE_SHA" \
         --arg mat "$PRT_REVIEW_MATERIAL_SHA256" --arg inp "$req_sha" '
         .format == "review-run-v1" and .outcome == "completed"
