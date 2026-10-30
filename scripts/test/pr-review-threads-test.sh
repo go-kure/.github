@@ -7146,6 +7146,25 @@ assert_eq "assess runner unreadable review.md: the failure reason is runner-no-o
   "true" "$(grep -qF '[runner-no-output]' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 assert_eq "assess runner unreadable review.md: the verdicts are not used" \
   "false" "$(grep -qE 'coverage: [0-9]+/[0-9]+ chunks review\+assess ok' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+
+# A good answer that was printed stays good when the cleanup after it fails: the status of the call
+# is not the status of the temporary directory's removal.
+rm -f "$PRT_TEST_RUNNER_LOG".*
+rc="$(
+  # Invoked indirectly by the orchestrator.
+  # shellcheck disable=SC2329,SC2317
+  rm() {
+    command rm "$@"
+    [ "${FUNCNAME[1]:-}" != _prt_call_runner ] || return 1
+  }
+  export -f rm
+  run_orchestrator advisory 0 0 0
+)"
+assert_eq "assess runner failed cleanup after a good answer: exits 0, one call" "0 1" "$rc $(prt_ar_calls)"
+assert_eq "assess runner failed cleanup after a good answer: the verdicts are used" \
+  "true" "$(grep -qE 'coverage: [0-9]+/[0-9]+ chunks review\+assess ok' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "assess runner failed cleanup after a good answer: no runner failure reason" \
+  "false" "$(grep -qE '\[(runner-[a-z]+|provenance-mismatch|local-tempdir)\]' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 # The stub above copies the caller's identity into its record, so it cannot catch a wrong root, a
 # base the checkout lacks or a merge-commit checkout. This one derives the identity from a real
 # repository, as the runner does, and the expected values below are derived apart from it: the head

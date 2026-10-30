@@ -18,7 +18,7 @@
 # (backend-config, local-tempdir, payload-build, findings-file-missing,
 # findings-file-malformed, provenance-mismatch; PRT_REVIEW_BACKEND=file) or
 # _prt_call_runner produced (backend-config, local-tempdir, deadline-exhausted,
-# runner-incomplete, runner-quota, runner-launch, runner-usage, runner-timeout, runner-failed,
+# runner-boundary, runner-incomplete, runner-quota, runner-launch, runner-usage, runner-timeout, runner-failed,
 # runner-no-output, runner-empty, provenance-mismatch; PRT_ASSESS_BACKEND=runner). Read by callers in
 # pr-review-threads.sh to annotate a bare "exit 1" with which of several
 # unrelated causes actually fired — same cross-file pattern as
@@ -1038,11 +1038,13 @@ _prt_call_runner() {
     _prt_set_model_failure "provenance-mismatch"
     return 1
   fi
-  # The status of the read is the status of the call: the cleanup after it must not decide it.
+  # The status of the read is the status of the call: the cleanup after it must not decide it, on
+  # either path (a good answer already printed stays good if the removal fails).
   if ! cat "$out/review.md"; then
     rm -rf "$tmp"
     _prt_set_model_failure "runner-no-output"
     return 1
   fi
-  rm -rf "$tmp"
+  rm -rf "$tmp" || true
+  return 0
 }
