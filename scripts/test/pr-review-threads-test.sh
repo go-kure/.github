@@ -246,6 +246,37 @@ rm -rf "$prt_fallback_dir"
 unset prt_fallback_dir
 unset -f prt_fallback_scan
 
+# `|| true` / `|| :` after a jq or gh call turns a failed query into success (an empty value). Each
+# site is either safe because an empty value takes the failure path next (the allow-list names the
+# variable and why) or must check the status itself. A new site fails this guard until it is listed.
+prt_swallow_scan() { # FILE... -> FILE:VARIABLE for each jq/gh substitution that ends in || true / || :
+  local f
+  for f in "$@"; do
+    grep -nE -e '(\bjq\b|\bgh\b|prt_gh_[a-z_]+).*\|\| *(true|:) *[)"]' "$f" | grep -vE '^[0-9]+:[[:space:]]*#' |
+      sed -E -e "s|^[0-9]+:[[:space:]]*([A-Za-z_]+)=.*|$(basename "$f"):\\1|" -e "t" -e "s|^[0-9]+:.*|$(basename "$f"):?|"
+  done
+}
+# Allow-list, one entry per site. Each result is empty on failure and an empty value is the failure
+# path of the next line: live_sha -> "no .head.sha" (rc 2); content -> "empty-content" failure;
+# cur_body (three marker rewrites) -> "GET ... failed or returned an empty body", incomplete and skipped.
+prt_swallow_allow="gh.sh:live_sha model.sh:content pr-review-threads.sh:cur_body pr-review-threads.sh:cur_body pr-review-threads.sh:cur_body"
+assert_eq "swallow guard: every jq/gh '|| true' site is a listed one whose empty value fails the next check" \
+  "$(printf '%s\n' $prt_swallow_allow | sort | tr '\n' ' ')" \
+  "$(prt_swallow_scan "$ROOT/scripts/pr-review-threads.sh" "$LIB"/*.sh "$ROOT/scripts/eval/review-adapter.sh" | sort | tr '\n' ' ')"
+prt_swallow_dir="$(mktemp -d)"
+cat > "$prt_swallow_dir/probe.sh" <<'PROBE'
+errors="$(jq -c '.errors // empty' <<< "$body" 2>/dev/null || true)"
+x="$(gh api /y 2>/dev/null || :)"
+  z="$(prt_gh_rest GET /z || true)"
+# w="$(jq . <<< "$q" || true)" is a comment
+n="$(cat "$f" 2>/dev/null || true)"
+PROBE
+assert_eq "swallow guard: the scanner reports jq, gh and prt_gh_ sites with their variable, not the comment or a cat" \
+  "probe.sh:errors probe.sh:x probe.sh:z" "$(prt_swallow_scan "$prt_swallow_dir/probe.sh" | tr '\n' ' ' | sed 's/ $//')"
+rm -rf "$prt_swallow_dir"
+unset prt_swallow_dir prt_swallow_allow
+unset -f prt_swallow_scan
+
 # prt_json_same_length A B: 0 same length, 1 different, 3 when either query failed or gave no
 # number (so two failures never compare equal).
 assert_eq "same_length: equal arrays -> 0" "0" "$(prt_json_same_length '[1,2]' '[3,4]' >/dev/null 2>&1; echo $?)"
@@ -1516,6 +1547,19 @@ fake_curl_ratelimited() {
 }
 PRT_CURL=fake_curl_ratelimited PRT_GH_TOKEN=x prt_gh_graphql 'query{viewer{login}}' '{}' >/dev/null 2>&1
 assert_eq "gh.sh: HTTP 200 with errors[] is classified as failure, not success" "1" "$?"
+# A failed errors[] query must not read as "no errors": the body carries a populated errors[] and
+# the query that looks for it fails, so the response is not a success and its .data is not printed.
+gql_fault_out="$(
+  # shellcheck disable=SC2329,SC2317
+  jq() {
+    case "$*" in *'.errors // empty'*) return 5 ;; esac
+    command jq "$@"
+  }
+  PRT_CURL=fake_curl_ratelimited PRT_GH_TOKEN=x prt_gh_graphql 'query{viewer{login}}' '{}' 2>/dev/null
+  echo "rc=$?"
+)"
+assert_eq "gh.sh: a failed errors[] query is a failure, not 'no errors' (no .data printed)" "rc=1" "$gql_fault_out"
+unset gql_fault_out
 
 # go-kure/.github#256: a rate-limited isResolved re-read inside a lift's
 # prt_retry must leave its Retry-After where prt_retry reads it.
