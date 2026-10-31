@@ -6783,6 +6783,12 @@ fi
 if [ -e "$out/review.md" ] || { [ -d "$out" ] && [ -n "$(ls -A "$out")" ]; }; then exit 64; fi
 case "$mode" in
   exit[0-9]*) exit "${mode#exit}" ;;
+  # noisy: a diagnostic on standard error that holds raw assessment text and a credential-like
+  # string, as a runner's own log may. noisy_exit1 does the same and then fails.
+  noisy|noisy_exit1)
+    echo "CANARY-RAW-ASSESSMENT-TEXT sk-canary-credential-0123" >&2
+    [ "$mode" = noisy_exit1 ] && exit 1
+    mode=clean ;;
   # Outlives any limit, with a child of its own that must go with it.
   # hang_stubborn: the child ignores TERM while the runner itself exits on it.
   # The child rewrites a counter file every 0.1 s: that is how a test sees, from outside the
@@ -7171,6 +7177,25 @@ assert_eq "assess runner failed cleanup after a good answer: the verdicts are us
   "true" "$(grep -qE 'coverage: [0-9]+/[0-9]+ chunks review\+assess ok' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 assert_eq "assess runner failed cleanup after a good answer: no runner failure reason" \
   "false" "$(grep -qE '\[(runner-[a-z]+|provenance-mismatch|local-tempdir)\]' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+
+# What the runner writes to standard error is never printed: it can hold raw assessment text and
+# credential-bearing diagnostics, and the run's log is not the place for either. Only the closed
+# reason is. Checked on a good run and on a failing one, in both output streams.
+prt_ar_stderr_case() { # label runner-mode expected-reason-or-empty
+  rm -f "$PRT_TEST_RUNNER_LOG".*
+  PRT_TEST_RUNNER_MODE="$2"
+  rc="$(run_orchestrator advisory 0 0 0)"
+  assert_eq "assess runner stderr, $1: exits 0, one call" "0 1" "$rc $(prt_ar_calls)"
+  assert_eq "assess runner stderr, $1: the runner's diagnostic is not in the run's output" \
+    "false" "$(cat "$PRT_TEST_STDERR_FILE" "$PRT_TEST_STDOUT_FILE" | grep -qF -e CANARY-RAW-ASSESSMENT-TEXT -e sk-canary-credential && echo true || echo false)"
+  if [ -n "$3" ]; then
+    assert_eq "assess runner stderr, $1: the closed reason is logged" \
+      "true" "$(grep -qF "[$3]" "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+  fi
+  PRT_TEST_RUNNER_MODE=clean
+}
+prt_ar_stderr_case "good run" noisy ""
+prt_ar_stderr_case "failing run" noisy_exit1 runner-failed
 
 # The clock is a trust input of the deadline: a failed `date` is not "0", which would make the time
 # left the whole epoch and let the floor and the kill-grace refusals pass. The call is refused as

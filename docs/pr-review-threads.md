@@ -608,6 +608,9 @@ limit), `runner-timeout` (the outer bound below fired), `runner-failed` (any oth
 `runner-empty`, `provenance-mismatch`, `deadline-exhausted`, `backend-config` (a required
 variable is unset or `PRT_ASSESS_RUNNER_SECONDS` is not a whole number; the start checks catch the
 usual cases first) and `local-tempdir`. A malformed answer is salvaged and retried once like a proxy answer.
+The runner's standard error is written to a file in the call's temporary directory and removed with
+it; it is never printed, because it can hold raw assessment text and credential-bearing
+diagnostics. The bracketed reason is all the log says about a failure.
 
 - **Proxy URL.** With the review also from a findings file, the run needs no `PRT_PROXY_URL`
   when assessment is on. With the proxy review, the URL is still required.
@@ -1063,7 +1066,7 @@ short-circuit, a non-2xx diff fetch, or a PR-metadata fetch failure — still pr
 mode line but not the full stage sequence or the closing `prt: done` line; those exits are already
 unambiguous on their own (a non-zero exit code plus one explicit `ERROR:` line), so the tracing
 gap there doesn't reintroduce the silent-hang shape #61 exists to close. Never logged:
-`PRT_GH_TOKEN`, raw model responses, comment bodies — only fingerprints, actions, and outcomes.
+`PRT_GH_TOKEN`, raw model responses, the runner's standard error, comment bodies — only fingerprints, actions, and outcomes.
 The unparseable-response diagnostic above stays on the permitted side of that line by
 construction: `len=`/`leading=` are shape, `sha16=` is a fingerprint, and `class=` is drawn from a
 closed in-repo enum rather than from the response. Adding a field that prints response bytes —
