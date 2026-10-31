@@ -7846,47 +7846,80 @@ rc="$(run_orchestrator advisory 0 0 0)"
 assert_eq "assess runner, boundary prefix that closes the environment descriptor: the runner is not started, degraded as runner-failed" \
   "0 0 true" "$rc $(prt_ar_calls) $(prt_ar_reason runner-failed)"
 
-# An empty environment list is refused before anything is written: the runner is not started and
-# the call fails like a closed descriptor. The list is emptied by a shim of printf, which the call
-# runs directly (writing the request) after it built the list; the real build always yields PATH.
-rm -f "$PRT_TEST_RUNNER_LOG".*
+# Each refusal of the hand-over ends the call before the runner starts: exit 125, degraded as
+# runner-failed, no call counted. The real build always yields well-formed words and a non-empty
+# list, so the faulty list is made by a shim of printf, which the call runs directly (writing the
+# request) after it built the list. The shims are defined from strings: the array they change and
+# the format they forward belong to the orchestrator, and the other printf calls in this file are
+# not calls of them. A shim of umask, which precedes the write of the environment file, records
+# that the write was reached (and, in one case, makes it fail).
 PRT_TEST_ASSESS_RUNNER_BOUNDARY_CMD="$(prt_ar_prod_prefix)"
 PRT_TEST_RUNNER_MODE=clean
-#
-# Without the guard the outcome is the same (an empty program name, exit 127, runner-failed), so the
-# outcome alone does not show it. What only the guard changes is that the environment file is never
-# written: that write is preceded by `umask`, which a second shim records. The control run, with
-# the list intact, shows the shim does see the write.
-rm -f "$PRT_TEST_RUNNER_LOG".*
-rc="$(
-  eval 'umask() {
-    if [ "${FUNCNAME[1]:-}" = _prt_call_runner ]; then echo wrote >> "$PRT_TEST_RUNNER_LOG.envfile"; fi
-    builtin umask "$@"
-  }'
-  export -f umask
-  run_orchestrator advisory 0 0 0
-)"
+prt_ar_hand_over_run() { # args: statement run in the call to change the list ("" = none), statement run before the file write ("" = none)
+  rm -f "$PRT_TEST_RUNNER_LOG".*
+  rc="$(
+    export PRT_AR_SHIM_LIST="$1" PRT_AR_SHIM_FILE="$2"
+    eval 'printf() {
+      if [ "${FUNCNAME[1]:-}" = _prt_call_runner ] && [ -n "${PRT_AR_SHIM_LIST:-}" ]; then eval "$PRT_AR_SHIM_LIST"; fi
+      builtin printf "$@"
+    }
+    umask() {
+      if [ "${FUNCNAME[1]:-}" = _prt_call_runner ]; then
+        echo wrote >> "$PRT_TEST_RUNNER_LOG.envfile"
+        if [ -n "${PRT_AR_SHIM_FILE:-}" ]; then eval "$PRT_AR_SHIM_FILE"; fi
+      fi
+      builtin umask "$@"
+    }'
+    export -f printf umask
+    run_orchestrator advisory 0 0 0
+  )"
+}
+prt_ar_hand_over_refused() { # label: the last run ended before the runner started
+  assert_eq "assess runner, $1: the runner is not started, degraded as runner-failed" \
+    "0 0 true" "$rc $(prt_ar_calls) $(prt_ar_reason runner-failed)"
+}
+prt_ar_envfile_written() { [ -e "$PRT_TEST_RUNNER_LOG.envfile" ] && echo present || echo absent; }
+
+# Control: the umask shim sees the write of the environment file on an intact list.
+prt_ar_hand_over_run "" ""
 assert_eq "assess runner, environment file control (list intact): the file is written, the run succeeds" \
   "0 1 1" "$rc $(prt_ar_calls) $(wc -l < "$PRT_TEST_RUNNER_LOG.envfile")"
-rm -f "$PRT_TEST_RUNNER_LOG".*
-rc="$(
-  # Defined from a string: the array it clears and the format it forwards belong to the
-  # orchestrator, and the other printf calls in this file are not calls of this shim.
-  eval 'printf() {
-    if [ "${FUNCNAME[1]:-}" = _prt_call_runner ]; then PRT_RUNNER_ENV_ARGS=(); fi
-    builtin printf "$@"
-  }
-  umask() {
-    if [ "${FUNCNAME[1]:-}" = _prt_call_runner ]; then echo wrote >> "$PRT_TEST_RUNNER_LOG.envfile"; fi
-    builtin umask "$@"
-  }'
-  export -f printf umask
-  run_orchestrator advisory 0 0 0
-)"
-assert_eq "assess runner, empty environment list: the runner is not started, degraded as runner-failed" \
-  "0 0 true" "$rc $(prt_ar_calls) $(prt_ar_reason runner-failed)"
+
+# An empty list. Without its guard the outcome is the same (one empty word, an empty program name,
+# runner-failed), so the outcome alone does not show it. What only the guard changes is that the
+# environment file is never written.
+prt_ar_hand_over_run "PRT_RUNNER_ENV_ARGS=()" ""
+prt_ar_hand_over_refused "empty environment list"
 assert_eq "assess runner, empty environment list: refused before the environment file is written" \
-  "absent" "$([ -e "$PRT_TEST_RUNNER_LOG.envfile" ] && echo present || echo absent)"
+  "absent" "$(prt_ar_envfile_written)"
+
+# A word that is not NAME=value, added to the list the call built (the stub needs the rest of it to
+# run at all). Without the check, `export weird` succeeds and the runner starts with an
+# environment that is not the one asked for.
+prt_ar_hand_over_run "PRT_RUNNER_ENV_ARGS+=(weird)" ""
+prt_ar_hand_over_refused "an environment word that is not NAME=value"
+
+# A word whose name cannot be exported (a read-only shell variable, listed as a pass-through name).
+# Without the status check the runner starts without that variable.
+PRT_TEST_ASSESS_RUNNER_ENV="$PRT_TEST_ASSESS_RUNNER_ENV BASHOPTS"
+prt_ar_hand_over_run "" ""
+prt_ar_hand_over_refused "a pass-through name that cannot be exported"
+PRT_TEST_ASSESS_RUNNER_ENV="${PRT_TEST_ASSESS_RUNNER_ENV% BASHOPTS}"
+
+# An environment file that cannot be written (its name is taken by a directory).
+prt_ar_hand_over_run "" "mkdir \"\$tmp/env\""
+prt_ar_hand_over_refused "an environment file that cannot be written"
+
+# An exported function of the boundary prefix does not reach the runner: `env -i` used to drop it,
+# and a function named like a builtin could shadow it inside the hand-over step.
+printf '#!/bin/bash\nprtfn() { :; }\nexport -f prtfn\nexec "$@"\n' > "$prt_ar_dir/boundary-fn"
+chmod 755 "$prt_ar_dir/boundary-fn"
+PRT_TEST_ASSESS_RUNNER_BOUNDARY_CMD="$prt_ar_dir/boundary-fn $(prt_ar_prod_prefix)"
+rm -f "$PRT_TEST_RUNNER_LOG".*
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "assess runner, boundary prefix that exports a function: the run succeeds, the runner's environment holds no function" \
+  "0 1 0" "$rc $(prt_ar_calls) $(grep -c '^BASH_FUNC_' "$PRT_TEST_RUNNER_LOG.env.1")"
+PRT_TEST_ASSESS_RUNNER_BOUNDARY_CMD="$(prt_ar_prod_prefix)"
 
 # A prefix that stays resident (it runs the rest as a child and waits) must not hold the posting
 # token: the prefix is started under `env -i`, so its own /proc/<pid>/environ has none. The control
