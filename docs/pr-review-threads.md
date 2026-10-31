@@ -277,7 +277,7 @@ overrides the workflow's own default) is one of three values. An unrecognized va
   (reply + unresolve) if a bot-resolved thread's issue recurs. A thread a *human* resolved is
   never reopened. A PR-wide cap
   (`PRT_MAX_FINDINGS_TOTAL`, default 5) bounds how many *new* threads can start gating per run;
-  findings beyond what's left of the cap go into one overflow comment instead of a thread.
+  findings beyond what's left of the cap go into the overflow comment instead of a thread.
   A false positive with no thread is never posted (`SUPPRESS`); the job summary lists each one
   with its line and the first line of its issue and of the assessor's reasoning, so the call can
   be checked (go-kure/.github#183).
@@ -1252,10 +1252,10 @@ quarantined finding as accounted for even if that POST is about to fail. When it
 ran and called `prt_render_clean_comment_superseded` with the true (nonzero) overflow/quarantined
 counts — producing "see the advisory comment on this PR for the withheld/overflow finding bodies"
 for a comment that was never posted. A new `OVERFLOW_COMMENT_POSTED` flag now tracks that POST's
-own outcome; the supersede call site passes `0 0` for the overflow/quarantined counts instead of
-the true lengths when it is `false`, which routes those findings into the existing "did not reach
-any durable outcome" branch instead of falsely pointing at the advisory comment — reusing the
-unaccounted-branch machinery the previous round's fix already added, rather than a new branch.
+own outcome; when it is `false` the supersede call site no longer credits the findings that were not
+posted, which routes them into the existing "did not reach any durable outcome" branch instead of
+falsely pointing at the advisory comment — reusing the unaccounted-branch machinery the previous
+round's fix already added, rather than a new branch.
 Second, the withheld-findings table's intro sentence claimed every quarantined finding "share[s] a
 fingerprint with another finding in this diff" — true only when this run's own multiplicity
 (`finding.sh`'s `collision` field, group length>1) caused the quarantine. A finding can also be
@@ -1361,47 +1361,30 @@ plus the finding is surfaced instead of discarded), so the row-precedence is not
 
 ### The overflow and withheld comment is split when it would pass GitHub's limit (go-kure/.github#307)
 
-GitHub rejects an issue comment longer than 65,536 characters with HTTP 422. The overflow and
-withheld findings are the only durable home of a withheld finding, so a body past the limit cannot be
-truncated or dropped. `prt_render_overflow_parts` (`render.sh`) renders it as one comment when GitHub
-accepts it whole (65,536 units or fewer), byte for byte what `prt_render_overflow_comment` prints, and
-otherwise as several parts.
+GitHub rejects an issue comment longer than 65,536 characters with HTTP 422. A report that exceeds a
+hard limit can only be split, truncated or dropped, and splitting is the only one of the three that
+loses nothing. So the overflow and withheld findings stay one comment when GitHub accepts that
+comment whole, and are split into several parts when it would not.
 
 This section is the one place that states the rules of the split. The code
 (`prt_overflow_part_line` and `prt_render_overflow_parts` in `render.sh`) and its tests implement them
 and point here instead of restating them.
 
-- **Size.** Each part is planned to `PRT_OVERFLOW_PART_MAX`, 60,000 UTF-16 units: 5,536 below the
-  limit. The margin covers what grows after the rows are measured (section headings, intros and
-  footers). The room for the "Part N of M" line is measured from the longest line the code can print,
-  so it follows the wording. An astral character counts as two units, the conservative reading of
-  "characters". Each finished part is checked against the real limit, and a part over it fails the
-  render, so nothing over the limit is ever posted.
-- **Order.** Merge-gating withheld rows are placed first across the parts, then every other row by
-  severity (critical, high, medium, other). Size never reorders a row. Inside one part the advisory
-  table is printed before the withheld table, so a part line says where the blockers are instead of
-  claiming they are on top.
-- **What part 1 says.** It carries every coverage caveat: how many parts follow, which parts hold the
-  merge-gating rows (more than part 1 only when those rows alone pass one part, and then it says
-  "parts 1 to N") and, when a finding had to be shortened, that it was. A later part points back to
-  part 1 and repeats where the blockers are. Each part repeats its own section headings, intro text
-  and footer, so it reads on its own. The split is forced, not chosen: the forge's hard limit leaves
-  only splitting, truncating or dropping a report that exceeds it, and splitting is the only one of
-  the three that loses nothing.
-- **A single finding larger than a part** is shortened, never dropped: its issue and fix text are cut
-  (and its severity, category, file and line each capped at 200 characters) and the cell ends with
-  `[truncated: N of M characters omitted]`. The omitted text is recorded nowhere
-  else, so the run is also marked `REVIEW_INCOMPLETE`. A finding that fits one part whole is never cut,
-  however large.
-- **Posting.** Parts are posted in order, each after a freshness check (before part 1, and again
-  before each later part). A part whose post fails marks the run incomplete and the reason names the
-  part (`failed to post overflow comment part 2 of 3 (HTTP 500)`); the later parts are still posted.
-  A freshness check that finds the head stale (the run is superseded, recorded as degraded) or that
-  fails (the pull request could not be read, recorded as incomplete) stops the remaining parts.
-  `OVERFLOW_COMMENT_POSTED` is true only when every part posted, so the clean-verdict supersede never
-  points at a comment that is missing or partial. When only some parts posted, the supersede counts
-  the rows in the parts that did post as having a durable outcome and reports only the rows in the
-  other parts as not reaching one.
+- **Size.** Every part is checked against the limit before it is posted, and a part over it fails the
+  render, so nothing over the limit is posted.
+- **Order.** Merge-gating withheld rows come first across the parts, then the other rows by severity.
+  Size never reorders rows.
+- **What part 1 says.** It says how many parts there are, which parts hold the merge-gating rows and,
+  when a finding had to be shortened, that it was. A later part points back to part 1.
+- **A single finding larger than any part** is shortened, never dropped, and the shortened text ends
+  with a marker that says how much was omitted. The omitted text is recorded nowhere else, so the run
+  is also marked `REVIEW_INCOMPLETE`.
+- **Posting.** Parts are posted in order, each after a freshness check. A part whose post fails marks
+  the run incomplete and the reason names the part, for example
+  `failed to post overflow comment part 2 of 3 (HTTP 500)`; the later parts are still posted. A
+  freshness check that finds the head stale (recorded as degraded) or that fails (recorded as
+  incomplete) stops the remaining parts. A superseded clean verdict never points at rows that were
+  not posted.
 
 ### How long a withheld finding stays withheld (go-kure/.github#148)
 
