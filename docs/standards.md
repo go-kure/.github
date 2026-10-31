@@ -272,6 +272,15 @@ on the binary the releases use. A consumer's `mise.toml` git-cliff pin is
 tracked separately by that consumer's Renovate, so the release binary and a
 local preview can still differ for the time between the two bumps.
 
+`.github`'s own `renovate.json` also carries one `packageRules` entry for the
+GoReleaser version that `release-publish.yml` passes to `goreleaser-action` as
+`version:`. Renovate reads that input as a `goreleaser/goreleaser` dependency and
+writes the release tag (for example `v2.19.0`); the org-wide
+`REQUIRED_GORELEASER_VERSION` is a bare version that its check compares as a
+string. The entry sets `extractVersion: "^v(?<version>.*)$"` for
+`goreleaser/goreleaser`, so a bump writes the bare version (`2.19.0`). Without it each GoReleaser bump needs a hand edit to remove the
+`v`.
+
 ### GitHub Actions pinning
 
 Every third-party action is pinned to a full 40-character commit SHA, with the
