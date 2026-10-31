@@ -706,7 +706,8 @@ A later review of \`${sha}\` reported **${count} finding(s)**, but ${unaccounted
 reach any durable outcome this run (a write likely failed) — this is not the same as being
 suppressed as a false positive. Check the job log for the REVIEW_INCOMPLETE reason (e.g.
 "create failed" for a single finding, "failed to post overflow comment" for the whole
-advisory batch) and re-run if needed.
+advisory batch, or "failed to post overflow comment part N of M" for the rows of that one part
+only) and re-run if needed.
 
 ${PRT_MARKER_STATE_SUPERSEDED}
 ${PRT_MARKER_CLEAN}

@@ -6731,6 +6731,8 @@ assert_eq "split overflow comment: some findings posted and some did not" \
   "true" "$([ "$prt_fo_posted" -ge 1 ] && [ "$prt_fo_unposted" -ge 1 ] && echo true || echo false)"
 assert_eq "split overflow comment: the superseded clean verdict counts only the findings of the part that did not post" \
   "true false" "$(grep -qF "reported **6 finding(s)**, but ${prt_fo_unposted} did not" "$PRT_TEST_ISSUE_COMMENT_LOG" && echo true || echo false) $(grep -qF 'advisory comment' "$PRT_TEST_ISSUE_COMMENT_LOG" && echo true || echo false)"
+assert_eq "split overflow comment: the superseded clean verdict names a part failure as covering that part's rows only" \
+  "true" "$(grep -qF 'part N of M' "$PRT_TEST_ISSUE_COMMENT_LOG" && echo true || echo false)"
 assert_eq "split overflow comment: the failure reason names the part that failed" \
   "true" "$(grep -qF 'failed to post overflow comment part 2 of 3 (HTTP 500)' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 assert_eq "split overflow comment: only part 2 is reported failed" \

@@ -1359,7 +1359,7 @@ GitHub rejects an issue comment longer than 65,536 characters with HTTP 422. The
 withheld findings are the only durable home of a withheld finding, so a body past the limit cannot be
 truncated or dropped. `prt_render_overflow_parts` (`render.sh`) renders it as one comment when GitHub
 accepts it whole (65,536 units or fewer), byte for byte what `prt_render_overflow_comment` prints, and
-otherwise as several parts:
+otherwise as several parts.
 
 This section is the one place that states the rules of the split. The code
 (`prt_overflow_part_line` and `prt_render_overflow_parts` in `render.sh`) and its tests implement them
@@ -1379,9 +1379,9 @@ and point here instead of restating them.
   merge-gating rows (more than part 1 only when those rows alone pass one part, and then it says
   "parts 1 to N") and, when a finding had to be shortened, that it was. A later part points back to
   part 1 and repeats where the blockers are. Each part repeats its own section headings, intro text
-  and footer, so it reads on its own. This splitting is not an agent's choice of how to write a
-  report: the forge's hard limit leaves only truncation or a failed run as the alternatives, so the
-  rule against splitting one report across several comments does not apply (RULING-1031-1200-281).
+  and footer, so it reads on its own. The split is forced, not chosen: the forge's hard limit leaves
+  only splitting, truncating or dropping a report that exceeds it, and splitting is the only one of
+  the three that loses nothing.
 - **A single finding larger than a part** is shortened, never dropped: its issue and fix text are cut
   (and its severity, category, file and line each capped at 200 characters) and the cell ends with
   `[truncated: N of M characters omitted]`. The omitted text is recorded nowhere
