@@ -40,11 +40,11 @@ write_report() { # write_report FILE KIND [KEY=VALUE...]
   if [ "$kind" = boundary ]; then
     lines=(canary_hits=0 ancestor_environ_open=0 ancestor_mem_open=0 fd_above_2=0
       uid=1000 cap_eff=0000000000000000 cap_bnd=000001ffffffffff no_new_privs=0
-      proc_mount=denied pids_visible=1 own_environ_open=1 own_environ_marker=1)
+      proc_mount=denied canary_state=ok own_environ_open=1 own_environ_marker=1)
   else
     lines=(canary_hits=1 ancestor_environ_open=6 ancestor_mem_open=6 fd_above_2=0
       uid=1000 cap_eff=0000000000000000 cap_bnd=000001ffffffffff no_new_privs=0
-      proc_mount=skipped pids_visible=900 own_environ_open=1 own_environ_marker=1)
+      proc_mount=skipped canary_state=ok own_environ_open=1 own_environ_marker=1)
   fi
   : > "$file"
   for line in "${lines[@]}"; do
@@ -213,10 +213,49 @@ write_report "$dir/k4" boundary own_environ_open=0
 assert_eq "judge: a boundary that cannot open its own environ is inconclusive" 3 "$(judge_rc "$dir/k4" "$dir/c")"
 write_report "$dir/k5" boundary own_environ_marker=@
 assert_eq "judge: a boundary report without the marker field is inconclusive" 3 "$(judge_rc "$dir/k5" "$dir/c")"
-write_report "$dir/k6" boundary pids_visible=0
-assert_eq "judge: a boundary that sees no process is inconclusive" 3 "$(judge_rc "$dir/k6" "$dir/c")"
+write_report "$dir/k6" boundary canary_state=missing
+assert_eq "judge: a boundary whose stub had no canary to look for is inconclusive" 3 "$(judge_rc "$dir/k6" "$dir/c")"
+write_report "$dir/k6b" boundary canary_hits=
+assert_eq "judge: a boundary with no canary count is inconclusive" 3 "$(judge_rc "$dir/k6b" "$dir/c")"
+write_report "$dir/k6c" boundary fd_above_2=
+assert_eq "judge: a boundary whose descriptor listing gave no count is inconclusive" 3 "$(judge_rc "$dir/k6c" "$dir/c")"
 write_report "$dir/k7" boundary canary_hits=1 own_environ_marker=0
 assert_eq "judge: a leak is still a leak when the scan is blind" 1 "$(judge_rc "$dir/k7" "$dir/c")"
+
+# A descriptor listing that fails must not read as "no descriptors". With globbing off the listing
+# stays a literal pattern: the stub saw none of the standard descriptors, so it writes an empty
+# count, which the judge reads as unusable. A working listing is counted from 0 up.
+stub_run "$dir/f0" SHELLOPTS=noglob
+assert_eq "stub: a descriptor listing that did not work leaves the count empty, not 0" \
+  "present-empty" "$(grep -q '^fd_above_2=$' "$dir/f0" && echo present-empty || echo "other:$(field "$dir/f0" fd_above_2)")"
+
+# `grep -q` would quit at the first match and leave `tr` writing into a closed pipe: under pipefail
+# the pipeline is then 141 and a match reads as a miss. The marker comes first in a large environment.
+big="$(head -c 100000 /dev/zero | tr '\0' x)"
+stub_run "$dir/g0" BIG1="$big" BIG2="$big" BIG3="$big"
+assert_eq "stub: the marker is found in an environment larger than a pipe buffer" 1 "$(field "$dir/g0" own_environ_marker)"
+
+# An empty or missing canary would match every environment: it is named, not scanned for.
+: > "$dir/canary-empty"
+stub_run "$dir/h0" PRT_PROBE_CANARY_FILE="$dir/canary-empty"
+assert_eq "stub: an empty canary file gives no canary count" "present-empty" \
+  "$(grep -q '^canary_hits=$' "$dir/h0" && echo present-empty || echo "other:$(field "$dir/h0" canary_hits)")"
+assert_eq "stub: an empty canary file is named" empty "$(field "$dir/h0" canary_state)"
+stub_run "$dir/h1" PRT_PROBE_CANARY_FILE="$dir/no-such-canary"
+assert_eq "stub: a missing canary file gives no canary count" "present-empty" \
+  "$(grep -q '^canary_hits=$' "$dir/h1" && echo present-empty || echo "other:$(field "$dir/h1" canary_hits)")"
+assert_eq "stub: a missing canary file is named" missing "$(field "$dir/h1" canary_state)"
+stub_run "$dir/h2"
+assert_eq "stub: a readable canary is reported as such" ok "$(field "$dir/h2" canary_state)"
+
+# Who the stub is and where it sits, as informational fields.
+assert_eq "stub: it reports its user name" "$(id -un)" "$(field "$dir/h2" user)"
+assert_eq "stub: it reports its namespace identity (here: not in a namespace of its own, parent unknown)" \
+  "true unknown" "$([ -n "$(field "$dir/h2" nspid)" ] && echo true || echo false) $(field "$dir/h2" pid_ns_differs)"
+stub_run "$dir/h3" PRT_PROBE_PARENT_PID_NS="$(readlink /proc/self/ns/pid)"
+assert_eq "stub: the same pid namespace as the parent is reported as 0" 0 "$(field "$dir/h3" pid_ns_differs)"
+stub_run "$dir/h4" PRT_PROBE_PARENT_PID_NS="pid:[1]"
+assert_eq "stub: a different pid namespace is reported as 1" 1 "$(field "$dir/h4" pid_ns_differs)"
 
 # The whole run, with stand-ins that break one step. Only where this host can start the
 # boundary at all: elsewhere the run itself reports exit 2 and the cases would say nothing.
@@ -224,13 +263,49 @@ run_rc() { # run_rc [env words...] -> exit code of a full run
   env "$@" bash "$PROBE" run > /dev/null 2>&1
   echo $?
 }
-if unshare --user --map-current-user --pid --fork --mount-proc true > /dev/null 2>&1; then
+# These stop before the boundary is tried, so they run on any host.
+assert_eq "run: a probe that cannot load the orchestrator's functions is a setup failure" 4 \
+  "$(mkdir -p "$dir/solo/scripts" && cp "$PROBE" "$dir/solo/scripts/" && env bash "$dir/solo/scripts/pr-review-runner-boundary-probe.sh" run > /dev/null 2>&1; echo $?)"
+mkdir -p "$dir/nochmod"
+printf '#!/bin/sh\nexit 1\n' > "$dir/nochmod/chmod"
+chmod 755 "$dir/nochmod/chmod"
+assert_eq "run: a stand-in runner that cannot be made executable is a setup failure" 4 "$(run_rc PATH="$dir/nochmod:$PATH")"
+assert_eq "run: an orchestrator refusal before the boundary (a floor that is not a number) is a setup failure, not a leak" 4 \
+  "$(run_rc PRT_MODEL_TIMEOUT_FLOOR=soon)"
+
+# An inherited re-exec marker, or a real token, must never be written to the work file as the canary.
+# The `uname` stand-in runs after the file is written and keeps a copy of it.
+mkdir -p "$dir/tw" "$dir/rx"
+real_uname="$(command -v uname)"
+# shellcheck disable=SC2016 # the stand-in's own text, not an expansion here
+printf '#!/bin/sh\ncp "$TMPDIR"/tmp.*/canary "$CANARY_COPY" 2>/dev/null\nexec %s "$@"\n' "$real_uname" > "$dir/rx/uname"
+printf '#!/bin/sh\nexit 1\n' > "$dir/rx/unshare"
+chmod 755 "$dir/rx/uname" "$dir/rx/unshare"
+for marker in 1 real-secret-value-0123456789abcdef; do
+  rm -f "$dir/canary-copy"
+  env TMPDIR="$dir/tw" CANARY_COPY="$dir/canary-copy" PATH="$dir/rx:$PATH" PRT_PROBE_REEXEC="$marker" \
+    PRT_GH_TOKEN=real-secret-value-0123456789abcdef bash "$PROBE" run > /dev/null 2>&1
+  assert_eq "run: with PRT_PROBE_REEXEC=$marker and a real token set, the work file holds a fresh canary" "true" \
+    "$(grep -qE '^probe-canary-[0-9a-f]{32}$' "$dir/canary-copy" 2> /dev/null && echo true || echo false)"
+done
+
+if [ -z "${PRT_TEST_FORCE_NO_NAMESPACE:-}" ] && unshare --user --map-current-user --pid --fork --mount-proc true > /dev/null 2>&1; then
   assert_eq "run: an unreadable own mount namespace is a setup failure" 4 \
     "$(mkdir -p "$dir/rl" && printf '#!/bin/sh\nexit 1\n' > "$dir/rl/readlink" && chmod 755 "$dir/rl/readlink" && run_rc PATH="$dir/rl:$PATH")"
   assert_eq "run: a boundary that cannot start is reported as not established" 2 \
     "$(mkdir -p "$dir/un" && printf '#!/bin/sh\nexit 1\n' > "$dir/un/unshare" && chmod 755 "$dir/un/unshare" && run_rc PATH="$dir/un:$PATH")"
-  assert_eq "run: a call that fails after the boundary stands is a failure" 1 \
+  assert_eq "run: a call that succeeds but whose stub cannot write its report is inconclusive, not a leak" 3 \
     "$(mkdir -p "$dir/sh" && printf '#!/bin/sh\nexit 1\n' > "$dir/sh/mv" && chmod 755 "$dir/sh/mv" && run_rc PATH="$dir/sh:$PATH")"
+  # A call that fails after the boundary stands: the stub cannot make its output directory, so the
+  # call ends as runner-no-output behind the production boundary.
+  assert_eq "run: a call that fails after the boundary stands is a failure" 1 \
+    "$(mkdir -p "$dir/nm" && printf '#!/bin/sh\nexit 1\n' > "$dir/nm/mkdir" && chmod 755 "$dir/nm/mkdir" && run_rc PATH="$dir/nm:$PATH")"
+else
+  # A silent skip would read as a pass. PRT_TEST_REQUIRE_NAMESPACE=1 (set by the lane that must run
+  # these cases) turns it into a failure.
+  echo "NOTE: this host forbids the PID namespace the default boundary needs: the full-run cases are skipped; a lane that can run them is required for acceptance"
+  assert_eq "no PID namespace here: PRT_TEST_REQUIRE_NAMESPACE is not set (the full-run cases did not run)" \
+    "" "${PRT_TEST_REQUIRE_NAMESPACE:-}"
 fi
 
 echo "passed: $pass_count, failed: $failures"
