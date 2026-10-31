@@ -2250,12 +2250,9 @@ assert_eq "prt_render_overflow_comment: quarantine_reason=content_mismatch -> Co
   "true" "$(grep -qF '| c.go | n/a | i3 | f3 | content changed (recurring defect) |' <<< "$quarantine_reason_row" && echo true || echo false)"
 
 # ============================================================ render.sh: prt_render_overflow_parts (go-kure/.github#307)
-# GitHub rejects a comment body past 65,536 characters. A body GitHub accepts stays one comment, byte
-# for byte; a larger one is split into parts under PRT_OVERFLOW_PART_MAX (60,000 UTF-16 units: a 5,536
-# margin for the part line, headings and footers). Merge-gating rows are placed in the earliest parts
-# and part 1 says which parts hold them, besides every coverage caveat; rows are ordered by severity,
-# never by size; a single finding too large for any part is shortened with a marker and counted, which
-# makes the run incomplete (RULING-1031-1200-281).
+# GitHub rejects a comment body past 65,536 characters; a larger body is split into parts. The rules
+# these cases check are stated once, in docs/pr-review-threads.md, "The overflow and withheld comment
+# is split when it would pass GitHub's limit"; each case below names the rule it covers.
 prt_parts_dir="$(mktemp -d)"
 prt_parts_clear() { find "$prt_parts_dir" -name 'part-*.md' -delete; }
 prt_parts_u16() { jq -Rs "${_PRT_OVERFLOW_JQ_DEFS}"' u16len' < "$1"; }
@@ -2330,6 +2327,18 @@ assert_eq "prt_render_overflow_parts: that finding's full issue and fix text are
   "27000 27000" "$(grep -m1 'BIGQ' "$prt_parts_dir/part-1.md" | grep -oE 'i{27000}|f{27000}' | awk '{print length($0)}' | paste -sd' ')"
 assert_eq "prt_render_overflow_parts: the part built from the largest fitting finding is under the real limit" \
   "true" "$([ "$(prt_parts_max_u16)" -le "$PRT_COMMENT_LIMIT" ] && echo true || echo false)"
+
+# A row of exactly the part budget fits and is not counted as shortened (review of go-kure/.github#307,
+# round 5). The budget is the one prt_render_overflow_parts computes: part maximum, minus the cost of an
+# empty part, minus the measured room for the part line and the blank line after it.
+prt_parts_overhead="$(prt_render_overflow_comment '[{"severity":"","category":"","file":"","issue":""}]' '[{"severity":"","category":"","file":"","issue":"","fix":"","gating":true}]' | jq -Rs "${_PRT_OVERFLOW_JQ_DEFS}"' u16len')"
+prt_parts_reserve="$(prt_overflow_part_line 1 99999 99999 99999 | jq -Rs "${_PRT_OVERFLOW_JQ_DEFS}"' u16len')"
+prt_parts_budget=$((PRT_OVERFLOW_PART_MAX - prt_parts_overhead - prt_parts_reserve - 2))
+prt_parts_row_base="$(jq -n "${_PRT_OVERFLOW_JQ_DEFS}"' {severity:"high",category:"c",file:"e.go",issue:""} | overflow_row | u16len')"
+prt_parts_exact="$(jq -n --argjson n "$((prt_parts_budget - prt_parts_row_base))" '[{severity:"high",category:"c",file:"e.go",issue:("x" * $n)}, {severity:"low",category:"d",file:"e.go",issue:("y" * 20000)}]')"
+prt_parts_clear
+assert_eq "prt_render_overflow_parts: a row of exactly the part budget is not shortened, and the other row follows in part 2" \
+  "2 0" "$(prt_render_overflow_parts "$prt_parts_exact" '[]' "$prt_parts_dir")"
 
 # A single finding larger than any part is shortened with a marker, counted, and never dropped.
 prt_parts_huge="$(jq -n '[{file:"huge.go", line:3, severity:"high", category:"huge", issue:("HUGE " + ("h" * 150000))}, {file:"s.go", severity:"low", category:"s", issue:"after-the-huge-one"}]')"

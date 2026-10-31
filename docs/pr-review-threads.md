@@ -1367,32 +1367,39 @@ truncated or dropped. `prt_render_overflow_parts` (`render.sh`) renders it as on
 accepts it whole (65,536 units or fewer), byte for byte what `prt_render_overflow_comment` prints, and
 otherwise as several parts:
 
-- **Size.** Each part stays at or under `PRT_OVERFLOW_PART_MAX`, 60,000 UTF-16 units: 5,536 below the
-  limit. The margin covers what grows after the rows are measured (the "Part N of M" line, which has
-  600 units reserved, section headings, intros and footers). An astral character counts as two units, the conservative reading of
+This section is the one place that states the rules of the split. The code
+(`prt_overflow_part_line` and `prt_render_overflow_parts` in `render.sh`) and its tests implement them
+and point here instead of restating them.
+
+- **Size.** Each part is planned to `PRT_OVERFLOW_PART_MAX`, 60,000 UTF-16 units: 5,536 below the
+  limit. The margin covers what grows after the rows are measured (section headings, intros and
+  footers). The room for the "Part N of M" line is measured from the longest line the code can print,
+  so it follows the wording. An astral character counts as two units, the conservative reading of
   "characters". Each finished part is checked against the real limit, and a part over it fails the
   render, so nothing over the limit is ever posted.
 - **Order.** Merge-gating withheld rows are placed first across the parts, then every other row by
   severity (critical, high, medium, other). Size never reorders a row. Inside one part the advisory
-  table is printed before the withheld table, so the part lines say where the blockers are instead of
-  claiming they are on top. The mock GitHub in the test suite enforces the real 65,536-character limit.
-- **Part 1 carries the blockers and every coverage caveat.** The merge-gating rows are in the earliest
-  parts. Part 1 says how many parts follow, which parts hold the merge-gating rows (only more than part 1 when those
-  rows alone pass one part, and then it says "parts 1 to N") and, when a finding had to be shortened,
-  says so. A later part points back to part 1 and repeats where the blockers are. Each part repeats its own
-  section headings, intro text and footer, so it reads on its own. This splitting is not an agent's
-  choice of how to write a report: the forge's hard limit leaves only truncation or a failed run as
-  the alternatives, so the rule against splitting one report across several comments does not apply
-  (RULING-1031-1200-281).
+  table is printed before the withheld table, so a part line says where the blockers are instead of
+  claiming they are on top.
+- **What part 1 says.** It carries every coverage caveat: how many parts follow, which parts hold the
+  merge-gating rows (more than part 1 only when those rows alone pass one part, and then it says
+  "parts 1 to N") and, when a finding had to be shortened, that it was. A later part points back to
+  part 1 and repeats where the blockers are. Each part repeats its own section headings, intro text
+  and footer, so it reads on its own. This splitting is not an agent's choice of how to write a
+  report: the forge's hard limit leaves only truncation or a failed run as the alternatives, so the
+  rule against splitting one report across several comments does not apply (RULING-1031-1200-281).
 - **A single finding larger than a part** is shortened, never dropped: its issue and fix text are cut
   (and its severity, category, file and line each capped at 200 characters) and the cell ends with
   `[truncated: N of M characters omitted]`. The omitted text is recorded nowhere
   else, so the run is also marked `REVIEW_INCOMPLETE`. A finding that fits one part whole is never cut,
   however large.
-- **Posting.** Every part is posted, after a freshness check (before part 1, and again before each later part). A part that fails marks the
-  run incomplete and the reason names the part (`failed to post overflow comment part 2 of 3 (HTTP
-  500)`); the other parts are still posted. `OVERFLOW_COMMENT_POSTED` is true only when every part
-  posted, so the clean-verdict supersede never points at a comment that is missing or partial.
+- **Posting.** Parts are posted in order, each after a freshness check (before part 1, and again
+  before each later part). A part whose post fails marks the run incomplete and the reason names the
+  part (`failed to post overflow comment part 2 of 3 (HTTP 500)`); the later parts are still posted.
+  A freshness check that finds the head stale (the run is superseded, recorded as degraded) or that
+  fails (the pull request could not be read, recorded as incomplete) stops the remaining parts.
+  `OVERFLOW_COMMENT_POSTED` is true only when every part posted, so the clean-verdict supersede never
+  points at a comment that is missing or partial.
 
 ### How long a withheld finding stays withheld (go-kure/.github#148)
 
