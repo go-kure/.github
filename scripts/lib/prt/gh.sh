@@ -109,7 +109,7 @@ prt_gh_rest() {
 prt_gh_graphql() {
   local query="$1" variables="${2:-{\}}"
   local payload body errors tmp
-  payload="$(jq -n --arg q "$query" --argjson v "$variables" '{query: $q, variables: $v}')"
+  payload="$(jq -n --arg q "$query" --argjson v "$variables" '{query: $q, variables: $v}')" || return 1
   # Through a file, not $(...): prt_gh_rest then runs in this shell, so the
   # rate-limit state it records reaches a caller that also avoids a
   # subshell (prt_gh_rest_fresh_open under prt_retry, go-kure/.github#256).

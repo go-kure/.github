@@ -355,6 +355,12 @@ meta_json="$(prt_retry 3 prt_gh_rest GET "/repos/${PRT_REPO}/pulls/${PRT_PR_NUMB
   echo "ERROR: failed to fetch PR metadata" >&2
   exit 1
 }
+# The three reads below (title, body, base commit) take a field from this object, so a metadata
+# response that is not a JSON object stops the run here instead of becoming empty fields.
+if ! jq -e 'type == "object"' <<< "$meta_json" > /dev/null 2>&1; then
+  echo "ERROR: PR metadata is not a JSON object" >&2
+  exit 1
+fi
 PR_TITLE="$(jq -r '.title // "Untitled"' <<< "$meta_json")"
 PR_DESC="$(jq -r '.body // ""' <<< "$meta_json")"
 
@@ -1497,7 +1503,12 @@ prt_persist_owned_collision() {
 if [ "$PRT_MODE" = advisory ]; then
   # advisory: zero thread creates/mutations, one plain issue comment with
   # the merged findings table — the staged-rollout mechanism itself.
-  advisory_findings="$(jq -c '[.[] | select(.verdict != "FALSE_POSITIVE")]' <<< "$ALL_FINDINGS")"
+  # An empty list here would post a comment that reads as "no findings", so a failed filter
+  # marks the run incomplete before the comment is built.
+  if ! advisory_findings="$(jq -c '[.[] | select(.verdict != "FALSE_POSITIVE")]' <<< "$ALL_FINDINGS" 2>/dev/null)"; then
+    prt_mark_incomplete "the findings could not be filtered for the advisory comment (local fault); the comment lists none"
+    advisory_findings='[]'
+  fi
   advisory_incomplete_reasons=""
   prt_is_incomplete && advisory_incomplete_reasons="$(prt_incomplete_reasons)"
   advisory_degraded_reasons=""
@@ -1902,11 +1913,16 @@ else
           # for good (codex round-2 confirm finding, go-kure/.github#99).
           # Stay fatal via prt_mark_incomplete regardless of rc.
           if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
-            reasoning="$(jq -r '.reasoning // "no reasoning provided"' <<< "$f")"
-            reply="$(prt_render_reply_false_positive "$reasoning")"
-            reply_payload="$(prt_json_body_payload "$reply" --argjson in_reply_to "$db_id")"
-            prt_gh_rest POST "/repos/${PRT_REPO}/pulls/${PRT_PR_NUMBER}/comments" "$reply_payload" >/dev/null || \
-              prt_mark_incomplete "fp=$fp: resolveReviewThread succeeded but the explanatory reply failed"
+            # A reply without its reasoning would explain nothing, and the resolve above will
+            # not be redone, so a failed read skips the reply and marks the run incomplete.
+            if ! reasoning="$(jq -r '.reasoning // "no reasoning provided"' <<< "$f" 2>/dev/null)"; then
+              prt_mark_incomplete "fp=$fp: resolveReviewThread succeeded but the false-positive reasoning could not be read (local fault), so the explanatory reply was skipped"
+            else
+              reply="$(prt_render_reply_false_positive "$reasoning")"
+              reply_payload="$(prt_json_body_payload "$reply" --argjson in_reply_to "$db_id")"
+              prt_gh_rest POST "/repos/${PRT_REPO}/pulls/${PRT_PR_NUMBER}/comments" "$reply_payload" >/dev/null || \
+                prt_mark_incomplete "fp=$fp: resolveReviewThread succeeded but the explanatory reply failed"
+            fi
           else
             prt_mark_incomplete "fp=$fp: resolveReviewThread succeeded but the post-mutation freshness re-check did not pass (head moved, or the check itself failed) — mutation already applied and will not be redone by a superseding run, reply permanently skipped"
           fi
@@ -2040,7 +2056,12 @@ fi
 # Every owned thread NOT matched by a finding's fp this run. Skipped
 # entirely in advisory/off mode — no thread was ever created to reconcile.
 if [ "$PRT_MODE" = enforce ]; then
-  n_owned="$(jq 'length' <<< "$OWNED")"
+  # An empty count makes the loop below run zero times, so no owned thread would be reconciled and
+  # the run would still read as complete.
+  if ! n_owned="$(jq 'length' <<< "$OWNED" 2>/dev/null)"; then
+    prt_mark_incomplete "the owned threads could not be counted (local fault); none were reconciled for absence"
+    n_owned=0
+  fi
   incomplete_now=false
   prt_is_incomplete && incomplete_now=true
   # go-kure/.github#98: a partial-drop chunk (finding.sh:97-121's rc=2) is
@@ -2060,11 +2081,19 @@ if [ "$PRT_MODE" = enforce ]; then
   # even though the run itself no longer fails closed for it.
   prt_degraded_reasons | grep -q 'review-parse-failed' && incomplete_now=true
   for ((oi = 0; oi < n_owned; oi++)); do
-    th="$(jq -c ".[$oi]" <<< "$OWNED")"
+    if ! th="$(jq -ce ".[$oi]" <<< "$OWNED" 2>/dev/null)"; then
+      prt_mark_incomplete "owned thread $oi could not be read (local fault); it was not reconciled for absence"
+      continue
+    fi
     fp="$(jq -r '.fp' <<< "$th")"
     # IN(), not [x] | inside(y) — see the within_cap comment above; same
     # substring-vs-exact-match trap for the same collision-ordinal fp shapes.
-    already_matched="$(jq --arg fp "$fp" '. as $arr | $fp | IN($arr[])' <<< "$MATCHED_FPS")"
+    # A thread this run's findings matched is not absent; reading that wrongly would treat a
+    # live thread as absent, so a failed read skips the thread.
+    if ! already_matched="$(jq --arg fp "$fp" '. as $arr | $fp | IN($arr[])' <<< "$MATCHED_FPS" 2>/dev/null)"; then
+      prt_mark_incomplete "fp=$fp: could not tell whether this run matched the thread (local fault); it was not reconciled for absence"
+      continue
+    fi
     [ "$already_matched" = true ] && continue
 
     collision="$(jq -r '.collision' <<< "$th")"
@@ -2250,8 +2279,8 @@ if [ "$PRT_MODE" = enforce ] && { [ "$overflow_len" -gt 0 ] || [ "$quarantined_l
       OVERFLOW_COMMENT_POSTED=false
     else
       if [ "$overflow_truncated" -gt 0 ]; then
-        # The cut text is in no posted part: say so, and fail the run.
-        prt_mark_incomplete "${overflow_truncated} overflow or withheld finding(s) were too long for one comment part and were shortened in the posted comment; the omitted text is not in it"
+        # The cut text is in no part: say so, and fail the run.
+        prt_mark_incomplete "${overflow_truncated} overflow or withheld finding(s) were too long for one comment part and are shortened; the omitted text is in no part"
       fi
       overflow_part=0
       while [ "$overflow_part" -lt "$overflow_parts" ]; do
@@ -2397,7 +2426,7 @@ if [ "$PRT_MODE" = enforce ]; then
               superseded_overflow_arg="$overflow_posted_len"
               superseded_quarantined_arg="$quarantined_posted_len"
             fi
-            superseded_body="$(prt_render_clean_comment_superseded "$PRT_HEAD_SHA" "$total_findings_this_run" "$THREADS_WRITTEN" "$SUPPRESSED_COUNT" "$superseded_overflow_arg" "$superseded_quarantined_arg" "$NONE_ANCHORED_COUNT")"
+            superseded_body="$(prt_render_clean_comment_superseded "$PRT_HEAD_SHA" "$total_findings_this_run" "$THREADS_WRITTEN" "$SUPPRESSED_COUNT" "$superseded_overflow_arg" "$superseded_quarantined_arg" "$NONE_ANCHORED_COUNT" "${overflow_truncated:-0}")"
             # go-kure/.github#98: degraded, not fatal — matching this
             # branch's own established asymmetry just above (a listing
             # failure here is deliberately NOT prt_mark_incomplete either):
