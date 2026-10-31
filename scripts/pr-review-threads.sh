@@ -2226,27 +2226,55 @@ if [ "$PRT_MODE" = enforce ] &&
   quarantined_len=0
 fi
 if [ "$PRT_MODE" = enforce ] && { [ "$overflow_len" -gt 0 ] || [ "$quarantined_len" -gt 0 ]; }; then
-  if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
+  # The body is split into parts when one comment would pass GitHub's
+  # 65,536-character limit (go-kure/.github#307). RULING-1031-1200-281: the
+  # one-report-one-comment rule governs text an agent chooses to split, not a
+  # body that exceeds the forge's hard limit, where the alternatives are a
+  # failed post or a truncated report. Part 1 carries every merge-gating
+  # finding and every coverage caveat; parts are ordered by severity, never by
+  # size. OVERFLOW_COMMENT_POSTED is true only when every part posted.
+  overflow_dir="$WORKDIR/overflow-parts"
+  overflow_parts=0
+  overflow_truncated=0
+  if ! mkdir -p "$overflow_dir" ||
+     ! overflow_plan="$(prt_render_overflow_parts "$OVERFLOW" "$QUARANTINED" "$overflow_dir")" ||
+     ! read -r overflow_parts overflow_truncated <<< "$overflow_plan"; then
     # A render or payload fault posts nothing: an incomplete table (for example
     # a quarantine table that failed to build) must never be written as if it
     # were the whole withheld list.
-    overflow_payload=""
-    if ! overflow_body="$(prt_render_overflow_comment "$OVERFLOW" "$QUARANTINED")" ||
-       ! overflow_payload="$(prt_json_body_payload "$overflow_body")" || [ -z "$overflow_payload" ]; then
-      prt_mark_incomplete "the overflow comment could not be rendered (local fault); nothing was posted"
-      OVERFLOW_COMMENT_POSTED=false
-    else
+    prt_mark_incomplete "the overflow comment could not be rendered (local fault); nothing was posted"
+    OVERFLOW_COMMENT_POSTED=false
+  else
+    if [ "$overflow_truncated" -gt 0 ]; then
+      # The cut text exists nowhere else on the PR: say so, and fail the run.
+      prt_mark_incomplete "${overflow_truncated} overflow or withheld finding(s) exceeded the size of one comment part and were shortened in the posted comment; the omitted text is not recorded elsewhere"
+    fi
+    overflow_part=0
+    while [ "$overflow_part" -lt "$overflow_parts" ]; do
+      overflow_part=$((overflow_part + 1))
+      overflow_label="overflow comment"
+      [ "$overflow_parts" -le 1 ] || overflow_label="overflow comment part ${overflow_part} of ${overflow_parts}"
+      # Freshness before every write: a later part can follow a long gap.
+      prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA" || {
+        prt_handle_freshness_rc "$?" "$overflow_label"
+        OVERFLOW_COMMENT_POSTED=false
+        break
+      }
+      overflow_payload=""
+      if ! overflow_body="$(cat "$overflow_dir/part-${overflow_part}.md")" ||
+         ! overflow_payload="$(prt_json_body_payload "$overflow_body")" || [ -z "$overflow_payload" ]; then
+        prt_mark_incomplete "the ${overflow_label} could not be rendered (local fault); it was not posted"
+        OVERFLOW_COMMENT_POSTED=false
+        continue
+      fi
       # issues/{n}/comments deliberately, not pulls/{n}/comments: the latter
       # posts a review thread reply, which sets has_human_reply (content-based,
       # not author-based) and would make a quarantined/overflow body a merge
       # blocker instead of the advisory it's meant to be.
       prt_gh_rest POST "/repos/${PRT_REPO}/issues/${PRT_PR_NUMBER}/comments" \
         "$overflow_payload" >/dev/null || \
-        { prt_mark_incomplete "failed to post overflow comment (HTTP ${PRT_LAST_HTTP_STATUS:-unknown})"; OVERFLOW_COMMENT_POSTED=false; }
-    fi
-  else
-    prt_handle_freshness_rc "$?" "overflow comment"
-    OVERFLOW_COMMENT_POSTED=false
+        { prt_mark_incomplete "failed to post ${overflow_label} (HTTP ${PRT_LAST_HTTP_STATUS:-unknown})"; OVERFLOW_COMMENT_POSTED=false; }
+    done
   fi
 fi
 

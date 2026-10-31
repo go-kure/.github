@@ -250,6 +250,132 @@ prt_write_summary() {
   printf '%s\n' "$out" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
 }
 
+# jq definitions shared by prt_render_overflow_comment (which prints the rows)
+# and prt_render_overflow_parts (which measures and splits them), so a row is
+# measured exactly as it is printed:
+# - esc: the cell escaping. gsub("<!-- gokure-pr-review"; ...) neutralizes
+#   marker syntax in model-generated prose, matching prt_marker_neutralize.
+# - overflow_row / quarantine_row: one table row.
+# - u16len: length in UTF-16 code units. GitHub's 65,536 limit counts
+#   characters; counting an astral character as two is the conservative reading.
+# - sevrank: the severity order the cap walk uses (reconcile.sh), unknown last.
+_PRT_OVERFLOW_JQ_DEFS='
+  def esc: tostring | gsub("\r\n"; " ") | gsub("[\n\r]"; " ") | gsub("\\|"; "\\|") | gsub("<!-- gokure-pr-review"; "&lt;!-- gokure-pr-review");
+  def collision_cell:
+    if .quarantine_reason == "content_mismatch" then "content changed (recurring defect)"
+    elif .quarantine_reason == "persisted" then "persisted (earlier run)"
+    elif .quarantine_reason == "this_run" then "this run"
+    elif .persisted_only == true then "persisted (earlier run)"
+    else "this run"
+    end;
+  def overflow_row: "| \(.severity|esc) | \(.category|esc) | \(.file|esc) | \((.line // "n/a")|esc) | \(.issue|esc) |";
+  def quarantine_row: "| \(.severity|esc) | \(.category|esc) | \(.file|esc) | \((.line // "n/a")|esc) | \(.issue|esc) | \(.fix|esc) | \(collision_cell) | \(if .gating == true then "yes (existing thread)" else "no" end) |";
+  def u16len: explode | map(if . > 65535 then 2 else 1 end) | add // 0;
+  def sevrank: ({"critical":0,"high":1,"medium":2}[(.severity | tostring | ascii_downcase)]) // 99;
+'
+
+# GitHub rejects an issue comment body past 65,536 characters (HTTP 422).
+# prt_render_overflow_parts keeps every part at or under PRT_OVERFLOW_PART_MAX:
+# 60,000 UTF-16 units, 5,536 below the limit. The margin covers what grows after
+# the rows are measured: the "Part N of M" line, a section's heading, intro and
+# footer, and the fixed per-part overhead estimate being a measurement of a
+# minimal part rather than the part itself. Each part is still checked against
+# the real limit after it is built.
+PRT_COMMENT_LIMIT=65536
+PRT_OVERFLOW_PART_MAX=60000
+
+# prt_render_overflow_parts FINDINGS_JSON QUARANTINED_JSON OUTDIR — renders the
+# overflow and withheld findings as one or more comment bodies, OUTDIR/part-1.md
+# ... part-M.md, and prints "M T" (parts, truncated findings) on stdout.
+# A body that fits is one part, byte-for-byte what prt_render_overflow_comment
+# prints. A larger one is split (go-kure/.github#307):
+# - Order: merge-gating withheld rows first, then every other row by severity
+#   (critical, high, medium, other), so part 1 holds every blocker and the
+#   most severe advisory rows. Size never reorders a row.
+# - Part 1 carries every coverage caveat: it says how many parts follow, and
+#   when a finding was shortened, says so. Every later part points back to it.
+# - Each part repeats its section headings, intro text and footer (it is the
+#   same renderer, run on that part's rows), so it reads on its own.
+# - A single finding too large for one part is shortened to fit, never
+#   dropped: its issue and fix text are cut and the cell ends with a marker
+#   naming how many characters were omitted. The cut text exists nowhere else
+#   in the PR, so the caller marks the run incomplete (T > 0).
+# Returns 1 with nothing printed on any fault, including a part that still
+# exceeds PRT_COMMENT_LIMIT.
+prt_render_overflow_parts() {
+  local findings="$1" quarantined="$2" outdir="$3"
+  local overhead budget plan total truncated n i part_f part_q body line
+  local dummy_f='[{"severity":"","category":"","file":"","issue":""}]'
+  local dummy_q='[{"severity":"","category":"","file":"","issue":"","fix":"","gating":true}]'
+  [ -d "$outdir" ] || return 1
+  body="$(prt_render_overflow_comment "$findings" "$quarantined")" || return 1
+  if [ "$(printf '%s' "$body" | jq -Rs "${_PRT_OVERFLOW_JQ_DEFS}"' u16len' 2>/dev/null)" -le "$PRT_OVERFLOW_PART_MAX" ] 2>/dev/null; then
+    printf '%s\n' "$body" > "$outdir/part-1.md" || return 1
+    printf '1 0\n'
+    return 0
+  fi
+  # Fixed cost of one part: both sections, the longest footer, and room for the
+  # part line (300 units, the line is about 150).
+  overhead="$(prt_render_overflow_comment "$dummy_f" "$dummy_q" | jq -Rs "${_PRT_OVERFLOW_JQ_DEFS}"' u16len' 2>/dev/null)" || return 1
+  budget=$(( PRT_OVERFLOW_PART_MAX - overhead - 300 ))
+  [ "$budget" -gt 1000 ] || return 1
+  # One jq pass plans the split on stdin: line 1 is "parts truncated", then one
+  # JSON object per part {f: [...], q: [...]}.
+  plan="$(printf '%s\n%s\n' "$findings" "$quarantined" | jq -sr --argjson budget "$budget" "${_PRT_OVERFLOW_JQ_DEFS}"'
+    # Shorten one oversized item until its row fits the budget. $row names the row filter.
+    def shorten($kind):
+      . as $item
+      | ($item.issue | tostring) as $oi
+      | (($item.fix // "") | tostring) as $of
+      | def row: if $kind == "q" then quarantine_row else overflow_row end;
+        def cutdown($keep):
+          $item
+          | .issue = (if ($oi | length) > $keep then $oi[0:$keep] + " [truncated: \(($oi | length) - $keep) of \($oi | length) characters omitted]" else $oi end)
+          | if $kind == "q" then .fix = (if ($of | length) > $keep then $of[0:$keep] + " [truncated: \(($of | length) - $keep) of \($of | length) characters omitted]" else $of end) else . end;
+        def fit($keep): cutdown($keep) as $c | if ($c | row | u16len) <= $budget or $keep == 0 then $c else fit(($keep * 0.9 | floor)) end;
+        fit([($oi | length), ($of | length), $budget] | max);
+    .[0] as $f | .[1] as $q
+    | ( [ $q | to_entries[] | {kind: "q", item: .value, gating: (.value.gating == true), rank: (.value | sevrank), pos: .key} ]
+      + [ $f | to_entries[] | {kind: "o", item: .value, gating: false, rank: (.value | sevrank), pos: .key} ] ) as $all
+    | ( $all | sort_by([(if .gating then 0 else 1 end), .rank, (if .kind == "q" then 0 else 1 end), .pos]) ) as $ordered
+    | ( $ordered | map(
+          (if .kind == "q" then (.item | quarantine_row | u16len) else (.item | overflow_row | u16len) end) as $cost
+          | if $cost + 1 > $budget
+            then . as $e | .item = ($e.item | shorten($e.kind)) | .cut = true | .cost = $budget
+            else .cost = $cost + 1 | .cut = false end
+        ) ) as $sized
+    | ( reduce $sized[] as $e ({parts: [], cur: {f: [], q: [], used: 0}};
+          if (.cur.used + $e.cost) > $budget and (.cur.f + .cur.q | length) > 0
+          then .parts += [.cur] | .cur = {f: [], q: [], used: 0}
+          else . end
+          | if $e.kind == "q" then .cur.q += [$e.item] else .cur.f += [$e.item] end
+          | .cur.used += $e.cost
+        ) | .parts + [.cur] | map({f, q}) ) as $parts
+    | "\($parts | length) \([$sized[] | select(.cut)] | length)",
+      ($parts[] | tojson)
+  ' 2>/dev/null)" || return 1
+  read -r total truncated <<< "$(printf '%s\n' "$plan" | sed -n 1p)"
+  [[ "$total" =~ ^[0-9]+$ && "$truncated" =~ ^[0-9]+$ && "$total" -ge 1 ]] || return 1
+  i=0
+  while IFS= read -r line; do
+    i=$((i + 1))
+    part_f="$(jq -c '.f' <<< "$line" 2>/dev/null)" || return 1
+    part_q="$(jq -c '.q' <<< "$line" 2>/dev/null)" || return 1
+    body="$(prt_render_overflow_comment "$part_f" "$part_q")" || return 1
+    if [ "$i" -eq 1 ]; then
+      n="**Part 1 of ${total}.** These findings did not fit in one comment. This part lists every merge-gating withheld finding, then the most severe of the rest; parts 2 to ${total} continue the tables."
+      [ "$truncated" -eq 0 ] || n="${n} ${truncated} finding(s) were still too long for one comment and were shortened: each shortened cell ends with a \"truncated\" marker, and the omitted text is not available elsewhere."
+    else
+      n="**Part ${i} of ${total}.** Continued from part 1, which lists every merge-gating withheld finding."
+    fi
+    body="$(printf '%s\n\n%s' "$n" "$body")"
+    [ "$(printf '%s' "$body" | jq -Rs "${_PRT_OVERFLOW_JQ_DEFS}"' u16len' 2>/dev/null)" -le "$PRT_COMMENT_LIMIT" ] 2>/dev/null || return 1
+    printf '%s\n' "$body" > "$outdir/part-${i}.md" || return 1
+  done < <(printf '%s\n' "$plan" | sed 1d)
+  [ "$i" -eq "$total" ] || return 1
+  printf '%s %s\n' "$total" "$truncated"
+}
+
 # prt_render_overflow_comment FINDINGS_JSON [QUARANTINED_JSON] — FINDINGS_JSON
 # is the array of VALID/PARTIALLY VALID findings beyond the PR-wide cap.
 # QUARANTINED_JSON (optional, defaults to empty array) is the array of
@@ -275,9 +401,8 @@ prt_render_overflow_comment() {
     # marker (e.g. a self-review of marker.sh itself) must not make this
     # comment eligible to be matched and later overwritten by a clean-verdict
     # upsert (gmr dot-github#88 round 1).
-    overflow_rows="$(jq -r '
-      def esc: tostring | gsub("\r\n"; " ") | gsub("[\n\r]"; " ") | gsub("\\|"; "\\|") | gsub("<!-- gokure-pr-review"; "&lt;!-- gokure-pr-review");
-      .[] | "| \(.severity|esc) | \(.category|esc) | \(.file|esc) | \((.line // "n/a")|esc) | \(.issue|esc) |"
+    overflow_rows="$(jq -r "${_PRT_OVERFLOW_JQ_DEFS}"'
+      .[] | overflow_row
     ' <<< "$findings" 2>/dev/null)" || return 1
   fi
   if [ "$qcount" -gt 0 ]; then
@@ -289,16 +414,8 @@ prt_render_overflow_comment() {
     # when present; persisted_only alone is kept as the fallback for
     # fixtures/tests predating that field (go-kure/.github#180) so their
     # binary this-run/persisted distinction still renders unchanged.
-    quarantine_rows="$(jq -r '
-      def esc: tostring | gsub("\r\n"; " ") | gsub("[\n\r]"; " ") | gsub("\\|"; "\\|") | gsub("<!-- gokure-pr-review"; "&lt;!-- gokure-pr-review");
-      def collision_cell:
-        if .quarantine_reason == "content_mismatch" then "content changed (recurring defect)"
-        elif .quarantine_reason == "persisted" then "persisted (earlier run)"
-        elif .quarantine_reason == "this_run" then "this run"
-        elif .persisted_only == true then "persisted (earlier run)"
-        else "this run"
-        end;
-      .[] | "| \(.severity|esc) | \(.category|esc) | \(.file|esc) | \((.line // "n/a")|esc) | \(.issue|esc) | \(.fix|esc) | \(collision_cell) | \(if .gating == true then "yes (existing thread)" else "no" end) |"
+    quarantine_rows="$(jq -r "${_PRT_OVERFLOW_JQ_DEFS}"'
+      .[] | quarantine_row
     ' <<< "$quarantined" 2>/dev/null)" || return 1
   fi
   {
