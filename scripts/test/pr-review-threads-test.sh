@@ -6789,6 +6789,9 @@ case "$mode" in
     echo "CANARY-RAW-ASSESSMENT-TEXT sk-canary-credential-0123" >&2
     [ "$mode" = noisy_exit1 ] && exit 1
     mode=clean ;;
+  # linger: signals that it started, stays up long enough for a test to read the process table
+  # from outside, then answers like a clean run.
+  linger) : > "$log.started"; sleep 4; mode=clean ;;
   # Outlives any limit, with a child of its own that must go with it.
   # hang_stubborn: the child ignores TERM while the runner itself exits on it.
   # The child rewrites a counter file every 0.1 s: that is how a test sees, from outside the
@@ -7333,6 +7336,32 @@ assert_eq "assess runner scrub: an unrelated variable is dropped" \
 assert_eq "assess runner scrub: PATH, HOME and the named model key are kept" \
   "1 1 1" "$(grep -c '^PATH=' "$PRT_TEST_RUNNER_LOG.env.1") $(grep -c '^HOME=' "$PRT_TEST_RUNNER_LOG.env.1") $(grep -c '^OPENAI_API_KEY=sentinel-model-key$' "$PRT_TEST_RUNNER_LOG.env.1")"
 
+# The names the runner may inherit carry the metered model key. It must never be an argument of a
+# process that outlives the start (`timeout`, the namespace's `unshare`): /proc/<pid>/cmdline is
+# readable by every user of the host. While the runner is up, the whole process table is read from
+# outside; the key must be in the runner's environment and in no command line. A value with
+# spaces and a newline must arrive intact.
+export PRT_AR_MULTI=$'multi line\nvalue  with spaces'
+PRT_TEST_ASSESS_RUNNER_ENV="$PRT_TEST_ASSESS_RUNNER_ENV PRT_AR_MULTI"
+rm -f "$PRT_TEST_RUNNER_LOG".*
+PRT_TEST_RUNNER_MODE=linger
+run_orchestrator advisory 0 0 0 > "$prt_ar_dir/linger.rc" &
+prt_ar_bg=$!
+for _ in $(seq 1 100); do [ -e "$PRT_TEST_RUNNER_LOG.started" ] && break; sleep 0.1; done
+# The pattern is spelled so that this very command line does not contain the key.
+prt_ar_cmdline_hits="$(cat /proc/[0-9]*/cmdline 2> /dev/null | tr '\0' '\n' | grep -c 'sentinel-model-[k]ey')"
+wait "$prt_ar_bg"
+PRT_TEST_RUNNER_MODE=clean
+assert_eq "assess runner scrub: the model key is in no process's command line while the runner is up" \
+  "0" "$prt_ar_cmdline_hits"
+assert_eq "assess runner scrub: the run still succeeds (rc, one call)" "0 1" "$(cat "$prt_ar_dir/linger.rc") $(prt_ar_calls)"
+assert_eq "assess runner scrub: the key is in the runner's environment" \
+  "1" "$(grep -c '^OPENAI_API_KEY=sentinel-model-key$' "$PRT_TEST_RUNNER_LOG.env.1")"
+assert_eq "assess runner scrub: a value with spaces and a newline arrives intact" \
+  "1 1" "$(grep -c '^PRT_AR_MULTI=multi line$' "$PRT_TEST_RUNNER_LOG.env.1") $(grep -c '^value  with spaces$' "$PRT_TEST_RUNNER_LOG.env.1")"
+PRT_TEST_ASSESS_RUNNER_ENV="${PRT_TEST_ASSESS_RUNNER_ENV% PRT_AR_MULTI}"
+unset PRT_AR_MULTI
+
 # The request travels on stdin; the prompt argument is a fixed instruction.
 assert_eq "assess runner request: the findings are on stdin" \
   "true" "$(grep -qF -- '--- FINDINGS (JSON) ---' "$PRT_TEST_RUNNER_LOG.stdin.1" && echo true || echo false)"
@@ -7781,6 +7810,36 @@ rm -f "$PRT_TEST_RUNNER_LOG".*
 rc="$(run_orchestrator advisory 0 0 0)"
 assert_eq "assess runner, raw privileged boundary command (maps root, keeps every capability): no runner call, degraded as runner-boundary" \
   "0 0 true" "$rc $(prt_ar_calls) $(prt_ar_reason runner-boundary)"
+
+# The runner's environment reaches the innermost step on descriptor 8. A prefix that closes it
+# leaves nothing to read: the runner is not started without its environment, the call fails.
+printf '#!/bin/sh\nexec 8<&-\nexec "$@"\n' > "$prt_ar_dir/boundary-closefd"
+chmod 755 "$prt_ar_dir/boundary-closefd"
+PRT_TEST_ASSESS_RUNNER_BOUNDARY_CMD="$prt_ar_dir/boundary-closefd $(prt_ar_prod_prefix)"
+PRT_TEST_RUNNER_MODE=clean
+rm -f "$PRT_TEST_RUNNER_LOG".*
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "assess runner, boundary prefix that closes the environment descriptor: the runner is not started, degraded as runner-failed" \
+  "0 0 true" "$rc $(prt_ar_calls) $(prt_ar_reason runner-failed)"
+
+# An empty environment list is refused before anything is written: the runner is not started and
+# the call fails like a closed descriptor. The list is emptied by a shim of printf, which the call
+# runs directly (writing the request) after it built the list; the real build always yields PATH.
+rm -f "$PRT_TEST_RUNNER_LOG".*
+PRT_TEST_ASSESS_RUNNER_BOUNDARY_CMD="$(prt_ar_prod_prefix)"
+PRT_TEST_RUNNER_MODE=clean
+rc="$(
+  # Defined from a string: the array it clears and the format it forwards belong to the
+  # orchestrator, and the other printf calls in this file are not calls of this shim.
+  eval 'printf() {
+    if [ "${FUNCNAME[1]:-}" = _prt_call_runner ]; then PRT_RUNNER_ENV_ARGS=(); fi
+    builtin printf "$@"
+  }'
+  export -f printf
+  run_orchestrator advisory 0 0 0
+)"
+assert_eq "assess runner, empty environment list: the runner is not started, degraded as runner-failed" \
+  "0 0 true" "$rc $(prt_ar_calls) $(prt_ar_reason runner-failed)"
 
 # A prefix that stays resident (it runs the rest as a child and waits) must not hold the posting
 # token: the prefix is started under `env -i`, so its own /proc/<pid>/environ has none. The control
