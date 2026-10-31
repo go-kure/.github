@@ -8185,6 +8185,10 @@ prt_ar_pid1_end_case() { # label, expected rc, prefix command for the child shel
 }
 prt_ar_pid1_end_case "the process is killed and gone" 0 ':'
 prt_ar_pid1_end_case "the process is still there after the kill" 1 'kill() { return 0; }'
+# The helper reads /proc/PID/stat whatever separator its caller has set: with one that holds no
+# space (a strict-mode IFS) the stat line was not split and every call was abandoned.
+# shellcheck disable=SC2016 # the text is evaluated by the child shell
+prt_ar_pid1_end_case "the process is killed and gone under a strict IFS" 0 'IFS=$(printf "\n\t")'
 fi
 
 # go-kure/.github#309: the default prefix sets no_new_privs for every user, not only for root. The
