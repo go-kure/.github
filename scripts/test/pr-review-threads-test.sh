@@ -4952,7 +4952,21 @@ done
 exec "$REAL_JQ" "$@"
 SHIM
 chmod +x "$prt_orch_shim/jq"
-prt_orch_real_jq="$(command -v jq)"
+# The shim must exec a real jq binary. `command -v jq` can name a version-manager shim (for example
+# mise's) that looks `jq` up on PATH again, finds this shim and loops forever; so take the first jq on
+# PATH that is not under a `shims` directory and does not resolve to the version manager itself.
+prt_orch_real_jq=""
+IFS=: read -r -a prt_orch_path_dirs <<< "$PATH"
+for prt_orch_dir in "${prt_orch_path_dirs[@]}"; do
+  prt_orch_cand="$prt_orch_dir/jq"
+  [ -x "$prt_orch_cand" ] || continue
+  case "$prt_orch_cand" in */shims/*) continue ;; esac
+  case "$(basename "$(readlink -f "$prt_orch_cand")")" in mise | asdf | rtx) continue ;; esac
+  prt_orch_real_jq="$prt_orch_cand"
+  break
+done
+[ -n "$prt_orch_real_jq" ] || prt_orch_real_jq="$(command -v jq)"
+unset prt_orch_path_dirs prt_orch_dir prt_orch_cand
 rc="$(PATH="$prt_orch_shim:$PATH" REAL_JQ="$prt_orch_real_jq" JQ_FAIL_MATCH='def collision_cell' run_orchestrator enforce 0 0 0)"
 assert_eq "orchestrator: a failed quarantine table -> exits 1 (not 0), nothing posted" \
   "1 0" "$rc $(cat "$PRT_TEST_ISSUE_COMMENT_COUNTFILE" 2>/dev/null || echo 0)"
