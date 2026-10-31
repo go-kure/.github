@@ -1363,19 +1363,21 @@ plus the finding is surfaced instead of discarded), so the row-precedence is not
 
 GitHub rejects an issue comment longer than 65,536 characters with HTTP 422. The overflow and
 withheld findings are the only durable home of a withheld finding, so a body past the limit cannot be
-truncated or dropped. `prt_render_overflow_parts` (`render.sh`) renders it as one comment when it fits,
-byte for byte what `prt_render_overflow_comment` prints, and otherwise as several parts:
+truncated or dropped. `prt_render_overflow_parts` (`render.sh`) renders it as one comment when GitHub
+accepts it whole (65,536 units or fewer), byte for byte what `prt_render_overflow_comment` prints, and
+otherwise as several parts:
 
 - **Size.** Each part stays at or under `PRT_OVERFLOW_PART_MAX`, 60,000 UTF-16 units: 5,536 below the
-  limit. The margin covers what grows after the rows are measured (the "Part N of M" line, section
-  headings, intros and footers). An astral character counts as two units, the conservative reading of
+  limit. The margin covers what grows after the rows are measured (the "Part N of M" line, which has
+  600 units reserved, section headings, intros and footers). An astral character counts as two units, the conservative reading of
   "characters". Each finished part is checked against the real limit, and a part over it fails the
   render, so nothing over the limit is ever posted.
-- **Order.** Merge-gating withheld rows come first, then every other row by severity (critical, high,
-  medium, other). Size never reorders a row. The mock GitHub in the test suite enforces the real
-  65,536-character limit.
-- **Part 1 opens with the blockers and carries every coverage caveat.** It opens with the merge-gating rows. It
-  says how many parts follow, which parts hold the merge-gating rows (only more than part 1 when those
+- **Order.** Merge-gating withheld rows are placed first across the parts, then every other row by
+  severity (critical, high, medium, other). Size never reorders a row. Inside one part the advisory
+  table is printed before the withheld table, so the part lines say where the blockers are instead of
+  claiming they are on top. The mock GitHub in the test suite enforces the real 65,536-character limit.
+- **Part 1 carries the blockers and every coverage caveat.** The merge-gating rows are in the earliest
+  parts. Part 1 says how many parts follow, which parts hold the merge-gating rows (only more than part 1 when those
   rows alone pass one part, and then it says "parts 1 to N") and, when a finding had to be shortened,
   says so. A later part points back to part 1 and repeats where the blockers are. Each part repeats its own
   section headings, intro text and footer, so it reads on its own. This splitting is not an agent's

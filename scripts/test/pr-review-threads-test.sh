@@ -2250,11 +2250,12 @@ assert_eq "prt_render_overflow_comment: quarantine_reason=content_mismatch -> Co
   "true" "$(grep -qF '| c.go | n/a | i3 | f3 | content changed (recurring defect) |' <<< "$quarantine_reason_row" && echo true || echo false)"
 
 # ============================================================ render.sh: prt_render_overflow_parts (go-kure/.github#307)
-# GitHub rejects a comment body past 65,536 characters. A body that fits stays one comment, byte for
-# byte; a larger one is split into parts under PRT_OVERFLOW_PART_MAX (60,000 UTF-16 units: a 5,536
-# margin for the part line, headings and footers). Merge-gating rows come first and part 1 says which
-# parts hold them, besides every coverage caveat; rows are ordered by severity, never by size; a single finding too large for any
-# part is shortened with a marker and counted, which makes the run incomplete (RULING-1031-1200-281).
+# GitHub rejects a comment body past 65,536 characters. A body GitHub accepts stays one comment, byte
+# for byte; a larger one is split into parts under PRT_OVERFLOW_PART_MAX (60,000 UTF-16 units: a 5,536
+# margin for the part line, headings and footers). Merge-gating rows are placed in the earliest parts
+# and part 1 says which parts hold them, besides every coverage caveat; rows are ordered by severity,
+# never by size; a single finding too large for any part is shortened with a marker and counted, which
+# makes the run incomplete (RULING-1031-1200-281).
 prt_parts_dir="$(mktemp -d)"
 prt_parts_clear() { find "$prt_parts_dir" -name 'part-*.md' -delete; }
 prt_parts_u16() { jq -Rs "${_PRT_OVERFLOW_JQ_DEFS}"' u16len' < "$1"; }
@@ -2268,6 +2269,14 @@ assert_eq "prt_render_overflow_parts: a body that fits is one part, 0 shortened"
   "1 0" "$(prt_render_overflow_parts "$prt_parts_small" "$quarantine_triple" "$prt_parts_dir")"
 assert_eq "prt_render_overflow_parts: a body that fits is byte-for-byte prt_render_overflow_comment" \
   "$(prt_render_overflow_comment "$prt_parts_small" "$quarantine_triple")" "$(cat "$prt_parts_dir/part-1.md")"
+# A body between the 60,000 part margin and GitHub's 65,536 limit is accepted whole, so it stays one
+# comment (review of go-kure/.github#307, round 4).
+prt_parts_mid="$(jq -n '[{file:"o.go", severity:"high", category:"mid", issue:("MID " + ("m" * 62000))}]')"
+prt_parts_clear
+assert_eq "prt_render_overflow_parts: a body of about 62,000 units that GitHub accepts stays one part" \
+  "1 0" "$(prt_render_overflow_parts "$prt_parts_mid" '[]' "$prt_parts_dir")"
+assert_eq "prt_render_overflow_parts: that body is posted whole, with no part line" \
+  "false" "$(grep -qF '**Part ' "$prt_parts_dir/part-1.md" && echo true || echo false)"
 
 # Gating rows first, then severity; the order holds across parts, and every row appears exactly once.
 prt_parts_q="$(jq -n '[range(0;4) | {file:"a.go", line:1, severity:"low", category:"c\(.)", issue:("lowq-\(.) " + ("z" * 20000)), fix:"f", quarantine_reason:"this_run", gating:false}] + [{file:"g.go", line:2, severity:"critical", category:"gate", issue:("GATING " + ("g" * 20000)), fix:"f", gating:true}]')"
@@ -2313,7 +2322,7 @@ assert_eq "prt_render_overflow_parts: with no merge-gating row the part 1 line s
 
 # The largest single finding that still fits one part is not shortened, and its part fits the limit.
 prt_parts_big_q="$(jq -n '[{file:"big.go", line:1, severity:"high", category:"big", issue:("BIGQ " + ("i" * 27000)), fix:("f" * 27000), quarantine_reason:"this_run", gating:true}]')"
-prt_parts_big_f="$(jq -n '[{file:"s.go", severity:"low", category:"s", issue:("small " + ("s" * 8000))}]')"
+prt_parts_big_f="$(jq -n '[{file:"s.go", severity:"low", category:"s", issue:("small " + ("s" * 14000))}]')"
 prt_parts_clear
 assert_eq "prt_render_overflow_parts: a withheld finding of 54000 characters (issue and fix) fits one part, none shortened" \
   "2 0" "$(prt_render_overflow_parts "$prt_parts_big_f" "$prt_parts_big_q" "$prt_parts_dir")"
