@@ -27,5 +27,12 @@ jobs:
           PRT_TEST_REQUIRE_NAMESPACE: "1"
         run: bash scripts/test/pr-review-threads-test.sh .
 
+      # The probe's own full-run cases need the same namespace. Without the switch they skip
+      # on a lane that forbids it, and nothing would fail.
+      - name: Probe fixture suite, full-run cases required
+        env:
+          PRT_TEST_REQUIRE_NAMESPACE: "1"
+        run: bash scripts/test/pr-review-runner-boundary-probe-test.sh .
+
       - name: Canary probe behind the default boundary
         run: bash scripts/pr-review-runner-boundary-probe.sh

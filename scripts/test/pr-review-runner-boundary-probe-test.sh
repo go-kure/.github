@@ -40,7 +40,8 @@ write_report() { # write_report FILE KIND [KEY=VALUE...]
   if [ "$kind" = boundary ]; then
     lines=(canary_hits=0 ancestor_environ_open=0 ancestor_mem_open=0 fd_above_2=0
       uid=1000 cap_eff=0000000000000000 cap_bnd=000001ffffffffff no_new_privs=0
-      proc_mount=denied canary_state=ok own_environ_open=1 own_environ_marker=1)
+      proc_mount=denied canary_state=ok own_environ_open=1 own_environ_marker=1
+      environ_entries=40 own_environ_listed=1)
   else
     lines=(canary_hits=1 ancestor_environ_open=6 ancestor_mem_open=6 fd_above_2=0
       uid=1000 cap_eff=0000000000000000 cap_bnd=000001ffffffffff no_new_privs=0
@@ -197,16 +198,17 @@ assert_eq "judge: an oversized count raises no arithmetic error" "" \
 stub_run "$dir/k0"
 assert_eq "stub: the scan finds the marker in the stub's own environment" 1 "$(field "$dir/k0" own_environ_marker)"
 assert_eq "stub: the stub can open its own environ" 1 "$(field "$dir/k0" own_environ_open)"
+assert_eq "stub: the scan listed the process table and found the stub's own entry" "1 1" \
+  "$([ "$(field "$dir/k0" environ_entries)" -ge 1 ] 2> /dev/null && echo 1 || echo 0) $(field "$dir/k0" own_environ_listed)"
+# The scan reads the files itself: no grep, tr or sed stands between it and the answer, so a
+# tool that fails (or behaves differently from one implementation to the next) changes nothing.
 mkdir "$dir/shim"
 printf '#!/bin/sh\nexit 2\n' > "$dir/shim/grep"
-chmod 755 "$dir/shim/grep"
-stub_run "$dir/k1" PATH="$dir/shim:$PATH"
-assert_eq "stub: a grep that fails leaves the marker count at 0" 0 "$(field "$dir/k1" own_environ_marker)"
 printf '#!/bin/sh\nexit 1\n' > "$dir/shim/tr"
-chmod 755 "$dir/shim/tr"
-rm -f "$dir/shim/grep"
-stub_run "$dir/k2" PATH="$dir/shim:$PATH"
-assert_eq "stub: a tr that fails leaves the marker count at 0" 0 "$(field "$dir/k2" own_environ_marker)"
+chmod 755 "$dir/shim/grep" "$dir/shim/tr"
+stub_run "$dir/k1" PATH="$dir/shim:$PATH"
+assert_eq "stub: a grep and a tr that fail leave the marker found" 1 "$(field "$dir/k1" own_environ_marker)"
+assert_eq "stub: a grep and a tr that fail leave the stub's own entry listed" 1 "$(field "$dir/k1" own_environ_listed)"
 write_report "$dir/k3" boundary own_environ_marker=0
 assert_eq "judge: a boundary scan that cannot find the marker is inconclusive" 3 "$(judge_rc "$dir/k3" "$dir/c")"
 write_report "$dir/k4" boundary own_environ_open=0
@@ -222,6 +224,32 @@ assert_eq "judge: a boundary whose descriptor listing gave no count is inconclus
 write_report "$dir/k7" boundary canary_hits=1 own_environ_marker=0
 assert_eq "judge: a leak is still a leak when the scan is blind" 1 "$(judge_rc "$dir/k7" "$dir/c")"
 
+# The hit count comes from one scan of the process table; a report in which that scan listed
+# nothing, or not the stub itself, must not pass on the strength of other checks that read 1.
+write_report "$dir/e1" boundary environ_entries=0
+assert_eq "judge: a scan that listed no process is inconclusive, whatever the other checks read" 3 "$(judge_rc "$dir/e1" "$dir/c")"
+write_report "$dir/e2" boundary own_environ_listed=0
+assert_eq "judge: a scan that did not list the stub's own entry is inconclusive" 3 "$(judge_rc "$dir/e2" "$dir/c")"
+write_report "$dir/e3" boundary environ_entries=@
+assert_eq "judge: a boundary report without the entry count is inconclusive" 3 "$(judge_rc "$dir/e3" "$dir/c")"
+write_report "$dir/e4" boundary own_environ_listed=@
+assert_eq "judge: a boundary report without the own-entry field is inconclusive" 3 "$(judge_rc "$dir/e4" "$dir/c")"
+write_report "$dir/e5" boundary environ_entries=
+assert_eq "judge: an empty entry count is inconclusive" 3 "$(judge_rc "$dir/e5" "$dir/c")"
+write_report "$dir/e6" boundary canary_hits=1 environ_entries=0
+assert_eq "judge: a leak is still a leak when the scan listed nothing" 1 "$(judge_rc "$dir/e6" "$dir/c")"
+# End to end: a real stub whose listing found nothing (globbing off leaves the pattern literal,
+# which is no entry) reports zero hits, and its own marker is read straight from its own file.
+# That pair is exactly what passed before the scan counted what it listed.
+stub_run "$dir/e7" SHELLOPTS=noglob
+assert_eq "stub: a process-table listing that gave nothing reports no entry" "0 0" \
+  "$(field "$dir/e7" environ_entries) $(field "$dir/e7" own_environ_listed)"
+# Otherwise-clean boundary reports that carry the stub's real scan fields: only these differ.
+write_report "$dir/e8" boundary environ_entries="$(field "$dir/e7" environ_entries)" own_environ_listed="$(field "$dir/e7" own_environ_listed)"
+assert_eq "judge: ... and that scan's report is inconclusive, not a pass" 3 "$(judge_rc "$dir/e8" "$dir/c")"
+write_report "$dir/e9" boundary environ_entries="$(field "$dir/k0" environ_entries)" own_environ_listed="$(field "$dir/k0" own_environ_listed)"
+assert_eq "judge: a working scan's fields in an otherwise clean report pass" 0 "$(judge_rc "$dir/e9" "$dir/c")"
+
 # A descriptor listing that fails must not read as "no descriptors". With globbing off the listing
 # stays a literal pattern: the stub saw none of the standard descriptors, so it writes an empty
 # count, which the judge reads as unusable. A working listing is counted from 0 up.
@@ -229,11 +257,32 @@ stub_run "$dir/f0" SHELLOPTS=noglob
 assert_eq "stub: a descriptor listing that did not work leaves the count empty, not 0" \
   "present-empty" "$(grep -q '^fd_above_2=$' "$dir/f0" && echo present-empty || echo "other:$(field "$dir/f0" fd_above_2)")"
 
-# `grep -q` would quit at the first match and leave `tr` writing into a closed pipe: under pipefail
-# the pipeline is then 141 and a match reads as a miss. The marker comes first in a large environment.
+# GNU grep quits at its first match when its output is /dev/null (ugrep does not), which left `tr`
+# writing into a closed pipe: under pipefail the pipeline was then 141 and a match read as a miss,
+# on one host and not another. The scan no longer has a pipe or a grep. A match first in an
+# environment far larger than a pipe buffer must be found, with grep and tr both failing.
 big="$(head -c 100000 /dev/zero | tr '\0' x)"
-stub_run "$dir/g0" BIG1="$big" BIG2="$big" BIG3="$big"
+stub_run "$dir/g0" PATH="$dir/shim:$PATH" LEAKED=canary-for-the-test BIG1="$big" BIG2="$big" BIG3="$big"
 assert_eq "stub: the marker is found in an environment larger than a pipe buffer" 1 "$(field "$dir/g0" own_environ_marker)"
+assert_eq "stub: the canary placed first in a large environment is counted" 1 "$(field "$dir/g0" canary_hits)"
+# The function itself, on files: a match first in a 5 MB environ, a match last without its NUL,
+# no match, an empty file, a missing file, an unreadable one.
+big5="$(head -c 5000000 /dev/zero | tr '\0' y)"
+printf 'FIRST=needle-1\0BIG=%s\0' "$big5" > "$dir/e.first"
+printf 'A=1\0B=2\0LAST=needle-2' > "$dir/e.last"
+printf 'A=1\0B=2\0' > "$dir/e.none"
+: > "$dir/e.empty"
+# shellcheck disable=SC2016 # the script text is for the inner shell
+has_script='source "$1"; shift
+for spec in "$@"; do
+  if environ_has "${spec%%|*}" "${spec##*|}" 2> /dev/null; then printf "yes "; else printf "no "; fi
+done'
+# An empty PATH: only builtins are left, so the answer cannot depend on any external tool.
+assert_eq "environ_has: a first match in a 5 MB environ, a last match with no NUL, and four misses, with no external command" \
+  "yes yes no no no no " \
+  "$(env -i PATH="$dir/no-such-dir" "$BASH" -c "$has_script" _ "$PROBE" \
+    "$dir/e.first|needle-1" "$dir/e.last|needle-2" "$dir/e.none|needle-1" "$dir/e.empty|needle-1" \
+    "$dir/e.missing|needle-1" "$dir|needle-1" 2> /dev/null)"
 
 # An empty or missing canary would match every environment: it is named, not scanned for.
 : > "$dir/canary-empty"
@@ -288,6 +337,45 @@ for marker in 1 real-secret-value-0123456789abcdef; do
   assert_eq "run: with PRT_PROBE_REEXEC=$marker and a real token set, the work file holds a fresh canary" "true" \
     "$(grep -qE '^probe-canary-[0-9a-f]{32}$' "$dir/canary-copy" 2> /dev/null && echo true || echo false)"
 done
+
+# A failed re-exec ends a shell with 126 or 127 unless told otherwise; the probe's codes are 0 to 4.
+# bash, od, tr, dirname and basename are on this PATH, `env` is not, so only the re-exec can fail.
+mkdir -p "$dir/noenv"
+for t in bash od tr dirname basename; do ln -sf "$(command -v "$t")" "$dir/noenv/$t"; done
+exec_out="$(env -i PATH="$dir/noenv" "$dir/noenv/bash" "$PROBE" run 2>&1)"
+exec_rc=$?
+assert_eq "run: a re-exec that cannot start is a setup failure (4), not 126 or 127" 4 "$exec_rc"
+assert_eq "run: ... and it says so" "true" "$([[ "$exec_out" == *"cannot start the probe again"* ]] && echo true || echo false)"
+
+# The lane lines: a failing command is a marker, never an empty field; the messages of unshare
+# lose their absolute paths like the orchestrator's own.
+mkdir -p "$dir/lane"
+printf '#!/bin/sh\nexit 1\n' > "$dir/lane/id"
+printf '#!/bin/sh\nexit 1\n' > "$dir/lane/uname"
+printf '#!/bin/sh\necho "unshare: cannot open /private/outside/the/workspace/ns: denied" >&2\nexit 1\n' > "$dir/lane/unshare"
+chmod 755 "$dir/lane/id" "$dir/lane/uname" "$dir/lane/unshare"
+mkdir -p "$dir/lane-tmp"
+lane_out="$(env TMPDIR="$dir/lane-tmp" PATH="$dir/lane:$PATH" bash "$PROBE" run 2> /dev/null)"
+assert_eq "run: a failing uname and id give markers in the lane lines" "true" \
+  "$([[ "$lane_out" == *"lane: kernel=n/a uid=n/a os="* && "$lane_out" == *"lane: orchestrator user=n/a groups=n/a"* ]] && echo true || echo false)"
+assert_eq "run: no lane line has an empty field" "" "$(printf '%s\n' "$lane_out" | grep -E '^lane: .*(=$|= )' || true)"
+assert_eq "run: an unshare message keeps its words and loses its absolute path" "true" \
+  "$([[ "$lane_out" == *"failed rc=1 unshare: cannot open <path>: denied"* && "$lane_out" != *"/private/outside"* ]] && echo true || echo false)"
+
+# The ancestor chain is parsed from /proc/PID/stat, whose fields after the command name are plain
+# words: both the parent and the start time must be numbers, or the chain would end short.
+stat_case() { # stat_case LINE -> "ppid start" or "fail"
+  bash -c 'source "$1"; if stat_fields "$2"; then echo "$STAT_PPID $STAT_START"; else echo fail; fi' _ "$PROBE" "$1" 2> /dev/null
+}
+stat_fill="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0" # fields 3 to 18 after the state, 17 words
+assert_eq "stat: a parent and a start time are read" "77 12345" "$(stat_case "1 (bash) S 77 $stat_fill 12345 0 0")"
+assert_eq "stat: a start time of 11 digits (a long uptime) is read" "77 12345678901" "$(stat_case "1 (bash) S 77 $stat_fill 12345678901 0")"
+assert_eq "stat: a command name with ') ' in it is skipped as a whole" "77 12345" "$(stat_case "1 (a) b) S 77 $stat_fill 12345 0")"
+assert_eq "stat: an empty parent field fails" fail "$(stat_case "1 (bash) S")"
+assert_eq "stat: a parent that is not a number fails" fail "$(stat_case "1 (bash) S x $stat_fill 12345 0")"
+assert_eq "stat: a start time that is not a number fails" fail "$(stat_case "1 (bash) S 77 $stat_fill x 0")"
+assert_eq "stat: a line too short for the start time fails" fail "$(stat_case "1 (bash) S 77 0 0 0")"
+assert_eq "stat: an empty line fails" fail "$(stat_case "")"
 
 if [ -z "${PRT_TEST_FORCE_NO_NAMESPACE:-}" ] && unshare --user --map-current-user --pid --fork --mount-proc true > /dev/null 2>&1; then
   assert_eq "run: an unreadable own mount namespace is a setup failure" 4 \

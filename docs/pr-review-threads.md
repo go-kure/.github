@@ -589,7 +589,8 @@ Acceptance needs a CI lane that can run the positive isolation cases. On a host 
 namespace the test suite skips the cases that need one (and says so) but still runs the ones that do
 not: invalid configuration, a prefix that isolates nothing, the check's deadline and the enforce
 refusal. Setting `PRT_TEST_REQUIRE_NAMESPACE=1` turns that skip into a failure, so a lane that must
-run them cannot pass by skipping.
+run them cannot pass by skipping. The probe's own fixture suite has the same switch for its
+full-run cases, and the acceptance workflow sets it for both suites.
 
 **Acceptance run.** `scripts/pr-review-runner-boundary-probe.sh`, started by the manual workflow
 `PR Review Runner Boundary Probe` on the runner image the review job uses, shows whether the default
@@ -608,13 +609,21 @@ through an ancestor, with numeric counts of at least 1: a missing, empty or malf
 voids the result, and so does a count of more than 9 digits. Only a refusal by `mount` itself is a
 denial. A mount that could not be tried (no `mount` command, one that cannot be executed, an
 unreadable or shared mount namespace, no directory) is not. Inside the boundary the scan must also
-be able to find something: the stub looks for a known, non-secret value (the head SHA) in its own
-environment with the same scan, and a report where it does not is inconclusive. A count that could
+be able to find something. One scan of the process table produces the canary count: for each
+`environ` it lists, it looks for the canary, and for the stub's own entry it also looks for a known,
+non-secret value (the head SHA). The scan reads those files itself and runs no `grep` or `tr`, whose
+behaviour differs between implementations. The report carries the number of entries scanned and
+whether the stub's own was among them; a report with no entry, no own entry or no marker is
+inconclusive, so a scan that listed nothing cannot pass with a zero. A count that could
 not be taken is written empty, never 0, and an empty or malformed one voids the result: the descriptor
 listing must have shown the three standard descriptors, and the canary must have been read and been
 non-empty (an empty canary would match any environment). The report also names, for information and
-without a judgement, the stub's own user and groups, its `NSpid` (the pid it has in each namespace)
-and whether its PID namespace differs from the orchestrator's. Its parent-death signal is not
+without a judgement, the stub's own user and groups, its `NSpid` (the pid it has in each namespace),
+whether its PID namespace differs from the orchestrator's, and the names (never the values) of the
+environment variables it holds, so a variable that should have been scrubbed shows up by name. Every
+informational field, and every `lane:` line the run prints before the probes, is a value or `n/a`,
+never empty: a command that failed does not read as a value that is absent. The `unshare` messages of
+the lane lines lose their absolute paths like the orchestrator's. Its parent-death signal is not
 reported: it can be read only by the process that holds it, and a child starts with it cleared.
 Limits of the probe: it tests the default boundary and a canary placed in the environment (a token in
 an argument, a descriptor or a file is not covered); the control proves that `environ` of an ancestor
@@ -627,7 +636,9 @@ established (a `runner-*` reason or `provenance-mismatch`); 2 the boundary canno
 that lane; 3 inconclusive (the control, a field or the mount result gave no usable answer, or the call
 succeeded but left no report, so no pass can be claimed); 4 the probe could not set itself up, or the
 orchestrator refused the call before the stub could run (`backend-config`, `deadline-exhausted`,
-`local-tempdir`), which says nothing about the boundary. The orchestrator's own messages are relayed
+`local-tempdir`), which says nothing about the boundary. A re-exec that cannot start and a
+`/proc/<pid>/stat` line without a numeric parent and start time (which would end the ancestor chain
+short) are also 4. The orchestrator's own messages are relayed
 with every absolute path replaced. It does not show the lifetime limit above, what else of the user's files the runner can read, or anything
 about a real runner or model key, and it says nothing about a later image.
 
