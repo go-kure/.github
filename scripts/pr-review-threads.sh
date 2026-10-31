@@ -2258,15 +2258,13 @@ if [ "$PRT_MODE" = enforce ] && { [ "$overflow_len" -gt 0 ] || [ "$quarantined_l
         overflow_part=$((overflow_part + 1))
         overflow_label="overflow comment"
         [ "$overflow_parts" -le 1 ] || overflow_label="overflow comment part ${overflow_part} of ${overflow_parts}"
-        # The freshness check above covers part 1; a later part can follow a
-        # long gap, so each of those checks again before its write.
-        if [ "$overflow_part" -gt 1 ]; then
-          prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA" || {
-            prt_handle_freshness_rc "$?" "$overflow_label"
-            OVERFLOW_COMMENT_POSTED=false
-            break
-          }
-        fi
+        # Every part is checked immediately before its own write: the check above
+        # precedes the render, and a later part can follow a long gap.
+        prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA" || {
+          prt_handle_freshness_rc "$?" "$overflow_label"
+          OVERFLOW_COMMENT_POSTED=false
+          break
+        }
         overflow_payload=""
         if ! overflow_body="$(cat "$overflow_dir/part-${overflow_part}.md")" ||
            ! overflow_payload="$(prt_json_body_payload "$overflow_body")" || [ -z "$overflow_payload" ]; then

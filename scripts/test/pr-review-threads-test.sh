@@ -2910,8 +2910,9 @@ fake_curl_orchestrator() {
         : > "$out"; echo 422; return 0
       fi
       # GitHub rejects a comment body longer than 65,536 characters with a 422
-      # (go-kure/.github#307). The real limit, never a lowered one.
-      if ! jq -e '(.body | length) <= 65536' <<< "$data" > /dev/null 2>&1; then
+      # (go-kure/.github#307). The real limit, never a lowered one, counted in
+      # UTF-16 units like the renderer (an astral character is two).
+      if ! jq -e '(.body | explode | map(if . > 65535 then 2 else 1 end) | add // 0) <= 65536' <<< "$data" > /dev/null 2>&1; then
         echo "mock: rejected a comment body over 65536 characters for $method $url" >&2
         : > "$out"; echo 422; return 0
       fi
@@ -4994,7 +4995,11 @@ for prt_orch_dir in "${prt_orch_path_dirs[@]}"; do
   prt_orch_real_jq="$prt_orch_cand"
   break
 done
-[ -n "$prt_orch_real_jq" ] || prt_orch_real_jq="$(command -v jq)"
+if [ -z "$prt_orch_real_jq" ]; then
+  # Falling back to `command -v jq` would pick the shim the loop just excluded and loop forever.
+  echo "FATAL: no jq outside a version-manager shim on PATH; the jq-fault case needs a real jq binary" >&2
+  exit 1
+fi
 unset prt_orch_path_dirs prt_orch_dir prt_orch_cand
 rc="$(PATH="$prt_orch_shim:$PATH" REAL_JQ="$prt_orch_real_jq" JQ_FAIL_MATCH='def collision_cell' run_orchestrator enforce 0 0 0)"
 assert_eq "orchestrator: a jq fault in the withheld-findings render -> exits 1 (not 0), nothing posted" \
