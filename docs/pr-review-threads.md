@@ -505,7 +505,11 @@ must not hold a token that can write to the PR. It is started under `env -i` wit
 `PRT_GH_TOKEN`, `GITHUB_TOKEN`, `GH_TOKEN`, `GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`,
 `ACTIONS_RUNTIME_TOKEN` or `ACTIONS_ID_TOKEN_REQUEST_TOKEN` on any line, a name that is not a plain
 ASCII identifier, or a name that is not set fails the run at start with `PRT_ASSESS_RUNNER_ENV` in the message, rather
-than being dropped. The calling workflow's checkout also has to leave no credentials in
+than being dropped. Those names and values (the metered model key among them) never appear in the
+command line of any process: `/proc/<pid>/cmdline` is readable by every user of the host, and the
+processes in front of the runner live as long as it does. They travel in a private file that is
+opened on descriptor 8 and unlinked at once; the innermost step, behind the boundary, reads them
+from it, closes it and starts the runner under `env -i`. The calling workflow's checkout also has to leave no credentials in
 `.git/config` (`persist-credentials: false`, as `pr-review.yml` sets), because the runner reads the
 checkout.
 
@@ -533,7 +537,10 @@ holds (a credential file, a pipe) would be readable to the runner.
   probe does not make an arbitrary one trustworthy: it shows that ancestors are hidden and that no
   capability is held, nothing about what else the command does. The command itself is started under
   `env -i` with only `PATH` (no `HOME`, no token), so a wrapper that stays resident while it waits
-  for the runner does not keep the posting token in its own environment.
+  for the runner does not keep the posting token in its own environment. It must leave descriptor 8
+  open to the command it starts (the runner's environment arrives on it): a command that closes it
+  leaves the runner nothing to start with, and the call fails as `runner-failed` instead of
+  running the runner without its environment.
 
 The check runs for every call, whichever form: a probe is started behind the boundary with every
 process from this one up to pid 1, each named by pid and start time, and it must find that none
