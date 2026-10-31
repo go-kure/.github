@@ -1374,7 +1374,7 @@ byte for byte what `prt_render_overflow_comment` prints, and otherwise as severa
 - **Order.** Merge-gating withheld rows come first, then every other row by severity (critical, high,
   medium, other). Size never reorders a row. The mock GitHub in the test suite enforces the real
   65,536-character limit.
-- **Part 1 carries every blocker and every coverage caveat.** It opens with the merge-gating rows. It
+- **Part 1 opens with the blockers and carries every coverage caveat.** It opens with the merge-gating rows. It
   says how many parts follow, which parts hold the merge-gating rows (only more than part 1 when those
   rows alone pass one part, and then it says "parts 1 to N") and, when a finding had to be shortened,
   says so. A later part points back to part 1 and repeats where the blockers are. Each part repeats its own
