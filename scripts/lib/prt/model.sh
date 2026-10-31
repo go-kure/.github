@@ -1023,19 +1023,37 @@ _prt_call_runner() {
     # the arguments of `timeout` or the boundary: /proc/<pid>/cmdline is readable by every user
     # of the host, and those processes live as long as the runner. The words go NUL-separated
     # into a private file that is opened on descriptor 8 and unlinked at once; the innermost
-    # step, already behind the boundary, reads them from it, closes it and becomes `env -i`.
-    # A boundary that closes descriptor 8 leaves it nothing to read: the call then fails
-    # (exit 125) instead of starting the runner without its environment. An empty list is
-    # refused here, before anything is written: `printf '%s\0'` with no arguments still
-    # prints one NUL, which would reach `env -i` as an empty program name and fail with
-    # another exit. The reader's own length check stays as the second guard.
+    # step, already behind the boundary, reads them from it, closes it, makes its own
+    # environment exactly those words and executes the runner. It does not hand the words to
+    # `env`: they would be that process's arguments, in /proc/<pid>/cmdline until it starts the
+    # runner. The reader's own arguments hold only the runner's command line.
+    # Every failure of the hand-over exits 125 and never starts the runner without its
+    # environment: a boundary that closes descriptor 8, an empty list, a word that is not
+    # NAME=value (`export word` would quietly export an existing variable instead of failing
+    # as `env -i word` did), a failed unset or export. An empty list is refused here, before
+    # anything is written: `printf '%s\0'` with no arguments still prints one NUL, which the
+    # reader would take for one empty word. The reader's own length check is the second guard.
+    local prt_reader
+    IFS= read -r -d '' prt_reader <<'READER' || true
+mapfile -d "" -t _w <&8 || exit 125
+exec 8<&-
+[ "${#_w[@]}" -gt 0 ] || exit 125
+for _x in "${_w[@]}"; do
+  ( LC_ALL=C; [[ "$_x" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] ) || exit 125
+done
+mapfile -t _e < <(compgen -e) || exit 125
+unset -v "${_e[@]}" || exit 125
+export "${_w[@]}" || exit 125
+shopt -s execfail
+exec "$@"
+exit 125
+READER
     [ "${#PRT_RUNNER_ENV_ARGS[@]}" -gt 0 ] || exit 125
     ( umask 077; printf '%s\0' "${PRT_RUNNER_ENV_ARGS[@]}" > "$tmp/env" ) || exit 125
     exec 8< "$tmp/env" || exit 125
     rm -f "$tmp/env"
-    # shellcheck disable=SC2016 # the reader is the child shell's program, not an expansion here
     exec env -i "PATH=$PATH" timeout --kill-after=5 "$outer" "${PRT_RUNNER_BOUNDARY_ARGS[@]}" \
-      bash -c 'mapfile -d "" -t w <&8 || exit 125; exec 8<&-; [ "${#w[@]}" -gt 0 ] || exit 125; exec env -i "${w[@]}" "$@"' reader \
+      bash -c "$prt_reader" reader \
       "$runner" --backend "$backend" --root "$root" --base "$PRT_REVIEW_BASE_SHA" \
       --seconds "$seconds" --sandbox none --out "$out" \
       -- "Perform the assessment described on the standard input. Answer with only the JSON object it asks for." \

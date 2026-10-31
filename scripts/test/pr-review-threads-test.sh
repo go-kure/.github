@@ -7348,10 +7348,14 @@ PRT_TEST_RUNNER_MODE=linger
 run_orchestrator advisory 0 0 0 > "$prt_ar_dir/linger.rc" &
 prt_ar_bg=$!
 for _ in $(seq 1 100); do [ -e "$PRT_TEST_RUNNER_LOG.started" ] && break; sleep 0.1; done
+# The wait above gives up after 10 s whether or not the runner started; a table read before the
+# start would show no key and pass. The marker is therefore checked at the moment of the read.
+prt_ar_started="$([ -e "$PRT_TEST_RUNNER_LOG.started" ] && echo true || echo false)"
 # The pattern is spelled so that this very command line does not contain the key.
 prt_ar_cmdline_hits="$(cat /proc/[0-9]*/cmdline 2> /dev/null | tr '\0' '\n' | grep -c 'sentinel-model-[k]ey')"
 wait "$prt_ar_bg"
 PRT_TEST_RUNNER_MODE=clean
+assert_eq "assess runner scrub: the runner had started when the process table was read" "true" "$prt_ar_started"
 assert_eq "assess runner scrub: the model key is in no process's command line while the runner is up" \
   "0" "$prt_ar_cmdline_hits"
 assert_eq "assess runner scrub: the run still succeeds (rc, one call)" "0 1" "$(cat "$prt_ar_dir/linger.rc") $(prt_ar_calls)"
@@ -7361,6 +7365,26 @@ assert_eq "assess runner scrub: a value with spaces and a newline arrives intact
   "1 1" "$(grep -c '^PRT_AR_MULTI=multi line$' "$PRT_TEST_RUNNER_LOG.env.1") $(grep -c '^value  with spaces$' "$PRT_TEST_RUNNER_LOG.env.1")"
 PRT_TEST_ASSESS_RUNNER_ENV="${PRT_TEST_ASSESS_RUNNER_ENV% PRT_AR_MULTI}"
 unset PRT_AR_MULTI
+
+# The hand-over step must not put the words back on a command line either: an `env` that is given
+# them as arguments shows them in /proc/<pid>/cmdline until it starts the runner. A spy `env`, first
+# in PATH, records every call whose arguments hold the key and then runs the real one. The control
+# call proves the spy sees what it is meant to see.
+mkdir -p "$prt_ar_dir/spy"
+printf '#!/bin/sh\ncase "$*" in *sentinel-model-key*) echo spied >> "%s/spy.log" ;; esac\nexec /usr/bin/env "$@"\n' "$prt_ar_dir" > "$prt_ar_dir/spy/env"
+chmod 755 "$prt_ar_dir/spy/env"
+rm -f "$prt_ar_dir/spy.log"
+PATH="$prt_ar_dir/spy:$PATH" env -i OPENAI_API_KEY=sentinel-model-key true
+assert_eq "assess runner scrub, spy control: an env given the key as an argument is recorded" "1" "$(wc -l < "$prt_ar_dir/spy.log")"
+rm -f "$PRT_TEST_RUNNER_LOG".*
+: > "$prt_ar_dir/spy.log"
+PRT_TEST_RUNNER_MODE=clean
+rc="$( eval "PATH=\"$prt_ar_dir/spy:\$PATH\"; export PATH"; run_orchestrator advisory 0 0 0 )"
+assert_eq "assess runner scrub: the run succeeds with the spy env in front" "0 1" "$rc $(prt_ar_calls)"
+assert_eq "assess runner scrub: no env process is ever given the model key as an argument" \
+  "0" "$(wc -l < "$prt_ar_dir/spy.log")"
+assert_eq "assess runner scrub: the key still reaches the runner's environment" \
+  "1" "$(grep -c '^OPENAI_API_KEY=sentinel-model-key$' "$PRT_TEST_RUNNER_LOG.env.1")"
 
 # The request travels on stdin; the prompt argument is a fixed instruction.
 assert_eq "assess runner request: the findings are on stdin" \
@@ -7828,18 +7852,41 @@ assert_eq "assess runner, boundary prefix that closes the environment descriptor
 rm -f "$PRT_TEST_RUNNER_LOG".*
 PRT_TEST_ASSESS_RUNNER_BOUNDARY_CMD="$(prt_ar_prod_prefix)"
 PRT_TEST_RUNNER_MODE=clean
+#
+# Without the guard the outcome is the same (an empty program name, exit 127, runner-failed), so the
+# outcome alone does not show it. What only the guard changes is that the environment file is never
+# written: that write is preceded by `umask`, which a second shim records. The control run, with
+# the list intact, shows the shim does see the write.
+rm -f "$PRT_TEST_RUNNER_LOG".*
+rc="$(
+  eval 'umask() {
+    if [ "${FUNCNAME[1]:-}" = _prt_call_runner ]; then echo wrote >> "$PRT_TEST_RUNNER_LOG.envfile"; fi
+    builtin umask "$@"
+  }'
+  export -f umask
+  run_orchestrator advisory 0 0 0
+)"
+assert_eq "assess runner, environment file control (list intact): the file is written, the run succeeds" \
+  "0 1 1" "$rc $(prt_ar_calls) $(wc -l < "$PRT_TEST_RUNNER_LOG.envfile")"
+rm -f "$PRT_TEST_RUNNER_LOG".*
 rc="$(
   # Defined from a string: the array it clears and the format it forwards belong to the
   # orchestrator, and the other printf calls in this file are not calls of this shim.
   eval 'printf() {
     if [ "${FUNCNAME[1]:-}" = _prt_call_runner ]; then PRT_RUNNER_ENV_ARGS=(); fi
     builtin printf "$@"
+  }
+  umask() {
+    if [ "${FUNCNAME[1]:-}" = _prt_call_runner ]; then echo wrote >> "$PRT_TEST_RUNNER_LOG.envfile"; fi
+    builtin umask "$@"
   }'
-  export -f printf
+  export -f printf umask
   run_orchestrator advisory 0 0 0
 )"
 assert_eq "assess runner, empty environment list: the runner is not started, degraded as runner-failed" \
   "0 0 true" "$rc $(prt_ar_calls) $(prt_ar_reason runner-failed)"
+assert_eq "assess runner, empty environment list: refused before the environment file is written" \
+  "absent" "$([ -e "$PRT_TEST_RUNNER_LOG.envfile" ] && echo present || echo absent)"
 
 # A prefix that stays resident (it runs the rest as a child and waits) must not hold the posting
 # token: the prefix is started under `env -i`, so its own /proc/<pid>/environ has none. The control
