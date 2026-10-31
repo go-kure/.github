@@ -1,6 +1,14 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["github>go-kure/.github//renovate/shared"],
+  "packageRules": [
+    {
+      "description": "GoReleaser pin in release-publish.yml: the goreleaser-action `version:` input is compared as a bare string against the org-wide REQUIRED_GORELEASER_VERSION (a bare version such as 2.19.0), but goreleaser/goreleaser tags are v-prefixed and Renovate writes the tag name. extractVersion strips the v so the pin stays bare.",
+      "matchManagers": ["github-actions"],
+      "matchDepNames": ["goreleaser/goreleaser"],
+      "extractVersion": "^v(?<version>.*)$"
+    }
+  ],
   "customManagers": [
     {
       "customType": "regex",
