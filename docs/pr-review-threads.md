@@ -508,11 +508,16 @@ ASCII identifier, or a name that is not set fails the run at start with `PRT_ASS
 than being dropped. Those names and values (the metered model key among them) never appear in the
 command line of any process: `/proc/<pid>/cmdline` is readable by every user of the host, and the
 processes in front of the runner live as long as it does. They travel in a private file that is
-opened on descriptor 8 and unlinked at once; the innermost step, behind the boundary, reads them
-from it, closes it, drops every variable it inherited, exports exactly those words and executes the
-runner. It does not pass them to `env`, whose arguments they would be. The runner's environment is
-therefore these words plus the `SHLVL` that bash sets. A word that is not `NAME=value`, a failed
-export or an unreadable file ends the call without starting the runner. The calling workflow's checkout also has to leave no credentials in
+opened on descriptor 8 and unlinked immediately (it goes with the temporary directory in any
+case); the innermost step, behind the boundary, reads them from it, closes it, drops every variable
+it inherited, exports exactly those words and executes the runner. It does not pass them to `env`,
+whose arguments they would be. That step itself starts under `env -i` with only `PATH`, so a
+function exported by a boundary command does not reach it or the runner. The runner's environment
+is therefore these words plus the `SHLVL` that bash sets. Each of these ends the call without
+starting the runner (it is degraded as `runner-failed`): an empty list of words, an environment file
+that cannot be written, a file that cannot be read (a boundary command that closed descriptor 8), an
+empty script for the step, a word that is not `NAME=value`, a variable that cannot be unset or
+exported. The calling workflow's checkout also has to leave no credentials in
 `.git/config` (`persist-credentials: false`, as `pr-review.yml` sets), because the runner reads the
 checkout.
 

@@ -1022,17 +1022,24 @@ _prt_call_runner() {
     # The runner's environment (NAME=value words, with the metered model key) never travels in
     # the arguments of `timeout` or the boundary: /proc/<pid>/cmdline is readable by every user
     # of the host, and those processes live as long as the runner. The words go NUL-separated
-    # into a private file that is opened on descriptor 8 and unlinked at once; the innermost
-    # step, already behind the boundary, reads them from it, closes it, makes its own
-    # environment exactly those words and executes the runner. It does not hand the words to
-    # `env`: they would be that process's arguments, in /proc/<pid>/cmdline until it starts the
-    # runner. The reader's own arguments hold only the runner's command line.
+    # into a private file that is opened on descriptor 8 and unlinked immediately (and in any
+    # case goes with the temporary directory; the status of that removal is not checked, as a
+    # cosmetic cleanup must not fail a good run); the innermost step, already behind the
+    # boundary, reads them from it, closes it, makes its own environment exactly those words
+    # and executes the runner. It does not hand the words to `env`: they would be that
+    # process's arguments, in /proc/<pid>/cmdline until it starts the runner. The reader's own
+    # arguments hold only the runner's command line.
+    # The reader itself starts under `env -i` with only PATH (not a secret): exported functions
+    # of a boundary prefix (BASH_FUNC_*) are not variables, so neither `compgen -e` nor `unset`
+    # would remove them, and one could shadow a builtin the reader uses. PATH is passed
+    # explicitly because `env -i` clears the environment its own program lookup uses.
     # Every failure of the hand-over exits 125 and never starts the runner without its
-    # environment: a boundary that closes descriptor 8, an empty list, a word that is not
+    # environment: an empty list, a file that cannot be written or opened (a boundary that
+    # closes descriptor 8 leaves nothing to read), an empty reader script, a word that is not
     # NAME=value (`export word` would quietly export an existing variable instead of failing
-    # as `env -i word` did), a failed unset or export. An empty list is refused here, before
-    # anything is written: `printf '%s\0'` with no arguments still prints one NUL, which the
-    # reader would take for one empty word. The reader's own length check is the second guard.
+    # as `env -i word` did), a failed unset, a failed export. An empty list is refused here,
+    # before anything is written: `printf '%s\0'` with no arguments still prints one NUL, which
+    # the reader would take for one empty word. The reader's own length check is the second guard.
     local prt_reader
     IFS= read -r -d '' prt_reader <<'READER' || true
 mapfile -d "" -t _w <&8 || exit 125
@@ -1048,12 +1055,17 @@ shopt -s execfail
 exec "$@"
 exit 125
 READER
+    # `read -d ''` returns non-zero at the end of the here-document (that is how it ends), so
+    # the `|| true` above also hides a here-document that failed: an empty script would make
+    # `bash -c ""` exit 0 without starting the runner, and the call would look like a runner
+    # with no output. The script is checked instead.
+    [ -n "$prt_reader" ] || exit 125
     [ "${#PRT_RUNNER_ENV_ARGS[@]}" -gt 0 ] || exit 125
     ( umask 077; printf '%s\0' "${PRT_RUNNER_ENV_ARGS[@]}" > "$tmp/env" ) || exit 125
     exec 8< "$tmp/env" || exit 125
     rm -f "$tmp/env"
     exec env -i "PATH=$PATH" timeout --kill-after=5 "$outer" "${PRT_RUNNER_BOUNDARY_ARGS[@]}" \
-      bash -c "$prt_reader" reader \
+      env -i "PATH=$PATH" bash -c "$prt_reader" reader \
       "$runner" --backend "$backend" --root "$root" --base "$PRT_REVIEW_BASE_SHA" \
       --seconds "$seconds" --sandbox none --out "$out" \
       -- "Perform the assessment described on the standard input. Answer with only the JSON object it asks for." \
