@@ -537,8 +537,11 @@ holds (a credential file, a pipe) would be readable to the runner.
   other ancestor are not there, and killing the namespace's first process ends all of it. As root
   the runner would keep the user namespace's capabilities across `exec` and could unmount the fresh
   `/proc` to see the host's again, so a root orchestrator adds
-  `setpriv --no-new-privs --bounding-set=-all --inh-caps=-all`; any other user has no capability
-  after `exec`.
+  `setpriv --no-new-privs --bounding-set=-all --inh-caps=-all`. Any other user has no capability
+  after `exec` and cannot empty the bounding or inheritable sets (that needs `CAP_SETPCAP`), so
+  that user gets `setpriv --no-new-privs` alone: a setuid or file-capability binary the runner
+  starts gains nothing. If the user id cannot be read (`id -u` fails), the run stops at start with
+  that reason; it does not guess the non-root form.
 - `cmd`: the command in `PRT_ASSESS_RUNNER_BOUNDARY_CMD` is put in front of the runner, for a host
   where a namespace is not allowed, for instance one that switches to another user. It is workflow
   configuration, never PR content, and its claim to isolate counts for nothing: it passes the same
@@ -551,7 +554,10 @@ holds (a credential file, a pipe) would be readable to the runner.
   for the runner does not keep the posting token in its own environment. It must leave descriptor 8
   open to the command it starts (the runner's environment arrives on it): a command that closes it
   leaves the runner nothing to start with, and the call fails as `runner-failed` instead of
-  running the runner without its environment.
+  running the runner without its environment. Whether the runner then has `no_new_privs` is the
+  operator's responsibility for this form: the runtime does not judge it, because requiring it
+  would refuse commands that work today. Add `setpriv --no-new-privs` to the command to get what
+  `pidns` gives.
 
 The check runs for every call, whichever form: a probe is started behind the boundary with every
 process from this one up to pid 1, each named by pid and start time, and it must find that none
