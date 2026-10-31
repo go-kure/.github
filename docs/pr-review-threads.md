@@ -575,49 +575,18 @@ started.
 Lifetime: when the boundary command dies, `--kill-child` takes the namespace with it, and the
 outer time bound ends it when the call overruns. If the orchestrator itself is killed outright, the
 runner's tree is not signalled by it and a cooperative runner runs until that outer bound fires (at
-most the call's seconds plus 30, within the run's deadline); a hostile runner is covered by the
-known limit below.
+most the call's seconds plus 30, within the run's deadline).
 
-Known limit, closed for `pidns` except for the cases listed as not closed: the runner is PID 1 of its namespace, so a hostile runner can clear
-its parent-death signal and start a new session; killing the launcher or the `timeout` process group
-then does not stop it. Right after the launch the orchestrator therefore records the host pid and
-start time of that first process (the only child of the namespace launcher, which is the only child
-of `timeout`, and it must report itself as the first process of a namespace). When the call ends,
-whatever its exit, it sends that process SIGKILL if the start time still matches, and waits for it to
-go; a SIGKILL from outside a namespace is always delivered to its first process, and its end takes
-every member with it. This depends on nothing inside the namespace. If the process cannot be
-identified (the read fails, finds nothing, finds more than one, or finds something that is not a
-namespace's first process) or is still there after the kill, the call is abandoned as
-`runner-lifetime` and its answer is not read: a failed read is never taken for "nothing to end".
-`timeout` gone before the first process was named counts as "nothing to end" only if it ended by
-itself, with an ordinary status below 124 or 125 to 127 (a launcher that failed or could not start).
-A status of 124 (the bound ran out) or of 128 and above (a signal) is abandoned as well: a first
-process that is already running shares the process group of `timeout` and the launcher, can end both
-with a KILL of the group, and then leaves the group and lives on.
-Not closed:
-- a first process that does that group KILL and leaves the group before it is named (the first poll
-  or so after the launch): the call is abandoned and its answer is not read, but both abandon paths
-  above can only signal the group, so that process lives until the job timeout
-  (go-kure/.github#319);
-- a first process that sends the group a stop signal before it starts its own session: `timeout`
-  and the launcher stop, the first process is named but `timeout` never fires its bound, and the
-  call waits until the job timeout, so the end-of-call kill and the outer time bound do not apply
-  (go-kure/.github#319; its fix, starting the first process in a session of its own in the boundary
-  builder, changes how the `timeout` signal reaches the namespace and is a separate change);
-- the `cmd` boundary (it has no such process to name; the lifetime of what the command starts is
-  the command's);
-- a SIGKILL of the orchestrator itself (nothing is left to send the kill, and a hostile runner then
-  lives until the job timeout);
-- what a surviving runner does during the call, while it is still legitimately running.
-
-Neither of the first two yields an accepted answer from a process that escaped: the first ends with
-the call abandoned and its findings left without a verdict, the second with a call that does not
-return before the job ends.
-
-The pid is checked against its start time just before the kill, which leaves a small
-check-then-kill window, as the group kill below has (accepted there). The `timeout` TERM is sent
-from outside the namespace, so a first process with no TERM handler ignores it and the call then
-runs to the KILL, 5 seconds later.
+Known limit: a hostile runner can outlive its call in narrow windows. The runner is PID 1 of its
+namespace, so it can clear its parent-death signal and start a new session; killing the launcher or
+the `timeout` process group then does not stop it. The orchestrator therefore names the namespace's
+first process right after the launch and sends it SIGKILL when the call ends, which ends every
+member of the namespace. If that process cannot be named, if `timeout` is gone with the status of
+an expired bound or of a signal before it was named, or if the process is still there after the
+kill, the call is abandoned as `runner-lifetime` and its answer is not read. The windows that stay
+open, and the fix for them, are tracked in go-kure/.github#319. Also not covered: the `cmd`
+boundary (it has no such process to name), a SIGKILL of the orchestrator itself (nothing is left to
+send the kill), and what a surviving runner does while it is still running.
 
 Hosts that forbid an unprivileged user namespace (for example Ubuntu 24.04 with its AppArmor
 restriction, or a container whose seccomp profile blocks `unshare`) cannot establish `pidns`,
@@ -709,8 +678,7 @@ clamped to the run) plus 30 for the snapshots, never beyond the run's model dead
 process that ignores the first signal is killed 5 seconds later. A call is refused as
 `deadline-exhausted` when less than 6 seconds of the deadline remain at launch, because the margin
 would not fit; so is a call made when the clock cannot be read as a whole number, since the time left
-cannot then be known. A hit is `runner-timeout`. The bound holds against a cooperative runner and
-against a hostile one except where "Not closed" says otherwise. When the call ends, whatever its exit, the whole process
+cannot then be known. A hit is `runner-timeout`. When the call ends, whatever its exit, the whole process
 group is killed, so a child that ignored the signal does not outlive it. A descendant that leaves
 the process group (for example with `setsid`) is not reached by the group signal; the default
 `pidns` boundary closes that, since ending the namespace's first process ends every member, and the
@@ -725,7 +693,7 @@ the id, so the case the signal exists for is unaffected. This window is accepted
 (`REVIEW_DEGRADED`, findings keep `verdict: null` and still gate, as `reconcile.sh` counts a null
 verdict like `VALID`), with the cause in brackets: `runner-boundary` (the process boundary could not
 be established or failed its check; the runner was not started), `runner-lifetime` (the namespace's first
-process could not be identified after the launch, or `timeout` ended with 124 or 128 and above before it was named, or it was still running after SIGKILL; the answer is not read), `runner-incomplete` (exit 2), `runner-quota`
+process could not be named after the launch, or was still running after SIGKILL; the answer is not read), `runner-incomplete` (exit 2), `runner-quota`
 (3), `runner-launch` (4), `runner-usage` (64, which includes an input over the runner's size
 limit), `runner-timeout` (the outer bound below fired), `runner-failed` (any other non-zero exit), `runner-no-output` (no `review.md`, or one that cannot be read),
 `runner-empty`, `provenance-mismatch`, `deadline-exhausted`, `backend-config` (a required
