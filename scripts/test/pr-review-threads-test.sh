@@ -3587,12 +3587,16 @@ fake_curl_orchestrator() {
               # PRT_TEST_THREAD2_RESOLVED_BY (go-kure/.github#153 R1-P2a):
               # when set, a second thread THREAD2 with the same marker body
               # and author, resolved by that login.
-              resp="$(jq -n --arg body "$(_prt_test_owned_thread_body)" --arg author "${PRT_TEST_OWNED_AUTHOR:-test-bot}" \
+              # PRT_TEST_THREAD2_FP: the fingerprint in THREAD2's marker (default: THREAD1's).
+              resp="$(jq -n --arg body "$(_prt_test_owned_thread_body)" \
+                --arg body2 "$(PRT_TEST_OWNED_FP="${PRT_TEST_THREAD2_FP:-${PRT_TEST_OWNED_FP:-deadbeefcafebabe}}" _prt_test_owned_thread_body)" \
+                --arg author "${PRT_TEST_OWNED_AUTHOR:-test-bot}" \
                 --argjson replies "${PRT_TEST_THREAD1_REPLIES:-[]}" \
                 --arg edited "${PRT_TEST_THREAD1_LAST_EDITED:-}" \
                 --arg resolved "${PRT_TEST_THREAD1_RESOLVED:-0}" \
                 --arg resolved_by "${PRT_TEST_THREAD1_RESOLVED_BY:-a-human}" \
-                --arg t2_resolved_by "${PRT_TEST_THREAD2_RESOLVED_BY:-}" '
+                --arg t2_resolved_by "${PRT_TEST_THREAD2_RESOLVED_BY:-}" \
+                --arg t2_open "${PRT_TEST_THREAD2_OPEN:-0}" '
                 {data:{repository:{pullRequest:{reviewThreads:{
                   pageInfo:{hasNextPage:false,endCursor:null},
                   nodes:([{
@@ -3603,12 +3607,12 @@ fake_curl_orchestrator() {
                       nodes:([{id:"C1", databaseId:1, body:$body, author:{login:$author},
                         createdAt:"2026-01-01T00:00:00Z",
                         lastEditedAt:(if $edited == "" then null else $edited end)}] + $replies)}
-                  }] + (if $t2_resolved_by == "" then [] else [{
-                    id:"THREAD2", isResolved:true, isOutdated:false,
-                    resolvedBy:{login:$t2_resolved_by},
+                  }] + (if $t2_resolved_by == "" and $t2_open != "1" then [] else [{
+                    id:"THREAD2", isResolved:($t2_open != "1"), isOutdated:false,
+                    resolvedBy:(if $t2_open == "1" then null else {login:$t2_resolved_by} end),
                     viewerCanResolve:true, viewerCanUnresolve:true,
                     comments:{pageInfo:{hasNextPage:false,endCursor:null},
-                      nodes:[{id:"C2", databaseId:2, body:$body, author:{login:$author},
+                      nodes:[{id:"C2", databaseId:2, body:$body2, author:{login:$author},
                         createdAt:"2026-01-01T00:00:00Z", lastEditedAt:null}]}
                   }] end))
                 }}}}}')"
@@ -3900,6 +3904,8 @@ run_orchestrator() {
     PRT_TEST_THREAD1_RESOLVED="${PRT_TEST_THREAD1_RESOLVED:-0}" \
     PRT_TEST_THREAD1_RESOLVED_BY="${PRT_TEST_THREAD1_RESOLVED_BY:-a-human}" \
     PRT_TEST_THREAD2_RESOLVED_BY="${PRT_TEST_THREAD2_RESOLVED_BY:-}" \
+    PRT_TEST_THREAD2_OPEN="${PRT_TEST_THREAD2_OPEN:-0}" \
+    PRT_TEST_THREAD2_FP="${PRT_TEST_THREAD2_FP:-}" \
     PRT_TEST_REPLY_BODY_LOG="${PRT_TEST_REPLY_BODY_LOG:-}" \
     PRT_TEST_CREATE_BODY_LOG="${PRT_TEST_CREATE_BODY_LOG:-}" \
     PRT_TEST_MODEL_REQUEST_LOG="${PRT_TEST_MODEL_REQUEST_LOG:-}" \
@@ -5252,6 +5258,25 @@ for prt_abs_field in .collision .has_human_reply; do
     "1 true" "$rc $(grep -qF 'its collision, reply or resolved state could not be read (local fault)' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 done
 unset prt_abs_field
+# A read that fails on one owned thread marks the run incomplete for the threads after it too: with
+# two owned threads that both carry a stamp from an older head, the control run resolves both, and
+# when the first thread's read fails the second is not resolved either.
+PRT_TEST_EMPTY_DIFF=1
+PRT_TEST_FIRST_ABSENT_SHA="2222222222222222222222222222222222222222"
+PRT_TEST_THREAD2_OPEN=1
+PRT_TEST_THREAD2_FP="cafebabedeadbeef"
+PRT_TEST_RECHECK_MODE=false
+rc="$(PATH="$prt_orch_shim:$PATH" REAL_JQ="$prt_orch_real_jq" JQ_FAIL_MATCH='no-such-program-text' run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator: two owned threads with an older absence stamp are both resolved through a pass-through shim (control)" \
+  "0 2" "$rc $(cat "$PRT_TEST_RESOLVE_COUNTFILE" 2>/dev/null || echo 0)"
+rc="$(PATH="$prt_orch_shim:$PATH" REAL_JQ="$prt_orch_real_jq" JQ_FAIL_EXACT='.[0]' run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator: a failed read on the first owned thread -> exits 1 and the second is not resolved" \
+  "1 0" "$rc $(cat "$PRT_TEST_RESOLVE_COUNTFILE" 2>/dev/null || echo 0)"
+PRT_TEST_EMPTY_DIFF=0
+PRT_TEST_FIRST_ABSENT_SHA=""
+PRT_TEST_THREAD2_OPEN=0
+PRT_TEST_THREAD2_FP=""
+PRT_TEST_RECHECK_MODE=
 # A metadata response that cannot be checked as a JSON object stops the run before any field is read.
 rc="$(PATH="$prt_orch_shim:$PATH" REAL_JQ="$prt_orch_real_jq" JQ_FAIL_MATCH='type == "object"' run_orchestrator enforce 0 0 0)"
 assert_eq "orchestrator: PR metadata that fails the object check -> exits 1 before reading any field" \
