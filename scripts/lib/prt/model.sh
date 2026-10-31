@@ -971,6 +971,12 @@ _prt_call_runner() {
     _prt_set_model_failure "local-tempdir"
     return 1
   fi
+  # The digest of what was sent is taken here, from the request itself, before the runner
+  # starts. The runner shares this user and learns $tmp from --out: a digest read back from
+  # the file afterwards would be one it could replace, and vouch for in its own record. A
+  # failed sha256sum leaves it empty (or short); anything but 64 hex characters is refused
+  # below as a mismatch.
+  req_sha="$(printf '%s' "$request" | sha256sum | cut -d' ' -f1)"
   out="$tmp/out"
   # --seconds bounds only the runner's timed backend run: it also snapshots the
   # checkout before and after, so slow filesystem work can outlast it and eat the
@@ -1048,9 +1054,8 @@ _prt_call_runner() {
   fi
   # The record must tie this answer to this head, base, material and the exact
   # request sent; a stale or foreign output directory fails here, not downstream.
-  # The digest is a trust input: a failed sha256sum leaves it empty, and a record that carries an
-  # empty (or short) input_sha256 must not match it. Anything but 64 hex characters is a mismatch.
-  req_sha="$(sha256sum < "$tmp/request" | cut -d' ' -f1)"
+  # The digest is a trust input (taken before the run, see above): a record that carries an
+  # empty (or short) input_sha256 must not match an empty or short one.
   if ! [[ "$req_sha" =~ ^[0-9a-f]{64}$ ]] || [ ! -f "$out/provider.json" ] || ! jq -e \
         --arg head "$PRT_HEAD_SHA" --arg base "$PRT_REVIEW_BASE_SHA" \
         --arg mat "$PRT_REVIEW_MATERIAL_SHA256" --arg inp "$req_sha" '

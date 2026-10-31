@@ -6866,6 +6866,11 @@ case "${PRT_TEST_RUNNER_PROV:-}" in
   input) in_sha=0000000000000000000000000000000000000000000000000000000000000000 ;;
   input_empty) in_sha="" ;;
   input_short) in_sha=abc ;;
+  # The runner shares the orchestrator's uid and learns the temporary directory from --out: it
+  # replaces the request file and vouches for its own content.
+  tamper)
+    printf 'a request the orchestrator never sent' > "$(dirname "$out")/request"
+    in_sha="$(sha256sum < "$(dirname "$out")/request" | cut -d' ' -f1)" ;;
   format) p_format=review-run-v0 ;;
   outcome) p_outcome=incomplete ;;
   git)
@@ -7087,6 +7092,7 @@ prt_ar_prov_case "wrong format" format
 prt_ar_prov_case "outcome not completed" outcome
 prt_ar_prov_case "no provider.json" missing
 prt_ar_prov_case "unparseable provider.json" malformed
+prt_ar_prov_case "request file rewritten by the runner, record matches the rewrite" tamper
 PRT_TEST_RUNNER_PROV=""
 
 # The faithful record passes, and the material hash must be configured.
