@@ -7463,6 +7463,19 @@ rc="$(run_orchestrator advisory 0 0 0)"
 assert_eq "assess runner scrub, names on several lines: the run works and the second line's name reaches the runner" \
   "0 1 1" "$rc $(prt_ar_calls) $(grep -c '^PRT_AR_SECOND=sentinel-second-line$' "$PRT_TEST_RUNNER_LOG.env.1")"
 unset PRT_AR_SECOND
+
+# The function that resolves the listed names has locals of its own. A listed name that matched one
+# of them would be read from the local, not from the caller: `name` as the string "name", `extra` as
+# the first word of the list. Both are ordinary names the caller may use, so each must reach the
+# runner with the caller's value, never another one and never dropped.
+rm -f "$PRT_TEST_RUNNER_LOG".*
+rc="$(
+  export name="sentinel-name-value" extra="sentinel-extra-value"
+  PRT_TEST_ASSESS_RUNNER_ENV="name extra PRT_TEST_RUNNER_LOG PRT_TEST_RUNNER_MODE PRT_TEST_RUNNER_PROV PRT_HEAD_SHA PRT_REVIEW_BASE_SHA PRT_REVIEW_MATERIAL_SHA256"
+  run_orchestrator advisory 0 0 0
+)"
+assert_eq "assess runner scrub, listed names that are locals of the builder (name, extra): the run works and each arrives with the caller's value" \
+  "0 1 1 1" "$rc $(prt_ar_calls) $(grep -c '^name=sentinel-name-value$' "$PRT_TEST_RUNNER_LOG.env.1") $(grep -c '^extra=sentinel-extra-value$' "$PRT_TEST_RUNNER_LOG.env.1")"
 fi
 # A listed name that is not set in the orchestrator is a configuration error naming
 # that variable, not a silent skip that surfaces later as an opaque runner failure.
@@ -7948,6 +7961,16 @@ for prt_ar_name in _prt_ar_us _w _x _e _n SHLVL OPTIND RANDOM SECONDS LINENO BAS
     "true" "$(grep -qF "PRT_ASSESS_RUNNER_ENV must not name $prt_ar_name " "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 done
 
+# IFS is always set, and the function that resolves the list names has its own IFS: the indirect
+# expansion would read that one (a fixed whitespace string) and hand the runner a value that is not
+# the caller's, with nothing reported. It cannot be renamed away, so it is refused like the rest.
+# Not exported here: an exported IFS would change how this harness splits words.
+rm -f "$PRT_TEST_RUNNER_LOG".*
+rc="$(PRT_TEST_ASSESS_RUNNER_ENV="IFS"; run_orchestrator advisory 0 0 0)"
+assert_eq "assess runner scrub, a name that is IFS: fails closed before any call" "1 0" "$rc $(prt_ar_calls)"
+assert_eq "assess runner scrub, a name that is IFS: the error names it" \
+  "true" "$(grep -qF "PRT_ASSESS_RUNNER_ENV must not name IFS " "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+
 # An exported function of the boundary prefix does not reach the runner: `env -i` used to drop it,
 # and a function named like a builtin could shadow it inside the hand-over step.
 printf '#!/bin/bash\nprtfn() { :; }\nexport -f prtfn\nexec "$@"\n' > "$prt_ar_dir/boundary-fn"
@@ -8013,6 +8036,27 @@ PRT_TEST_MODEL_BUDGET_SECONDS=4
 rc="$(run_orchestrator advisory 0 0 0)"
 assert_eq "assess runner, run budget spent: refused as deadline-exhausted before the boundary preflight ran" \
   "0 0 true false" "$rc $(prt_ar_calls) $(prt_ar_reason deadline-exhausted) $([ -e "$prt_ar_dir/preflighted" ] && echo true || echo false)"
+# The floor is applied again once the preflight is done: a call that started with 33 s left and spent
+# 5 s in the preflight has fewer than the 30 s minimum, and is refused instead of launched. The prefix
+# records that the preflight ran, so a refusal at the first check (no preflight) cannot pass for it.
+# The control gives the same prefix a budget that leaves enough, and the call runs.
+if $prt_ar_ns; then
+# shellcheck disable=SC2016 # script text for the prefix, not an expansion
+printf '#!/bin/sh\n: > "%s"\nsleep 5\nexec "$@"\n' "$prt_ar_dir/preflighted" > "$prt_ar_dir/boundary-slow"
+chmod 755 "$prt_ar_dir/boundary-slow"
+PRT_TEST_ASSESS_RUNNER_BOUNDARY_CMD="$prt_ar_dir/boundary-slow $(prt_ar_prod_prefix)"
+PRT_TEST_RUNNER_MODE=clean
+rm -f "$PRT_TEST_RUNNER_LOG".* "$prt_ar_dir/preflighted"
+PRT_TEST_MODEL_BUDGET_SECONDS=33
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "assess runner, the preflight spends the budget below the floor: no runner call, degraded as deadline-exhausted, and the preflight did run" \
+  "0 0 true true" "$rc $(prt_ar_calls) $(prt_ar_reason deadline-exhausted) $([ -e "$prt_ar_dir/preflighted" ] && echo true || echo false)"
+rm -f "$PRT_TEST_RUNNER_LOG".* "$prt_ar_dir/preflighted"
+PRT_TEST_MODEL_BUDGET_SECONDS=""
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "assess runner, the same slow preflight with ample budget (control): the runner is called" \
+  "0 1 true" "$rc $(prt_ar_calls) $([ -e "$prt_ar_dir/preflighted" ] && echo true || echo false)"
+fi
 printf '#!/bin/sh\nexec sleep 100\n' > "$prt_ar_dir/boundary-hang"
 chmod 755 "$prt_ar_dir/boundary-hang"
 PRT_TEST_ASSESS_RUNNER_BOUNDARY_CMD="$prt_ar_dir/boundary-hang"

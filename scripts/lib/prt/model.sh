@@ -761,26 +761,29 @@ _prt_runner_clock_read() {
 # runner failure. The five defaults are skipped when unset.
 # shellcheck disable=SC2034 # PRT_RUNNER_ENV_ERROR is read by pr-review-threads.sh at start, not within this file
 _prt_runner_env_build() {
-  local name extra=() IFS=$' \t\n'
+  # The locals start with an underscore, a prefix the case below refuses, and IFS is refused by
+  # name: `${!_name}` reads the variable of that name as this function sees it, so a listed name
+  # equal to one of these locals would be read from the local, not from the caller.
+  local _name _extra=() IFS=$' \t\n'
   PRT_RUNNER_ENV_ARGS=()
   PRT_RUNNER_ENV_ERROR=""
-  read -rd '' -a extra <<< "${PRT_ASSESS_RUNNER_ENV:-}" || true
-  for name in PATH HOME TMPDIR LANG LC_ALL; do
-    if [ -n "${!name+x}" ]; then
-      PRT_RUNNER_ENV_ARGS+=("$name=${!name}")
+  read -rd '' -a _extra <<< "${PRT_ASSESS_RUNNER_ENV:-}" || true
+  for _name in PATH HOME TMPDIR LANG LC_ALL; do
+    if [ -n "${!_name+x}" ]; then
+      PRT_RUNNER_ENV_ARGS+=("$_name=${!_name}")
     fi
   done
-  for name in ${extra[@]+"${extra[@]}"}; do
-    case "$name" in
+  for _name in ${_extra[@]+"${_extra[@]}"}; do
+    case "$_name" in
       PRT_GH_TOKEN|GITHUB_TOKEN|GH_TOKEN|GH_ENTERPRISE_TOKEN|GITHUB_ENTERPRISE_TOKEN|ACTIONS_RUNTIME_TOKEN|ACTIONS_ID_TOKEN_REQUEST_TOKEN)
-        PRT_RUNNER_ENV_ERROR="PRT_ASSESS_RUNNER_ENV must not name a posting token ($name)"
+        PRT_RUNNER_ENV_ERROR="PRT_ASSESS_RUNNER_ENV must not name a posting token ($_name)"
         return 1 ;;
     esac
     # The check runs in the C locale: under a UTF-8 locale the identifier class
     # also matches accented letters, and the indirect expansion below then aborts
     # the whole command instead of failing it, so the run would go on with that
     # name silently dropped.
-    if ! ( LC_ALL=C; [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] ); then
+    if ! ( LC_ALL=C; [[ "$_name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] ); then
       PRT_RUNNER_ENV_ERROR="PRT_ASSESS_RUNNER_ENV holds a name that is not a plain variable name"
       return 1
     fi
@@ -789,17 +792,19 @@ _prt_runner_env_build() {
     # underscore is refused, which also keeps the reader's own names out of reach), bash
     # rewrites `_`, SHLVL and OPTIND, the dynamic variables do not keep an assigned value, and
     # the read-only ones cannot be exported. `env -i NAME=value` delivered all of them, so
-    # they are refused here rather than dropped without notice. BASH* is refused whole.
-    case "$name" in
-      _*|BASH*|SHLVL|OPTIND|DIRSTACK|EPOCHREALTIME|EPOCHSECONDS|EUID|EXECIGNORE|FUNCNAME|GROUPS|HISTCMD|LINENO|PIPESTATUS|PPID|RANDOM|SECONDS|SHELLOPTS|SRANDOM|UID)
-        PRT_RUNNER_ENV_ERROR="PRT_ASSESS_RUNNER_ENV must not name $name (bash would change or refuse it, or the hand-over step uses it)"
+    # they are refused here rather than dropped without notice. BASH* is refused whole. IFS is
+    # refused because this function has an IFS of its own (above), so the expansion below would
+    # return that value, a fixed whitespace string, not the caller's.
+    case "$_name" in
+      _*|BASH*|IFS|SHLVL|OPTIND|DIRSTACK|EPOCHREALTIME|EPOCHSECONDS|EUID|EXECIGNORE|FUNCNAME|GROUPS|HISTCMD|LINENO|PIPESTATUS|PPID|RANDOM|SECONDS|SHELLOPTS|SRANDOM|UID)
+        PRT_RUNNER_ENV_ERROR="PRT_ASSESS_RUNNER_ENV must not name $_name (bash would change or refuse it, or the hand-over step uses it)"
         return 1 ;;
     esac
-    if [ -z "${!name+x}" ]; then
-      PRT_RUNNER_ENV_ERROR="PRT_ASSESS_RUNNER_ENV lists $name, which is not set"
+    if [ -z "${!_name+x}" ]; then
+      PRT_RUNNER_ENV_ERROR="PRT_ASSESS_RUNNER_ENV lists $_name, which is not set"
       return 1
     fi
-    PRT_RUNNER_ENV_ARGS+=("$name=${!name}")
+    PRT_RUNNER_ENV_ARGS+=("$_name=${!_name}")
   done
 }
 
@@ -996,8 +1001,10 @@ _prt_call_runner() {
   # (`timeout` runs it in its own process group and signals the group), gives the
   # runner 30 s beyond --seconds for that work, and never reaches past the run
   # deadline: the KILL follows 5 s after the TERM, so the TERM leaves that margin. The
-  # budget is read again here (the request was written since the check above); a call
-  # whose TERM-to-KILL grace no longer fits in it is refused, never run past the deadline.
+  # budget is read again here, the last read before the launch (the preflight and the write of
+  # the request have used time since the first one), and the same two refusals apply to it: a
+  # call with less than the floor left, or one whose TERM-to-KILL grace no longer fits, is
+  # refused, never run past the deadline or below the minimum a runner call is worth.
   local outer runner_pid
   if ! _prt_runner_clock_read; then
     rm -rf "$tmp"
@@ -1005,8 +1012,8 @@ _prt_call_runner() {
     return 1
   fi
   budget_left=$(( ${PRT_MODEL_DEADLINE_EPOCH:-$((now + 300))} - now ))
-  if [ "$budget_left" -lt 6 ]; then
-    echo "prt_model: run deadline leaves no room for the runner call and its kill grace (${budget_left}s left) — refusing call" >&2
+  if [ "$budget_left" -lt "$PRT_MODEL_TIMEOUT_FLOOR" ] || [ "$budget_left" -lt 6 ]; then
+    echo "prt_model: run deadline leaves too little for the runner call after the boundary preflight (${budget_left}s left, floor ${PRT_MODEL_TIMEOUT_FLOOR}s, kill grace 6s) — refusing call" >&2
     rm -rf "$tmp"
     _prt_set_model_failure "deadline-exhausted"
     return 1
