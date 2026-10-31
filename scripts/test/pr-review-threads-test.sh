@@ -174,7 +174,7 @@ model.sh:idx model.sh:max_tokens model.sh:model model.sh:n \
 model.sh:PRT_HEAD_SHA model.sh:PRT_REVIEW_BASE_SHA model.sh:PRT_REVIEW_MATERIAL_SHA256 \
 model.sh:req_sha \
 reconcile.sh:2 reconcile.sh:cap reconcile.sh:fp reconcile.sh:rank reconcile.sh:sev_rank \
-reconcile.sh:this_cfp \
+reconcile.sh:this_cfp render.sh:budget \
 review-adapter.sh:chunk_count review-adapter.sh:n_chunk_failed review-adapter.sh:n_chunk_ok \
 "
 
@@ -2249,6 +2249,93 @@ assert_eq "prt_render_overflow_comment: quarantine_reason=persisted -> Collision
 assert_eq "prt_render_overflow_comment: quarantine_reason=content_mismatch -> Collision cell reads 'content changed (recurring defect)', NOT 'persisted (earlier run)' even though persisted_only:true is also set on this row (quarantine_reason must win over the legacy field when both are present)" \
   "true" "$(grep -qF '| c.go | n/a | i3 | f3 | content changed (recurring defect) |' <<< "$quarantine_reason_row" && echo true || echo false)"
 
+# ============================================================ render.sh: prt_render_overflow_parts (go-kure/.github#307)
+# GitHub rejects a comment body past 65,536 characters. A body that fits stays one comment, byte for
+# byte; a larger one is split into parts under PRT_OVERFLOW_PART_MAX (60,000 UTF-16 units: a 5,536
+# margin for the part line, headings and footers). Part 1 holds every merge-gating row and every
+# coverage caveat; rows are ordered by severity, never by size; a single finding too large for any
+# part is shortened with a marker and counted, which makes the run incomplete (RULING-1031-1200-281).
+prt_parts_dir="$(mktemp -d)"
+prt_parts_clear() { find "$prt_parts_dir" -name 'part-*.md' -delete; }
+prt_parts_u16() { jq -Rs "${_PRT_OVERFLOW_JQ_DEFS}"' u16len' < "$1"; }
+# prt_parts_max_u16 -> the largest part length in UTF-16 units
+prt_parts_max_u16() { local f m=0 n; for f in "$prt_parts_dir"/part-*.md; do n="$(prt_parts_u16 "$f")"; [ "$n" -gt "$m" ] && m="$n"; done; echo "$m"; }
+
+# A body that fits is one part, identical to prt_render_overflow_comment.
+prt_parts_small='[{"severity":"High","category":"other","file":"o.go","issue":"overflow issue"}]'
+prt_parts_clear
+assert_eq "prt_render_overflow_parts: a body that fits is one part, 0 shortened" \
+  "1 0" "$(prt_render_overflow_parts "$prt_parts_small" "$quarantine_triple" "$prt_parts_dir")"
+assert_eq "prt_render_overflow_parts: a body that fits is byte-for-byte prt_render_overflow_comment" \
+  "$(prt_render_overflow_comment "$prt_parts_small" "$quarantine_triple")" "$(cat "$prt_parts_dir/part-1.md")"
+
+# Gating rows first, then severity; the order holds across parts, and every row appears exactly once.
+prt_parts_q="$(jq -n '[range(0;4) | {file:"a.go", line:1, severity:"low", category:"c\(.)", issue:("lowq-\(.) " + ("z" * 20000)), fix:"f", quarantine_reason:"this_run", gating:false}] + [{file:"g.go", line:2, severity:"critical", category:"gate", issue:("GATING " + ("g" * 20000)), fix:"f", gating:true}]')"
+prt_parts_f="$(jq -n '[{file:"o.go", severity:"medium", category:"m", issue:("med-ov " + ("m" * 20000))}, {file:"o.go", severity:"critical", category:"k", issue:("crit-ov " + ("k" * 20000))}]')"
+prt_parts_clear
+assert_eq "prt_render_overflow_parts: 7 rows of 20 KB split into 4 parts, none shortened" \
+  "4 0" "$(prt_render_overflow_parts "$prt_parts_f" "$prt_parts_q" "$prt_parts_dir")"
+# (Within one part the renderer prints the overflow table before the withheld table; the order that
+# matters is which part a row lands in.)
+assert_eq "prt_render_overflow_parts: the merge-gating row and the critical row fill part 1, then medium, then low, never ordered by size" \
+  "GATING:1 crit-ov:1 med-ov:2 lowq-0:2 lowq-1:3 lowq-2:3 lowq-3:4" \
+  "$(for m in GATING crit-ov med-ov lowq-0 lowq-1 lowq-2 lowq-3; do printf '%s:%s ' "$m" "$(grep -lF "$m " "$prt_parts_dir"/part-*.md | sed -E 's/.*part-([0-9]+)\.md/\1/')"; done | sed 's/ $//')"
+assert_eq "prt_render_overflow_parts: every row is posted exactly once across the parts" \
+  "7" "$(cat "$prt_parts_dir"/part-*.md | grep -oE 'GATING|crit-ov|med-ov|lowq-[0-9]' | wc -l | tr -d ' ')"
+assert_eq "prt_render_overflow_parts: part 1 holds the merge-gating row" \
+  "true" "$(grep -qF 'GATING' "$prt_parts_dir/part-1.md" && echo true || echo false)"
+assert_eq "prt_render_overflow_parts: part 1 says it lists every merge-gating finding and how many parts there are" \
+  "true" "$(head -1 "$prt_parts_dir/part-1.md" | grep -qF '**Part 1 of 4.** These findings did not fit in one comment. This part lists every merge-gating withheld finding' && echo true || echo false)"
+assert_eq "prt_render_overflow_parts: a later part points back to part 1" \
+  "true" "$(head -1 "$prt_parts_dir/part-3.md" | grep -qF '**Part 3 of 4.** Continued from part 1, which lists every merge-gating withheld finding.' && echo true || echo false)"
+assert_eq "prt_render_overflow_parts: a later part repeats its section heading and footer, so it reads on its own" \
+  "2" "$(grep -cE '^## Withheld AI Review Findings|^\*Automated review' "$prt_parts_dir/part-3.md" | tr -d ' ')"
+assert_eq "prt_render_overflow_parts: no part is over the margin (60000 units)" \
+  "true" "$([ "$(prt_parts_max_u16)" -le "$PRT_OVERFLOW_PART_MAX" ] && echo true || echo false)"
+
+# The largest single finding that still fits one part is not shortened, and its part fits the limit.
+prt_parts_big_q="$(jq -n '[{file:"big.go", line:1, severity:"high", category:"big", issue:("BIGQ " + ("i" * 27000)), fix:("f" * 27000), quarantine_reason:"this_run", gating:true}]')"
+prt_parts_big_f="$(jq -n '[{file:"s.go", severity:"low", category:"s", issue:("small " + ("s" * 8000))}]')"
+prt_parts_clear
+assert_eq "prt_render_overflow_parts: a withheld finding of 54000 characters (issue and fix) fits one part, none shortened" \
+  "2 0" "$(prt_render_overflow_parts "$prt_parts_big_f" "$prt_parts_big_q" "$prt_parts_dir")"
+assert_eq "prt_render_overflow_parts: that finding's full issue and fix text are in the posted part" \
+  "27000 27000" "$(grep -m1 'BIGQ' "$prt_parts_dir/part-1.md" | grep -oE 'i{27000}|f{27000}' | awk '{print length($0)}' | paste -sd' ')"
+assert_eq "prt_render_overflow_parts: the part built from the largest fitting finding is under the real limit" \
+  "true" "$([ "$(prt_parts_max_u16)" -le "$PRT_COMMENT_LIMIT" ] && echo true || echo false)"
+
+# A single finding larger than any part is shortened with a marker, counted, and never dropped.
+prt_parts_huge="$(jq -n '[{file:"huge.go", line:3, severity:"high", category:"huge", issue:("HUGE " + ("h" * 150000))}, {file:"s.go", severity:"low", category:"s", issue:"after-the-huge-one"}]')"
+prt_parts_clear
+assert_eq "prt_render_overflow_parts: a 150000-character finding is shortened (1 counted) and the rest still follows" \
+  "2 1" "$(prt_render_overflow_parts "$prt_parts_huge" '[]' "$prt_parts_dir")"
+assert_eq "prt_render_overflow_parts: the shortened cell ends with a marker naming how many characters were omitted" \
+  "true" "$(grep -qE 'truncated: [0-9]+ of 150005 characters omitted\]' "$prt_parts_dir/part-1.md" && echo true || echo false)"
+assert_eq "prt_render_overflow_parts: part 1 states that a finding was shortened and that the text is not recorded elsewhere" \
+  "true" "$(head -1 "$prt_parts_dir/part-1.md" | grep -qF '1 finding(s) were still too long for one comment and were shortened' && echo true || echo false)"
+assert_eq "prt_render_overflow_parts: the finding after the shortened one is still posted" \
+  "true" "$(grep -qF 'after-the-huge-one' "$prt_parts_dir/part-2.md" && echo true || echo false)"
+assert_eq "prt_render_overflow_parts: the shortened finding's part is under the real limit" \
+  "true" "$([ "$(prt_parts_max_u16)" -le "$PRT_COMMENT_LIMIT" ] && echo true || echo false)"
+
+# Astral characters count as two UTF-16 units: 3 findings of 25000 emoji are 50000 units each.
+prt_parts_astral="$(jq -n '[range(0;3) | {file:"x.go", severity:"high", category:"a\(.)", issue:("😀" * 25000)}]')"
+prt_parts_clear
+assert_eq "prt_render_overflow_parts: astral characters are measured as two units, so 3 x 25000 emoji need 3 parts" \
+  "3 0" "$(prt_render_overflow_parts "$prt_parts_astral" '[]' "$prt_parts_dir")"
+assert_eq "prt_render_overflow_parts: every astral part is under the real limit in UTF-16 units" \
+  "true" "$([ "$(prt_parts_max_u16)" -le "$PRT_COMMENT_LIMIT" ] && echo true || echo false)"
+
+# A fault prints nothing and fails, never a short or empty part list.
+prt_parts_clear
+prt_parts_out="$(prt_render_overflow_parts 'not json' '[]' "$prt_parts_dir" 2>/dev/null)"; prt_parts_rc=$?
+assert_eq "prt_render_overflow_parts: unreadable findings fail with no output and no part file" \
+  "1||0" "${prt_parts_rc}|${prt_parts_out}|$(find "$prt_parts_dir" -name 'part-*.md' | wc -l | tr -d ' ')"
+prt_parts_out="$(prt_render_overflow_parts "$prt_parts_small" '[]' "$prt_parts_dir/no-such-dir" 2>/dev/null)"; prt_parts_rc=$?
+assert_eq "prt_render_overflow_parts: an output directory that does not exist fails" \
+  "1|" "${prt_parts_rc}|${prt_parts_out}"
+find "$prt_parts_dir" -delete
+
 # ============================================================ render.sh: prt_render_advisory_comment degraded/incomplete disclosure (go-kure/.github#98 round 3, chatgpt-codex-connector[bot] review go-kure/.github#101#pullrequestreview-5028172237; round 5, kure-bot pr-review AI Code Review on go-kure/.github#101 at 9b2fe22 — the zero-count suppression round 3 added for `degraded_reasons` alone left the strictly-more-severe `incomplete_reasons`-only zero-count case still printing plain "No issues found.")
 adv_clean_zero="$(prt_render_advisory_comment '[]')"
 assert_eq "prt_render_advisory_comment: zero findings, no incomplete/degraded reasons -> plain 'No issues found.'" \
@@ -2758,6 +2845,12 @@ fake_curl_orchestrator() {
         echo "mock: rejected an empty or non-JSON comment payload for $method $url" >&2
         : > "$out"; echo 422; return 0
       fi
+      # GitHub rejects a comment body longer than 65,536 characters with a 422
+      # (go-kure/.github#307). The real limit, never a lowered one.
+      if ! jq -e '(.body | length) <= 65536' <<< "$data" > /dev/null 2>&1; then
+        echo "mock: rejected a comment body over 65536 characters for $method $url" >&2
+        : > "$out"; echo 422; return 0
+      fi
       ;;
   esac
 
@@ -3167,6 +3260,12 @@ fake_curl_orchestrator() {
       if [ -n "${PRT_TEST_ISSUE_COMMENT_BODY_FILE:-}" ]; then
         jq -r '.body' <<< "$data" > "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" 2>/dev/null || true
       fi
+      # PRT_TEST_ISSUE_COMMENT_BODIES_DIR keeps EVERY posted body, one file per
+      # POST (the file above holds only the last one). A run that splits its
+      # overflow comment into parts (go-kure/.github#307) posts several.
+      if [ -n "${PRT_TEST_ISSUE_COMMENT_BODIES_DIR:-}" ]; then
+        jq -r '.body' <<< "$data" > "$PRT_TEST_ISSUE_COMMENT_BODIES_DIR/body-$(cat "${PRT_TEST_ISSUE_COMMENT_COUNTFILE:?}")" 2>/dev/null || true
+      fi
       printf '%s' '{"id":1}' > "$out"
       echo 200
       ;;
@@ -3517,6 +3616,7 @@ run_orchestrator() {
     PRT_TEST_REPLY_COUNTFILE="$PRT_TEST_REPLY_COUNTFILE" \
     PRT_TEST_ISSUE_COMMENT_COUNTFILE="$PRT_TEST_ISSUE_COMMENT_COUNTFILE" \
     PRT_TEST_ISSUE_COMMENT_BODY_FILE="${PRT_TEST_ISSUE_COMMENT_BODY_FILE:-}" \
+    PRT_TEST_ISSUE_COMMENT_BODIES_DIR="${PRT_TEST_ISSUE_COMMENT_BODIES_DIR:-}" \
     PRT_TEST_DIFF_FAIL_TIMES="$diff_fail" \
     PRT_TEST_META_FAIL_TIMES="$meta_fail" \
     PRT_TEST_MODEL_ALWAYS_FAIL="$model_fail" \
@@ -6485,26 +6585,71 @@ PRT_TEST_REVIEW_BASE_SHA="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 PRT_TEST_REVIEW_MATERIAL_SHA256="cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 PRT_TEST_CREATE_BODY_LOG="$(mktemp)"
 PRT_TEST_ISSUE_COMMENT_BODY_FILE="$(mktemp)"
+PRT_TEST_ISSUE_COMMENT_BODIES_DIR="$(mktemp -d)"
 rc="$(run_orchestrator enforce 0 0 0)"
 assert_eq "file backend, orchestrator: 6 findings over the argv limit still finish the run -> exits 0" "0" "$rc"
 assert_eq "file backend, orchestrator: all 6 findings reach the report (none lost to an oversized argument)" \
   "true" "$(grep -qF 'done: findings=6 ' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 assert_eq "file backend, orchestrator: the chunk is logged with all 6 findings" \
   "true" "$(grep -qF 'review ok (6 findings)' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
-# The delivered payloads, not just the run's own log, must carry every finding:
-# five become threads, the sixth is in the overflow comment. A zero-length or
-# truncated payload (the mock now refuses those) cannot satisfy this.
+# The delivered payloads, not just the run's own log, must carry every finding.
+# The six share one file and category, so one fingerprint: all six are
+# quarantined, none becomes a thread, and the withheld comment is their only
+# home (go-kure/.github#155). Together they are ~144 KB, past GitHub's
+# 65,536-character comment limit, so the comment is split into parts
+# (go-kure/.github#307). The mock rejects any body over the real limit, and a
+# zero-length or truncated payload, so a lost part cannot satisfy this.
+assert_eq "file backend, orchestrator: all 6 findings are withheld, none opens a thread" \
+  "0" "$(grep -c . "$PRT_TEST_CREATE_BODY_LOG")"
 assert_eq "file backend, orchestrator: every one of the 6 findings is in a delivered comment payload" \
-  "6" "$(cat "$PRT_TEST_CREATE_BODY_LOG" "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" | grep -o 'many-findings-[0-9]' | sort -u | wc -l | tr -d ' ')"
+  "6" "$(cat "$PRT_TEST_ISSUE_COMMENT_BODIES_DIR"/body-* | grep -o 'many-findings-[0-9]' | sort -u | wc -l | tr -d ' ')"
 assert_eq "file backend, orchestrator: the delivered payloads hold all the finding text (>= 6 x 24000 bytes)" \
-  "true" "$([ "$(cat "$PRT_TEST_CREATE_BODY_LOG" "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" | wc -c)" -ge 144000 ] && echo true || echo false)"
+  "true" "$([ "$(cat "$PRT_TEST_ISSUE_COMMENT_BODIES_DIR"/body-* | wc -c)" -ge 144000 ] && echo true || echo false)"
 assert_eq "file backend, orchestrator: the mock refused no comment payload" \
   "false" "$(grep -qF 'mock: rejected' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "file backend, orchestrator: the withheld findings arrive as 3 comments" \
+  "3" "$(find "$PRT_TEST_ISSUE_COMMENT_BODIES_DIR" -name 'body-*' | wc -l | tr -d ' ')"
+assert_eq "file backend, orchestrator: no delivered comment is over 65536 characters" \
+  "0" "$(find "$PRT_TEST_ISSUE_COMMENT_BODIES_DIR" -name 'body-*' -size +65536c -exec sh -c 'wc -m < "$1"' _ {} \; | awk '$1 > 65536' | wc -l | tr -d ' ')"
+assert_eq "file backend, orchestrator: the parts are labelled 1 to 3 of 3" \
+  "Part 1 of 3.|Part 2 of 3.|Part 3 of 3." "$(cat "$PRT_TEST_ISSUE_COMMENT_BODIES_DIR"/body-* | grep -o '^\*\*Part [0-9] of [0-9]\.\*\*' | tr -d '*' | sort | paste -sd'|')"
 rm -f "$PRT_TEST_CREATE_BODY_LOG" "$PRT_TEST_ISSUE_COMMENT_BODY_FILE"
-unset PRT_TEST_CREATE_BODY_LOG PRT_TEST_ISSUE_COMMENT_BODY_FILE
+find "$PRT_TEST_ISSUE_COMMENT_BODIES_DIR" -delete
+unset PRT_TEST_CREATE_BODY_LOG PRT_TEST_ISSUE_COMMENT_BODY_FILE PRT_TEST_ISSUE_COMMENT_BODIES_DIR
 unset PRT_TEST_REVIEW_BACKEND PRT_TEST_FINDINGS_FILE PRT_TEST_REVIEW_BASE_SHA PRT_TEST_REVIEW_MATERIAL_SHA256
 rm -rf "$prt_fo_dir"
 # (end of the many-findings case)
+
+# go-kure/.github#307: a part that fails to post leaves the run incomplete AND names the part. The
+# run still posts the other parts (a reader gets as much as GitHub accepts), and a part that fails is
+# not retried inside the run.
+prt_fo_dir="$(mktemp -d)"
+jq -n '{format:"review-findings-v1", findings:[range(0;6) | {file:"x.go", line:1, severity:"high", category:"logic-error", issue:("many-findings-" + tostring + " " + ("y" * 24000)), fix:"fix", klass:"blocking", claim:("c" + tostring)}]}' \
+  > "$prt_fo_dir/findings.json"
+jq -n '{format:"review-run-v1", outcome:"completed", backend:"x", identity:{root:"/r", head:"1111111111111111111111111111111111111111", base:"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", material_sha256:"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", input_sha256:"d", add_dirs:[]}}' \
+  > "$prt_fo_dir/provider.json"
+PRT_TEST_REVIEW_BACKEND="file"
+PRT_TEST_FINDINGS_FILE="$prt_fo_dir/findings.json"
+PRT_TEST_REVIEW_BASE_SHA="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+PRT_TEST_REVIEW_MATERIAL_SHA256="cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+PRT_TEST_CREATE_BODY_LOG="$(mktemp)"
+PRT_TEST_ISSUE_COMMENT_LOG="$(mktemp)"
+PRT_TEST_WRITE_FAIL_BODY_MATCH='**Part 2 of 3.**'
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "split overflow comment: a part that fails to post fails the run -> exits 1" "1" "$rc"
+assert_eq "split overflow comment: the failure reason names the part that failed" \
+  "true" "$(grep -qF 'failed to post overflow comment part 2 of 3 (HTTP 500)' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "split overflow comment: only part 2 is reported failed" \
+  "1" "$(grep -c 'failed to post overflow comment part' "$PRT_TEST_STDERR_FILE" | tr -d ' ')"
+assert_eq "split overflow comment: parts 1 and 3 were still posted" \
+  "2" "$(grep -cE '^POST [0-9]+/comments$|^POST ' "$PRT_TEST_ISSUE_COMMENT_LOG" | tr -d ' ')"
+assert_eq "split overflow comment: the failed write is logged against part 2's POST" \
+  "1" "$(grep -c '^FAILED POST' "$PRT_TEST_ISSUE_COMMENT_LOG" | tr -d ' ')"
+rm -f "$PRT_TEST_CREATE_BODY_LOG" "$PRT_TEST_ISSUE_COMMENT_LOG"
+unset PRT_TEST_CREATE_BODY_LOG PRT_TEST_ISSUE_COMMENT_LOG
+PRT_TEST_WRITE_FAIL_BODY_MATCH=''
+unset PRT_TEST_REVIEW_BACKEND PRT_TEST_FINDINGS_FILE PRT_TEST_REVIEW_BASE_SHA PRT_TEST_REVIEW_MATERIAL_SHA256
+rm -rf "$prt_fo_dir"
 
 # A comment body of multi-byte characters can pass the kernel's 128 KiB limit
 # on one argument while staying under GitHub's 65,536-character cap: 50,000
