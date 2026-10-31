@@ -290,10 +290,12 @@ PRT_OVERFLOW_PART_MAX=60000
 # A body that fits is one part, byte-for-byte what prt_render_overflow_comment
 # prints. A larger one is split (go-kure/.github#307):
 # - Order: merge-gating withheld rows first, then every other row by severity
-#   (critical, high, medium, other), so part 1 holds every blocker and the
-#   most severe advisory rows. Size never reorders a row.
-# - Part 1 carries every coverage caveat: it says how many parts follow, and
-#   when a finding was shortened, says so. Every later part points back to it.
+#   (critical, high, medium, other), so part 1 opens with the blockers and goes
+#   on with the most severe advisory rows. Size never reorders a row.
+# - Part 1 carries every coverage caveat: it says how many parts follow, which
+#   parts hold the merge-gating rows (more than one only when they alone pass
+#   one part) and, when a finding was shortened, says so. Every later part
+#   points back to it and repeats where the blockers are.
 # - Each part repeats its section headings, intro text and footer (it is the
 #   same renderer, run on that part's rows), so it reads on its own.
 # - A single finding too large for one part is shortened to fit, never
@@ -304,7 +306,7 @@ PRT_OVERFLOW_PART_MAX=60000
 # exceeds PRT_COMMENT_LIMIT.
 prt_render_overflow_parts() {
   local findings="$1" quarantined="$2" outdir="$3"
-  local overhead budget plan total truncated n i part_f part_q body line
+  local overhead budget plan total truncated n i part_f part_q body line gating_last gating_note
   local dummy_f='[{"severity":"","category":"","file":"","issue":""}]'
   local dummy_q='[{"severity":"","category":"","file":"","issue":"","fix":"","gating":true}]'
   [ -d "$outdir" ] || return 1
@@ -328,8 +330,13 @@ prt_render_overflow_parts() {
       | ($item.issue | tostring) as $oi
       | (($item.fix // "") | tostring) as $of
       | def row: if $kind == "q" then quarantine_row else overflow_row end;
+        # The short fields are bounded too (200 characters), so a row whose
+        # file, category, severity or line is itself enormous still fits.
+        def cap200: tostring | if length > 200 then .[0:200] + " [truncated: \(length - 200) of \(length) characters omitted]" else . end;
         def cutdown($keep):
           $item
+          | .severity = (.severity | cap200) | .category = (.category | cap200) | .file = (.file | cap200)
+          | .line = (if .line == null then null else (.line | cap200) end)
           | .issue = (if ($oi | length) > $keep then $oi[0:$keep] + " [truncated: \(($oi | length) - $keep) of \($oi | length) characters omitted]" else $oi end)
           | if $kind == "q" then .fix = (if ($of | length) > $keep then $of[0:$keep] + " [truncated: \(($of | length) - $keep) of \($of | length) characters omitted]" else $of end) else . end;
         def fit($keep): cutdown($keep) as $c | if ($c | row | u16len) <= $budget or $keep == 0 then $c else fit(($keep * 0.9 | floor)) end;
@@ -350,23 +357,37 @@ prt_render_overflow_parts() {
           else . end
           | if $e.kind == "q" then .cur.q += [$e.item] else .cur.f += [$e.item] end
           | .cur.used += $e.cost
-        ) | .parts + [.cur] | map({f, q}) ) as $parts
+        ) | .parts + [.cur] | map({f, q, g: ([.q[] | select(.gating == true)] | length)}) ) as $parts
     | "\($parts | length) \([$sized[] | select(.cut)] | length)",
       ($parts[] | tojson)
   ' 2>/dev/null)" || return 1
   read -r total truncated <<< "$(printf '%s\n' "$plan" | sed -n 1p)"
   [[ "$total" =~ ^[0-9]+$ && "$truncated" =~ ^[0-9]+$ && "$total" -ge 1 ]] || return 1
+  # The last part that holds a merge-gating row (0 when none does): the part
+  # lines state where the blockers are, not that part 1 holds them all.
+  gating_last="$(printf '%s\n' "$plan" | sed 1d | jq -sr 'to_entries | map(select(.value.g > 0) | .key + 1) | max // 0' 2>/dev/null)" || return 1
+  [[ "$gating_last" =~ ^[0-9]+$ ]] || return 1
+  if [ "$gating_last" -eq 0 ]; then
+    gating_note="None of the withheld findings is merge-gating."
+  elif [ "$gating_last" -eq 1 ]; then
+    gating_note="Part 1 lists every merge-gating withheld finding."
+  else
+    gating_note="The merge-gating withheld findings fill parts 1 to ${gating_last}; read those parts first."
+  fi
   i=0
   while IFS= read -r line; do
     i=$((i + 1))
     part_f="$(jq -c '.f' <<< "$line" 2>/dev/null)" || return 1
     part_q="$(jq -c '.q' <<< "$line" 2>/dev/null)" || return 1
     body="$(prt_render_overflow_comment "$part_f" "$part_q")" || return 1
-    if [ "$i" -eq 1 ]; then
-      n="**Part 1 of ${total}.** These findings did not fit in one comment. This part lists every merge-gating withheld finding, then the most severe of the rest; parts 2 to ${total} continue the tables."
+    if [ "$i" -eq 1 ] && [ "$total" -eq 1 ]; then
+      n="**Part 1 of 1.**"
+      [ "$truncated" -eq 0 ] || n="${n} ${truncated} finding(s) were too long for one comment and were shortened: each shortened cell ends with a \"truncated\" marker, and the omitted text is not available elsewhere."
+    elif [ "$i" -eq 1 ]; then
+      n="**Part 1 of ${total}.** These findings did not fit in one comment. ${gating_note} Merge-gating rows come first, then the most severe of the rest; parts 2 to ${total} continue the tables."
       [ "$truncated" -eq 0 ] || n="${n} ${truncated} finding(s) were still too long for one comment and were shortened: each shortened cell ends with a \"truncated\" marker, and the omitted text is not available elsewhere."
     else
-      n="**Part ${i} of ${total}.** Continued from part 1, which lists every merge-gating withheld finding."
+      n="**Part ${i} of ${total}.** Continued from part 1. ${gating_note}"
     fi
     body="$(printf '%s\n\n%s' "$n" "$body")"
     [ "$(printf '%s' "$body" | jq -Rs "${_PRT_OVERFLOW_JQ_DEFS}"' u16len' 2>/dev/null)" -le "$PRT_COMMENT_LIMIT" ] 2>/dev/null || return 1
