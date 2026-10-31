@@ -595,7 +595,10 @@ process that is already running shares the process group of `timeout` and the la
 with a KILL of the group, and then leaves the group and lives on.
 Not closed: the `cmd` boundary (it has no such process to name; the lifetime of what the command
 starts is the command's), a SIGKILL of the orchestrator itself (nothing is left to send the kill, and
-the runner then lives until the job timeout), and what a surviving runner does during the call. The
+the runner then lives until the job timeout), a first process that does that group KILL and leaves
+the group before it is named (the first poll or so after the launch; the call is abandoned and its
+answer is not read, but both abandon paths above can only signal the group, so that process lives
+until the job timeout), and what a surviving runner does during the call. The
 pid is checked against its start time just before the kill, which leaves a small check-then-kill
 window, as the group kill below has (accepted there). The `timeout` TERM is sent from outside the namespace, so a first process with
 no TERM handler ignores it and the call then runs to the KILL, 5 seconds later.
