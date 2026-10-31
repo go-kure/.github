@@ -504,8 +504,11 @@ must not hold a token that can write to the PR. It is started under `env -i` wit
 `HOME`, `TMPDIR`, `LANG`, `LC_ALL` and the names in `PRT_ASSESS_RUNNER_ENV`. A list that names
 `PRT_GH_TOKEN`, `GITHUB_TOKEN`, `GH_TOKEN`, `GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`,
 `ACTIONS_RUNTIME_TOKEN` or `ACTIONS_ID_TOKEN_REQUEST_TOKEN` on any line, a name that is not a plain
-ASCII identifier, or a name that is not set fails the run at start with `PRT_ASSESS_RUNNER_ENV` in the message, rather
-than being dropped. Those names and values (the metered model key among them) never appear in the
+ASCII identifier, a name that bash would change or refuse to export (one that starts with an
+underscore or with `BASH`, `SHLVL`, `OPTIND`, `UID`, `EUID`, `PPID`, `SHELLOPTS`, `GROUPS`,
+`DIRSTACK`, `FUNCNAME`, `PIPESTATUS`, `HISTCMD`, `LINENO`, `RANDOM`, `SRANDOM`, `SECONDS`,
+`EPOCHSECONDS` or `EPOCHREALTIME`), or a name that is not set fails the run at start with
+`PRT_ASSESS_RUNNER_ENV` in the message, rather than being dropped. Those names and values (the metered model key among them) never appear in the
 command line of any process: `/proc/<pid>/cmdline` is readable by every user of the host, and the
 processes in front of the runner live as long as it does. They travel in a private file that is
 opened on descriptor 8 and unlinked immediately (it goes with the temporary directory in any
@@ -516,8 +519,8 @@ function exported by a boundary command does not reach it or the runner. The run
 is therefore these words plus the `SHLVL` that bash sets. Each of these ends the call without
 starting the runner (it is degraded as `runner-failed`): an empty list of words, an environment file
 that cannot be written, a file that cannot be read (a boundary command that closed descriptor 8), an
-empty script for the step, a word that is not `NAME=value`, a variable that cannot be unset or
-exported. The calling workflow's checkout also has to leave no credentials in
+empty script for the step, a word that is not `NAME=value`, a number of words read that differs
+from the number written, a variable that cannot be unset or exported. The calling workflow's checkout also has to leave no credentials in
 `.git/config` (`persist-credentials: false`, as `pr-review.yml` sets), because the runner reads the
 checkout.
 
@@ -625,7 +628,10 @@ variable is unset or `PRT_ASSESS_RUNNER_SECONDS` is not a whole number; the star
 usual cases first) and `local-tempdir`. A malformed answer is salvaged and retried once like a proxy answer.
 The runner's standard error is written to a file in the call's temporary directory and removed with
 it; it is never printed, because it can hold raw assessment text and credential-bearing
-diagnostics. The bracketed reason is all the log says about a failure.
+diagnostics. The bracketed reason is all the log says about a failure of the runner. A hand-over
+failure before the runner starts (the environment file cannot be written or opened) also prints
+bash's own redirection error, which names the temporary path and holds no runner content and no
+credential.
 
 - **Proxy URL.** With the review also from a findings file, the run needs no `PRT_PROXY_URL`
   when assessment is on. With the proxy review, the URL is still required.

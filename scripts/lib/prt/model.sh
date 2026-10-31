@@ -755,7 +755,8 @@ _prt_runner_clock_read() {
 # model key lives there), nothing else. Returns 1, with the reason in
 # PRT_RUNNER_ENV_ERROR, for a posting-token name (the PRT/GitHub/GH tokens and the
 # enterprise and Actions runtime ones), a name that is not a plain
-# identifier (refused, never dropped) and a listed name that is not set: a
+# identifier or that bash would change or refuse to export (refused, never dropped;
+# see the case below) and a listed name that is not set: a
 # variable the runner needs but never receives would surface later as an opaque
 # runner failure. The five defaults are skipped when unset.
 # shellcheck disable=SC2034 # PRT_RUNNER_ENV_ERROR is read by pr-review-threads.sh at start, not within this file
@@ -783,6 +784,17 @@ _prt_runner_env_build() {
       PRT_RUNNER_ENV_ERROR="PRT_ASSESS_RUNNER_ENV holds a name that is not a plain variable name"
       return 1
     fi
+    # Names the hand-over would not deliver as given, found by trying every variable of a fresh
+    # bash: `export _w=v` assigns an element of the reader's own array (any name with a leading
+    # underscore is refused, which also keeps the reader's own names out of reach), bash
+    # rewrites `_`, SHLVL and OPTIND, the dynamic variables do not keep an assigned value, and
+    # the read-only ones cannot be exported. `env -i NAME=value` delivered all of them, so
+    # they are refused here rather than dropped without notice. BASH* is refused whole.
+    case "$name" in
+      _*|BASH*|SHLVL|OPTIND|DIRSTACK|EPOCHREALTIME|EPOCHSECONDS|EUID|FUNCNAME|GROUPS|HISTCMD|LINENO|PIPESTATUS|PPID|RANDOM|SECONDS|SHELLOPTS|SRANDOM|UID)
+        PRT_RUNNER_ENV_ERROR="PRT_ASSESS_RUNNER_ENV must not name $name (bash would change or refuse it, or the hand-over step uses it)"
+        return 1 ;;
+    esac
     if [ -z "${!name+x}" ]; then
       PRT_RUNNER_ENV_ERROR="PRT_ASSESS_RUNNER_ENV lists $name, which is not set"
       return 1
@@ -1014,6 +1026,9 @@ _prt_call_runner() {
   # assessment text and credential-bearing diagnostics, which the run's log must not carry
   # (see "Never logged" in the guide). The cause is the closed reason set below, and the
   # file goes with $tmp. The same file takes the diagnostics of `timeout` and the boundary.
+  # One thing does reach the run's own standard error: a hand-over failure before the exec (the
+  # write of the environment file or its opening) prints bash's redirection error, which names
+  # the temporary path and holds no runner content and no credential.
   (
     for prt_fd_path in /proc/self/fd/*; do
       prt_fd="${prt_fd_path##*/}"
@@ -1028,7 +1043,11 @@ _prt_call_runner() {
     # boundary, reads them from it, closes it, makes its own environment exactly those words
     # and executes the runner. It does not hand the words to `env`: they would be that
     # process's arguments, in /proc/<pid>/cmdline until it starts the runner. The reader's own
-    # arguments hold only the runner's command line.
+    # arguments hold the number of words (not a secret) and the runner's command line. The reader
+    # compares that number with what it read: `mapfile` returns 0 after a read error, so a short
+    # read would otherwise start the runner with a truncated list. (The word count does not
+    # reveal a value cut short inside the last word.) The reader's variables all start with an
+    # underscore, a prefix the start check refuses in a pass-through name.
     # The reader itself starts under `env -i` with only PATH (not a secret): exported functions
     # of a boundary prefix (BASH_FUNC_*) are not variables, so neither `compgen -e` nor `unset`
     # would remove them, and one could shadow a builtin the reader uses. PATH is passed
@@ -1037,14 +1056,19 @@ _prt_call_runner() {
     # environment: an empty list, a file that cannot be written or opened (a boundary that
     # closes descriptor 8 leaves nothing to read), an empty reader script, a word that is not
     # NAME=value (`export word` would quietly export an existing variable instead of failing
-    # as `env -i word` did), a failed unset, a failed export. An empty list is refused here,
+    # as `env -i word` did), a word count that differs from what was read, a failed unset, a
+    # failed export. The status of `compgen` is hidden by the process substitution and is not
+    # checked: under `env -i` it has nothing to fail on. An empty list is refused here,
     # before anything is written: `printf '%s\0'` with no arguments still prints one NUL, which
     # the reader would take for one empty word. The reader's own length check is the second guard.
     local prt_reader
     IFS= read -r -d '' prt_reader <<'READER' || true
+_n=$1
+shift
 mapfile -d "" -t _w <&8 || exit 125
 exec 8<&-
 [ "${#_w[@]}" -gt 0 ] || exit 125
+[ "${#_w[@]}" -eq "$_n" ] || exit 125
 for _x in "${_w[@]}"; do
   ( LC_ALL=C; [[ "$_x" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] ) || exit 125
 done
@@ -1065,7 +1089,7 @@ READER
     exec 8< "$tmp/env" || exit 125
     rm -f "$tmp/env"
     exec env -i "PATH=$PATH" timeout --kill-after=5 "$outer" "${PRT_RUNNER_BOUNDARY_ARGS[@]}" \
-      env -i "PATH=$PATH" bash -c "$prt_reader" reader \
+      env -i "PATH=$PATH" bash -c "$prt_reader" reader "${#PRT_RUNNER_ENV_ARGS[@]}" \
       "$runner" --backend "$backend" --root "$root" --base "$PRT_REVIEW_BASE_SHA" \
       --seconds "$seconds" --sandbox none --out "$out" \
       -- "Perform the assessment described on the standard input. Answer with only the JSON object it asks for." \
