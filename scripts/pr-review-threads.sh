@@ -2230,9 +2230,10 @@ if [ "$PRT_MODE" = enforce ] && { [ "$overflow_len" -gt 0 ] || [ "$quarantined_l
   # 65,536-character limit (go-kure/.github#307). RULING-1031-1200-281: the
   # one-report-one-comment rule governs text an agent chooses to split, not a
   # body that exceeds the forge's hard limit, where the alternatives are a
-  # failed post or a truncated report. Part 1 carries every merge-gating
-  # finding and every coverage caveat; parts are ordered by severity, never by
-  # size. OVERFLOW_COMMENT_POSTED is true only when every part posted.
+  # failed post or a truncated report. Merge-gating findings come first and
+  # part 1 carries every coverage caveat, including which parts hold the
+  # merge-gating rows; parts are ordered by severity, never by size.
+  # OVERFLOW_COMMENT_POSTED is true only when every part posted.
   overflow_dir="$WORKDIR/overflow-parts"
   overflow_parts=0
   overflow_truncated=0
