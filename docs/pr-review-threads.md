@@ -609,16 +609,26 @@ voids the result, and so does a count of more than 9 digits. Only a refusal by `
 denial. A mount that could not be tried (no `mount` command, one that cannot be executed, an
 unreadable or shared mount namespace, no directory) is not. Inside the boundary the scan must also
 be able to find something: the stub looks for a known, non-secret value (the head SHA) in its own
-environment with the same scan, and a report where it does not, or where no process is visible, is
-inconclusive.
+environment with the same scan, and a report where it does not is inconclusive. A count that could
+not be taken is written empty, never 0, and an empty or malformed one voids the result: the descriptor
+listing must have shown the three standard descriptors, and the canary must have been read and been
+non-empty (an empty canary would match any environment). The report also names, for information and
+without a judgement, the stub's own user and groups, its `NSpid` (the pid it has in each namespace)
+and whether its PID namespace differs from the orchestrator's. Its parent-death signal is not
+reported: it can be read only by the process that holds it, and a child starts with it cleared.
 Limits of the probe: it tests the default boundary and a canary placed in the environment (a token in
 an argument, a descriptor or a file is not covered); the control proves that `environ` of an ancestor
 is readable without the boundary, not `mem`; and `no_new_privs` and the bounding set are reported for a
 non-root orchestrator but not judged, because the default boundary sets no-new-privs only for root
-(go-kure/.github#309).
-Exit codes: 0 holds, 1 leaks, 2 the boundary cannot be established on that lane, 3 inconclusive (the
-control, a field or the mount result gave no usable answer, so no pass can be claimed), 4 the probe
-could not set itself up. It does not show the lifetime limit above, what else of the user's files the runner can read, or anything
+(go-kure/.github#309). For root the bounding set is judged; the no-new-privs flag is reported but
+never judged, for any user (its judgement waits for go-kure/.github#309).
+Exit codes: 0 holds; 1 the boundary leaks, or the production call failed after the boundary was
+established (a `runner-*` reason or `provenance-mismatch`); 2 the boundary cannot be established on
+that lane; 3 inconclusive (the control, a field or the mount result gave no usable answer, or the call
+succeeded but left no report, so no pass can be claimed); 4 the probe could not set itself up, or the
+orchestrator refused the call before the stub could run (`backend-config`, `deadline-exhausted`,
+`local-tempdir`), which says nothing about the boundary. The orchestrator's own messages are relayed
+with every absolute path replaced. It does not show the lifetime limit above, what else of the user's files the runner can read, or anything
 about a real runner or model key, and it says nothing about a later image.
 
 **Provenance.** A call that exits 0 is still refused unless its `provider.json` has format
