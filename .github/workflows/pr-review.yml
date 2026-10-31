@@ -254,7 +254,7 @@ jobs:
           done
 
       - name: Run PR review threads
-        uses: go-kure/.github/.github/actions/pr-review-threads@3acdfd82f622e22c54cdcfe4126b8772a34084c0 # placeholder pending PR2 (pin-bump PR1 of the runner assessment, go-kure/.github#311 — base-ref tip, see docs/standards.md "GitHub Actions pinning")
+        uses: go-kure/.github/.github/actions/pr-review-threads@51ad824115cbb86b915b886b7efd6f73a6d6f6cb # go-kure/.github#313 merge SHA — PR2 of the runner assessment, closes the pin-bump sequence opened by go-kure/.github#311; see docs/standards.md "GitHub Actions pinning"
         with:
           # github-token / bot-login: GITHUB_TOKEN always gets viewerCanResolve:false
           # on threads it authors (GitHub rejects bot/App actors for
