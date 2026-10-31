@@ -8053,9 +8053,10 @@ rc="$(PRT_MODEL_TIMEOUT_FLOOR=1 run_orchestrator advisory 0 0 0)"
 prt_ar_elapsed=$((SECONDS - prt_ar_t0))
 # A first process that installs no TERM handler ignores the TERM `timeout` sends from outside its
 # namespace, so the call runs to the KILL, 5 s after the TERM: at the deadline, not inside it. That
-# is the existing bound; the cleanup after it is quick, which the margin of two seconds checks.
-assert_eq "assess runner, hostile PID 1: one call, ends within two seconds of the 12s deadline, degraded as runner-timeout" \
-  "0 1 true true" "$rc $(prt_ar_calls) $([ "$prt_ar_elapsed" -lt 14 ] && echo true || echo false) $(prt_ar_reason runner-timeout)"
+# is the existing bound; the cleanup after it is quick, which the margin of three seconds checks (the
+# deadline and this clock count whole seconds from different instants, so it allows for one more).
+assert_eq "assess runner, hostile PID 1: one call, ends within three seconds of the 12s deadline, degraded as runner-timeout" \
+  "0 1 true true" "$rc $(prt_ar_calls) $([ "$prt_ar_elapsed" -lt 15 ] && echo true || echo false) $(prt_ar_reason runner-timeout)"
 assert_eq "assess runner, hostile PID 1: the runner was seen running, and nothing of it is left once the call has returned" \
   "true" "$(prt_ar_hb_stopped)"
 prt_ar_hostile_reap
@@ -8083,15 +8084,40 @@ assert_eq "assess runner, the launcher has two children: the abandoned runner's 
 pkill -KILL -f "sleep 20" 2>/dev/null
 PRT_TEST_RUNNER_MODE=probe
 
-# `timeout` gone before the first process is named is "nothing to end" only while its bound was
-# running. A launcher that never starts a child keeps the finder polling; the bound fires, `timeout`
-# ends, and the call is abandoned as runner-lifetime, not read as a call with nothing to end. The
-# polling is lengthened so that it outlasts the bound (6 s here).
+# `timeout` gone before the first process was named is "nothing to end" only if it ended by itself.
+# A first process that is already running shares the process group of `timeout` and the launcher,
+# and can end both with a KILL of the group while it lives on; so a `timeout` that went with the
+# status of a signal (128 and above) or of an expired bound (124) is abandoned as runner-lifetime,
+# and one that went with an ordinary status (a launcher that failed) is not. The launchers below
+# pass the boundary preflight (its probe is a `sh`) and act only on the call's own command (a `bash`
+# reader).
+mkdir -p "$prt_ar_dir/bin-gonelauncher"
+# shellcheck disable=SC2016 # script text for the wrapper, not an expansion
+printf '#!/bin/bash\nfor a in "$@"; do\n  if [ "$a" = bash ]; then %s; fi\ndone\nexec %s "$@"\n' \
+  'kill -KILL 0' "$(command -v unshare)" > "$prt_ar_dir/bin-gonelauncher/unshare"
+chmod 755 "$prt_ar_dir/bin-gonelauncher/unshare"
+rm -f "$PRT_TEST_RUNNER_LOG".*
+PRT_TEST_RUNNER_MODE=heartbeat
+PRT_TEST_MODEL_BUDGET_SECONDS=""
+rc="$(PATH="$prt_ar_dir/bin-gonelauncher:$PATH" run_orchestrator advisory 0 0 0)"
+assert_eq "assess runner, timeout killed with its group before the first process was named: degraded as runner-lifetime, the message names the status" \
+  "0 true true" "$rc $(prt_ar_reason runner-lifetime) $(grep -qF 'ended (status 137) before the runner' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+mkdir -p "$prt_ar_dir/bin-failedlauncher"
+# shellcheck disable=SC2016 # script text for the wrapper, not an expansion
+printf '#!/bin/bash\nfor a in "$@"; do\n  if [ "$a" = bash ]; then exit 3; fi\ndone\nexec %s "$@"\n' \
+  "$(command -v unshare)" > "$prt_ar_dir/bin-failedlauncher/unshare"
+chmod 755 "$prt_ar_dir/bin-failedlauncher/unshare"
+rm -f "$PRT_TEST_RUNNER_LOG".*
+rc="$(PATH="$prt_ar_dir/bin-failedlauncher:$PATH" run_orchestrator advisory 0 0 0)"
+assert_eq "assess runner, the launcher fails by itself (status 3): nothing to end, not abandoned as runner-lifetime" \
+  "0 false" "$rc $(prt_ar_reason runner-lifetime)"
+
+# The same with the bound running out: a launcher that never starts a child keeps the finder polling;
+# the bound fires, `timeout` ends with status 124, and the call is abandoned. The polling is
+# lengthened so that it outlasts the bound (6 s here).
 rm -f "$PRT_TEST_RUNNER_LOG".*
 mkdir -p "$prt_ar_dir/bin-slowlauncher"
 mkfifo "$prt_ar_dir/slow.fifo"
-# The boundary preflight runs its probe (a `sh`) through the launcher and must pass; only the
-# call's own command (a `bash` reader) is stalled, with no child ever started.
 # shellcheck disable=SC2016 # script text for the wrapper, not an expansion
 printf '#!/bin/bash\nfor a in "$@"; do\n  if [ "$a" = bash ]; then read -r -t 30 _ 0<> "%s"; exit 0; fi\ndone\nexec %s "$@"\n' \
   "$prt_ar_dir/slow.fifo" "$(command -v unshare)" > "$prt_ar_dir/bin-slowlauncher/unshare"
@@ -8099,8 +8125,8 @@ chmod 755 "$prt_ar_dir/bin-slowlauncher/unshare"
 PRT_TEST_RUNNER_MODE=heartbeat
 PRT_TEST_MODEL_BUDGET_SECONDS=11
 rc="$(PATH="$prt_ar_dir/bin-slowlauncher:$PATH" PRT_RUNNER_PID1_POLLS=400 PRT_MODEL_TIMEOUT_FLOOR=1 run_orchestrator advisory 0 0 0)"
-assert_eq "assess runner, the first process is not named before the bound ends: degraded as runner-lifetime, the message names the cause" \
-  "0 true true" "$rc $(prt_ar_reason runner-lifetime) $(grep -qF 'ended after its bound, before the first process was named' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "assess runner, the bound runs out before the first process was named: degraded as runner-lifetime, the message names the status" \
+  "0 true true" "$rc $(prt_ar_reason runner-lifetime) $(grep -qF 'ended (status 124) before the runner' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 PRT_TEST_MODEL_BUDGET_SECONDS=""
 PRT_TEST_RUNNER_MODE=probe
 
