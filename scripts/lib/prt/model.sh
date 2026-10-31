@@ -762,8 +762,11 @@ _prt_runner_clock_read() {
 # shellcheck disable=SC2034 # PRT_RUNNER_ENV_ERROR is read by pr-review-threads.sh at start, not within this file
 _prt_runner_env_build() {
   # The locals start with an underscore, a prefix the case below refuses, and IFS is refused by
-  # name: `${!_name}` reads the variable of that name as this function sees it, so a listed name
-  # equal to one of these locals would be read from the local, not from the caller.
+  # name, so a listed name cannot match this function's own locals. That is all this closes:
+  # `${!_name}` follows bash's dynamic scope, so a listed name that matches a local of a function
+  # up the call chain (`tmp`, `out` or `request` of _prt_call_runner, `model` or `user` of the
+  # assess function, ...) is still read from that local, not from the caller's environment. The
+  # structural fix is to build this list once at start, outside those functions, and reuse it.
   local _name _extra=() IFS=$' \t\n'
   PRT_RUNNER_ENV_ARGS=()
   PRT_RUNNER_ENV_ERROR=""
@@ -930,8 +933,11 @@ _prt_call_runner() {
     return 1
   fi
   # Up to nine digits, read as decimal: "08" is 8 (bash arithmetic would call it a bad
-  # octal number) and "060" is 60, and a longer string is no sane number of seconds.
-  if ! _prt_runner_env_build || ! [[ "$seconds" =~ ^[0-9]{1,9}$ ]]; then
+  # octal number) and "060" is 60, and a longer string is no sane number of seconds. The floor
+  # is held to the same shape: `[ "$n" -lt soon ]` is an error, which an `if` reads as "not
+  # below", so a floor that is not a whole number would let every call past the checks below.
+  if ! _prt_runner_env_build || ! [[ "$seconds" =~ ^[0-9]{1,9}$ ]] \
+     || ! [[ "${PRT_MODEL_TIMEOUT_FLOOR:-30}" =~ ^[0-9]{1,9}$ ]]; then
     _prt_set_model_failure "backend-config"
     return 1
   fi

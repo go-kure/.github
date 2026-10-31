@@ -7613,6 +7613,19 @@ rc="$(run_orchestrator advisory 0 0 0 150)"
 assert_eq "assess runner, non-numeric PRT_ASSESS_RUNNER_SECONDS: no runner call, degraded as backend-config" \
   "0 0 true" "$rc $(prt_ar_calls) $(grep -qF '[backend-config]' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 PRT_TEST_ASSESS_RUNNER_SECONDS=""
+
+# The floor is a number the comparisons below read: `[ "$budget_left" -lt soon ]` is an error, and an
+# error in an `if` reads as "not below the floor", so a floor that is not a whole number would let
+# every call pass the check it exists for. It is refused like the other settings.
+for prt_ar_floor in soon -1 3x 99999999999999999999; do
+  rm -f "$PRT_TEST_RUNNER_LOG".*
+  rc="$(PRT_MODEL_TIMEOUT_FLOOR="$prt_ar_floor" run_orchestrator advisory 0 0 0)"
+  assert_eq "assess runner, PRT_MODEL_TIMEOUT_FLOOR=$prt_ar_floor: no runner call, degraded as backend-config" \
+    "0 0 true" "$rc $(prt_ar_calls) $(grep -qF '[backend-config]' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+done
+rm -f "$PRT_TEST_RUNNER_LOG".*
+rc="$(PRT_MODEL_TIMEOUT_FLOOR=08 run_orchestrator advisory 0 0 0)"
+assert_eq "assess runner, PRT_MODEL_TIMEOUT_FLOOR=08 (a whole number with a leading zero): the runner is called" "0 1" "$rc $(prt_ar_calls)"
 fi
 
 # ---- the process boundary (the review of the runner backend, go-kure/.github#311)
@@ -8036,24 +8049,28 @@ PRT_TEST_MODEL_BUDGET_SECONDS=4
 rc="$(run_orchestrator advisory 0 0 0)"
 assert_eq "assess runner, run budget spent: refused as deadline-exhausted before the boundary preflight ran" \
   "0 0 true false" "$rc $(prt_ar_calls) $(prt_ar_reason deadline-exhausted) $([ -e "$prt_ar_dir/preflighted" ] && echo true || echo false)"
-# The floor is applied again once the preflight is done: a call that started with 33 s left and spent
-# 5 s in the preflight has fewer than the 30 s minimum, and is refused instead of launched. The prefix
-# records that the preflight ran, so a refusal at the first check (no preflight) cannot pass for it.
-# The control gives the same prefix a budget that leaves enough, and the call runs.
+# The floor is applied again once the preflight is done: a call that started with 45 s left and spent
+# 20 s in the preflight has fewer than the 30 s minimum, and is refused instead of launched. The
+# margins are wide on both sides: the first check passes unless the run takes 15 s to reach it, and the
+# second fails whatever the speed of the host, because the prefix really sleeps 20 s. The check's own
+# cap (10 s by default) is raised above the sleep. The prefix sleeps only the first time it is
+# started (the preflight), not when it starts the runner, and records that the preflight ran, so a
+# refusal at the first check (no preflight) cannot pass for it. The control gives the same prefix a
+# budget that leaves enough, and the call runs.
 if $prt_ar_ns; then
 # shellcheck disable=SC2016 # script text for the prefix, not an expansion
-printf '#!/bin/sh\n: > "%s"\nsleep 5\nexec "$@"\n' "$prt_ar_dir/preflighted" > "$prt_ar_dir/boundary-slow"
+printf '#!/bin/sh\nif [ ! -e "%s" ]; then : > "%s"; sleep 20; fi\nexec "$@"\n' "$prt_ar_dir/preflighted" "$prt_ar_dir/preflighted" > "$prt_ar_dir/boundary-slow"
 chmod 755 "$prt_ar_dir/boundary-slow"
 PRT_TEST_ASSESS_RUNNER_BOUNDARY_CMD="$prt_ar_dir/boundary-slow $(prt_ar_prod_prefix)"
 PRT_TEST_RUNNER_MODE=clean
 rm -f "$PRT_TEST_RUNNER_LOG".* "$prt_ar_dir/preflighted"
-PRT_TEST_MODEL_BUDGET_SECONDS=33
-rc="$(run_orchestrator advisory 0 0 0)"
+PRT_TEST_MODEL_BUDGET_SECONDS=45
+rc="$(PRT_BOUNDARY_CHECK_SECONDS=40 run_orchestrator advisory 0 0 0)"
 assert_eq "assess runner, the preflight spends the budget below the floor: no runner call, degraded as deadline-exhausted, and the preflight did run" \
   "0 0 true true" "$rc $(prt_ar_calls) $(prt_ar_reason deadline-exhausted) $([ -e "$prt_ar_dir/preflighted" ] && echo true || echo false)"
 rm -f "$PRT_TEST_RUNNER_LOG".* "$prt_ar_dir/preflighted"
 PRT_TEST_MODEL_BUDGET_SECONDS=""
-rc="$(run_orchestrator advisory 0 0 0)"
+rc="$(PRT_BOUNDARY_CHECK_SECONDS=40 run_orchestrator advisory 0 0 0)"
 assert_eq "assess runner, the same slow preflight with ample budget (control): the runner is called" \
   "0 1 true" "$rc $(prt_ar_calls) $([ -e "$prt_ar_dir/preflighted" ] && echo true || echo false)"
 fi
