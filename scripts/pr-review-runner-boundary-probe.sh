@@ -34,11 +34,60 @@ self="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]
 get() { sed -n "s/^$2=//p" "$1" 2> /dev/null | head -1; }
 # At most 9 digits: a longer string would make bash arithmetic comparisons error out.
 is_count() { [[ "${1:-}" =~ ^[0-9]{1,9}$ ]]; }
+# A start time is in clock ticks since boot and passes 9 digits after about 115 days at 100 Hz.
+is_digits() { [[ "${1:-}" =~ ^[0-9]{1,20}$ ]]; }
+# stat_fields LINE: the parent pid and start time of a /proc/PID/stat line, into STAT_PPID and
+# STAT_START. Fails unless both are numbers.
+stat_fields() {
+  local -a f
+  read -ra f <<< "${1##*) }"
+  is_digits "${f[1]:-}" && is_digits "${f[19]:-}" || return 1
+  STAT_PPID="${f[1]}"
+  STAT_START="${f[19]}"
+}
 is_caps() { [[ "${1:-}" =~ ^[0-9a-f]{16}$ ]]; }
-# environ_has FILE VALUE: does the NUL-separated environ FILE hold VALUE? Errors read as "no".
-# grep reads to the end (no -q): under pipefail a grep that quit at the first match would leave
-# tr writing into a closed pipe, and the pipeline would return 141, a match read as a miss.
-environ_has() { { tr '\0' '\n' < "$1"; } 2> /dev/null | grep -F -- "$2" > /dev/null; }
+# environ_has FILE VALUE: does a NUL-separated record of FILE hold VALUE? An unreadable FILE reads
+# as "no". There is no pipe and no external command: GNU grep stops at its first match when its
+# output is /dev/null (ugrep does not), and a pipeline whose reader quit early returns 141 under
+# pipefail, so a match would read as a miss, differently on the host and in the lane.
+# The last record may lack its NUL (read then fails with the text in $rec).
+environ_has() {
+  local rec="" # set: a read that fails before it assigns would leave it unbound under set -u
+  while IFS= read -r -d '' rec || [ -n "$rec" ]; do
+    case "$rec" in *"$2"*) return 0 ;; esac
+  done 2> /dev/null < "$1"
+  return 1
+}
+# status_field NAME: a /proc/self/status value, or the marker "n/a" (never an empty field).
+status_field() {
+  local v
+  v="$(sed -n "s/^$1:[[:space:]]*//p" /proc/self/status 2> /dev/null)" || v=""
+  echo "${v:-n/a}"
+}
+# csv TEXT: words or lines of TEXT joined by commas; empty TEXT gives the marker "n/a".
+csv() {
+  local w out=""
+  set -f
+  for w in $1; do out="${out:+$out,}$w"; done
+  set +f
+  echo "${out:-n/a}"
+}
+# or_na CMD...: its output, or the marker "n/a" when it fails or prints nothing.
+or_na() {
+  local v
+  v="$("$@" 2> /dev/null)" || v=""
+  echo "${v:-n/a}"
+}
+# os_pretty: the PRETTY_NAME of /etc/os-release, or "n/a".
+os_pretty() {
+  local a b
+  while IFS='=' read -r a b; do
+    if [ "$a" = PRETTY_NAME ]; then echo "${b//\"/}"; return 0; fi
+  done 2> /dev/null < /etc/os-release
+  echo "n/a"
+}
+# anon: stdin with every absolute path replaced; a sed that fails prints nothing (it says less).
+anon() { sed -E 's#/[^[:space:]:"'"'"')]+#<path>#g' 2> /dev/null; }
 
 # ---------------------------------------------------------------------------------------
 # stub: what a runner could reach, written to $PRT_PROBE_REPORT, then a clean answer
@@ -47,6 +96,7 @@ probe_stub() {
   local out="" req canary a p st f s n e mnt msg rc own_ns pid_ns nspid key canary_state=ok
   local pid_ns_differs=unknown
   local anc_environ=0 anc_mem=0 hits=0 fd_above2=0 fd_std=0 mount_result=skipped own_open=0 own_marker=0
+  local entries=0 own_listed=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --out) out="$2"; shift 2 ;;
@@ -61,20 +111,23 @@ probe_stub() {
   canary=""
   if [ -r "${PRT_PROBE_CANARY_FILE:-}" ]; then canary="$(cat "$PRT_PROBE_CANARY_FILE")" || canary=""; else canary_state=missing; fi
   [ -n "$canary" ] || { [ "$canary_state" != ok ] || canary_state=empty; }
-  if [ "$canary_state" = ok ]; then
-    shopt -s nullglob
-    for e in /proc/[0-9]*/environ; do
-      if environ_has "$e" "$canary"; then hits=$((hits + 1)); fi
-    done
-    shopt -u nullglob
-  else
-    hits=""
-  fi
-  # The scan above only means something if it can find a known value. Look for a non-secret
-  # one (the head SHA) in this process's own environment with the very same scan, so a scan
-  # that fails inside the boundary (a missing tr or grep, an unreadable /proc) reads as blind.
+  # One scan produces every number below. For each environ the glob lists it looks for the canary
+  # and, when the entry is this process's own, for a non-secret known value (the head SHA): a scan
+  # that is blind (an empty listing, an unreadable /proc) then shows as no entries, no own entry
+  # or no marker, never as a quiet zero. The scan reads files itself and runs no other command.
+  shopt -s nullglob
+  for e in /proc/[0-9]*/environ; do
+    [ -e "$e" ] || continue # the pattern left as it is (no match, or globbing off) is not an entry
+    entries=$((entries + 1))
+    if [ "$canary_state" = ok ] && environ_has "$e" "$canary"; then hits=$((hits + 1)); fi
+    if [ "$e" = "/proc/$$/environ" ]; then
+      own_listed=1
+      if [ -n "${PRT_HEAD_SHA:-}" ] && environ_has "$e" "$PRT_HEAD_SHA"; then own_marker=1; fi
+    fi
+  done
+  shopt -u nullglob
+  [ "$canary_state" = ok ] || hits=""
   if ( : < "/proc/$$/environ" ) 2> /dev/null; then own_open=1; fi
-  if [ -n "${PRT_HEAD_SHA:-}" ] && environ_has "/proc/$$/environ" "$PRT_HEAD_SHA"; then own_marker=1; fi
   for a in ${PRT_PROBE_ANCESTORS:-}; do
     p="${a%%:*}"; st="${a##*:}"
     for f in environ mem; do
@@ -148,19 +201,21 @@ probe_stub() {
     echo "ancestor_environ_open=$anc_environ"
     echo "ancestor_mem_open=$anc_mem"
     echo "fd_above_2=$fd_above2"
-    echo "uid=$(id -u)"
-    echo "cap_eff=$(sed -n 's/^CapEff:[[:space:]]*//p' /proc/self/status)"
-    echo "cap_bnd=$(sed -n 's/^CapBnd:[[:space:]]*//p' /proc/self/status)"
-    echo "no_new_privs=$(sed -n 's/^NoNewPrivs:[[:space:]]*//p' /proc/self/status)"
+    echo "uid=$(id -u 2> /dev/null || echo n/a)"
+    echo "cap_eff=$(status_field CapEff)"
+    echo "cap_bnd=$(status_field CapBnd)"
+    echo "no_new_privs=$(status_field NoNewPrivs)"
     echo "proc_mount=$mount_result"
     echo "canary_state=$canary_state"
-    echo "nspid=${nspid:-unknown}"
+    echo "nspid=${nspid:-n/a}"
     echo "pid_ns_differs=$pid_ns_differs"
-    echo "user=$(id -un 2> /dev/null || echo unknown)"
-    echo "groups=$(id -Gn 2> /dev/null | tr ' ' ',')"
+    echo "user=$(id -un 2> /dev/null || echo n/a)"
+    echo "groups=$(csv "$(id -Gn 2> /dev/null)")"
     echo "own_environ_open=$own_open"
     echo "own_environ_marker=$own_marker"
-    echo "own_env_names=$(compgen -e | sort | tr '\n' ' ')"
+    echo "environ_entries=$entries"
+    echo "own_environ_listed=$own_listed"
+    echo "own_env_names=$(csv "$(compgen -e 2> /dev/null | sort)")"
   } > "$PRT_PROBE_REPORT.tmp" && mv "$PRT_PROBE_REPORT.tmp" "$PRT_PROBE_REPORT"
   mkdir -p "$out"
   printf '{"assessments":[]}' > "$out/review.md"
@@ -198,7 +253,9 @@ probe_judge() {
     # boundary it must open its own environ and find a known value in it.
     v="$(get "$b" canary_state)"
     [ "$v" = ok ] || unusable+=("boundary: the canary was ${v:-not reported} in the stub, so nothing was looked for")
-    for k in own_environ_open own_environ_marker; do
+    # The count above comes from one scan of the process table: it must have listed something,
+    # and its own entry among them, or a zero from it is not an answer.
+    for k in environ_entries own_environ_listed own_environ_open own_environ_marker; do
       v="$(get "$b" "$k")"
       if ! is_count "$v"; then unusable+=("boundary: $k is '${v:-empty}', not a number")
       elif [ "$v" -lt 1 ]; then unusable+=("boundary: $k is $v, so the scan inside the boundary may be blind")
@@ -249,10 +306,14 @@ probe_run() {
       echo "probe: no random canary could be made" >&2
       return 4
     fi
+    # A failed exec would end the shell with 126 or 127, codes this script does not document.
+    shopt -s execfail
     exec env "PRT_GH_TOKEN=$canary" "GITHUB_TOKEN=$canary" "GH_TOKEN=$canary" "PRT_PROBE_REEXEC=$canary" bash "$self" "$@"
+    echo "probe: cannot start the probe again with the canary in place" >&2
+    return 4
   fi
-  local here work q stat k call_rc=0 failure line
-  local -a ancestors=() fields=()
+  local here work q stat k rc call_rc=0 failure line
+  local -a ancestors=()
   here="$(dirname "$self")"
   # shellcheck source=/dev/null
   source "$here/lib/prt/model.sh" || { echo "probe: cannot load the orchestrator's model functions" >&2; return 4; }
@@ -263,12 +324,14 @@ probe_run() {
   umask 077
   printf '%s' "$PRT_GH_TOKEN" > "$work/canary" || { echo "probe: cannot write the canary file" >&2; return 4; }
 
-  echo "lane: kernel=$(uname -sr) uid=$(id -u) os=$(sed -n 's/^PRETTY_NAME=//p' /etc/os-release 2> /dev/null | tr -d '"')"
-  echo "lane: $(grep -E '^(Seccomp|NoNewPrivs):' /proc/self/status | tr '\n\t' '  ')"
-  echo "lane: orchestrator user=$(id -un 2> /dev/null || echo n/a) groups=$(id -Gn 2> /dev/null | tr ' ' ',')"
+  # Every field is a value or the marker n/a, never empty: a command that fails must not read as
+  # a value that is absent.
+  echo "lane: kernel=$(or_na uname -sr) uid=$(or_na id -u) os=$(os_pretty)"
+  echo "lane: Seccomp=$(status_field Seccomp) NoNewPrivs=$(status_field NoNewPrivs)"
+  echo "lane: orchestrator user=$(or_na id -un) groups=$(csv "$(id -Gn 2> /dev/null)")"
   for k in kernel/yama/ptrace_scope kernel/apparmor_restrict_unprivileged_userns kernel/unprivileged_userns_clone \
     kernel/unprivileged_userns_apparmor_policy user/max_user_namespaces user/max_pid_namespaces; do
-    echo "lane: $k=$(cat "/proc/sys/$k" 2> /dev/null || echo n/a)"
+    echo "lane: $k=$(or_na cat "/proc/sys/$k")"
   done
   # Which step of the default boundary this lane refuses, and what it says. Each attempt runs
   # `true` and nothing else; none needs a capability or leaves anything behind.
@@ -278,18 +341,26 @@ probe_run() {
     if q="$(unshare $k true 2>&1)"; then
       echo "lane: unshare $k: ok"
     else
-      echo "lane: unshare $k: failed rc=$? ${q:-no message}"
+      # rc first: the anonymising below would otherwise replace $?. The message gets the same
+      # path replacement as the orchestrator's stderr further down.
+      rc=$?
+      echo "lane: unshare $k: failed rc=$rc $(anon <<< "${q:-no message}")"
     fi
   done
 
   # The pids from this process up to pid 1, each as pid:start-time, as the boundary check names them.
+  # A stat line that does not give both numbers ends the run: a short chain would let the
+  # ancestor checks pass while looking at fewer processes than the orchestrator has.
   q="$BASHPID"
   while [ "$q" -ge 1 ]; do
     [ "${#ancestors[@]}" -lt 256 ] || { echo "probe: ancestor chain too long" >&2; return 4; }
     stat="$(< "/proc/$q/stat")" || { echo "probe: cannot read /proc/$q/stat" >&2; return 4; }
-    read -ra fields <<< "${stat##*) }"
-    ancestors+=("$q:${fields[19]}")
-    q="${fields[1]}"
+    if ! stat_fields "$stat"; then
+      echo "probe: cannot read the parent and start time from /proc/$q/stat" >&2
+      return 4
+    fi
+    ancestors+=("$q:$STAT_START")
+    q="$STAT_PPID"
   done
 
   # The stand-in for review-run: this script's stub mode.
@@ -331,7 +402,7 @@ probe_run() {
     # its temporary directory, which is nothing this run's log should carry.
     # A sed that fails prints nothing, which errs on the side of saying less.
     while IFS= read -r line; do echo "boundary: $line"; done \
-      < <(sed -E 's#/[^[:space:]:"'"'"')]+#<path>#g' "$work/call.stderr" 2> /dev/null)
+      < <(anon < "$work/call.stderr")
     case "$failure" in
       runner-boundary)
         echo "RESULT: not-established (the default boundary cannot be set up or fails its own check on this lane)"
@@ -382,9 +453,12 @@ probe_run() {
   probe_judge "$work/report.boundary" "$work/report.control"
 }
 
-case "${1:-run}" in
-  judge) shift; probe_judge "${1:-}" "${2:-}" ;;
-  stub) shift; probe_stub "$@" ;;
-  run) probe_run "$@" ;;
-  *) echo "usage: $0 [run | judge BOUNDARY_REPORT CONTROL_REPORT]" >&2; exit 64 ;;
-esac
+# Sourced (by the fixture tests), the script only defines its functions.
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  case "${1:-run}" in
+    judge) shift; probe_judge "${1:-}" "${2:-}" ;;
+    stub) shift; probe_stub "$@" ;;
+    run) probe_run "$@" ;;
+    *) echo "usage: $0 [run | judge BOUNDARY_REPORT CONTROL_REPORT]" >&2; exit 64 ;;
+  esac
+fi
