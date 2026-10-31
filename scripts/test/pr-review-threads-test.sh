@@ -6847,6 +6847,23 @@ case "$mode" in
   heartbeat)
     ( while :; do date +%s%N > "$log.hb"; sleep 0.1; done ) &
     sleep 300; exit 0 ;;
+  # hostile: the runner is PID 1 of its namespace and escapes everything the launcher's death and
+  # the process group reach: it clears its parent-death signal (what --kill-child sets), starts a
+  # session of its own and keeps rewriting a counter file, never exiting (go-kure/.github#304).
+  # It ends when "$log.stop" exists, so a test can reap it, and after two minutes in any case.
+  hostile)
+    exec python3 -I -c '
+import ctypes, os, sys, time
+ctypes.CDLL(None).prctl(1, 0, 0, 0, 0)  # PR_SET_PDEATHSIG, 0
+os.setsid()
+hb, stop = sys.argv[1], sys.argv[2]
+end = time.time() + 120
+while time.time() < end and not os.path.exists(stop):
+    with open(hb + ".tmp", "w") as f:
+        f.write(str(time.time_ns()))
+    os.replace(hb + ".tmp", hb)
+    time.sleep(0.1)
+' "$log.hb" "$log.stop" ;;
   garbage_then_exit4) if [ "$n" -ge 2 ]; then exit 4; fi; mode=garbage ;;
   garbage_then_clean) if [ "$n" -ge 2 ]; then mode=clean; else mode=garbage; fi ;;
 esac
@@ -7751,6 +7768,81 @@ assert_eq "assess runner, detached TERM-resistant helper, default boundary: the 
 sleep 0.5
 assert_eq "assess runner, detached TERM-resistant helper, default boundary: nothing of it is left running" "true" "$(prt_ar_hb_stopped)"
 PRT_TEST_RUNNER_MODE=probe
+
+# A hostile PID 1 (go-kure/.github#304): the runner itself clears its parent-death signal and starts
+# a session of its own, so neither the death of the namespace launcher nor the process group reaches
+# it, and ending the namespace's first process is the only thing that ends it. The control runs the
+# stub the way the call did before: behind the production prefix, under `timeout`, with the group
+# killed afterwards and nothing else. The heartbeat then keeps advancing, which shows the stub
+# escapes and the heartbeat can show it. A reaper file ends any survivor.
+prt_ar_hostile_reap() { : > "$PRT_TEST_RUNNER_LOG.stop"; sleep 0.5; }
+rm -f "$PRT_TEST_RUNNER_LOG".*
+_prt_runner_boundary_build
+( exec env -i "PATH=$PATH" PRT_TEST_RUNNER_LOG="$PRT_TEST_RUNNER_LOG" PRT_TEST_RUNNER_MODE=hostile \
+    timeout --kill-after=2 2 "${PRT_RUNNER_BOUNDARY_ARGS[@]}" "$prt_ar_dir/review-run" \
+    --out "$prt_ar_dir/hostile-control-out" --root . --base x -- p < /dev/null > /dev/null 2>&1 ) &
+prt_ar_cpid=$!
+wait "$prt_ar_cpid" 2>/dev/null
+kill -KILL -- "-$prt_ar_cpid" 2>/dev/null
+sleep 0.5
+assert_eq "assess runner, hostile PID 1, control (timeout and the group kill alone): the runner outlives the call" \
+  "true" "$(prt_ar_hb_advancing)"
+prt_ar_hostile_reap
+rm -rf "$prt_ar_dir/hostile-control-out"
+
+# The call itself: the runner never exits, the outer bound fires, and the namespace's first process
+# is killed by the orchestrator. The heartbeat must have started, and must stop at once (within
+# about a second of the call returning, which prt_ar_hb_stopped checks over one second).
+rm -f "$PRT_TEST_RUNNER_LOG".*
+PRT_TEST_RUNNER_MODE=hostile
+PRT_TEST_MODEL_BUDGET_SECONDS=12
+prt_ar_t0=$SECONDS
+rc="$(PRT_MODEL_TIMEOUT_FLOOR=1 run_orchestrator advisory 0 0 0)"
+prt_ar_elapsed=$((SECONDS - prt_ar_t0))
+# A first process that installs no TERM handler ignores the TERM `timeout` sends from outside its
+# namespace, so the call runs to the KILL, 5 s after the TERM: at the deadline, not inside it. That
+# is the existing bound; the cleanup after it is quick, which the margin of two seconds checks.
+assert_eq "assess runner, hostile PID 1: one call, ends within two seconds of the 12s deadline, degraded as runner-timeout" \
+  "0 1 true true" "$rc $(prt_ar_calls) $([ "$prt_ar_elapsed" -lt 14 ] && echo true || echo false) $(prt_ar_reason runner-timeout)"
+assert_eq "assess runner, hostile PID 1: the runner was seen running, and nothing of it is left once the call has returned" \
+  "true" "$(prt_ar_hb_stopped)"
+prt_ar_hostile_reap
+PRT_TEST_MODEL_BUDGET_SECONDS=""
+
+# A failed discovery is not "nothing to end". A launcher with a second child leaves two candidates
+# for the namespace's first process: the call is abandoned as runner-lifetime, the runner's tree is
+# stopped, and no answer is read.
+rm -f "$PRT_TEST_RUNNER_LOG".*
+mkdir -p "$prt_ar_dir/bin-twokids"
+# shellcheck disable=SC2016 # script text for the wrapper, not an expansion
+printf '#!/bin/sh\nsleep 20 < /dev/null > /dev/null 2>&1 &\nexec %s "$@"\n' "$(command -v unshare)" > "$prt_ar_dir/bin-twokids/unshare"
+chmod 755 "$prt_ar_dir/bin-twokids/unshare"
+PRT_TEST_RUNNER_MODE=heartbeat
+PRT_TEST_MODEL_BUDGET_SECONDS=""
+rc="$(PATH="$prt_ar_dir/bin-twokids:$PATH" run_orchestrator advisory 0 0 0)"
+assert_eq "assess runner, the launcher has two children: degraded as runner-lifetime, the run still exits 0, the message names the cause" \
+  "0 true true" "$rc $(prt_ar_reason runner-lifetime) $(grep -qF 'namespace launcher has more than one child' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "assess runner, the launcher has two children: the abandoned runner's tree is stopped" "true" "$(prt_ar_hb_stopped)"
+pkill -KILL -f "sleep 20" 2>/dev/null
+PRT_TEST_RUNNER_MODE=probe
+
+# The finder on its own, against process trees the test builds. Short polling keeps the cases quick.
+# shellcheck disable=SC2016 # the program text of each case is evaluated by the child shell
+prt_ar_pid1_case() { # label, expected rc, expected error fragment (or "-"), setup command run in the child
+  local out
+  out="$(PRT_RUNNER_PID1_POLLS=4 bash -c '
+    source "$1/scripts/lib/prt/model.sh"
+    _prt_runner_boundary_build
+    eval "$3"
+    _prt_runner_pid1_record "$tp"; echo "rc=$? pid1=${PRT_RUNNER_PID1:-} err=${PRT_RUNNER_PID1_ERROR:-}"
+    kill -KILL $(jobs -p) 2>/dev/null' bash "$ROOT" x "$4" 2>/dev/null)"
+  assert_eq "pid pid1 finder, $1: rc $2" "true" "$([[ "$out" == "rc=$2 "* ]] && echo true || echo false)"
+  if [ "$3" != "-" ]; then
+    assert_eq "pid1 finder, $1: the cause is named" "true" "$([[ "$out" == *"$3"* ]] && echo true || echo false)"
+  fi
+}
+prt_ar_pid1_case "a process that is not timeout" 1 "no namespace first process was found in time" 'sleep 30 & tp=$!; sleep 0.1'
+prt_ar_pid1_case "a pid that is not there" 3 - 'tp=999999'
 fi
 
 # go-kure/.github#309: the default prefix sets no_new_privs for every user, not only for root. The
