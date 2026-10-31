@@ -720,12 +720,16 @@ regardless, defeating the point of moving it to degraded.
 
 A read that decides what is posted or reconciled and fails for a local reason (a `jq` fault) is
 `REVIEW_INCOMPLETE` too, and the reason names what could not be read: a false-positive reply's
-reasoning, the findings an advisory comment lists, the owned threads of the absence pass, and the
-PR metadata (a response that is not a JSON object stops the run). The reads that stay unchecked are
-those of a field from an object already read once, and the ones whose empty value fails the next
-check; a test lists each with the reason, and a new unchecked `jq`, `gh` or `prt_gh_*` assignment
-fails it until it is checked or listed. The scan covers `jq`, `gh` and `prt_gh_*` substitutions
-only; the substitutions of other helper functions are not scanned.
+reasoning, the findings an advisory comment lists, and the owned threads of the absence pass (their
+count, the thread, its fingerprint, the matched-by-this-run test and the collision, reply and
+resolved fields). A PR metadata response that cannot be read as a JSON object stops the run with an
+error before anything is posted; it is not recorded as `REVIEW_INCOMPLETE`. The other reads take a
+field from an object already read once and stay unchecked; a test lists them, and an empty value
+from one of them is not always harmless. That test sees only a line that begins `NAME="$(jq`,
+`NAME="$(gh` or `NAME="$(prt_gh_` with no `||` or `&&` on its statement, in the orchestrator and
+its libraries. A new site of that shape fails it until it is checked or listed; any other shape (a
+`local` prefix, an unquoted form, a pipe in front of the command, another helper function) is not
+scanned.
 
 Both are rendered as their own section in the job summary (`render.sh:87-121`) and checked at
 exit (`pr-review-threads.sh`'s tail): a non-empty `REVIEW_INCOMPLETE` state makes the top-level
@@ -1384,8 +1388,8 @@ and point here instead of restating them.
 - **Order.** Merge-gating withheld rows come first across the parts, then the other rows by severity.
   Size never reorders rows.
 - **What part 1 says.** In a split, part 1 says how many parts there are and which hold the
-  merge-gating rows, and a later part points back to part 1. A comment that is not split carries no
-  such note. Either kind says so when a finding had to be shortened.
+  merge-gating rows, and a later part points back to part 1. A comment that is not split has no
+  merge-gating note. Any comment says so when a finding had to be shortened.
 - **A single finding larger than any part** is shortened, never dropped, and the shortened text ends
   with a marker that says how much was omitted. The omitted text is not in any posted part, so the run
   is also marked `REVIEW_INCOMPLETE`.
@@ -1394,7 +1398,8 @@ and point here instead of restating them.
   `failed to post overflow comment part 2 of 3 (HTTP 500)`; the later parts are still posted. A
   freshness check that finds the head stale (recorded as degraded) or that fails (recorded as
   incomplete) stops the remaining parts. A superseded clean verdict never points at rows that were
-  not posted, and when a finding was shortened it says that the omitted text is in no part.
+  not posted. When the verdict points at the advisory comments and a finding was shortened, it says
+  that the omitted text is in no part.
 
 ### How long a withheld finding stays withheld (go-kure/.github#148)
 

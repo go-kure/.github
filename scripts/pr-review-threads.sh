@@ -358,7 +358,7 @@ meta_json="$(prt_retry 3 prt_gh_rest GET "/repos/${PRT_REPO}/pulls/${PRT_PR_NUMB
 # The three reads below (title, body, base commit) take a field from this object, so a metadata
 # response that is not a JSON object stops the run here instead of becoming empty fields.
 if ! jq -e 'type == "object"' <<< "$meta_json" > /dev/null 2>&1; then
-  echo "ERROR: PR metadata is not a JSON object" >&2
+  echo "ERROR: PR metadata could not be read as a JSON object" >&2
   exit 1
 fi
 PR_TITLE="$(jq -r '.title // "Untitled"' <<< "$meta_json")"
@@ -2085,7 +2085,10 @@ if [ "$PRT_MODE" = enforce ]; then
       prt_mark_incomplete "owned thread $oi could not be read (local fault); it was not reconciled for absence"
       continue
     fi
-    fp="$(jq -r '.fp' <<< "$th")"
+    if ! fp="$(jq -r '.fp' <<< "$th" 2>/dev/null)"; then
+      prt_mark_incomplete "owned thread $oi: its fingerprint could not be read (local fault); it was not reconciled for absence"
+      continue
+    fi
     # IN(), not [x] | inside(y) — see the within_cap comment above; same
     # substring-vs-exact-match trap for the same collision-ordinal fp shapes.
     # A thread this run's findings matched is not absent; reading that wrongly would treat a
@@ -2096,9 +2099,15 @@ if [ "$PRT_MODE" = enforce ]; then
     fi
     [ "$already_matched" = true ] && continue
 
-    collision="$(jq -r '.collision' <<< "$th")"
-    has_human_reply="$(jq -r '.has_human_reply' <<< "$th")"
-    thread_resolved="$(jq -r '.resolved' <<< "$th")"
+    # prt_decide_absent acts on these three only when they are not true (a human reply or a resolved
+    # thread protects the thread), so an empty value from a failed read is the unsafe side: a failed
+    # read skips the thread.
+    if ! collision="$(jq -r '.collision' <<< "$th" 2>/dev/null)" ||
+      ! has_human_reply="$(jq -r '.has_human_reply' <<< "$th" 2>/dev/null)" ||
+      ! thread_resolved="$(jq -r '.resolved' <<< "$th" 2>/dev/null)"; then
+      prt_mark_incomplete "fp=$fp: its collision, reply or resolved state could not be read (local fault); it was not reconciled for absence"
+      continue
+    fi
     first_absent_sha="$(jq -r '.first_absent_sha' <<< "$th")"
     thread_id="$(jq -r '.thread_id' <<< "$th")"
     first_comment_db_id="$(jq -r '.first_comment_db_id' <<< "$th")"
