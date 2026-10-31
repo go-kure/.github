@@ -2217,6 +2217,10 @@ fi
 OVERFLOW_COMMENT_POSTED=true
 overflow_len=0
 quarantined_len=0
+# How many overflow and withheld rows reached a posted part: when only some
+# parts post, the supersede below credits those rows and no others.
+overflow_posted_len=0
+quarantined_posted_len=0
 if [ "$PRT_MODE" = enforce ] &&
    { ! overflow_len="$(jq 'length' <<< "$OVERFLOW" 2>/dev/null)" || ! quarantined_len="$(jq 'length' <<< "$QUARANTINED" 2>/dev/null)"; }; then
   # An unreadable list must not read as an empty one: nothing is posted, the run is incomplete.
@@ -2274,9 +2278,22 @@ if [ "$PRT_MODE" = enforce ] && { [ "$overflow_len" -gt 0 ] || [ "$quarantined_l
         # posts a review thread reply, which sets has_human_reply (content-based,
         # not author-based) and would make a quarantined/overflow body a merge
         # blocker instead of the advisory it's meant to be.
-        prt_gh_rest POST "/repos/${PRT_REPO}/issues/${PRT_PR_NUMBER}/comments" \
-          "$overflow_payload" >/dev/null || \
-          { prt_mark_incomplete "failed to post ${overflow_label} (HTTP ${PRT_LAST_HTTP_STATUS:-unknown})"; OVERFLOW_COMMENT_POSTED=false; }
+        if prt_gh_rest POST "/repos/${PRT_REPO}/issues/${PRT_PR_NUMBER}/comments" \
+          "$overflow_payload" >/dev/null; then
+          if read -r overflow_part_f overflow_part_q < "$overflow_dir/part-${overflow_part}.counts"; then
+            overflow_posted_len=$((overflow_posted_len + overflow_part_f))
+            quarantined_posted_len=$((quarantined_posted_len + overflow_part_q))
+          else
+            # The part posted but its row counts are unreadable: credit nothing
+            # for it, so the supersede text errs toward "re-check", never
+            # toward claiming rows that may be missing.
+            prt_mark_incomplete "the row counts of the ${overflow_label} could not be read (local fault)"
+            OVERFLOW_COMMENT_POSTED=false
+          fi
+        else
+          prt_mark_incomplete "failed to post ${overflow_label} (HTTP ${PRT_LAST_HTTP_STATUS:-unknown})"
+          OVERFLOW_COMMENT_POSTED=false
+        fi
       done
     fi
   else
@@ -2368,18 +2385,19 @@ if [ "$PRT_MODE" = enforce ]; then
           # Re-check immediately before the write — see the identical
           # rationale on the zero-findings branch above.
           if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
-            # When the overflow/quarantine comment failed to post, its
-            # findings did not reach ANY durable outcome this run — pass 0,
-            # not the true counts, so the "unaccounted" branch below picks
-            # them up instead of the advisory-comment branch falsely
-            # claiming "see the advisory comment on this PR" for a comment
-            # that was never written (go-kure/.github#180 codex review, this
-            # round).
+            # When a part of the overflow/quarantine comment failed to post,
+            # only the rows in the parts that DID post reached a durable
+            # outcome this run — pass those counts, not the totals, so the
+            # "unaccounted" branch below picks up the rest instead of the
+            # advisory-comment branch falsely claiming "see the advisory
+            # comment on this PR" for rows that were never written
+            # (go-kure/.github#180 codex review, this round), and does not
+            # report the rows that were posted as lost.
             superseded_overflow_arg="$overflow_len"
             superseded_quarantined_arg="$quarantined_len"
             if [ "$OVERFLOW_COMMENT_POSTED" != true ]; then
-              superseded_overflow_arg=0
-              superseded_quarantined_arg=0
+              superseded_overflow_arg="$overflow_posted_len"
+              superseded_quarantined_arg="$quarantined_posted_len"
             fi
             superseded_body="$(prt_render_clean_comment_superseded "$PRT_HEAD_SHA" "$total_findings_this_run" "$THREADS_WRITTEN" "$SUPPRESSED_COUNT" "$superseded_overflow_arg" "$superseded_quarantined_arg" "$NONE_ANCHORED_COUNT")"
             # go-kure/.github#98: degraded, not fatal — matching this

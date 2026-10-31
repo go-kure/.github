@@ -2266,6 +2266,8 @@ assert_eq "prt_render_overflow_parts: a body that fits is one part, 0 shortened"
   "1 0" "$(prt_render_overflow_parts "$prt_parts_small" "$quarantine_triple" "$prt_parts_dir")"
 assert_eq "prt_render_overflow_parts: a body that fits is byte-for-byte prt_render_overflow_comment" \
   "$(prt_render_overflow_comment "$prt_parts_small" "$quarantine_triple")" "$(cat "$prt_parts_dir/part-1.md")"
+assert_eq "prt_render_overflow_parts: a body that fits records its overflow and withheld row counts for part 1" \
+  "$(jq 'length' <<< "$prt_parts_small") $(jq 'length' <<< "$quarantine_triple")" "$(cat "$prt_parts_dir/part-1.counts")"
 # A body between the 60,000 part margin and GitHub's 65,536 limit is accepted whole, so it stays one
 # comment (review of go-kure/.github#307, round 4).
 prt_parts_mid="$(jq -n '[{file:"o.go", severity:"high", category:"mid", issue:("MID " + ("m" * 62000))}]')"
@@ -2288,6 +2290,12 @@ assert_eq "prt_render_overflow_parts: the merge-gating row and the critical row 
   "$(for m in GATING crit-ov med-ov lowq-0 lowq-1 lowq-2 lowq-3; do printf '%s:%s ' "$m" "$(grep -lF "$m " "$prt_parts_dir"/part-*.md | sed -E 's/.*part-([0-9]+)\.md/\1/')"; done | sed 's/ $//')"
 assert_eq "prt_render_overflow_parts: every row is posted exactly once across the parts" \
   "7" "$(cat "$prt_parts_dir"/part-*.md | grep -oE 'GATING|crit-ov|med-ov|lowq-[0-9]' | wc -l | tr -d ' ')"
+# The orchestrator credits the rows of the parts that posted from these files, so they must add up to
+# the input (2 overflow rows and 5 withheld rows) and match what each part holds.
+assert_eq "prt_render_overflow_parts: the row counts of the 4 parts add up to the input" \
+  "2 5" "$(cat "$prt_parts_dir"/part-*.counts | awk '{f += $1; q += $2} END {print f, q}')"
+assert_eq "prt_render_overflow_parts: each part's counts match the rows in it (parts 1 to 4)" \
+  "1 1|1 1|0 2|0 1" "$(for n in 1 2 3 4; do cat "$prt_parts_dir/part-$n.counts"; done | paste -sd'|')"
 assert_eq "prt_render_overflow_parts: part 1 holds the merge-gating row" \
   "true" "$(grep -qF 'GATING' "$prt_parts_dir/part-1.md" && echo true || echo false)"
 assert_eq "prt_render_overflow_parts: part 1 says it lists every merge-gating finding and how many parts there are" \
@@ -4960,7 +4968,10 @@ assert_eq "orchestrator: fingerprint-collided run (THIS-run multiplicity, no own
   "true" "$(grep -qF '| this run |' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && ! grep -qF '| persisted (earlier run) |' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && echo true || echo false)"
 # A jq fault while rendering the withheld-findings table: the three quarantined findings must
 # not be posted as an empty or partial comment and read as a clean run. The run exits nonzero,
-# is incomplete, and posts nothing. The fault is a `jq` on PATH that fails on that program only.
+# is incomplete, and posts nothing. The fault is a `jq` on PATH that fails every call whose program
+# carries `def collision_cell`: that definition sits in the shared overflow definitions, so the
+# overflow-row render, the size measurements and the planning pass fail too. This fixture has no
+# overflow rows, so the quarantine table is the first call to fail.
 prt_orch_shim="$(mktemp -d)"
 cat > "$prt_orch_shim/jq" <<'SHIM'
 #!/usr/bin/env bash
@@ -4986,11 +4997,11 @@ done
 [ -n "$prt_orch_real_jq" ] || prt_orch_real_jq="$(command -v jq)"
 unset prt_orch_path_dirs prt_orch_dir prt_orch_cand
 rc="$(PATH="$prt_orch_shim:$PATH" REAL_JQ="$prt_orch_real_jq" JQ_FAIL_MATCH='def collision_cell' run_orchestrator enforce 0 0 0)"
-assert_eq "orchestrator: a failed quarantine table -> exits 1 (not 0), nothing posted" \
+assert_eq "orchestrator: a jq fault in the withheld-findings render -> exits 1 (not 0), nothing posted" \
   "1 0" "$rc $(cat "$PRT_TEST_ISSUE_COMMENT_COUNTFILE" 2>/dev/null || echo 0)"
-assert_eq "orchestrator: a failed quarantine table -> the body is not posted and the run names the render fault" \
+assert_eq "orchestrator: a jq fault in the withheld-findings render -> the body is not posted and the run names the render fault" \
   "false true" "$(grep -qF 'Withheld AI Review Findings' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && echo true || echo false) $(grep -qF 'overflow comment could not be rendered' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
-assert_eq "orchestrator: a failed quarantine table -> the done line is not incomplete=0" \
+assert_eq "orchestrator: a jq fault in the withheld-findings render -> the done line is not incomplete=0" \
   "false" "$(grep -qE 'done:.*incomplete=0 ' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 rc="$(PATH="$prt_orch_shim:$PATH" REAL_JQ="$prt_orch_real_jq" JQ_FAIL_MATCH='no-such-program-text' run_orchestrator enforce 0 0 0)"
 assert_eq "orchestrator: the same run through a pass-through shim posts the table and exits 0" \
@@ -6711,14 +6722,21 @@ PRT_TEST_ISSUE_COMMENTS_LIST='[{"id":88,"user":{"login":"test-bot[bot]"},"body":
 rc="$(run_orchestrator enforce 0 0 0)"
 PRT_TEST_ISSUE_COMMENTS_LIST="$prt_fo_saved_list"
 assert_eq "split overflow comment: a part that fails to post fails the run -> exits 1" "1" "$rc"
-assert_eq "split overflow comment: the flag went false, so the superseded clean verdict says the findings reached no durable outcome" \
-  "true false" "$(grep -qF 'reach any durable outcome' "$PRT_TEST_ISSUE_COMMENT_LOG" && echo true || echo false) $(grep -qF 'advisory comment' "$PRT_TEST_ISSUE_COMMENT_LOG" && echo true || echo false)"
+# Parts 1 and 3 posted, so the findings in them reached a durable outcome; the superseded clean
+# verdict must count only the findings of the part that did not post. The posted findings are read
+# from the bodies the mock logged, so the expected count does not repeat the split's own arithmetic.
+prt_fo_posted="$(grep -o 'many-findings-[0-9]' "$PRT_TEST_ISSUE_COMMENT_LOG" | sort -u | wc -l | tr -d ' ')"
+prt_fo_unposted=$((6 - prt_fo_posted))
+assert_eq "split overflow comment: some findings posted and some did not" \
+  "true" "$([ "$prt_fo_posted" -ge 1 ] && [ "$prt_fo_unposted" -ge 1 ] && echo true || echo false)"
+assert_eq "split overflow comment: the superseded clean verdict counts only the findings of the part that did not post" \
+  "true false" "$(grep -qF "reported **6 finding(s)**, but ${prt_fo_unposted} did not" "$PRT_TEST_ISSUE_COMMENT_LOG" && echo true || echo false) $(grep -qF 'advisory comment' "$PRT_TEST_ISSUE_COMMENT_LOG" && echo true || echo false)"
 assert_eq "split overflow comment: the failure reason names the part that failed" \
   "true" "$(grep -qF 'failed to post overflow comment part 2 of 3 (HTTP 500)' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 assert_eq "split overflow comment: only part 2 is reported failed" \
   "overflow comment part 2 of 3" "$(grep -o 'failed to post overflow comment part [0-9]* of [0-9]*' "$PRT_TEST_STDERR_FILE" | sed 's/^failed to post //' | sort -u)"
-assert_eq "split overflow comment: parts 1 and 3 were still posted" \
-  "2" "$(grep -cE '^POST [0-9]+/comments$|^POST ' "$PRT_TEST_ISSUE_COMMENT_LOG" | tr -d ' ')"
+assert_eq "split overflow comment: parts 1 and 3 were posted and part 2 was not" \
+  "1 0 1" "$(grep -c '^  | \*\*Part 1 of 3\.\*\*' "$PRT_TEST_ISSUE_COMMENT_LOG" | tr -d ' ') $(grep -c '^  | \*\*Part 2 of 3\.\*\*' "$PRT_TEST_ISSUE_COMMENT_LOG" | tr -d ' ') $(grep -c '^  | \*\*Part 3 of 3\.\*\*' "$PRT_TEST_ISSUE_COMMENT_LOG" | tr -d ' ')"
 assert_eq "split overflow comment: the failed write is logged against part 2's POST" \
   "1" "$(grep -c '^FAILED POST' "$PRT_TEST_ISSUE_COMMENT_LOG" | tr -d ' ')"
 rm -f "$PRT_TEST_CREATE_BODY_LOG" "$PRT_TEST_ISSUE_COMMENT_LOG"

@@ -315,7 +315,9 @@ prt_overflow_part_line() {
 # A body GitHub accepts whole (PRT_COMMENT_LIMIT) is one part, byte-for-byte
 # what prt_render_overflow_comment prints; a larger one is split into parts
 # (go-kure/.github#307, rules in the doc named above). Each part is rendered by
-# prt_render_overflow_comment on that part's rows. T counts the findings that
+# prt_render_overflow_comment on that part's rows, and OUTDIR/part-N.counts holds
+# "OVERFLOW WITHHELD", how many rows of each kind that part carries (the caller
+# sums the parts that posted). T counts the findings that
 # had to be shortened: their cut text exists nowhere else in the PR, so the
 # caller marks the run incomplete when T > 0.
 # Returns 1 with nothing printed on any fault, including a part that still
@@ -331,6 +333,7 @@ prt_render_overflow_parts() {
   # the parts of a split, which grow by a part line the whole body never has.
   if [ "$(printf '%s' "$body" | jq -Rs "${_PRT_OVERFLOW_JQ_DEFS}"' u16len' 2>/dev/null)" -le "$PRT_COMMENT_LIMIT" ] 2>/dev/null; then
     printf '%s\n' "$body" > "$outdir/part-1.md" || return 1
+    printf '%s %s\n' "$(jq 'length' <<< "$findings" 2>/dev/null)" "$(jq 'length' <<< "$quarantined" 2>/dev/null)" > "$outdir/part-1.counts" || return 1
     printf '1 0\n'
     return 0
   fi
@@ -395,6 +398,7 @@ prt_render_overflow_parts() {
     body="$(printf '%s\n\n%s' "$n" "$body")"
     [ "$(printf '%s' "$body" | jq -Rs "${_PRT_OVERFLOW_JQ_DEFS}"' u16len' 2>/dev/null)" -le "$PRT_COMMENT_LIMIT" ] 2>/dev/null || return 1
     printf '%s\n' "$body" > "$outdir/part-${i}.md" || return 1
+    printf '%s %s\n' "$(jq 'length' <<< "$part_f" 2>/dev/null)" "$(jq 'length' <<< "$part_q" 2>/dev/null)" > "$outdir/part-${i}.counts" || return 1
   done < <(printf '%s\n' "$plan" | sed 1d)
   [ "$i" -eq "$total" ] || return 1
   printf '%s %s\n' "$total" "$truncated"
