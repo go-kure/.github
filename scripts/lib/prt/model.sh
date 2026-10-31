@@ -890,7 +890,7 @@ _prt_runner_boundary_build() {
 # This check does not make an arbitrary prefix trustworthy: it shows that ancestors are
 # hidden and that no capability is held, nothing about what else the prefix does.
 _prt_runner_boundary_check() {
-  local ancestors=() q="$BASHPID" stat fields=() out out_file probe_pid rc=0 secs="${PRT_BOUNDARY_CHECK_SECONDS:-10}" cap="${1:-}"
+  local IFS=$' \t\n' ancestors=() q="$BASHPID" stat fields=() out out_file probe_pid rc=0 secs="${PRT_BOUNDARY_CHECK_SECONDS:-10}" cap="${1:-}"
   [[ "$secs" =~ ^[0-9]{1,3}$ ]] && [ "$secs" -ge 1 ] || secs=10
   if [[ "$cap" =~ ^[0-9]+$ ]]; then
     [ "$cap" -ge 1 ] || cap=1
@@ -900,7 +900,8 @@ _prt_runner_boundary_check() {
     [ "${#ancestors[@]}" -lt 256 ] || return 1
     # The command name is in parentheses and may hold spaces and parentheses, so the
     # fields start after the last ") ": state, parent pid, ... start time (index 19).
-    { stat="$(< "/proc/$q/stat")"; } 2> /dev/null || return 1
+    stat=""; { IFS= read -r -d '' stat < "/proc/$q/stat"; } 2> /dev/null || :
+    [ -n "$stat" ] || return 1
     read -ra fields <<< "${stat##*) }"
     [[ "${fields[1]:-}" =~ ^[0-9]+$ && "${fields[19]:-}" =~ ^[0-9]+$ ]] || return 1
     # Each ancestor is named by pid and start time: behind a PID namespace its pid number
@@ -924,7 +925,7 @@ _prt_runner_boundary_check() {
        done
        [ "$(sed -n "s/^CapEff:[[:space:]]*//p" /proc/self/status)" = 0000000000000000 ] || exit 1
        echo boundary-ok' sh \
-      "${ancestors[@]}" < /dev/null > "$out_file" 2> /dev/null
+      "${ancestors[@]}" < /dev/null >| "$out_file" 2> /dev/null
   ) &
   probe_pid=$!
   wait "$probe_pid" || rc=$?
@@ -936,31 +937,49 @@ _prt_runner_boundary_check() {
 
 # _prt_proc_start PID — sets PRT_PROC_START to the start time (field 22 of /proc/PID/stat,
 # clock ticks since boot) of a live process. Returns 0 for a live process, 1 when there is none
-# (no such pid, or a zombie or dead one), 2 when the stat cannot be parsed. A pid is reused, its
+# (no such pid, a dead one, or a zombie with no thread left), 2 when the stat cannot be read or
+# parsed. A pid is reused, its
 # start time is not: the pair names one process.
 _prt_proc_start() {
   local stat fields=() IFS=$' \t\n'
   PRT_PROC_START=""
-  { stat="$(< "/proc/$1/stat")"; } 2> /dev/null || return 1
+  # The whole file is read with `read -d ''`, not a line: a process names itself freely and the name
+  # may hold a newline. A `$(< file)` would read it all but exits a caller under `set -e` when the
+  # process has gone; read returns 1 at the end of the file, hence the `:`, and an empty result is a
+  # process that is not there.
+  stat=""; { IFS= read -r -d '' stat < "/proc/$1/stat"; } 2> /dev/null || :
+  if [ -z "$stat" ]; then
+    # Nothing was read: the process has gone, or it is there and could not be read (no descriptor
+    # left, no memory). Only the first is "not there".
+    [ ! -e "/proc/$1" ] || return 2
+    return 1
+  fi
   # The command name is in parentheses and may hold spaces and parentheses, so the fields start
   # after the last ") ": state, parent pid, ... start time (index 19).
   read -ra fields <<< "${stat##*) }"
   [[ "${fields[0]:-}" =~ ^[A-Za-z]$ && "${fields[19]:-}" =~ ^[0-9]+$ ]] || return 2
-  case "${fields[0]}" in Z|X|x) return 1 ;; esac
+  case "${fields[0]}" in
+    X|x) return 1 ;;
+    # A zombie leader whose other threads run on (a process that ended its main thread alone) is
+    # not gone: the namespace it leads is alive and a SIGKILL to its pid still reaches every thread.
+    Z) [[ "${fields[17]:-}" =~ ^[0-9]+$ ]] || return 2
+       [ "${fields[17]}" -gt 1 ] || return 1 ;;
+  esac
   PRT_PROC_START="${fields[19]}"
 }
 
 # _prt_proc_children PID — sets PRT_PROC_KIDS to the direct children of PID, as a space-separated
 # string. Returns 1 when they cannot be read: /proc/PID/task/*/children is missing (a kernel built
 # without CONFIG_PROC_CHILDREN) or the process has gone. The pattern is expanded in a subshell
-# with the glob options at their defaults, so the result does not depend on the caller's
-# `set -f`, nullglob or failglob.
+# with the glob settings at their defaults, so the result does not depend on the caller's
+# `set -f`, nullglob, failglob or GLOBIGNORE.
 _prt_proc_children() {
   local out
   PRT_PROC_KIDS=""
   out="$(
     set +f
     shopt -u nullglob failglob
+    unset GLOBIGNORE
     kids=""
     for f in "/proc/$1"/task/*/children; do
       [ -e "$f" ] || exit 1
@@ -1003,7 +1022,7 @@ _prt_runner_pid1_record() {
     esac
     # The launch subshell runs a few helpers of its own before it becomes `timeout`; until then
     # its children are not the chain.
-    comm=""; { comm="$(< "/proc/$tp/comm")"; } 2> /dev/null || true
+    comm=""; { IFS= read -r comm < "/proc/$tp/comm"; } 2> /dev/null || true
     if [ "$comm" = timeout ]; then
       if ! _prt_proc_children "$tp"; then
         _prt_proc_start "$tp" || return 3
@@ -1015,7 +1034,7 @@ _prt_runner_pid1_record() {
       fi
       if [ "${#kids[@]}" -eq 1 ]; then
         launcher="${kids[0]}"
-        comm=""; { comm="$(< "/proc/$launcher/comm")"; } 2> /dev/null || true
+        comm=""; { IFS= read -r comm < "/proc/$launcher/comm"; } 2> /dev/null || true
         # Before its exec the launcher is still a copy of `timeout`; after it, it carries the
         # name of the first word of the boundary.
         if [ "$comm" != timeout ] && [ -n "$comm" ]; then
@@ -1079,6 +1098,22 @@ _prt_runner_pid1_end() {
     sleep 0.05
   done
   return 1
+}
+
+# _prt_close_fds — closes every descriptor above 2 of the shell it runs in. It is for the subshell
+# that launches the runner, so that nothing the orchestrator holds open (a credential file, a
+# pipe) is readable behind the boundary. It is called in a subshell, because it changes that
+# shell's glob settings; the pattern is expanded with them at their defaults, so a caller's
+# `set -f` or GLOBIGNORE cannot leave the descriptors open.
+_prt_close_fds() {
+  local prt_fd_path prt_fd
+  set +f
+  shopt -u nullglob failglob
+  unset GLOBIGNORE
+  for prt_fd_path in /proc/self/fd/*; do
+    prt_fd="${prt_fd_path##*/}"
+    if [ "$prt_fd" -gt 2 ] 2>/dev/null; then eval "exec $prt_fd>&-"; fi
+  done
 }
 
 _prt_call_runner() {
@@ -1205,10 +1240,7 @@ _prt_call_runner() {
   # write of the environment file or its opening) prints bash's redirection error, which names
   # the temporary path and holds no runner content and no credential.
   (
-    for prt_fd_path in /proc/self/fd/*; do
-      prt_fd="${prt_fd_path##*/}"
-      if [ "$prt_fd" -gt 2 ] 2>/dev/null; then eval "exec $prt_fd>&-"; fi
-    done
+    _prt_close_fds
     # The runner's environment (NAME=value words, with the metered model key) never travels in
     # the arguments of `timeout` or the boundary: /proc/<pid>/cmdline is readable by every user
     # of the host, and those processes live as long as the runner. The words go NUL-separated
