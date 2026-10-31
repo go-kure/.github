@@ -324,7 +324,7 @@ prt_overflow_part_line() {
 # exceeds PRT_COMMENT_LIMIT.
 prt_render_overflow_parts() {
   local findings="$1" quarantined="$2" outdir="$3"
-  local overhead reserve budget plan total truncated n i part_f part_q body line gating_last
+  local overhead reserve budget plan total truncated n i part_f part_q body line gating_last count_f count_q
   local dummy_f='[{"severity":"","category":"","file":"","issue":""}]'
   local dummy_q='[{"severity":"","category":"","file":"","issue":"","fix":"","gating":true}]'
   [ -d "$outdir" ] || return 1
@@ -333,7 +333,9 @@ prt_render_overflow_parts() {
   # the parts of a split, which grow by a part line the whole body never has.
   if [ "$(printf '%s' "$body" | jq -Rs "${_PRT_OVERFLOW_JQ_DEFS}"' u16len' 2>/dev/null)" -le "$PRT_COMMENT_LIMIT" ] 2>/dev/null; then
     printf '%s\n' "$body" > "$outdir/part-1.md" || return 1
-    printf '%s %s\n' "$(jq 'length' <<< "$findings" 2>/dev/null)" "$(jq 'length' <<< "$quarantined" 2>/dev/null)" > "$outdir/part-1.counts" || return 1
+    count_f="$(jq 'length' <<< "$findings" 2>/dev/null)" || return 1
+    count_q="$(jq 'length' <<< "$quarantined" 2>/dev/null)" || return 1
+    printf '%s %s\n' "$count_f" "$count_q" > "$outdir/part-1.counts" || return 1
     printf '1 0\n'
     return 0
   fi
@@ -398,7 +400,9 @@ prt_render_overflow_parts() {
     body="$(printf '%s\n\n%s' "$n" "$body")"
     [ "$(printf '%s' "$body" | jq -Rs "${_PRT_OVERFLOW_JQ_DEFS}"' u16len' 2>/dev/null)" -le "$PRT_COMMENT_LIMIT" ] 2>/dev/null || return 1
     printf '%s\n' "$body" > "$outdir/part-${i}.md" || return 1
-    printf '%s %s\n' "$(jq 'length' <<< "$part_f" 2>/dev/null)" "$(jq 'length' <<< "$part_q" 2>/dev/null)" > "$outdir/part-${i}.counts" || return 1
+    count_f="$(jq 'length' <<< "$part_f" 2>/dev/null)" || return 1
+    count_q="$(jq 'length' <<< "$part_q" 2>/dev/null)" || return 1
+    printf '%s %s\n' "$count_f" "$count_q" > "$outdir/part-${i}.counts" || return 1
   done < <(printf '%s\n' "$plan" | sed 1d)
   [ "$i" -eq "$total" ] || return 1
   printf '%s %s\n' "$total" "$truncated"
