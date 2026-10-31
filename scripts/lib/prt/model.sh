@@ -939,7 +939,7 @@ _prt_runner_boundary_check() {
 # (no such pid, or a zombie or dead one), 2 when the stat cannot be parsed. A pid is reused, its
 # start time is not: the pair names one process.
 _prt_proc_start() {
-  local stat fields=()
+  local stat fields=() IFS=$' \t\n'
   PRT_PROC_START=""
   { stat="$(< "/proc/$1/stat")"; } 2> /dev/null || return 1
   # The command name is in parentheses and may hold spaces and parentheses, so the fields start
@@ -975,9 +975,10 @@ _prt_proc_children() {
 # the first process of a namespace (NSpid ends in 1): a read that finds nothing, finds more than
 # one, or finds something else is not "no process to end", it is a call whose end cannot be
 # guaranteed. Polls (PRT_RUNNER_PID1_POLLS times 50 ms, default 100): the chain is built by the
-# process that was just launched. Returns 0 when recorded, 3 when `timeout` has gone first (so the
-# namespace went with it and there is nothing to end), 1 for everything else, with the cause in
-# PRT_RUNNER_PID1_ERROR.
+# process that was just launched. Returns 0 when recorded, 3 when `timeout` has gone first (the
+# caller judges that by the exit status of `timeout`: an ordinary one means the namespace went
+# with it and there is nothing to end, 124 or 128 and above means the first process may still be
+# alive), 1 for everything else, with the cause in PRT_RUNNER_PID1_ERROR.
 # shellcheck disable=SC2034 # the PRT_RUNNER_PID1* variables are read by _prt_call_runner
 _prt_runner_pid1_record() {
   local IFS=$' \t\n' tp="$1" polls="${PRT_RUNNER_PID1_POLLS:-100}" comm launcher pid1 key nspid rc kids=()
