@@ -574,7 +574,10 @@ run them cannot pass by skipping.
 **Provenance.** A call that exits 0 is still refused unless its `provider.json` has format
 `review-run-v1`, `outcome` `completed`, and `identity.head`, `identity.base`,
 `identity.material_sha256` equal to the three variables above and `identity.input_sha256` equal to
-the sha256 of the exact request bytes sent. If the orchestrator cannot compute that digest as 64
+the sha256 of the exact request bytes sent. The orchestrator takes that digest from the request
+itself before the runner starts, never from the request file afterwards: the runner runs as the
+same user and could replace the file and vouch for the replacement in its own record. If the
+orchestrator cannot compute that digest as 64
 hex characters, the call is refused as `provenance-mismatch`: an empty or short digest never
 matches a record. The same caveat as for a findings file applies: copying
 the base and digest out of the record into the environment binds nothing.
