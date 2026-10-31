@@ -2080,16 +2080,20 @@ if [ "$PRT_MODE" = enforce ]; then
   # of its findings' existing threads must not be read as absent this run
   # even though the run itself no longer fails closed for it.
   prt_degraded_reasons | grep -q 'review-parse-failed' && incomplete_now=true
+  read_faulted=false
   for ((oi = 0; oi < n_owned; oi++)); do
-    # A read that failed on an earlier thread of this loop marked the run incomplete after the
-    # flag was set above; fold it in so a later thread is not read as absent either.
-    prt_is_incomplete && incomplete_now=true
+    # A read that failed on an earlier thread of this loop is not in the flag set above; fold it in
+    # so a later thread is not read as absent either. Only these reads count: another incomplete
+    # mark in the loop (a failed resolve, say) leaves the later threads as they were.
+    [ "$read_faulted" = true ] && incomplete_now=true
     if ! th="$(jq -ce ".[$oi]" <<< "$OWNED" 2>/dev/null)"; then
       prt_mark_incomplete "owned thread $oi could not be read (local fault); it was not reconciled for absence"
+      read_faulted=true
       continue
     fi
     if ! fp="$(jq -r '.fp' <<< "$th" 2>/dev/null)"; then
       prt_mark_incomplete "owned thread $oi: its fingerprint could not be read (local fault); it was not reconciled for absence"
+      read_faulted=true
       continue
     fi
     # IN(), not [x] | inside(y) — see the within_cap comment above; same
@@ -2098,6 +2102,7 @@ if [ "$PRT_MODE" = enforce ]; then
     # live thread as absent, so a failed read skips the thread.
     if ! already_matched="$(jq --arg fp "$fp" '. as $arr | $fp | IN($arr[])' <<< "$MATCHED_FPS" 2>/dev/null)"; then
       prt_mark_incomplete "fp=$fp: could not tell whether this run matched the thread (local fault); it was not reconciled for absence"
+      read_faulted=true
       continue
     fi
     [ "$already_matched" = true ] && continue
@@ -2109,6 +2114,7 @@ if [ "$PRT_MODE" = enforce ]; then
       ! has_human_reply="$(jq -r '.has_human_reply' <<< "$th" 2>/dev/null)" ||
       ! thread_resolved="$(jq -r '.resolved' <<< "$th" 2>/dev/null)"; then
       prt_mark_incomplete "fp=$fp: its collision, reply or resolved state could not be read (local fault); it was not reconciled for absence"
+      read_faulted=true
       continue
     fi
     first_absent_sha="$(jq -r '.first_absent_sha' <<< "$th")"

@@ -5250,8 +5250,9 @@ assert_eq "orchestrator: a failed matched-by-this-run read -> exits 1 and skips 
 rc="$(PATH="$prt_orch_shim:$PATH" REAL_JQ="$prt_orch_real_jq" JQ_FAIL_EXACT='.fp' run_orchestrator enforce 0 0 0)"
 assert_eq "orchestrator: a failed owned-thread fingerprint read -> exits 1 and skips the thread" \
   "1 true" "$rc $(grep -qF 'its fingerprint could not be read (local fault)' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
-# .resolved is the third read of the same condition, but the shim cannot reach it alone: building the
-# owned list reads .resolved first (reconcile.sh) and stops the run before the absence loop.
+# .resolved is the third read of the same condition, but the shim cannot reach it alone: the
+# gating-cap reservation (prt_reserved_ranks, reconcile.sh) reads .resolved of every owned thread
+# first and stops the run before the absence loop.
 for prt_abs_field in .collision .has_human_reply; do
   rc="$(PATH="$prt_orch_shim:$PATH" REAL_JQ="$prt_orch_real_jq" JQ_FAIL_EXACT="$prt_abs_field" run_orchestrator enforce 0 0 0)"
   assert_eq "orchestrator: a failed owned-thread $prt_abs_field read -> exits 1 and skips the thread" \
