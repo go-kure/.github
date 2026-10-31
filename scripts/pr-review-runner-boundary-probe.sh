@@ -22,7 +22,8 @@
 # Exit codes: 0 the boundary holds and the control saw the canary; 1 the boundary leaks (or
 # the call failed after the boundary was established); 2 the boundary cannot be established
 # here; 3 inconclusive: the control, a field or the mount experiment did not give a usable
-# answer, so no pass can be claimed; 4 the probe could not set itself up.
+# answer, so no pass can be claimed; 4 the probe could not set itself up (or the call was
+# refused before the stub could run, which says nothing about the boundary).
 set -uo pipefail
 
 self="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
@@ -35,14 +36,17 @@ get() { sed -n "s/^$2=//p" "$1" 2> /dev/null | head -1; }
 is_count() { [[ "${1:-}" =~ ^[0-9]{1,9}$ ]]; }
 is_caps() { [[ "${1:-}" =~ ^[0-9a-f]{16}$ ]]; }
 # environ_has FILE VALUE: does the NUL-separated environ FILE hold VALUE? Errors read as "no".
-environ_has() { { tr '\0' '\n' < "$1"; } 2> /dev/null | grep -qF -- "$2"; }
+# grep reads to the end (no -q): under pipefail a grep that quit at the first match would leave
+# tr writing into a closed pipe, and the pipeline would return 141, a match read as a miss.
+environ_has() { { tr '\0' '\n' < "$1"; } 2> /dev/null | grep -F -- "$2" > /dev/null; }
 
 # ---------------------------------------------------------------------------------------
 # stub: what a runner could reach, written to $PRT_PROBE_REPORT, then a clean answer
 # ---------------------------------------------------------------------------------------
 probe_stub() {
-  local out="" req canary a p st f s n e mnt msg rc own_ns
-  local anc_environ=0 anc_mem=0 hits=0 visible=0 fd_above2=0 mount_result=skipped own_open=0 own_marker=0
+  local out="" req canary a p st f s n e mnt msg rc own_ns pid_ns nspid key canary_state=ok
+  local pid_ns_differs=unknown
+  local anc_environ=0 anc_mem=0 hits=0 fd_above2=0 fd_std=0 mount_result=skipped own_open=0 own_marker=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --out) out="$2"; shift 2 ;;
@@ -52,11 +56,20 @@ probe_stub() {
     esac
   done
   req="$(cat)"
-  canary="$(cat "$PRT_PROBE_CANARY_FILE")"
-  for e in /proc/[0-9]*/environ; do
-    visible=$((visible + 1))
-    if environ_has "$e" "$canary"; then hits=$((hits + 1)); fi
-  done
+  # An empty canary would match every readable environment (grep -F "" matches any line): a
+  # canary that cannot be read, or is empty, is reported as such and nothing is scanned for it.
+  canary=""
+  if [ -r "${PRT_PROBE_CANARY_FILE:-}" ]; then canary="$(cat "$PRT_PROBE_CANARY_FILE")" || canary=""; else canary_state=missing; fi
+  [ -n "$canary" ] || { [ "$canary_state" != ok ] || canary_state=empty; }
+  if [ "$canary_state" = ok ]; then
+    shopt -s nullglob
+    for e in /proc/[0-9]*/environ; do
+      if environ_has "$e" "$canary"; then hits=$((hits + 1)); fi
+    done
+    shopt -u nullglob
+  else
+    hits=""
+  fi
   # The scan above only means something if it can find a known value. Look for a non-secret
   # one (the head SHA) in this process's own environment with the very same scan, so a scan
   # that fails inside the boundary (a missing tr or grep, an unreadable /proc) reads as blind.
@@ -78,14 +91,32 @@ probe_stub() {
   done
   # Every descriptor above 2 this process holds, but the ones it opens itself: the shell's hold
   # on this script and the directory handle of this very listing.
+  # Every entry is read, 0, 1 and 2 included: a listing that failed (the glob stays literal) or
+  # came back short shows as fewer than the three standard descriptors, and then the count is
+  # written empty, which the judge reads as unusable. It is never 0 for a listing that did not work.
   for p in "/proc/$$/fd"/*; do
     n="${p##*/}"
-    [ "$n" -gt 2 ] 2> /dev/null || continue
+    [[ "$n" =~ ^[0-9]{1,9}$ ]] || continue
+    case "$n" in 0|1|2) fd_std=$((fd_std + 1)); continue ;; esac
     [ -e "$p" ] || continue
     [ "$p" -ef "$self" ] && continue
     [ "$p" -ef "/proc/$$/fd" ] && continue
     fd_above2=$((fd_above2 + 1))
   done
+  [ "$fd_std" -eq 3 ] || fd_above2=""
+  # Who the stub is and which namespaces it sits in, as it sees them. Informational: the judge
+  # does not read these. Its parent-death signal cannot be read from here: PR_GET_PDEATHSIG
+  # answers only for the calling process, and a child starts with it cleared.
+  pid_ns="$(readlink /proc/self/ns/pid 2> /dev/null)" || pid_ns=""
+  nspid=""
+  while IFS=$'\t' read -r key a; do
+    if [ "$key" = "NSpid:" ]; then nspid="${a//$'\t'/\/}"; break; fi
+  done 2> /dev/null < /proc/self/status || nspid=""
+  if [ -z "$pid_ns" ] || [ -z "${PRT_PROBE_PARENT_PID_NS:-}" ]; then
+    pid_ns_differs=unknown
+  elif [ "$pid_ns" = "$PRT_PROBE_PARENT_PID_NS" ]; then pid_ns_differs=0
+  else pid_ns_differs=1
+  fi
   if [ "${PRT_PROBE_MOUNT:-skip}" = try ]; then
     # Both namespace names must have been read, and differ, before anything is mounted.
     own_ns="$(readlink /proc/self/ns/mnt 2> /dev/null)" || own_ns=""
@@ -122,7 +153,11 @@ probe_stub() {
     echo "cap_bnd=$(sed -n 's/^CapBnd:[[:space:]]*//p' /proc/self/status)"
     echo "no_new_privs=$(sed -n 's/^NoNewPrivs:[[:space:]]*//p' /proc/self/status)"
     echo "proc_mount=$mount_result"
-    echo "pids_visible=$visible"
+    echo "canary_state=$canary_state"
+    echo "nspid=${nspid:-unknown}"
+    echo "pid_ns_differs=$pid_ns_differs"
+    echo "user=$(id -un 2> /dev/null || echo unknown)"
+    echo "groups=$(id -Gn 2> /dev/null | tr ' ' ',')"
     echo "own_environ_open=$own_open"
     echo "own_environ_marker=$own_marker"
     echo "own_env_names=$(compgen -e | sort | tr '\n' ' ')"
@@ -160,8 +195,10 @@ probe_judge() {
       fi
     done
     # A scan that found nothing counts only if it could have found something: inside the
-    # boundary it must see a process, open its own environ and find a known value in it.
-    for k in pids_visible own_environ_open own_environ_marker; do
+    # boundary it must open its own environ and find a known value in it.
+    v="$(get "$b" canary_state)"
+    [ "$v" = ok ] || unusable+=("boundary: the canary was ${v:-not reported} in the stub, so nothing was looked for")
+    for k in own_environ_open own_environ_marker; do
       v="$(get "$b" "$k")"
       if ! is_count "$v"; then unusable+=("boundary: $k is '${v:-empty}', not a number")
       elif [ "$v" -lt 1 ]; then unusable+=("boundary: $k is $v, so the scan inside the boundary may be blind")
@@ -200,27 +237,35 @@ probe_judge() {
 # run
 # ---------------------------------------------------------------------------------------
 probe_run() {
-  if [ -z "${PRT_PROBE_REEXEC:-}" ]; then
+  # The re-exec carries the canary itself as its marker: a flag a caller could inherit (set to 1,
+  # or to anything else) must not skip the swap and let a real token stand in as the canary. The
+  # marker counts only when it has the canary's shape and is what the token variable holds.
+  local canary_re='^probe-canary-[0-9a-f]{32}$'
+  if ! [[ "${PRT_PROBE_REEXEC:-}" =~ $canary_re && "${PRT_GH_TOKEN:-}" = "${PRT_PROBE_REEXEC:-}" ]]; then
     # A real token in the caller's environment is never used or printed: the canary replaces it.
     local canary
     canary="probe-canary-$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
-    exec env "PRT_GH_TOKEN=$canary" "GITHUB_TOKEN=$canary" "GH_TOKEN=$canary" PRT_PROBE_REEXEC=1 bash "$self" "$@"
+    if ! [[ "$canary" =~ $canary_re ]]; then
+      echo "probe: no random canary could be made" >&2
+      return 4
+    fi
+    exec env "PRT_GH_TOKEN=$canary" "GITHUB_TOKEN=$canary" "GH_TOKEN=$canary" "PRT_PROBE_REEXEC=$canary" bash "$self" "$@"
   fi
   local here work q stat k call_rc=0 failure line
   local -a ancestors=() fields=()
   here="$(dirname "$self")"
   # shellcheck source=/dev/null
-  source "$here/lib/prt/model.sh"
+  source "$here/lib/prt/model.sh" || { echo "probe: cannot load the orchestrator's model functions" >&2; return 4; }
 
   work="$(mktemp -d)" || { echo "probe: no temporary directory" >&2; return 4; }
   # shellcheck disable=SC2064 # expand now: $work is function-local and gone when the trap fires
   trap "rm -rf '$work'" EXIT
   umask 077
-  printf '%s' "$PRT_GH_TOKEN" > "$work/canary"
+  printf '%s' "$PRT_GH_TOKEN" > "$work/canary" || { echo "probe: cannot write the canary file" >&2; return 4; }
 
   echo "lane: kernel=$(uname -sr) uid=$(id -u) os=$(sed -n 's/^PRETTY_NAME=//p' /etc/os-release 2> /dev/null | tr -d '"')"
   echo "lane: $(grep -E '^(Seccomp|NoNewPrivs):' /proc/self/status | tr '\n\t' '  ')"
-  echo "lane: user=$(id -un 2> /dev/null || echo n/a) groups=$(id -Gn 2> /dev/null | tr ' ' ',')"
+  echo "lane: orchestrator user=$(id -un 2> /dev/null || echo n/a) groups=$(id -Gn 2> /dev/null | tr ' ' ',')"
   for k in kernel/yama/ptrace_scope kernel/apparmor_restrict_unprivileged_userns kernel/unprivileged_userns_clone \
     kernel/unprivileged_userns_apparmor_policy user/max_user_namespaces user/max_pid_namespaces; do
     echo "lane: $k=$(cat "/proc/sys/$k" 2> /dev/null || echo n/a)"
@@ -248,8 +293,10 @@ probe_run() {
   done
 
   # The stand-in for review-run: this script's stub mode.
-  printf '#!/bin/sh\nexec bash %q stub "$@"\n' "$self" > "$work/review-run"
-  chmod 755 "$work/review-run"
+  if ! { printf '#!/bin/sh\nexec bash %q stub "$@"\n' "$self" > "$work/review-run" && chmod 755 "$work/review-run"; }; then
+    echo "probe: cannot write the stand-in runner" >&2
+    return 4
+  fi
 
   export PRT_HEAD_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
   export PRT_REVIEW_BASE_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
@@ -262,11 +309,13 @@ probe_run() {
     return 4
   fi
   export PRT_PROBE_PARENT_MNT_NS
+  PRT_PROBE_PARENT_PID_NS="$(readlink /proc/self/ns/pid 2> /dev/null)" || PRT_PROBE_PARENT_PID_NS=""
+  export PRT_PROBE_PARENT_PID_NS
   export PRT_ASSESS_RUNNER="$work/review-run"
   export PRT_ASSESS_RUNNER_BACKEND=probe
   export PRT_ASSESS_RUNNER_ROOT="$PWD"
   export PRT_ASSESS_RUNNER_SECONDS=60
-  export PRT_ASSESS_RUNNER_ENV="PRT_PROBE_REPORT PRT_PROBE_CANARY_FILE PRT_PROBE_ANCESTORS PRT_PROBE_MOUNT PRT_PROBE_PARENT_MNT_NS PRT_HEAD_SHA PRT_REVIEW_BASE_SHA PRT_REVIEW_MATERIAL_SHA256"
+  export PRT_ASSESS_RUNNER_ENV="PRT_PROBE_REPORT PRT_PROBE_CANARY_FILE PRT_PROBE_ANCESTORS PRT_PROBE_MOUNT PRT_PROBE_PARENT_MNT_NS PRT_PROBE_PARENT_PID_NS PRT_HEAD_SHA PRT_REVIEW_BASE_SHA PRT_REVIEW_MATERIAL_SHA256"
   export PRT_LAST_MODEL_FAILURE_FILE="$work/failure"
   unset PRT_ASSESS_RUNNER_BOUNDARY PRT_ASSESS_RUNNER_BOUNDARY_CMD
 
@@ -278,13 +327,32 @@ probe_run() {
   failure="$(cat "$work/failure" 2> /dev/null || true)"
   if [ "$call_rc" -ne 0 ] || [ ! -s "$work/report.boundary" ]; then
     echo "boundary: call failed rc=$call_rc reason=${failure:-none}"
-    while IFS= read -r line; do echo "boundary: $line"; done < "$work/call.stderr"
-    if [ "$failure" = runner-boundary ]; then
-      echo "RESULT: not-established (the default boundary cannot be set up or fails its own check on this lane)"
-      return 2
-    fi
-    echo "RESULT: fail (the call failed after the boundary was established: ${failure:-no reason recorded})"
-    return 1
+    # The orchestrator's own words, with every absolute path made anonymous: a message can name
+    # its temporary directory, which is nothing this run's log should carry.
+    # A sed that fails prints nothing, which errs on the side of saying less.
+    while IFS= read -r line; do echo "boundary: $line"; done \
+      < <(sed -E 's#/[^[:space:]:"'"'"')]+#<path>#g' "$work/call.stderr" 2> /dev/null)
+    case "$failure" in
+      runner-boundary)
+        echo "RESULT: not-established (the default boundary cannot be set up or fails its own check on this lane)"
+        return 2 ;;
+      runner-*|provenance-mismatch)
+        # The boundary was established and the stub ran (or should have): the call failed after it.
+        echo "RESULT: fail (the call failed after the boundary was established: $failure)"
+        return 1 ;;
+      "")
+        if [ "$call_rc" -eq 0 ]; then
+          echo "RESULT: inconclusive (the call succeeded but the stub left no report)"
+          return 3
+        fi
+        echo "RESULT: setup-failed (the call failed with no reason recorded)"
+        return 4 ;;
+      *)
+        # backend-config, deadline-exhausted, local-tempdir: refused before or around the boundary,
+        # nothing here says the boundary was established. Not a verdict on it.
+        echo "RESULT: setup-failed (the call was refused before the stub could run: $failure)"
+        return 4 ;;
+    esac
   fi
 
   # Control: same stub, same scrub and descriptor closing, no boundary, no mount experiment.
