@@ -7572,6 +7572,12 @@ prt_ar_hb_stopped() {
   a="$(cat "$PRT_TEST_RUNNER_LOG.hb")"; sleep 1; b="$(cat "$PRT_TEST_RUNNER_LOG.hb")"
   [ "$a" = "$b" ] && echo true || echo false
 }
+# prt_ar_hb_not_running: nothing is advancing the counter, whether or not it ever started.
+prt_ar_hb_not_running() {
+  local a b
+  a="$(cat "$PRT_TEST_RUNNER_LOG.hb" 2>/dev/null)"; sleep 1; b="$(cat "$PRT_TEST_RUNNER_LOG.hb" 2>/dev/null)"
+  [ "$a" = "$b" ] && echo true || echo false
+}
 prt_ar_child_gone() { # label
   assert_eq "$1: the stub's child was seen running" "true" "$([ -s "$PRT_TEST_RUNNER_LOG.hb" ] && echo true || echo false)"
   assert_eq "$1: the runner's own child is gone with it" "true" "$(prt_ar_hb_stopped)"
@@ -7820,10 +7826,36 @@ chmod 755 "$prt_ar_dir/bin-twokids/unshare"
 PRT_TEST_RUNNER_MODE=heartbeat
 PRT_TEST_MODEL_BUDGET_SECONDS=""
 rc="$(PATH="$prt_ar_dir/bin-twokids:$PATH" run_orchestrator advisory 0 0 0)"
+# The wrapper starts its extra child a few milliseconds before it execs `unshare`, so a poll can
+# land in that gap and see the extra child alone: it is not a namespace's first process, which the
+# finder refuses with its own cause. Either way the call is abandoned and the cause is named. The
+# abandonment comes within one poll of the launch, before the runner's heartbeat may have started,
+# so the check is that nothing is running, not that something was seen running first.
 assert_eq "assess runner, the launcher has two children: degraded as runner-lifetime, the run still exits 0, the message names the cause" \
-  "0 true true" "$rc $(prt_ar_reason runner-lifetime) $(grep -qF 'namespace launcher has more than one child' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
-assert_eq "assess runner, the launcher has two children: the abandoned runner's tree is stopped" "true" "$(prt_ar_hb_stopped)"
+  "0 true true" "$rc $(prt_ar_reason runner-lifetime) $(grep -qE 'namespace launcher has more than one child|not the first process of a namespace' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "assess runner, the launcher has two children: the abandoned runner's tree is stopped" "true" "$(prt_ar_hb_not_running)"
 pkill -KILL -f "sleep 20" 2>/dev/null
+PRT_TEST_RUNNER_MODE=probe
+
+# `timeout` gone before the first process is named is "nothing to end" only while its bound was
+# running. A launcher that never starts a child keeps the finder polling; the bound fires, `timeout`
+# ends, and the call is abandoned as runner-lifetime, not read as a call with nothing to end. The
+# polling is lengthened so that it outlasts the bound (6 s here).
+rm -f "$PRT_TEST_RUNNER_LOG".*
+mkdir -p "$prt_ar_dir/bin-slowlauncher"
+mkfifo "$prt_ar_dir/slow.fifo"
+# The boundary preflight runs its probe (a `sh`) through the launcher and must pass; only the
+# call's own command (a `bash` reader) is stalled, with no child ever started.
+# shellcheck disable=SC2016 # script text for the wrapper, not an expansion
+printf '#!/bin/bash\nfor a in "$@"; do\n  if [ "$a" = bash ]; then read -r -t 30 _ 0<> "%s"; exit 0; fi\ndone\nexec %s "$@"\n' \
+  "$prt_ar_dir/slow.fifo" "$(command -v unshare)" > "$prt_ar_dir/bin-slowlauncher/unshare"
+chmod 755 "$prt_ar_dir/bin-slowlauncher/unshare"
+PRT_TEST_RUNNER_MODE=heartbeat
+PRT_TEST_MODEL_BUDGET_SECONDS=11
+rc="$(PATH="$prt_ar_dir/bin-slowlauncher:$PATH" PRT_RUNNER_PID1_POLLS=400 PRT_MODEL_TIMEOUT_FLOOR=1 run_orchestrator advisory 0 0 0)"
+assert_eq "assess runner, the first process is not named before the bound ends: degraded as runner-lifetime, the message names the cause" \
+  "0 true true" "$rc $(prt_ar_reason runner-lifetime) $(grep -qF 'ended after its bound, before the first process was named' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_MODEL_BUDGET_SECONDS=""
 PRT_TEST_RUNNER_MODE=probe
 
 # The finder on its own, against process trees the test builds. Short polling keeps the cases quick.
@@ -7842,7 +7874,36 @@ prt_ar_pid1_case() { # label, expected rc, expected error fragment (or "-"), set
   fi
 }
 prt_ar_pid1_case "a process that is not timeout" 1 "no namespace first process was found in time" 'sleep 30 & tp=$!; sleep 0.1'
-prt_ar_pid1_case "a pid that is not there" 3 - 'tp=999999'
+# A pid above the kernel's largest pid cannot exist, whatever the host's pid_max.
+prt_ar_pid1_case "a pid that is not there" 3 - 'tp=$(< /proc/sys/kernel/pid_max)'
+# A chain of the right shape whose last link is not a namespace's first process: scripts named for
+# the processes of the chain (the kernel names a script's process after the script).
+mkdir -p "$prt_ar_dir/chain-ok" "$prt_ar_dir/chain-other"
+printf '#!/bin/sh\n"%s/chain-ok/unshare" &\nwait\n' "$prt_ar_dir" > "$prt_ar_dir/chain-ok/timeout"
+printf '#!/bin/sh\nsleep 8 &\nwait\n' > "$prt_ar_dir/chain-ok/unshare"
+printf '#!/bin/sh\n"%s/chain-other/other" &\nwait\n' "$prt_ar_dir" > "$prt_ar_dir/chain-other/timeout"
+printf '#!/bin/sh\nsleep 8 &\nwait\n' > "$prt_ar_dir/chain-other/other"
+chmod 755 "$prt_ar_dir"/chain-ok/* "$prt_ar_dir"/chain-other/*
+prt_ar_pid1_case "a child of the launcher that is not a namespace's first process" 1 \
+  "not the first process of a namespace" "\"$prt_ar_dir/chain-ok/timeout\" & tp=\$!; sleep 0.2"
+prt_ar_pid1_case "a timeout process that runs something other than the launcher" 1 \
+  "runs something other than the namespace launcher" "\"$prt_ar_dir/chain-other/timeout\" & tp=\$!; sleep 0.2"
+pkill -KILL -f "sleep 8" 2>/dev/null
+# The end of the first process: gone after the kill is 0; still there after it is 1. The second
+# case turns the kill into a no-op, so the process stays and the wait for it runs out.
+prt_ar_pid1_end_case() { # label, expected rc, prefix command for the child shell
+  local out
+  out="$(bash -c '
+    source "$1/scripts/lib/prt/model.sh"
+    sleep 30 & p=$!
+    _prt_proc_start "$p" && PRT_RUNNER_PID1="$p" && PRT_RUNNER_PID1_START="$PRT_PROC_START"
+    eval "$2"
+    _prt_runner_pid1_end; echo "rc=$?"
+    builtin kill -KILL "$p" 2>/dev/null' bash "$ROOT" "$3" 2>/dev/null)"
+  assert_eq "pid1 end, $1: rc $2" "true" "$([[ "$out" == "rc=$2" ]] && echo true || echo false)"
+}
+prt_ar_pid1_end_case "the process is killed and gone" 0 ':'
+prt_ar_pid1_end_case "the process is still there after the kill" 1 'kill() { return 0; }'
 fi
 
 # go-kure/.github#309: the default prefix sets no_new_privs for every user, not only for root. The
