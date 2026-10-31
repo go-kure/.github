@@ -1399,7 +1399,9 @@ and point here instead of restating them.
   A freshness check that finds the head stale (the run is superseded, recorded as degraded) or that
   fails (the pull request could not be read, recorded as incomplete) stops the remaining parts.
   `OVERFLOW_COMMENT_POSTED` is true only when every part posted, so the clean-verdict supersede never
-  points at a comment that is missing or partial.
+  points at a comment that is missing or partial. When only some parts posted, the supersede counts
+  the rows in the parts that did post as having a durable outcome and reports only the rows in the
+  other parts as not reaching one.
 
 ### How long a withheld finding stays withheld (go-kure/.github#148)
 
