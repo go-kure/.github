@@ -491,7 +491,7 @@ Inputs, all from the environment:
 | `PRT_ASSESS_RUNNER_SECONDS` | Its deadline per call (default 600), clamped to what is left of the run's model deadline (`PRT_MODEL_DEADLINE_EPOCH`, the same one the proxy calls use). A call is refused as `deadline-exhausted` when less than the 30-second floor remains, checked both before the boundary check and again after it, so the time the check used counts (the floor is `PRT_MODEL_TIMEOUT_FLOOR`, default 30; a value that is not a whole number of at most nine digits refuses the call as `backend-config`). Must be a whole number of seconds, at most nine digits and read as decimal (`060` is 60). It bounds the runner's own timed run; a separate outer bound covers the whole process tree (see "Outer time bound"). |
 | `PRT_ASSESS_RUNNER_ENV` | Variable names the runner may inherit, separated by any whitespace, newlines included (action input `assess-runner-env`), typically the metered model key. Every listed name must be set in the step, or the run fails at start naming it. |
 | `PRT_ASSESS_RUNNER_BOUNDARY`, `PRT_ASSESS_RUNNER_BOUNDARY_CMD` | The process boundary (action inputs `assess-runner-boundary`, `assess-runner-boundary-cmd`): `pidns` (the default, also when empty) or `cmd` with the command words in the second variable. Any other value, or `cmd` with no words, is refused at start. See "Process boundary". |
-| `PRT_BOUNDARY_CHECK_SECONDS` | The most seconds the boundary's check may run before each call (default 10), further cut to what the run's model deadline leaves after the runner's own time. A check that does not finish is a failed check: the call is refused as `runner-boundary`. |
+| `PRT_BOUNDARY_CHECK_SECONDS` | The most seconds the boundary's check may run before each call (default 10; a value that is not 1 to 3 digits, or is below 1, falls back to 10), further cut to what the run's model deadline leaves after the runner's own time. A check that does not finish is a failed check: the call is refused as `runner-boundary`. |
 | `PRT_HEAD_SHA`, `PRT_REVIEW_BASE_SHA`, `PRT_REVIEW_MATERIAL_SHA256` | The identity the runner's record must carry; the last two are defined under "Review from a findings file". All required: a missing one fails the run at start. |
 
 **The request.** System and user text are written to a temporary file and reach the runner on
@@ -717,6 +717,15 @@ in a given chunk was reviewed is `REVIEW_INCOMPLETE` only when that happened to 
 run; see the review-call section below for the exact rule. **Never dual-mark the same event with both** — `prt_mark_incomplete`'s file is
 read unconditionally by the exit gate below, so dual-marking a degraded event would force `exit 1`
 regardless, defeating the point of moving it to degraded.
+
+A read that decides what is posted or reconciled and fails for a local reason (a `jq` fault) is
+`REVIEW_INCOMPLETE` too, and the reason names what could not be read: a false-positive reply's
+reasoning, the findings an advisory comment lists, the owned threads of the absence pass, and the
+PR metadata (a response that is not a JSON object stops the run). The reads that stay unchecked are
+those of a field from an object already read once, and the ones whose empty value fails the next
+check; a test lists each with the reason, and a new unchecked `jq`, `gh` or `prt_gh_*` assignment
+fails it until it is checked or listed. The scan covers `jq`, `gh` and `prt_gh_*` substitutions
+only; the substitutions of other helper functions are not scanned.
 
 Both are rendered as their own section in the job summary (`render.sh:87-121`) and checked at
 exit (`pr-review-threads.sh`'s tail): a non-empty `REVIEW_INCOMPLETE` state makes the top-level
@@ -1374,8 +1383,9 @@ and point here instead of restating them.
   render, so nothing over the limit is posted.
 - **Order.** Merge-gating withheld rows come first across the parts, then the other rows by severity.
   Size never reorders rows.
-- **What part 1 says.** It says how many parts there are, which parts hold the merge-gating rows and,
-  when a finding had to be shortened, that it was. A later part points back to part 1.
+- **What part 1 says.** In a split, part 1 says how many parts there are and which hold the
+  merge-gating rows, and a later part points back to part 1. A comment that is not split carries no
+  such note. Either kind says so when a finding had to be shortened.
 - **A single finding larger than any part** is shortened, never dropped, and the shortened text ends
   with a marker that says how much was omitted. The omitted text is not in any posted part, so the run
   is also marked `REVIEW_INCOMPLETE`.
@@ -1384,7 +1394,7 @@ and point here instead of restating them.
   `failed to post overflow comment part 2 of 3 (HTTP 500)`; the later parts are still posted. A
   freshness check that finds the head stale (recorded as degraded) or that fails (recorded as
   incomplete) stops the remaining parts. A superseded clean verdict never points at rows that were
-  not posted.
+  not posted, and when a finding was shortened it says that the omitted text is in no part.
 
 ### How long a withheld finding stays withheld (go-kure/.github#148)
 

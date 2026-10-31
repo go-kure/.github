@@ -275,8 +275,7 @@ _PRT_OVERFLOW_JQ_DEFS='
 '
 
 # GitHub rejects an issue comment body past 65,536 characters (HTTP 422).
-# PRT_OVERFLOW_PART_MAX is the size a part is planned to: 5,536 units below the
-# limit, a margin for what grows after the rows are measured. The rules for the
+# PRT_OVERFLOW_PART_MAX is the most a part is planned to hold, below the limit. The rules for the
 # split (row order, what part 1 says, shortening) are written once, in
 # docs/pr-review-threads.md, "The overflow and withheld comment is split when it
 # would pass GitHub's limit"; this file implements them and restates none.
@@ -329,8 +328,8 @@ prt_render_overflow_parts() {
   local dummy_q='[{"severity":"","category":"","file":"","issue":"","fix":"","gating":true}]'
   [ -d "$outdir" ] || return 1
   body="$(prt_render_overflow_comment "$findings" "$quarantined")" || return 1
-  # A body GitHub accepts whole stays one comment: the 60,000 margin below is for
-  # the parts of a split, which grow by a part line the whole body never has.
+  # A body GitHub accepts whole stays one comment: the 60,000 cap applies to the
+  # parts of a split only.
   if [ "$(printf '%s' "$body" | jq -Rs "${_PRT_OVERFLOW_JQ_DEFS}"' u16len' 2>/dev/null)" -le "$PRT_COMMENT_LIMIT" ] 2>/dev/null; then
     printf '%s\n' "$body" > "$outdir/part-1.md" || return 1
     count_f="$(jq 'length' <<< "$findings" 2>/dev/null)" || return 1
@@ -660,7 +659,8 @@ EOF
 
 # prt_render_clean_comment_superseded SHA FINDING_COUNT THREADS_WRITTEN \
 #                                      SUPPRESSED_COUNT OVERFLOW_COUNT \
-#                                      QUARANTINED_COUNT NONE_ANCHORED_COUNT
+#                                      QUARANTINED_COUNT NONE_ANCHORED_COUNT \
+#                                      SHORTENED_COUNT
 # — rewrites (never deletes) a prior clean-verdict comment once a later run
 # on the same PR finds something. Deleting would destroy the audit trail
 # that SHA really was reviewed clean. Every branch ends with the
@@ -690,8 +690,12 @@ EOF
 #      .github#180 codex review) — must not point at an advisory comment that
 #      was never posted (that POST requires overflow or quarantined > 0).
 prt_render_clean_comment_superseded() {
-  local sha="$1" count="$2" threads_written="$3" suppressed="$4" overflow="$5" quarantined="$6" none_anchored="${7:-0}"
+  local sha="$1" count="$2" threads_written="$3" suppressed="$4" overflow="$5" quarantined="$6" none_anchored="${7:-0}" shortened="${8:-0}"
   local threads_carry=$((threads_written + none_anchored))
+  # The advisory comments are the readers' next stop, so a finding shortened there says so: its
+  # omitted text is in no part of them.
+  local shortened_note=""
+  [ "$shortened" -eq 0 ] || shortened_note=" ${shortened} of them were shortened; the omitted text is in no part."
   local advisory_count=$((overflow + quarantined))
   # A finding whose CREATE failed (network error, non-422 rejection) is
   # counted in none of threads_written/suppressed/overflow/quarantined —
@@ -739,7 +743,7 @@ EOF
 A later review of \`${sha}\` reported **${count} finding(s)**. ${lead}
 ${suppressed} suppressed (false positive), ${overflow} beyond the gating cap,
 ${quarantined} withheld (ambiguous fingerprint) — see the advisory comment(s)
-on this PR for the withheld/overflow finding bodies.
+on this PR for the withheld/overflow finding bodies.${shortened_note}
 
 ${PRT_MARKER_STATE_SUPERSEDED}
 ${PRT_MARKER_CLEAN}

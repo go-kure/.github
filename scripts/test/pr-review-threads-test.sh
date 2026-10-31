@@ -43,6 +43,25 @@ assert_eq() {
   fi
 }
 
+# prt_test_real_jq — prints the first jq on PATH that a PATH shim can exec. `command -v jq` can name a
+# version-manager shim (for example mise's) that looks `jq` up on PATH again, finds the test's own
+# shim and loops forever, so a jq under a `shims` directory, or one that resolves to the version
+# manager itself, is skipped. Fails with no output when there is none: falling back to
+# `command -v jq` would pick the shim the loop just excluded.
+prt_test_real_jq() {
+  local path_dirs dir cand
+  IFS=: read -r -a path_dirs <<< "$PATH"
+  for dir in "${path_dirs[@]}"; do
+    cand="$dir/jq"
+    [ -x "$cand" ] || continue
+    case "$cand" in */shims/*) continue ;; esac
+    case "$(basename "$(readlink -f "$cand")")" in mise | asdf | rtx) continue ;; esac
+    printf '%s\n' "$cand"
+    return 0
+  done
+  return 1
+}
+
 assert_ne() {
   local desc="$1" a="$2" b="$3"
   if [ "$a" != "$b" ]; then
@@ -277,6 +296,101 @@ assert_eq "swallow guard: the scanner reports jq, gh and prt_gh_ sites with thei
 rm -rf "$prt_swallow_dir"
 unset prt_swallow_dir prt_swallow_allow
 unset -f prt_swallow_scan
+
+# A plain `var="$(jq ...)"` (or gh, or prt_gh_*) whose status nothing tests reads a failed call as an
+# empty value, and the orchestrator (set -uo pipefail, no -e) carries on with it. The rule is in
+# docs/pr-review-threads.md ("Failures degrade"): a read whose empty value changes what is posted or
+# reconciled is checked on its own status. The scanner below lists every other site, and the
+# allow-list names each one with the reason an empty value is harmless there. A new unchecked site
+# fails this guard until it is checked or listed.
+prt_unchecked_dir="$(mktemp -d)"
+cat > "$prt_unchecked_dir/scan.awk" <<'AWK'
+# Prints FILE:LINE:VARIABLE for each plain assignment of a jq/gh/prt_gh_* command substitution whose
+# status is not tested on the same statement (no `||`/`&&` inside or after it). A statement may span
+# lines (a multi-line jq program); single-quoted spans are dropped before parentheses are counted.
+function start_match(line) {
+  return line ~ /^[[:space:]]*[A-Za-z_][A-Za-z_0-9]*="\$\((jq|gh|prt_gh_[a-z_]+)([[:space:]]|\))/
+}
+{
+  if ($0 ~ /^[[:space:]]*#/) next
+  if (!in_stmt) {
+    if (!start_match($0)) next
+    in_stmt = 1; depth = 0; start = FNR; handled = 0
+    var = $0; sub(/^[[:space:]]*/, "", var); sub(/=.*/, "", var)
+    sq = 0
+  }
+  clean = ""
+  for (i = 1; i <= length($0); i++) {
+    c = substr($0, i, 1)
+    if (c == "'") { sq = !sq; continue }
+    if (!sq) clean = clean c
+  }
+  n = length(clean)
+  for (i = 1; i <= n; i++) {
+    c = substr(clean, i, 1)
+    if (c == "\\") { i++; continue }
+    if (c == "(") depth++
+    else if (c == ")") {
+      depth--
+      if (depth == 0) {
+        rest = substr(clean, i + 1)
+        if (!handled && rest !~ /^"?[[:space:]]*(\|\||&&)/) printf "%s:%d:%s\n", FILENAME, start, var
+        in_stmt = 0
+        break
+      }
+    } else if ((c == "|" && substr(clean, i + 1, 1) == "|") || (c == "&" && substr(clean, i + 1, 1) == "&")) {
+      handled = 1; i++
+    }
+  }
+}
+AWK
+prt_unchecked_scan() { # FILE... -> FILE:VARIABLE for each unchecked substitution
+  awk -f "$prt_unchecked_dir/scan.awk" "$@" | sed -E 's|^.*/([^/:]*):[0-9]+:|\1:|'
+}
+# One entry per site (a repeated name is a repeated site). Every list below reads a field of an
+# object an earlier, checked step produced; an empty value from a failed read fails the checks
+# that follow it (a field compared to true, a non-empty id, a fingerprint match) or is the fail-safe
+# path of the next line:
+#   meta_json      validated as an object right after its fetch: PR_TITLE PR_DESC base_sha
+#   row            prt_persist_owned_collision's argument, a checked jq -ce result of its caller
+#   owned_match    the checked `jq -c ... | .[0] // empty` read of $OWNED, 13 field reads
+#   th             the checked `jq -ce ".[$oi]"` read of the owned thread in the absence loop
+#   cur_resp       a failed GET gives an empty body, which the next `-z "$cur_body"` test reports
+#   stamp_known_stale  anything other than the word false is taken as true (re-stamp, never resolve)
+prt_unchecked_allow="
+pr-review-threads.sh:PR_TITLE pr-review-threads.sh:PR_DESC pr-review-threads.sh:base_sha
+pr-review-threads.sh:db_id pr-review-threads.sh:stale_fas pr-review-threads.sh:cfp
+pr-review-threads.sh:cur_resp pr-review-threads.sh:cur_resp pr-review-threads.sh:cur_resp
+pr-review-threads.sh:thread_resolved pr-review-threads.sh:resolved_by_bot pr-review-threads.sh:has_human_reply
+pr-review-threads.sh:owned_collision pr-review-threads.sh:owned_collision_eff pr-review-threads.sh:owned_content_fp
+pr-review-threads.sh:owned_fas pr-review-threads.sh:can_resolve pr-review-threads.sh:can_unresolve
+pr-review-threads.sh:thread_id pr-review-threads.sh:db_id pr-review-threads.sh:thread_id pr-review-threads.sh:db_id
+pr-review-threads.sh:fp pr-review-threads.sh:collision pr-review-threads.sh:has_human_reply
+pr-review-threads.sh:thread_resolved pr-review-threads.sh:first_absent_sha pr-review-threads.sh:thread_id
+pr-review-threads.sh:first_comment_db_id pr-review-threads.sh:content_fp pr-review-threads.sh:viewer_can_resolve
+pr-review-threads.sh:stamp_known_stale
+"
+prt_unchecked_found="$(prt_unchecked_scan "$ROOT/scripts/pr-review-threads.sh" "$LIB"/*.sh "$ROOT/scripts/eval/review-adapter.sh" | sort | tr '\n' ' ')"
+assert_eq "unchecked-read guard: every jq/gh substitution without a status test is a listed site" \
+  "$(printf '%s\n' $prt_unchecked_allow | sort | tr '\n' ' ')" "$prt_unchecked_found"
+assert_eq "unchecked-read guard: the scan finds the listed sites (not a vacuous pass)" \
+  "true" "$([ "$(wc -w <<< "$prt_unchecked_found")" -ge 30 ] && echo true || echo false)"
+cat > "$prt_unchecked_dir/probe.sh" <<'PROBE'
+a="$(jq -r '.a' <<< "$o")"
+b="$(jq -r '.b' <<< "$o")" || return 1
+c="$(jq -r '.c' <<< "$o" 2>/dev/null || true)"
+# d="$(jq -r '.d' <<< "$o")" is a comment
+if ! e="$(jq -r '.e' <<< "$o")"; then :; fi
+  f="$(jq -r --arg x "$y" \
+    '(.f) and
+     ((.g // []) | index($x) != null)' <<< "$o" 2>/dev/null)"
+h="$(gh api /h)"
+PROBE
+assert_eq "unchecked-read guard: the scanner reports a bare read and a multi-line one, not a checked, fallback or commented one" \
+  "probe.sh:a probe.sh:f probe.sh:h" "$(prt_unchecked_scan "$prt_unchecked_dir/probe.sh" | tr '\n' ' ' | sed 's/ $//')"
+find "$prt_unchecked_dir" -delete
+unset prt_unchecked_dir prt_unchecked_allow prt_unchecked_found
+unset -f prt_unchecked_scan
 
 # prt_json_same_length A B: 0 same length, 1 different, 3 when either query failed or gave no
 # number (so two failures never compare equal).
@@ -1561,6 +1675,16 @@ gql_fault_out="$(
 )"
 assert_eq "gh.sh: a failed errors[] query is a failure, not 'no errors' (no .data printed)" "rc=1" "$gql_fault_out"
 unset gql_fault_out
+# A variables argument that is not JSON makes the payload build fail. The call must fail without
+# sending a request whose body is empty.
+gql_sent="$(mktemp)"
+rm -f "$gql_sent"
+# shellcheck disable=SC2329,SC2317
+fake_curl_records_call() { : > "$gql_sent"; echo 200; }
+PRT_CURL=fake_curl_records_call PRT_GH_TOKEN=x prt_gh_graphql 'query{x}' 'not json' >/dev/null 2>&1
+assert_eq "gh.sh: a variables argument that is not JSON fails the call and sends no request" \
+  "1 false" "$? $([ -e "$gql_sent" ] && echo true || echo false)"
+unset gql_sent
 
 # go-kure/.github#256: a rate-limited isResolved re-read inside a lift's
 # prt_retry must leave its Retry-After where prt_retry reads it.
@@ -1968,6 +2092,14 @@ assert_eq "prt_render_clean_comment_superseded: mixed -> still points at the adv
   "true" "$(grep -qF 'advisory comment' <<< "$superseded_mixed" && echo true || echo false)"
 assert_eq "prt_render_clean_comment_superseded: mixed -> states the overflow/quarantined breakdown" \
   "true" "$(grep -qF '1 beyond the gating cap' <<< "$superseded_mixed" && grep -qF '1 withheld' <<< "$superseded_mixed" && echo true || echo false)"
+# A finding shortened in the advisory comments has its omitted text in no part of them, and the
+# superseded verdict says so; with none shortened it adds nothing.
+superseded_shortened="$(prt_render_clean_comment_superseded 'def4567890def4567890def4567890def4567890' 3 1 0 1 1 0 2)"
+assert_eq "prt_render_clean_comment_superseded: 2 shortened -> names the count and says the omitted text is in no part" \
+  "true" "$(grep -qF '2 of them were shortened; the omitted text is in no part.' <<< "$superseded_shortened" && echo true || echo false)"
+assert_eq "prt_render_clean_comment_superseded: none shortened -> no shortened clause" \
+  "false" "$(grep -qF 'shortened' <<< "$superseded_mixed" && echo true || echo false)"
+unset superseded_shortened
 
 # (2) suppressed-only run — every finding this run was a false positive.
 # SUPPRESS has no durable output surface anywhere (the overflow/advisory
@@ -2268,7 +2400,7 @@ assert_eq "prt_render_overflow_parts: a body that fits is byte-for-byte prt_rend
   "$(prt_render_overflow_comment "$prt_parts_small" "$quarantine_triple")" "$(cat "$prt_parts_dir/part-1.md")"
 assert_eq "prt_render_overflow_parts: a body that fits records its overflow and withheld row counts for part 1" \
   "$(jq 'length' <<< "$prt_parts_small") $(jq 'length' <<< "$quarantine_triple")" "$(cat "$prt_parts_dir/part-1.counts")"
-# A body between the 60,000 part margin and GitHub's 65,536 limit is accepted whole, so it stays one
+# A body between the 60,000 part cap and GitHub's 65,536 limit is accepted whole, so it stays one
 # comment (review of go-kure/.github#307, round 4).
 prt_parts_mid="$(jq -n '[{file:"o.go", severity:"high", category:"mid", issue:("MID " + ("m" * 62000))}]')"
 prt_parts_clear
@@ -2296,6 +2428,45 @@ assert_eq "prt_render_overflow_parts: the row counts of the 4 parts add up to th
   "2 5" "$(cat "$prt_parts_dir"/part-*.counts | awk '{f += $1; q += $2} END {print f, q}')"
 assert_eq "prt_render_overflow_parts: each part's counts match the rows in it (parts 1 to 4)" \
   "1 1|1 1|0 2|0 1" "$(for n in 1 2 3 4; do cat "$prt_parts_dir/part-$n.counts"; done | paste -sd'|')"
+# A failed `jq length` that fills a count file must fail the render, never leave a blank count for the
+# caller to read as zero. The fault is injected into the Nth `jq length` call: the calls of one render
+# are counted in a file (the reads run in command substitutions), the last two are the count reads of
+# the final part.
+prt_cnt_file="$prt_parts_dir/length-calls"
+prt_cnt_fail_at=0
+jq() {
+  if [ "${1:-}" = length ]; then
+    echo x >> "$prt_cnt_file"
+    [ "$(wc -l < "$prt_cnt_file")" = "$prt_cnt_fail_at" ] && return 5
+  fi
+  command jq "$@"
+}
+# prt_cnt_render F Q FAIL_AT -> "<rc> <stdout>" of one render with the FAIL_AT-th `jq length` failing
+prt_cnt_render() {
+  local out rc
+  : > "$prt_cnt_file"
+  prt_cnt_fail_at="$3"
+  out="$(prt_render_overflow_parts "$1" "$2" "$prt_parts_dir")"
+  rc=$?
+  echo "$rc $out"
+}
+prt_cnt_render "$prt_parts_small" "$quarantine_triple" 0 > /dev/null
+prt_cnt_small="$(wc -l < "$prt_cnt_file")"
+prt_cnt_render "$prt_parts_f" "$prt_parts_q" 0 > /dev/null
+prt_cnt_split="$(wc -l < "$prt_cnt_file")"
+assert_eq "prt_render_overflow_parts: a body that fits fails when the overflow row count cannot be read" \
+  "1 " "$(prt_cnt_render "$prt_parts_small" "$quarantine_triple" "$((prt_cnt_small - 1))")"
+assert_eq "prt_render_overflow_parts: a body that fits fails when the withheld row count cannot be read" \
+  "1 " "$(prt_cnt_render "$prt_parts_small" "$quarantine_triple" "$prt_cnt_small")"
+assert_eq "prt_render_overflow_parts: a split fails when the overflow row count of the last part cannot be read" \
+  "1 " "$(prt_cnt_render "$prt_parts_f" "$prt_parts_q" "$((prt_cnt_split - 1))")"
+assert_eq "prt_render_overflow_parts: a split fails when the withheld row count of the last part cannot be read" \
+  "1 " "$(prt_cnt_render "$prt_parts_f" "$prt_parts_q" "$prt_cnt_split")"
+unset -f jq prt_cnt_render
+prt_parts_clear
+prt_render_overflow_parts "$prt_parts_f" "$prt_parts_q" "$prt_parts_dir" > /dev/null
+assert_eq "prt_render_overflow_parts: the count-read fault cases leave the next render intact (4 parts)" \
+  "4" "$(find "$prt_parts_dir" -name 'part-*.md' | wc -l | tr -d ' ')"
 assert_eq "prt_render_overflow_parts: part 1 holds the merge-gating row" \
   "true" "$(grep -qF 'GATING' "$prt_parts_dir/part-1.md" && echo true || echo false)"
 assert_eq "prt_render_overflow_parts: part 1 says it lists every merge-gating finding and how many parts there are" \
@@ -2304,7 +2475,7 @@ assert_eq "prt_render_overflow_parts: a later part points back to part 1 and say
   "true" "$(head -1 "$prt_parts_dir/part-3.md" | grep -qF '**Part 3 of 4.** Continued from part 1. Part 1 lists every merge-gating withheld finding.' && echo true || echo false)"
 assert_eq "prt_render_overflow_parts: a later part repeats its section heading and footer, so it reads on its own" \
   "2" "$(grep -cE '^## Withheld AI Review Findings|^\*Automated review' "$prt_parts_dir/part-3.md" | tr -d ' ')"
-assert_eq "prt_render_overflow_parts: no part is over the margin (60000 units)" \
+assert_eq "prt_render_overflow_parts: no part is over the cap (60000 units)" \
   "true" "$([ "$(prt_parts_max_u16)" -le "$PRT_OVERFLOW_PART_MAX" ] && echo true || echo false)"
 
 # Merge-gating rows that alone pass one part: the part lines say which parts hold them, never that
@@ -4977,30 +5148,19 @@ prt_orch_shim="$(mktemp -d)"
 cat > "$prt_orch_shim/jq" <<'SHIM'
 #!/usr/bin/env bash
 for a in "$@"; do
-  case "$a" in *"$JQ_FAIL_MATCH"*) exit 5 ;; esac
+  # an unset match would be the empty pattern, which every argument contains
+  [ -n "${JQ_FAIL_MATCH:-}" ] && case "$a" in *"$JQ_FAIL_MATCH"*) exit 5 ;; esac
+  # JQ_FAIL_EXACT fails a call that has this argument whole (a short program that other programs contain)
+  [ -n "${JQ_FAIL_EXACT:-}" ] && [ "$a" = "$JQ_FAIL_EXACT" ] && exit 5
 done
 exec "$REAL_JQ" "$@"
 SHIM
 chmod +x "$prt_orch_shim/jq"
-# The shim must exec a real jq binary. `command -v jq` can name a version-manager shim (for example
-# mise's) that looks `jq` up on PATH again, finds this shim and loops forever; so take the first jq on
-# PATH that is not under a `shims` directory and does not resolve to the version manager itself.
-prt_orch_real_jq=""
-IFS=: read -r -a prt_orch_path_dirs <<< "$PATH"
-for prt_orch_dir in "${prt_orch_path_dirs[@]}"; do
-  prt_orch_cand="$prt_orch_dir/jq"
-  [ -x "$prt_orch_cand" ] || continue
-  case "$prt_orch_cand" in */shims/*) continue ;; esac
-  case "$(basename "$(readlink -f "$prt_orch_cand")")" in mise | asdf | rtx) continue ;; esac
-  prt_orch_real_jq="$prt_orch_cand"
-  break
-done
-if [ -z "$prt_orch_real_jq" ]; then
-  # Falling back to `command -v jq` would pick the shim the loop just excluded and loop forever.
+# The shim must exec a real jq binary (prt_test_real_jq).
+if ! prt_orch_real_jq="$(prt_test_real_jq)"; then
   echo "FATAL: no jq outside a version-manager shim on PATH; the jq-fault case needs a real jq binary" >&2
   exit 1
 fi
-unset prt_orch_path_dirs prt_orch_dir prt_orch_cand
 rc="$(PATH="$prt_orch_shim:$PATH" REAL_JQ="$prt_orch_real_jq" JQ_FAIL_MATCH='def collision_cell' run_orchestrator enforce 0 0 0)"
 assert_eq "orchestrator: a jq fault in the withheld-findings render -> exits 1 (not 0), nothing posted" \
   "1 0" "$rc $(cat "$PRT_TEST_ISSUE_COMMENT_COUNTFILE" 2>/dev/null || echo 0)"
@@ -5020,6 +5180,51 @@ assert_eq "orchestrator: a failed shape query on every chunk -> exits nonzero, n
 assert_eq "orchestrator: a failed shape query is reported as a local fault, not a retried unusable response" \
   "true" "$(grep -qF 'local fault reading the response shape' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 PRT_TEST_TWO_FILE_DIFF=0
+# A false-positive reply is rendered from the assessment's reasoning. If that reasoning cannot be
+# read, the reply must not be posted without it and the run must not read as complete: the thread was
+# already resolved, so nothing would post the explanation later. The fault is a `jq` on PATH that
+# fails the program that reads the reasoning; the control run goes through the same shim with no fault.
+PRT_TEST_MODEL_RESPONSE_MODE=clean_with_finding
+PRT_TEST_ASSESS_RESPONSE_MODE=false_positive_survivor
+PRT_TEST_OWNED_FP="$(prt_fp_base x.go other)"
+PRT_TEST_RECHECK_MODE=false
+rc="$(PATH="$prt_orch_shim:$PATH" REAL_JQ="$prt_orch_real_jq" JQ_FAIL_MATCH='no-such-program-text' run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator: a false-positive thread resolves and the reply is posted when the reasoning reads (control)" \
+  "0 1 1" "$rc $(cat "$PRT_TEST_RESOLVE_COUNTFILE" 2>/dev/null || echo 0) $(cat "$PRT_TEST_REPLY_COUNTFILE" 2>/dev/null || echo 0)"
+rc="$(PATH="$prt_orch_shim:$PATH" REAL_JQ="$prt_orch_real_jq" JQ_FAIL_MATCH='no reasoning provided' run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator: a false-positive reply whose reasoning cannot be read -> exits 1, the thread is resolved, no reply posted" \
+  "1 1 0" "$rc $(cat "$PRT_TEST_RESOLVE_COUNTFILE" 2>/dev/null || echo 0) $(cat "$PRT_TEST_REPLY_COUNTFILE" 2>/dev/null || echo 0)"
+assert_eq "orchestrator: a false-positive reply whose reasoning cannot be read -> the run is marked incomplete and says the reply was skipped" \
+  "true" "$(grep -qF 'the false-positive reasoning could not be read' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_MODEL_RESPONSE_MODE=clean
+PRT_TEST_ASSESS_RESPONSE_MODE=clean
+PRT_TEST_OWNED_FP="deadbeefcafebabe"
+PRT_TEST_RECHECK_MODE=
+# The absence loop reads the owned threads with four jq calls. An empty result from any of them
+# would let an owned thread pass unreconciled while the run reads as complete, so each failure
+# marks the run incomplete. The default fixture has one owned thread that no finding matches;
+# each case fails one read through the shim and checks the exit code and the reason on stderr.
+rc="$(PATH="$prt_orch_shim:$PATH" REAL_JQ="$prt_orch_real_jq" JQ_FAIL_MATCH='no-such-program-text' run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator: the absence loop through a pass-through shim exits 0 with no read fault (control)" \
+  "0 false" "$rc $(grep -qF '(local fault)' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+rc="$(PATH="$prt_orch_shim:$PATH" REAL_JQ="$prt_orch_real_jq" JQ_FAIL_EXACT='length' run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator: a failed owned-thread count -> exits 1 and says no owned thread was reconciled" \
+  "1 true" "$rc $(grep -qF 'the owned threads could not be counted (local fault)' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+rc="$(PATH="$prt_orch_shim:$PATH" REAL_JQ="$prt_orch_real_jq" JQ_FAIL_EXACT='.[0]' run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator: a failed owned-thread read -> exits 1 and names the thread it skipped" \
+  "1 true" "$rc $(grep -qF 'owned thread 0 could not be read (local fault)' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+rc="$(PATH="$prt_orch_shim:$PATH" REAL_JQ="$prt_orch_real_jq" JQ_FAIL_MATCH='IN($arr[])' run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator: a failed matched-by-this-run read -> exits 1 and skips the thread" \
+  "1 true" "$rc $(grep -qF 'could not tell whether this run matched the thread (local fault)' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+# A metadata response that cannot be checked as a JSON object stops the run before any field is read.
+rc="$(PATH="$prt_orch_shim:$PATH" REAL_JQ="$prt_orch_real_jq" JQ_FAIL_MATCH='type == "object"' run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator: PR metadata that fails the object check -> exits 1 before reading any field" \
+  "1 true" "$rc $(grep -qF 'PR metadata is not a JSON object' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+# Advisory mode builds its table from the filtered findings; a failed filter must not post a table
+# that lists none and reads as a clean run.
+rc="$(PATH="$prt_orch_shim:$PATH" REAL_JQ="$prt_orch_real_jq" JQ_FAIL_MATCH='select(.verdict != "FALSE_POSITIVE")' run_orchestrator advisory 0 0 0)"
+assert_eq "orchestrator: a failed advisory findings filter -> exits 1 and the run names the filter fault" \
+  "1 true" "$rc $(grep -qF 'the findings could not be filtered for the advisory comment (local fault)' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 find "$prt_orch_shim" -delete
 unset prt_orch_shim prt_orch_real_jq
 PRT_TEST_MODEL_RESPONSE_MODE=clean
@@ -6804,7 +7009,10 @@ FOFINDINGS
 jq -n '{format:"review-run-v1", outcome:"completed", backend:"x", identity:{root:"/r", head:"1111111111111111111111111111111111111111", base:"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", material_sha256:"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", input_sha256:"d", add_dirs:[]}}' \
   > "$prt_fo_dir/provider.json"
 mkdir "$prt_fo_dir/bin"
-prt_fo_real_jq="$(command -v jq)"
+if ! prt_fo_real_jq="$(prt_test_real_jq)"; then
+  echo "FATAL: no jq outside a version-manager shim on PATH; the join-fault case needs a real jq binary" >&2
+  exit 1
+fi
 printf '%s\n' '#!/bin/bash' \
   "case \"\$*\" in *'group_by(.fp)'*) exit 5 ;; esac" \
   "exec \"$prt_fo_real_jq\" \"\$@\"" > "$prt_fo_dir/bin/jq"
