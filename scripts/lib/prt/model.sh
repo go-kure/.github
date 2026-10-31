@@ -791,7 +791,7 @@ _prt_runner_env_build() {
     # the read-only ones cannot be exported. `env -i NAME=value` delivered all of them, so
     # they are refused here rather than dropped without notice. BASH* is refused whole.
     case "$name" in
-      _*|BASH*|SHLVL|OPTIND|DIRSTACK|EPOCHREALTIME|EPOCHSECONDS|EUID|FUNCNAME|GROUPS|HISTCMD|LINENO|PIPESTATUS|PPID|RANDOM|SECONDS|SHELLOPTS|SRANDOM|UID)
+      _*|BASH*|SHLVL|OPTIND|DIRSTACK|EPOCHREALTIME|EPOCHSECONDS|EUID|EXECIGNORE|FUNCNAME|GROUPS|HISTCMD|LINENO|PIPESTATUS|PPID|RANDOM|SECONDS|SHELLOPTS|SRANDOM|UID)
         PRT_RUNNER_ENV_ERROR="PRT_ASSESS_RUNNER_ENV must not name $name (bash would change or refuse it, or the hand-over step uses it)"
         return 1 ;;
     esac
