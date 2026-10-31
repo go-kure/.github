@@ -2227,13 +2227,11 @@ if [ "$PRT_MODE" = enforce ] &&
 fi
 if [ "$PRT_MODE" = enforce ] && { [ "$overflow_len" -gt 0 ] || [ "$quarantined_len" -gt 0 ]; }; then
   # The body is split into parts when one comment would pass GitHub's
-  # 65,536-character limit (go-kure/.github#307). RULING-1031-1200-281: the
-  # one-report-one-comment rule governs text an agent chooses to split, not a
-  # body that exceeds the forge's hard limit, where the alternatives are a
-  # failed post or a truncated report. Merge-gating findings come first and
-  # part 1 carries every coverage caveat, including which parts hold the
-  # merge-gating rows; parts are ordered by severity, never by size.
-  # OVERFLOW_COMMENT_POSTED is true only when every part posted.
+  # 65,536-character limit (go-kure/.github#307). The rules of the split (order,
+  # what part 1 says, shortening, posting) are stated once, in
+  # docs/pr-review-threads.md, "The overflow and withheld comment is split when
+  # it would pass GitHub's limit". OVERFLOW_COMMENT_POSTED is true only when
+  # every part posted.
   overflow_dir="$WORKDIR/overflow-parts"
   overflow_parts=0
   overflow_truncated=0

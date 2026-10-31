@@ -275,42 +275,54 @@ _PRT_OVERFLOW_JQ_DEFS='
 '
 
 # GitHub rejects an issue comment body past 65,536 characters (HTTP 422).
-# prt_render_overflow_parts keeps every part at or under PRT_OVERFLOW_PART_MAX:
-# 60,000 UTF-16 units, 5,536 below the limit. The margin covers what grows after
-# the rows are measured: the "Part N of M" line, a section's heading, intro and
-# footer, and the fixed per-part overhead estimate being a measurement of a
-# minimal part rather than the part itself. Each part is still checked against
-# the real limit after it is built.
+# PRT_OVERFLOW_PART_MAX is the size a part is planned to: 5,536 units below the
+# limit, a margin for what grows after the rows are measured. The rules for the
+# split (row order, what part 1 says, shortening) are written once, in
+# docs/pr-review-threads.md, "The overflow and withheld comment is split when it
+# would pass GitHub's limit"; this file implements them and restates none.
 PRT_COMMENT_LIMIT=65536
 PRT_OVERFLOW_PART_MAX=60000
+
+# prt_overflow_part_line PART TOTAL GATING_LAST TRUNCATED — prints the "Part N of
+# M" line that heads one part. GATING_LAST is the last part holding a
+# merge-gating row (0 when none does). The wording lives only here;
+# prt_render_overflow_parts also measures this function's longest output to
+# reserve room for it, so the reserve cannot drift from the text.
+prt_overflow_part_line() {
+  local part="$1" total="$2" gating_last="$3" truncated="$4" gating_note n
+  if [ "$gating_last" -eq 0 ]; then
+    gating_note="None of the withheld findings is merge-gating."
+  elif [ "$gating_last" -eq 1 ]; then
+    gating_note="Part 1 lists every merge-gating withheld finding."
+  else
+    gating_note="The merge-gating withheld findings fill parts 1 to ${gating_last}; read those parts first."
+  fi
+  if [ "$part" -eq 1 ] && [ "$total" -eq 1 ]; then
+    n="**Part 1 of 1.**"
+    [ "$truncated" -eq 0 ] || n="${n} ${truncated} finding(s) were too long for one comment and were shortened: each shortened cell ends with a \"truncated\" marker, and the omitted text is not available elsewhere."
+  elif [ "$part" -eq 1 ]; then
+    n="**Part 1 of ${total}.** These findings did not fit in one comment. ${gating_note} Merge-gating rows are placed in the earliest parts, then the most severe of the rest; inside a part the advisory table comes before the withheld table. Parts 2 to ${total} continue the tables."
+    [ "$truncated" -eq 0 ] || n="${n} ${truncated} finding(s) were still too long for one comment and were shortened: each shortened cell ends with a \"truncated\" marker, and the omitted text is not available elsewhere."
+  else
+    n="**Part ${part} of ${total}.** Continued from part 1. ${gating_note}"
+  fi
+  printf '%s' "$n"
+}
 
 # prt_render_overflow_parts FINDINGS_JSON QUARANTINED_JSON OUTDIR — renders the
 # overflow and withheld findings as one or more comment bodies, OUTDIR/part-1.md
 # ... part-M.md, and prints "M T" (parts, truncated findings) on stdout.
 # A body GitHub accepts whole (PRT_COMMENT_LIMIT) is one part, byte-for-byte
-# what prt_render_overflow_comment prints. A larger one is split
-# (go-kure/.github#307):
-# - Order: merge-gating withheld rows are placed first across the parts, then
-#   every other row by severity (critical, high, medium, other), so part 1 holds
-#   the blockers and goes on with the most severe advisory rows. Size never
-#   reorders a row. Inside one part the renderer prints the advisory table
-#   before the withheld table, so the part lines say where the blockers are
-#   rather than claim they are on top.
-# - Part 1 carries every coverage caveat: it says how many parts follow, which
-#   parts hold the merge-gating rows (more than one only when they alone pass
-#   one part) and, when a finding was shortened, says so. Every later part
-#   points back to it and repeats where the blockers are.
-# - Each part repeats its section headings, intro text and footer (it is the
-#   same renderer, run on that part's rows), so it reads on its own.
-# - A single finding too large for one part is shortened to fit, never
-#   dropped: its issue and fix text are cut and the cell ends with a marker
-#   naming how many characters were omitted. The cut text exists nowhere else
-#   in the PR, so the caller marks the run incomplete (T > 0).
+# what prt_render_overflow_comment prints; a larger one is split into parts
+# (go-kure/.github#307, rules in the doc named above). Each part is rendered by
+# prt_render_overflow_comment on that part's rows. T counts the findings that
+# had to be shortened: their cut text exists nowhere else in the PR, so the
+# caller marks the run incomplete when T > 0.
 # Returns 1 with nothing printed on any fault, including a part that still
 # exceeds PRT_COMMENT_LIMIT.
 prt_render_overflow_parts() {
   local findings="$1" quarantined="$2" outdir="$3"
-  local overhead budget plan total truncated n i part_f part_q body line gating_last gating_note
+  local overhead reserve budget plan total truncated n i part_f part_q body line gating_last
   local dummy_f='[{"severity":"","category":"","file":"","issue":""}]'
   local dummy_q='[{"severity":"","category":"","file":"","issue":"","fix":"","gating":true}]'
   [ -d "$outdir" ] || return 1
@@ -323,10 +335,10 @@ prt_render_overflow_parts() {
     return 0
   fi
   # Fixed cost of one part: both sections, the longest footer, and room for the
-  # part line (600 units; the longest, part 1 with a gating note spanning parts
-  # and the shortened-finding sentence, is about 410).
+  # longest part line (measured, with five-digit counts) and the blank line after it.
   overhead="$(prt_render_overflow_comment "$dummy_f" "$dummy_q" | jq -Rs "${_PRT_OVERFLOW_JQ_DEFS}"' u16len' 2>/dev/null)" || return 1
-  budget=$(( PRT_OVERFLOW_PART_MAX - overhead - 600 ))
+  reserve="$(prt_overflow_part_line 1 99999 99999 99999 | jq -Rs "${_PRT_OVERFLOW_JQ_DEFS}"' u16len' 2>/dev/null)" || return 1
+  budget=$(( PRT_OVERFLOW_PART_MAX - overhead - reserve - 2 ))
   [ "$budget" -gt 1000 ] || return 1
   # One jq pass plans the split on stdin: line 1 is "parts truncated", then one
   # JSON object per part {f: [...], q: [...]}.
@@ -354,7 +366,7 @@ prt_render_overflow_parts() {
     | ( $all | sort_by([(if .gating then 0 else 1 end), .rank, (if .kind == "q" then 0 else 1 end), .pos]) ) as $ordered
     | ( $ordered | map(
           (if .kind == "q" then (.item | quarantine_row | u16len) else (.item | overflow_row | u16len) end) as $cost
-          | if $cost + 1 > $budget
+          | if $cost > $budget
             then . as $e | .item = ($e.item | shorten($e.kind)) | .cut = true | .cost = $budget
             else .cost = $cost + 1 | .cut = false end
         ) ) as $sized
@@ -370,32 +382,16 @@ prt_render_overflow_parts() {
   ' 2>/dev/null)" || return 1
   read -r total truncated <<< "$(printf '%s\n' "$plan" | sed -n 1p)"
   [[ "$total" =~ ^[0-9]+$ && "$truncated" =~ ^[0-9]+$ && "$total" -ge 1 ]] || return 1
-  # The last part that holds a merge-gating row (0 when none does): the part
-  # lines state where the blockers are, not that part 1 holds them all.
+  # The last part that holds a merge-gating row (0 when none does).
   gating_last="$(printf '%s\n' "$plan" | sed 1d | jq -sr 'to_entries | map(select(.value.g > 0) | .key + 1) | max // 0' 2>/dev/null)" || return 1
   [[ "$gating_last" =~ ^[0-9]+$ ]] || return 1
-  if [ "$gating_last" -eq 0 ]; then
-    gating_note="None of the withheld findings is merge-gating."
-  elif [ "$gating_last" -eq 1 ]; then
-    gating_note="Part 1 lists every merge-gating withheld finding."
-  else
-    gating_note="The merge-gating withheld findings fill parts 1 to ${gating_last}; read those parts first."
-  fi
   i=0
   while IFS= read -r line; do
     i=$((i + 1))
     part_f="$(jq -c '.f' <<< "$line" 2>/dev/null)" || return 1
     part_q="$(jq -c '.q' <<< "$line" 2>/dev/null)" || return 1
     body="$(prt_render_overflow_comment "$part_f" "$part_q")" || return 1
-    if [ "$i" -eq 1 ] && [ "$total" -eq 1 ]; then
-      n="**Part 1 of 1.**"
-      [ "$truncated" -eq 0 ] || n="${n} ${truncated} finding(s) were too long for one comment and were shortened: each shortened cell ends with a \"truncated\" marker, and the omitted text is not available elsewhere."
-    elif [ "$i" -eq 1 ]; then
-      n="**Part 1 of ${total}.** These findings did not fit in one comment. ${gating_note} Merge-gating rows are placed in the earliest parts, then the most severe of the rest; inside a part the advisory table comes before the withheld table. Parts 2 to ${total} continue the tables."
-      [ "$truncated" -eq 0 ] || n="${n} ${truncated} finding(s) were still too long for one comment and were shortened: each shortened cell ends with a \"truncated\" marker, and the omitted text is not available elsewhere."
-    else
-      n="**Part ${i} of ${total}.** Continued from part 1. ${gating_note}"
-    fi
+    n="$(prt_overflow_part_line "$i" "$total" "$gating_last" "$truncated")" || return 1
     body="$(printf '%s\n\n%s' "$n" "$body")"
     [ "$(printf '%s' "$body" | jq -Rs "${_PRT_OVERFLOW_JQ_DEFS}"' u16len' 2>/dev/null)" -le "$PRT_COMMENT_LIMIT" ] 2>/dev/null || return 1
     printf '%s\n' "$body" > "$outdir/part-${i}.md" || return 1
