@@ -220,8 +220,21 @@ probe_run() {
 
   echo "lane: kernel=$(uname -sr) uid=$(id -u) os=$(sed -n 's/^PRETTY_NAME=//p' /etc/os-release 2> /dev/null | tr -d '"')"
   echo "lane: $(grep -E '^(Seccomp|NoNewPrivs):' /proc/self/status | tr '\n\t' '  ')"
-  for k in kernel/yama/ptrace_scope kernel/apparmor_restrict_unprivileged_userns user/max_user_namespaces; do
+  echo "lane: user=$(id -un 2> /dev/null || echo n/a) groups=$(id -Gn 2> /dev/null | tr ' ' ',')"
+  for k in kernel/yama/ptrace_scope kernel/apparmor_restrict_unprivileged_userns kernel/unprivileged_userns_clone \
+    kernel/unprivileged_userns_apparmor_policy user/max_user_namespaces user/max_pid_namespaces; do
     echo "lane: $k=$(cat "/proc/sys/$k" 2> /dev/null || echo n/a)"
+  done
+  # Which step of the default boundary this lane refuses, and what it says. Each attempt runs
+  # `true` and nothing else; none needs a capability or leaves anything behind.
+  for k in "--user --map-current-user" "--user --map-current-user --pid --fork" \
+    "--user --map-current-user --pid --fork --mount-proc"; do
+    # shellcheck disable=SC2086 # the option words are meant to split
+    if q="$(unshare $k true 2>&1)"; then
+      echo "lane: unshare $k: ok"
+    else
+      echo "lane: unshare $k: failed rc=$? ${q:-no message}"
+    fi
   done
 
   # The pids from this process up to pid 1, each as pid:start-time, as the boundary check names them.
