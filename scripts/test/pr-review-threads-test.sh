@@ -8191,6 +8191,118 @@ prt_ar_pid1_end_case "the process is still there after the kill" 1 'kill() { ret
 # space (a strict-mode IFS) the stat line was not split and every call was abandoned.
 # shellcheck disable=SC2016 # the text is evaluated by the child shell
 prt_ar_pid1_end_case "the process is killed and gone under a strict IFS" 0 'IFS=$(printf "\n\t")'
+# A caller under `set -e` is not ended by the helpers: a command substitution that reads a file
+# which is no longer there (`$(< /proc/PID/stat)`) exits such a shell even inside `||`, so the
+# end of a killed process, and a process that is gone, must not use one.
+prt_ar_pid1_end_case "the process is killed and gone under errexit" 0 'set -e'
+# The descriptors above 2 are closed whatever glob settings the caller has: `set -f` leaves the
+# /proc/self/fd/* pattern unexpanded and a GLOBIGNORE that matches it removes every entry, and
+# either would leave a credential file the orchestrator holds readable to the runner.
+prt_ar_closefds_case() { # label, shell setting commands run before the launch subshell
+  local out
+  out="$(bash -c '
+    source "$1/scripts/lib/prt/model.sh"
+    exec 9< /dev/null
+    eval "$2"
+    ( _prt_close_fds; if [ -e /proc/self/fd/9 ]; then echo open; else echo closed; fi )' bash "$ROOT" "$2" 2> /dev/null)"
+  assert_eq "close fds, $1: descriptor 9 is closed in the launch subshell" "closed" "$out"
+}
+prt_ar_closefds_case "default options" ':'
+prt_ar_closefds_case "set -f" 'set -f'
+prt_ar_closefds_case "GLOBIGNORE" "GLOBIGNORE='/proc/*'"
+# A start time that cannot be read is not "not there" unless the process has gone: with no
+# descriptor to open the file (EMFILE), a live process is a failed read (2), never a gone one (1).
+prt_ar_unreadable_case() {
+  local out
+  out="$(bash -c '
+    source "$1/scripts/lib/prt/model.sh"
+    rc=0; ( ulimit -n 3; _prt_proc_start "$$" ) || rc=$?
+    echo "unreadable=$rc"
+    rc=0; _prt_proc_start "$(< /proc/sys/kernel/pid_max)" || rc=$?
+    echo "gone=$rc"' bash "$ROOT" 2> /dev/null | tr '\n' ' ')"
+  assert_eq "a live process whose stat cannot be opened is unreadable, not gone" "unreadable=2 gone=1 " "$out"
+}
+prt_ar_unreadable_case
+# A process can end its main thread alone (the system call `exit`, not `exit_group`): the group
+# leader becomes a zombie and /proc/PID/stat says Z, while the other threads run on, inside a
+# namespace that stays alive. Such a first process is not gone and must still be killed.
+prt_ar_zombie_leader_case() {
+  local out prt_ar_zf
+  prt_ar_zf="$(mktemp)"
+  out="$(bash -c '
+    source "$1/scripts/lib/prt/model.sh"
+    python3 -I -c "
+import ctypes, os, threading, time
+nr = {\"x86_64\": 60, \"aarch64\": 93}.get(os.uname().machine)
+if nr is None:
+    print(\"skip\")
+else:
+    threading.Thread(target=time.sleep, args=(60,)).start()
+    time.sleep(0.3)
+    ctypes.CDLL(None).syscall(nr, 0)" > "$2" 2> /dev/null < /dev/null &
+    p=$!
+    seen=no
+    for _ in $(seq 200); do
+      st=""; IFS= read -r -d "" st < "/proc/$p/stat" 2> /dev/null; st="${st##*) }"
+      case "$st" in Z*) seen=yes; break ;; esac
+      [ -s "$2" ] && break
+      sleep 0.05
+    done
+    if [ -s "$2" ]; then echo skip; builtin kill -KILL "$p" 2> /dev/null; exit 0; fi
+    if [ "$seen" != yes ]; then echo "no zombie leader appeared"; builtin kill -KILL "$p" 2> /dev/null; exit 0; fi
+    s_rc=0; _prt_proc_start "$p" || s_rc=$?
+    PRT_RUNNER_PID1="$p"; PRT_RUNNER_PID1_START="$PRT_PROC_START"
+    e_rc=0; _prt_runner_pid1_end || e_rc=$?
+    st=""; IFS= read -r -d "" st < "/proc/$p/stat" 2> /dev/null || :
+    st="${st##*) }"; set -- $st
+    left=0; [ -z "$st" ] || left="${18:-0}"
+    echo "live=$s_rc end=$e_rc threads=$([ "$left" -le 1 ] && echo none || echo "$left")"
+    builtin kill -KILL "$p" 2> /dev/null || :' bash "$ROOT" "$prt_ar_zf" 2> /dev/null | tail -n 1)"
+  rm -f "$prt_ar_zf"
+  [ "$out" = skip ] && return 0
+  assert_eq "a first process that ended its main thread and left others running is live, killed, and has no thread left" \
+    "live=0 end=0 threads=none" "$out"
+}
+prt_ar_zombie_leader_case
+# A process can name itself with a newline in it (`prctl(PR_SET_NAME)`, no privilege), and
+# /proc/PID/stat prints the name as it is: "PID (a\nb) S ...". The helpers read the whole file, so
+# a hostile first process cannot make its start time unreadable and escape the kill that way.
+prt_ar_newline_name_case() {
+  local out
+  out="$(bash -c '
+    source "$1/scripts/lib/prt/model.sh"
+    python3 -I -c "
+import os, time
+fd = os.open(\"/proc/self/comm\", os.O_WRONLY)
+os.write(fd, b\"a\\nb\")
+os.close(fd)
+time.sleep(30)" < /dev/null > /dev/null 2>&1 &
+    p=$!
+    for _ in $(seq 100); do IFS= read -r c < "/proc/$p/comm" 2> /dev/null; [ "$c" = a ] && break; sleep 0.05; done
+    s_rc=0; _prt_proc_start "$p" || s_rc=$?
+    PRT_RUNNER_PID1="$p"; PRT_RUNNER_PID1_START="$PRT_PROC_START"
+    e_rc=0; _prt_runner_pid1_end || e_rc=$?
+    a_rc=0; _prt_proc_start "$p" || a_rc=$?
+    builtin kill -KILL "$p" 2> /dev/null || :
+    echo "name=$c start=$s_rc end=$e_rc after=$a_rc"' bash "$ROOT" 2> /dev/null | tail -n 1)"
+  assert_eq "a process named with a newline: its start time is read and it is killed and gone" \
+    "name=a start=0 end=0 after=1" "$out"
+}
+prt_ar_newline_name_case
+prt_ar_gone_errexit_case() { # label, command run under `set -e` against a pid that is not there
+  local out
+  out="$(bash -c '
+    source "$1/scripts/lib/prt/model.sh"
+    set -e
+    gone="$(< /proc/sys/kernel/pid_max)"
+    rc=0; eval "$2" || rc=$?
+    echo "rc=$rc"' bash "$ROOT" "$3" 2> /dev/null)"
+  assert_eq "errexit, $1: the caller goes on" "rc=$2" "$out"
+}
+# shellcheck disable=SC2016 # the text is evaluated by the child shell
+prt_ar_gone_errexit_case "a process that is not there has no start time" 1 '_prt_proc_start "$gone"'
+# shellcheck disable=SC2016 # the text is evaluated by the child shell
+prt_ar_gone_errexit_case "a timeout process that is gone is reported as gone" 3 '_prt_runner_pid1_record "$gone"'
 # The children are listed whatever glob options the caller has set: noglob left the pattern
 # unexpanded and failglob made it an error, so a caller with either could never name a child.
 prt_ar_children_case() { # label, shell setting commands run before the read
@@ -8212,11 +8324,47 @@ prt_ar_children_gone_case() { # label, shell setting commands run before the rea
     _prt_proc_children "$(< /proc/sys/kernel/pid_max)"; echo "rc=$?"' bash "$ROOT" "$2" 2> /dev/null)"
   assert_eq "proc children, $1: a process that is not there cannot be read" "rc=1" "$out"
 }
-for prt_ar_opt in ':' 'set -f' 'shopt -s nullglob' 'shopt -s failglob'; do
+for prt_ar_opt in ':' 'set -f' 'shopt -s nullglob' 'shopt -s failglob' "GLOBIGNORE='/proc/*'"; do
   prt_ar_children_case "$prt_ar_opt" "$prt_ar_opt"
   prt_ar_children_gone_case "$prt_ar_opt" "$prt_ar_opt"
 done
 unset prt_ar_opt
+# The matrix: the helpers give the same answers whatever state the caller's shell is in. One
+# probe runs each helper that reads /proc (the start time, the children, the end of a recorded
+# process, the boundary check) after a state is set, and its line must equal the line of a clean
+# shell. The states are the ones a sourcing script can have: the field separator, the glob
+# settings, the match settings, the error, unset and clobber options, and the locale. A helper
+# that depends on one of them fails here by name, not in a run that happens to set it.
+prt_ar_state_probe() { # shell commands that set the state
+  bash -c '
+    source "$1/scripts/lib/prt/model.sh"
+    sleep 30 & p=$!
+    disown "$p"
+    eval "$2"
+    s_rc=0; _prt_proc_start "$p" || s_rc=$?; s_val=$PRT_PROC_START
+    c_rc=0; _prt_proc_children "$$" || c_rc=$?
+    c_has=no; case " $PRT_PROC_KIDS " in *" $p "*) c_has=yes ;; esac
+    PRT_RUNNER_PID1="$p"; PRT_RUNNER_PID1_START="$s_val"
+    e_rc=0; _prt_runner_pid1_end || e_rc=$?
+    alive=no; { builtin kill -0 "$p"; } 2> /dev/null && alive=yes
+    builtin kill -KILL "$p" 2> /dev/null || :
+    b_rc=0; _prt_runner_boundary_build && { _prt_runner_boundary_check > /dev/null 2>&1 || b_rc=$?; } || b_rc=build
+    echo "start=$s_rc children=$c_rc has=$c_has end=$e_rc alive=$alive boundary=$b_rc"' bash "$ROOT" "$1" 2> /dev/null | tail -n 1
+}
+prt_ar_state_base="$(prt_ar_state_probe ':')"
+assert_eq "state matrix: the clean shell answers" "true" \
+  "$([[ "$prt_ar_state_base" == "start=0 children=0 has=yes end=0 alive=no boundary=0" ]] && echo true || echo false)"
+for prt_ar_opt in 'IFS=' 'IFS=:' 'IFS=x' "IFS=\$'\\n'" "IFS=\$'\\n\\t'" 'IFS=0123456789' \
+  'set -f' 'shopt -s nullglob' 'shopt -s failglob' 'shopt -s dotglob' 'shopt -s nocaseglob' 'shopt -s extglob' \
+  'shopt -s globstar' "GLOBIGNORE='*'" "GLOBIGNORE='/proc/*'" 'shopt -s nocasematch' 'shopt -s nocasematch extglob' \
+  'set -e' 'set -eE -o pipefail' 'shopt -s inherit_errexit; set -e' 'set -u' 'set -C' 'set -o posix' \
+  'shopt -s lastpipe' 'shopt -s nullglob extglob nocasematch; set -efu' \
+  'LC_ALL=C' 'LC_ALL=en_US.utf8' 'LC_ALL=nl_BE.utf8' 'LC_ALL=C.utf8' 'LANG=nl_BE.utf8' 'LC_COLLATE=en_US.utf8' \
+  'LC_NUMERIC=nl_BE.utf8' 'LC_CTYPE=en_US.utf8'; do
+  assert_eq "state matrix, $prt_ar_opt: the helpers answer as in a clean shell" "$prt_ar_state_base" \
+    "$(prt_ar_state_probe "$prt_ar_opt")"
+done
+unset prt_ar_opt prt_ar_state_base
 fi
 
 # go-kure/.github#309: the default prefix sets no_new_privs for every user, not only for root. The
