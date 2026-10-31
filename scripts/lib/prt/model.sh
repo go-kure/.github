@@ -18,7 +18,7 @@
 # (backend-config, local-tempdir, payload-build, findings-file-missing,
 # findings-file-malformed, provenance-mismatch; PRT_REVIEW_BACKEND=file) or
 # _prt_call_runner produced (backend-config, local-tempdir, deadline-exhausted,
-# runner-boundary, runner-incomplete, runner-quota, runner-launch, runner-usage, runner-timeout, runner-failed,
+# runner-boundary, runner-lifetime, runner-incomplete, runner-quota, runner-launch, runner-usage, runner-timeout, runner-failed,
 # runner-no-output, runner-empty, provenance-mismatch; PRT_ASSESS_BACKEND=runner). Read by callers in
 # pr-review-threads.sh to annotate a bare "exit 1" with which of several
 # unrelated causes actually fired — same cross-file pattern as
@@ -739,6 +739,9 @@ _prt_runner_clock_read() {
 # backend-config (an input this mode needs is not set), local-tempdir,
 # runner-boundary (the process boundary in front of the runner cannot be
 # established or fails its check; see _prt_runner_boundary_build),
+# runner-lifetime (the call's end could not be guaranteed: the first process of the
+# runner's namespace could not be identified after the launch, or was still running
+# after SIGKILL; see _prt_runner_pid1_record),
 # runner-incomplete (review-run exit 2), runner-quota (3), runner-launch (4),
 # runner-usage (64, includes an input over its ceiling), runner-timeout (the outer
 # bound on the whole process tree fired; see the call below), runner-failed (any other
@@ -919,6 +922,144 @@ _prt_runner_boundary_check() {
   [ "$rc" -eq 0 ] && [ "$out" = boundary-ok ]
 }
 
+# _prt_proc_start PID — sets PRT_PROC_START to the start time (field 22 of /proc/PID/stat,
+# clock ticks since boot) of a live process. Returns 0 for a live process, 1 when there is none
+# (no such pid, or a zombie or dead one), 2 when the stat cannot be parsed. A pid is reused, its
+# start time is not: the pair names one process.
+_prt_proc_start() {
+  local stat fields=()
+  PRT_PROC_START=""
+  { stat="$(< "/proc/$1/stat")"; } 2> /dev/null || return 1
+  # The command name is in parentheses and may hold spaces and parentheses, so the fields start
+  # after the last ") ": state, parent pid, ... start time (index 19).
+  read -ra fields <<< "${stat##*) }"
+  [[ "${fields[0]:-}" =~ ^[A-Za-z]$ && "${fields[19]:-}" =~ ^[0-9]+$ ]] || return 2
+  case "${fields[0]}" in Z|X|x) return 1 ;; esac
+  PRT_PROC_START="${fields[19]}"
+}
+
+# _prt_proc_children PID — sets PRT_PROC_KIDS to the direct children of PID, as a space-separated
+# string. Returns 1 when they cannot be read: /proc/PID/task/*/children is missing (a kernel built
+# without CONFIG_PROC_CHILDREN) or the process has gone.
+_prt_proc_children() {
+  local f c
+  PRT_PROC_KIDS=""
+  for f in "/proc/$1"/task/*/children; do
+    [ -e "$f" ] || return 1
+    { c="$(< "$f")"; } 2> /dev/null || return 1
+    [ -z "$c" ] || PRT_PROC_KIDS="$PRT_PROC_KIDS $c"
+  done
+  PRT_PROC_KIDS="${PRT_PROC_KIDS# }"
+}
+
+# _prt_runner_pid1_record TIMEOUT_PID — finds the first process of the runner's PID namespace
+# (its "PID 1") as the host sees it, and records it in PRT_RUNNER_PID1 and its start time in
+# PRT_RUNNER_PID1_START. Called right after the launch, because that is the only moment the
+# parentage is certain: a runner that is PID 1 can clear its parent-death signal and start a
+# session of its own, and once `timeout` or the namespace launcher is gone it is a child of the
+# host's init with nothing left to find it by.
+# The chain is TIMEOUT_PID (`timeout`) -> the namespace launcher (`unshare --fork`) -> PID 1.
+# Each step must be exactly one process of the expected name, and the last must report itself as
+# the first process of a namespace (NSpid ends in 1): a read that finds nothing, finds more than
+# one, or finds something else is not "no process to end", it is a call whose end cannot be
+# guaranteed. Polls (PRT_RUNNER_PID1_POLLS times 50 ms, default 100): the chain is built by the
+# process that was just launched. Returns 0 when recorded, 3 when `timeout` has gone first (so the
+# namespace went with it and there is nothing to end), 1 for everything else, with the cause in
+# PRT_RUNNER_PID1_ERROR.
+# shellcheck disable=SC2034 # the PRT_RUNNER_PID1* variables are read by _prt_call_runner
+_prt_runner_pid1_record() {
+  local IFS=$' \t\n' tp="$1" polls="${PRT_RUNNER_PID1_POLLS:-100}" comm launcher pid1 key nspid rc kids=()
+  PRT_RUNNER_PID1=""
+  PRT_RUNNER_PID1_START=""
+  PRT_RUNNER_PID1_ERROR=""
+  [[ "$polls" =~ ^[0-9]{1,5}$ ]] && [ "$polls" -ge 1 ] || polls=100
+  while :; do
+    rc=0; _prt_proc_start "$tp" || rc=$?
+    case "$rc" in
+      0) ;;
+      1) return 3 ;;
+      *) PRT_RUNNER_PID1_ERROR="the timeout process cannot be read"; return 1 ;;
+    esac
+    # The launch subshell runs a few helpers of its own before it becomes `timeout`; until then
+    # its children are not the chain.
+    comm=""; { comm="$(< "/proc/$tp/comm")"; } 2> /dev/null || true
+    if [ "$comm" = timeout ]; then
+      if ! _prt_proc_children "$tp"; then
+        _prt_proc_start "$tp" || return 3
+        PRT_RUNNER_PID1_ERROR="the children of the timeout process cannot be read"; return 1
+      fi
+      read -ra kids <<< "$PRT_PROC_KIDS"
+      if [ "${#kids[@]}" -gt 1 ]; then
+        PRT_RUNNER_PID1_ERROR="the timeout process has more than one child"; return 1
+      fi
+      if [ "${#kids[@]}" -eq 1 ]; then
+        launcher="${kids[0]}"
+        comm=""; { comm="$(< "/proc/$launcher/comm")"; } 2> /dev/null || true
+        # Before its exec the launcher is still a copy of `timeout`; after it, it carries the
+        # name of the first word of the boundary.
+        if [ "$comm" != timeout ] && [ -n "$comm" ]; then
+          if [ "$comm" != "${PRT_RUNNER_BOUNDARY_ARGS[0]##*/}" ]; then
+            PRT_RUNNER_PID1_ERROR="the timeout process runs something other than the namespace launcher"; return 1
+          fi
+          if ! _prt_proc_children "$launcher"; then
+            _prt_proc_start "$launcher" || { sleep 0.05; continue; }
+            PRT_RUNNER_PID1_ERROR="the children of the namespace launcher cannot be read"; return 1
+          fi
+          read -ra kids <<< "$PRT_PROC_KIDS"
+          if [ "${#kids[@]}" -gt 1 ]; then
+            PRT_RUNNER_PID1_ERROR="the namespace launcher has more than one child"; return 1
+          fi
+          if [ "${#kids[@]}" -eq 1 ]; then
+            pid1="${kids[0]}"
+            nspid=""
+            { while IFS=$'\t' read -r key nspid; do [ "$key" = "NSpid:" ] && break; nspid=""; done < "/proc/$pid1/status"; } 2> /dev/null || nspid=""
+            rc=0; _prt_proc_start "$pid1" || rc=$?
+            if [ "$rc" -eq 0 ]; then
+              if [ "$nspid" != "$pid1"$'\t'1 ]; then
+                PRT_RUNNER_PID1_ERROR="the child of the namespace launcher is not the first process of a namespace"; return 1
+              fi
+              PRT_RUNNER_PID1="$pid1"
+              PRT_RUNNER_PID1_START="$PRT_PROC_START"
+              return 0
+            fi
+            [ "$rc" -eq 1 ] || { PRT_RUNNER_PID1_ERROR="the namespace's first process cannot be read"; return 1; }
+          fi
+        fi
+      fi
+    fi
+    polls=$((polls - 1))
+    if [ "$polls" -le 0 ]; then
+      PRT_RUNNER_PID1_ERROR="no namespace first process was found in time"; return 1
+    fi
+    sleep 0.05
+  done
+}
+
+# _prt_runner_pid1_end — kills the process _prt_runner_pid1_record named, when it is still the
+# same process (same start time), and waits for it to go. SIGKILL sent from outside a PID
+# namespace is always delivered to its first process, and its end takes every member with it. It
+# depends on nothing inside the namespace. Returns 0 when there is nothing to end (none recorded,
+# gone, or the pid belongs to another process now) and when it has been ended; 1 when it is still
+# there after the kill, or its stat cannot be read.
+_prt_runner_pid1_end() {
+  local rc tries=40
+  [ -n "${PRT_RUNNER_PID1:-}" ] || return 0
+  rc=0; _prt_proc_start "$PRT_RUNNER_PID1" || rc=$?
+  [ "$rc" -ne 1 ] || return 0
+  [ "$rc" -eq 0 ] || return 1
+  [ "$PRT_PROC_START" = "$PRT_RUNNER_PID1_START" ] || return 0
+  kill -KILL "$PRT_RUNNER_PID1" 2> /dev/null || true
+  while [ "$tries" -gt 0 ]; do
+    rc=0; _prt_proc_start "$PRT_RUNNER_PID1" || rc=$?
+    [ "$rc" -ne 1 ] || return 0
+    [ "$rc" -eq 0 ] || return 1
+    [ "$PRT_PROC_START" = "$PRT_RUNNER_PID1_START" ] || return 0
+    tries=$((tries - 1))
+    sleep 0.05
+  done
+  return 1
+}
+
 _prt_call_runner() {
   local request="$1" runner backend root seconds tmp out req_sha rc=0
   _prt_set_model_failure ""
@@ -1011,7 +1152,7 @@ _prt_call_runner() {
   # the request have used time since the first one), and the same two refusals apply to it: a
   # call with less than the floor left, or one whose TERM-to-KILL grace no longer fits, is
   # refused, never run past the deadline or below the minimum a runner call is worth.
-  local outer runner_pid
+  local outer runner_pid pid1_rc
   if ! _prt_runner_clock_read; then
     rm -rf "$tmp"
     _prt_set_model_failure "deadline-exhausted"
@@ -1109,7 +1250,38 @@ READER
       < "$tmp/request" > /dev/null 2> "$tmp/runner.stderr"
   ) &
   runner_pid=$!
+  # The runner is PID 1 of its namespace and can leave the process group and clear the
+  # parent-death signal `--kill-child` relies on, so neither the group kill below nor the death
+  # of the launcher ends it (go-kure/.github#304). Its host pid and start time are recorded now,
+  # while the launcher is still its parent, and it is killed from here when the call ends. If it
+  # cannot be named (the read fails, finds nothing, finds more than one), the call is abandoned
+  # as runner-lifetime: a failed read never reads as "nothing to end". Only the pidns form has
+  # such a process; a cmd form brings none, and its limit is documented.
+  PRT_RUNNER_PID1=""
+  PRT_RUNNER_PID1_START=""
+  if [ "${PRT_ASSESS_RUNNER_BOUNDARY:-pidns}" = pidns ]; then
+    pid1_rc=0
+    _prt_runner_pid1_record "$runner_pid" || pid1_rc=$?
+    if [ "$pid1_rc" -eq 1 ]; then
+      echo "prt_model: the runner's namespace first process cannot be identified (${PRT_RUNNER_PID1_ERROR:-unknown}) — abandoning call" >&2
+      kill -KILL -- "-$runner_pid" 2>/dev/null || true
+      wait "$runner_pid" 2>/dev/null || true
+      rm -rf "$tmp"
+      _prt_set_model_failure "runner-lifetime"
+      return 1
+    fi
+  fi
   wait "$runner_pid" || rc=$?
+  # The namespace's first process goes first: it is the one the group signal cannot reach, and
+  # its end takes the rest of the namespace with it. Whatever the exit, and before anything is
+  # read from the call: a runner that is still alive could still be writing.
+  if ! _prt_runner_pid1_end; then
+    echo "prt_model: the runner's namespace first process ($PRT_RUNNER_PID1) is still running after SIGKILL — abandoning call" >&2
+    kill -KILL -- "-$runner_pid" 2>/dev/null || true
+    rm -rf "$tmp"
+    _prt_set_model_failure "runner-lifetime"
+    return 1
+  fi
   # Nothing in the group survives the call, whatever its exit; no member left is fine.
   # Known window: bash has already reaped `timeout` (its SIGCHLD handler does, before
   # `wait` runs), so with no member left the group id is free, and this signal would
