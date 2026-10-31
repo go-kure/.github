@@ -2313,10 +2313,10 @@ prt_parts_gate3="$(jq -n '[range(0;3) | {file:"g.go", line:1, severity:"critical
 prt_parts_clear
 assert_eq "prt_render_overflow_parts: 3 merge-gating rows of 25 KB need 2 parts, none shortened" \
   "2 0" "$(prt_render_overflow_parts '[]' "$prt_parts_gate3" "$prt_parts_dir")"
-assert_eq "prt_render_overflow_parts: part 1 says the merge-gating findings fill parts 1 to 2, not that part 1 lists them all" \
-  "true" "$(head -1 "$prt_parts_dir/part-1.md" | grep -qF 'The merge-gating withheld findings fill parts 1 to 2; read those parts first.' && ! head -1 "$prt_parts_dir/part-1.md" | grep -qF 'Part 1 lists every merge-gating' && echo true || echo false)"
+assert_eq "prt_render_overflow_parts: part 1 says the merge-gating findings are in parts 1 to 2, not that part 1 lists them all" \
+  "true" "$(head -1 "$prt_parts_dir/part-1.md" | grep -qF 'The merge-gating withheld findings are in parts 1 to 2; read those parts first.' && ! head -1 "$prt_parts_dir/part-1.md" | grep -qF 'Part 1 lists every merge-gating' && echo true || echo false)"
 assert_eq "prt_render_overflow_parts: part 2 repeats where the merge-gating findings are" \
-  "true" "$(head -1 "$prt_parts_dir/part-2.md" | grep -qF '**Part 2 of 2.** Continued from part 1. The merge-gating withheld findings fill parts 1 to 2' && echo true || echo false)"
+  "true" "$(head -1 "$prt_parts_dir/part-2.md" | grep -qF '**Part 2 of 2.** Continued from part 1. The merge-gating withheld findings are in parts 1 to 2' && echo true || echo false)"
 assert_eq "prt_render_overflow_parts: the third merge-gating row is in part 2" \
   "true" "$(grep -qF 'GATE2 ' "$prt_parts_dir/part-2.md" && echo true || echo false)"
 # No merge-gating row at all: the part lines say so instead of claiming a list.
@@ -2355,8 +2355,8 @@ assert_eq "prt_render_overflow_parts: a 150000-character finding is shortened (1
   "2 1" "$(prt_render_overflow_parts "$prt_parts_huge" '[]' "$prt_parts_dir")"
 assert_eq "prt_render_overflow_parts: the shortened cell ends with a marker naming how many characters were omitted" \
   "true" "$(grep -qE 'truncated: [0-9]+ of 150005 characters omitted\]' "$prt_parts_dir/part-1.md" && echo true || echo false)"
-assert_eq "prt_render_overflow_parts: part 1 states that a finding was shortened and that the text is not recorded elsewhere" \
-  "true" "$(head -1 "$prt_parts_dir/part-1.md" | grep -qF '1 finding(s) were still too long for one comment and were shortened' && echo true || echo false)"
+assert_eq "prt_render_overflow_parts: part 1 states that a finding was shortened and that the omitted text is not in the comments" \
+  "true" "$(head -1 "$prt_parts_dir/part-1.md" | grep -qF '1 finding(s) were too long for one part and were shortened' && head -1 "$prt_parts_dir/part-1.md" | grep -qF 'the omitted text is not in these comments.' && echo true || echo false)"
 assert_eq "prt_render_overflow_parts: the finding after the shortened one is still posted" \
   "true" "$(grep -qF 'after-the-huge-one' "$prt_parts_dir/part-2.md" && echo true || echo false)"
 assert_eq "prt_render_overflow_parts: the shortened finding's part is under the real limit" \

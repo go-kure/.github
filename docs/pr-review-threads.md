@@ -1371,7 +1371,7 @@ and point here instead of restating them.
 - **What part 1 says.** It says how many parts there are, which parts hold the merge-gating rows and,
   when a finding had to be shortened, that it was. A later part points back to part 1.
 - **A single finding larger than any part** is shortened, never dropped, and the shortened text ends
-  with a marker that says how much was omitted. The omitted text is recorded nowhere else, so the run
+  with a marker that says how much was omitted. The omitted text is not in any posted part, so the run
   is also marked `REVIEW_INCOMPLETE`.
 - **Posting.** Parts are posted in order, each after a freshness check. A part whose post fails marks
   the run incomplete and the reason names the part, for example

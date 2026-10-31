@@ -295,14 +295,14 @@ prt_overflow_part_line() {
   elif [ "$gating_last" -eq 1 ]; then
     gating_note="Part 1 lists every merge-gating withheld finding."
   else
-    gating_note="The merge-gating withheld findings fill parts 1 to ${gating_last}; read those parts first."
+    gating_note="The merge-gating withheld findings are in parts 1 to ${gating_last}; read those parts first."
   fi
   if [ "$part" -eq 1 ] && [ "$total" -eq 1 ]; then
     n="**Part 1 of 1.**"
-    [ "$truncated" -eq 0 ] || n="${n} ${truncated} finding(s) were too long for one comment and were shortened: each shortened cell ends with a \"truncated\" marker, and the omitted text is not available elsewhere."
+    [ "$truncated" -eq 0 ] || n="${n} ${truncated} finding(s) were too long for one comment and were shortened: each shortened cell ends with a \"truncated\" marker, and the omitted text is not in this comment."
   elif [ "$part" -eq 1 ]; then
-    n="**Part 1 of ${total}.** These findings did not fit in one comment. ${gating_note} Merge-gating rows are placed in the earliest parts, then the most severe of the rest; inside a part the advisory table comes before the withheld table. Parts 2 to ${total} continue the tables."
-    [ "$truncated" -eq 0 ] || n="${n} ${truncated} finding(s) were still too long for one comment and were shortened: each shortened cell ends with a \"truncated\" marker, and the omitted text is not available elsewhere."
+    n="**Part 1 of ${total}.** These findings did not fit in one comment. ${gating_note} Merge-gating rows are placed in the earliest parts, then the most severe of the rest; inside a part the additional-findings table comes before the withheld table. The other parts hold the remaining rows."
+    [ "$truncated" -eq 0 ] || n="${n} ${truncated} finding(s) were too long for one part and were shortened: each shortened cell ends with a \"truncated\" marker, and the omitted text is not in these comments."
   else
     n="**Part ${part} of ${total}.** Continued from part 1. ${gating_note}"
   fi
@@ -318,7 +318,7 @@ prt_overflow_part_line() {
 # prt_render_overflow_comment on that part's rows, and OUTDIR/part-N.counts holds
 # "OVERFLOW WITHHELD", how many rows of each kind that part carries (the caller
 # sums the parts that posted). T counts the findings that
-# had to be shortened: their cut text exists nowhere else in the PR, so the
+# had to be shortened: their cut text is not in any posted part, so the
 # caller marks the run incomplete when T > 0.
 # Returns 1 with nothing printed on any fault, including a part that still
 # exceeds PRT_COMMENT_LIMIT.
@@ -703,11 +703,11 @@ prt_render_clean_comment_superseded() {
 ## ~~AI Code Review — Reviewed, no findings~~ (superseded)
 
 A later review of \`${sha}\` reported **${count} finding(s)**, but ${unaccounted} did not
-reach any durable outcome this run (a write likely failed) — this is not the same as being
-suppressed as a false positive. Check the job log for the REVIEW_INCOMPLETE reason (e.g.
-"create failed" for a single finding, "failed to post overflow comment" for the whole
-advisory batch, or "failed to post overflow comment part N of M" for the rows of that one part
-only) and re-run if needed.
+reach any durable outcome this run (a write failed or was skipped) — this is not the same as being
+suppressed as a false positive. Check the job log for the REVIEW_INCOMPLETE or REVIEW_DEGRADED
+reasons (e.g. "create failed" for a single finding, "failed to post overflow comment" for the
+whole advisory batch, or "failed to post overflow comment part N of M" for the rows of that one
+part only) and re-run if needed.
 
 ${PRT_MARKER_STATE_SUPERSEDED}
 ${PRT_MARKER_CLEAN}
@@ -734,7 +734,7 @@ EOF
 
 A later review of \`${sha}\` reported **${count} finding(s)**. ${lead}
 ${suppressed} suppressed (false positive), ${overflow} beyond the gating cap,
-${quarantined} withheld (ambiguous fingerprint) — see the advisory comment
+${quarantined} withheld (ambiguous fingerprint) — see the advisory comment(s)
 on this PR for the withheld/overflow finding bodies.
 
 ${PRT_MARKER_STATE_SUPERSEDED}
