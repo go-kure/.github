@@ -1368,17 +1368,20 @@ byte for byte what `prt_render_overflow_comment` prints, and otherwise as severa
 - **Order.** Merge-gating withheld rows come first, then every other row by severity (critical, high,
   medium, other). Size never reorders a row. The mock GitHub in the test suite enforces the real
   65,536-character limit.
-- **Part 1 carries every blocker and every coverage caveat.** It says how many parts follow and, when a
-  finding had to be shortened, says so. A later part points back to part 1. Each part repeats its own
+- **Part 1 carries every blocker and every coverage caveat.** It opens with the merge-gating rows. It
+  says how many parts follow, which parts hold the merge-gating rows (only more than part 1 when those
+  rows alone pass one part, and then it says "parts 1 to N") and, when a finding had to be shortened,
+  says so. A later part points back to part 1 and repeats where the blockers are. Each part repeats its own
   section headings, intro text and footer, so it reads on its own. This splitting is not an agent's
   choice of how to write a report: the forge's hard limit leaves only truncation or a failed run as
   the alternatives, so the rule against splitting one report across several comments does not apply
   (RULING-1031-1200-281).
 - **A single finding larger than a part** is shortened, never dropped: its issue and fix text are cut
-  and the cell ends with `[truncated: N of M characters omitted]`. The omitted text is recorded nowhere
+  (and its severity, category, file and line each capped at 200 characters) and the cell ends with
+  `[truncated: N of M characters omitted]`. The omitted text is recorded nowhere
   else, so the run is also marked `REVIEW_INCOMPLETE`. A finding that fits one part whole is never cut,
   however large.
-- **Posting.** Every part is posted, each after its own freshness check. A part that fails marks the
+- **Posting.** Every part is posted, after a freshness check (before part 1, and again before each later part). A part that fails marks the
   run incomplete and the reason names the part (`failed to post overflow comment part 2 of 3 (HTTP
   500)`); the other parts are still posted. `OVERFLOW_COMMENT_POSTED` is true only when every part
   posted, so the clean-verdict supersede never points at a comment that is missing or partial.

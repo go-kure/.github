@@ -2285,13 +2285,31 @@ assert_eq "prt_render_overflow_parts: every row is posted exactly once across th
 assert_eq "prt_render_overflow_parts: part 1 holds the merge-gating row" \
   "true" "$(grep -qF 'GATING' "$prt_parts_dir/part-1.md" && echo true || echo false)"
 assert_eq "prt_render_overflow_parts: part 1 says it lists every merge-gating finding and how many parts there are" \
-  "true" "$(head -1 "$prt_parts_dir/part-1.md" | grep -qF '**Part 1 of 4.** These findings did not fit in one comment. This part lists every merge-gating withheld finding' && echo true || echo false)"
-assert_eq "prt_render_overflow_parts: a later part points back to part 1" \
-  "true" "$(head -1 "$prt_parts_dir/part-3.md" | grep -qF '**Part 3 of 4.** Continued from part 1, which lists every merge-gating withheld finding.' && echo true || echo false)"
+  "true" "$(head -1 "$prt_parts_dir/part-1.md" | grep -qF '**Part 1 of 4.** These findings did not fit in one comment. Part 1 lists every merge-gating withheld finding.' && echo true || echo false)"
+assert_eq "prt_render_overflow_parts: a later part points back to part 1 and says where the blockers are" \
+  "true" "$(head -1 "$prt_parts_dir/part-3.md" | grep -qF '**Part 3 of 4.** Continued from part 1. Part 1 lists every merge-gating withheld finding.' && echo true || echo false)"
 assert_eq "prt_render_overflow_parts: a later part repeats its section heading and footer, so it reads on its own" \
   "2" "$(grep -cE '^## Withheld AI Review Findings|^\*Automated review' "$prt_parts_dir/part-3.md" | tr -d ' ')"
 assert_eq "prt_render_overflow_parts: no part is over the margin (60000 units)" \
   "true" "$([ "$(prt_parts_max_u16)" -le "$PRT_OVERFLOW_PART_MAX" ] && echo true || echo false)"
+
+# Merge-gating rows that alone pass one part: the part lines say which parts hold them, never that
+# part 1 holds them all (review of go-kure/.github#307, defect 1).
+prt_parts_gate3="$(jq -n '[range(0;3) | {file:"g.go", line:1, severity:"critical", category:"gate\(.)", issue:("GATE\(.) " + ("g" * 25000)), fix:"f", quarantine_reason:"this_run", gating:true}]')"
+prt_parts_clear
+assert_eq "prt_render_overflow_parts: 3 merge-gating rows of 25 KB need 2 parts, none shortened" \
+  "2 0" "$(prt_render_overflow_parts '[]' "$prt_parts_gate3" "$prt_parts_dir")"
+assert_eq "prt_render_overflow_parts: part 1 says the merge-gating findings fill parts 1 to 2, not that part 1 lists them all" \
+  "true" "$(head -1 "$prt_parts_dir/part-1.md" | grep -qF 'The merge-gating withheld findings fill parts 1 to 2; read those parts first.' && ! head -1 "$prt_parts_dir/part-1.md" | grep -qF 'Part 1 lists every merge-gating' && echo true || echo false)"
+assert_eq "prt_render_overflow_parts: part 2 repeats where the merge-gating findings are" \
+  "true" "$(head -1 "$prt_parts_dir/part-2.md" | grep -qF '**Part 2 of 2.** Continued from part 1. The merge-gating withheld findings fill parts 1 to 2' && echo true || echo false)"
+assert_eq "prt_render_overflow_parts: the third merge-gating row is in part 2" \
+  "true" "$(grep -qF 'GATE2 ' "$prt_parts_dir/part-2.md" && echo true || echo false)"
+# No merge-gating row at all: the part lines say so instead of claiming a list.
+prt_parts_nogate="$(jq -n '[range(0;3) | {file:"n.go", line:1, severity:"low", category:"n\(.)", issue:("NOGATE\(.) " + ("n" * 25000)), fix:"f", quarantine_reason:"this_run", gating:false}]')"
+prt_parts_clear
+assert_eq "prt_render_overflow_parts: with no merge-gating row the part 1 line says none is" \
+  "true" "$(prt_render_overflow_parts '[]' "$prt_parts_nogate" "$prt_parts_dir" >/dev/null; head -1 "$prt_parts_dir/part-1.md" | grep -qF 'None of the withheld findings is merge-gating.' && echo true || echo false)"
 
 # The largest single finding that still fits one part is not shortened, and its part fits the limit.
 prt_parts_big_q="$(jq -n '[{file:"big.go", line:1, severity:"high", category:"big", issue:("BIGQ " + ("i" * 27000)), fix:("f" * 27000), quarantine_reason:"this_run", gating:true}]')"
@@ -2316,6 +2334,26 @@ assert_eq "prt_render_overflow_parts: part 1 states that a finding was shortened
 assert_eq "prt_render_overflow_parts: the finding after the shortened one is still posted" \
   "true" "$(grep -qF 'after-the-huge-one' "$prt_parts_dir/part-2.md" && echo true || echo false)"
 assert_eq "prt_render_overflow_parts: the shortened finding's part is under the real limit" \
+  "true" "$([ "$(prt_parts_max_u16)" -le "$PRT_COMMENT_LIMIT" ] && echo true || echo false)"
+
+# One oversized finding alone is one part: no "parts 2 to 1" (review of go-kure/.github#307, defect 2).
+prt_parts_alone="$(jq -n '[{file:"alone.go", line:3, severity:"high", category:"alone", issue:("ALONE " + ("a" * 150000))}]')"
+prt_parts_clear
+assert_eq "prt_render_overflow_parts: one oversized finding alone is 1 part, 1 shortened" \
+  "1 1" "$(prt_render_overflow_parts "$prt_parts_alone" '[]' "$prt_parts_dir")"
+assert_eq "prt_render_overflow_parts: that single part says it was shortened and never mentions further parts" \
+  "true" "$(head -1 "$prt_parts_dir/part-1.md" | grep -qF '**Part 1 of 1.** 1 finding(s) were too long for one comment and were shortened' && ! head -1 "$prt_parts_dir/part-1.md" | grep -qE 'parts 2 to|did not fit' && echo true || echo false)"
+
+# An enormous short field (file, category, severity) is shortened too, so the whole comment is not lost
+# (review of go-kure/.github#307, defect 3).
+prt_parts_longfile="$(jq -n '[{file:("f" * 70000), line:1, severity:"high", category:("c" * 70000), issue:"short issue"}, {file:"s.go", severity:"low", category:"s", issue:"other finding"}]')"
+prt_parts_clear
+# (A shortened row is counted as filling its part, so the other finding follows in part 2.)
+assert_eq "prt_render_overflow_parts: an oversized file and category are shortened, counted, and the other finding is posted" \
+  "2 1" "$(prt_render_overflow_parts "$prt_parts_longfile" '[]' "$prt_parts_dir")"
+assert_eq "prt_render_overflow_parts: the shortened file name carries a marker and the other finding is present" \
+  "true" "$(grep -qE 'truncated: 69800 of 70000 characters omitted\]' "$prt_parts_dir/part-1.md" && grep -qF 'other finding' "$prt_parts_dir/part-2.md" && echo true || echo false)"
+assert_eq "prt_render_overflow_parts: that part is under the real limit" \
   "true" "$([ "$(prt_parts_max_u16)" -le "$PRT_COMMENT_LIMIT" ] && echo true || echo false)"
 
 # Astral characters count as two UTF-16 units: 3 findings of 25000 emoji are 50000 units each.
@@ -6635,8 +6673,14 @@ PRT_TEST_REVIEW_MATERIAL_SHA256="ccccccccccccccccccccccccccccccccccccccccccccccc
 PRT_TEST_CREATE_BODY_LOG="$(mktemp)"
 PRT_TEST_ISSUE_COMMENT_LOG="$(mktemp)"
 PRT_TEST_WRITE_FAIL_BODY_MATCH='**Part 2 of 3.**'
+# A prior clean verdict is seeded so the run's supersede step shows whether the overflow flag went false.
+prt_fo_saved_list="${PRT_TEST_ISSUE_COMMENTS_LIST:-}"
+PRT_TEST_ISSUE_COMMENTS_LIST='[{"id":88,"user":{"login":"test-bot[bot]"},"body":"old clean\n<!-- gokure-pr-review:v1-clean -->"}]'
 rc="$(run_orchestrator enforce 0 0 0)"
+PRT_TEST_ISSUE_COMMENTS_LIST="$prt_fo_saved_list"
 assert_eq "split overflow comment: a part that fails to post fails the run -> exits 1" "1" "$rc"
+assert_eq "split overflow comment: the flag went false, so the superseded clean verdict says the findings reached no durable outcome" \
+  "true false" "$(grep -qF 'reach any durable outcome' "$PRT_TEST_ISSUE_COMMENT_LOG" && echo true || echo false) $(grep -qF 'advisory comment' "$PRT_TEST_ISSUE_COMMENT_LOG" && echo true || echo false)"
 assert_eq "split overflow comment: the failure reason names the part that failed" \
   "true" "$(grep -qF 'failed to post overflow comment part 2 of 3 (HTTP 500)' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 assert_eq "split overflow comment: only part 2 is reported failed" \
