@@ -2081,6 +2081,9 @@ if [ "$PRT_MODE" = enforce ]; then
   # even though the run itself no longer fails closed for it.
   prt_degraded_reasons | grep -q 'review-parse-failed' && incomplete_now=true
   for ((oi = 0; oi < n_owned; oi++)); do
+    # A read that failed on an earlier thread of this loop marked the run incomplete after the
+    # flag was set above; fold it in so a later thread is not read as absent either.
+    prt_is_incomplete && incomplete_now=true
     if ! th="$(jq -ce ".[$oi]" <<< "$OWNED" 2>/dev/null)"; then
       prt_mark_incomplete "owned thread $oi could not be read (local fault); it was not reconciled for absence"
       continue
