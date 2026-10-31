@@ -7753,6 +7753,46 @@ assert_eq "assess runner, detached TERM-resistant helper, default boundary: noth
 PRT_TEST_RUNNER_MODE=probe
 fi
 
+# go-kure/.github#309: the default prefix sets no_new_privs for every user, not only for root. The
+# builder is tested with a stand-in `id`, so the root and non-root forms are both checked here,
+# whoever runs the suite. The bounding and inheritable sets can only be emptied by root (it needs
+# CAP_SETPCAP, which is gone after exec), so those two flags stay root-only.
+prt_ar_build_as() { # args: the uid `id -u` reports; prints the built prefix words
+  ( unset PRT_ASSESS_RUNNER_BOUNDARY PRT_ASSESS_RUNNER_BOUNDARY_CMD
+    prt_ar_uid="$1"
+    id() { echo "$prt_ar_uid"; }
+    _prt_runner_boundary_build && printf '%s ' "${PRT_RUNNER_BOUNDARY_ARGS[@]}" )
+}
+prt_ar_pre="unshare --user --map-current-user --pid --fork --mount-proc --kill-child"
+assert_eq "default boundary, non-root: no_new_privs only, no bounding or inheritable clearing" \
+  "$prt_ar_pre setpriv --no-new-privs " "$(prt_ar_build_as 1000)"
+assert_eq "default boundary, root: no_new_privs and both clearings" \
+  "$prt_ar_pre setpriv --no-new-privs --bounding-set=-all --inh-caps=-all " "$(prt_ar_build_as 0)"
+# A failed `id -u` is a start fault naming the read, not a silent non-root form.
+prt_ar_idfail="$( unset PRT_ASSESS_RUNNER_BOUNDARY PRT_ASSESS_RUNNER_BOUNDARY_CMD
+  id() { return 1; }
+  _prt_runner_boundary_build; echo "rc=$? args=${#PRT_RUNNER_BOUNDARY_ARGS[@]} err=$PRT_RUNNER_BOUNDARY_ERROR" )"
+assert_eq "default boundary, id -u fails: the build fails with a reason naming id -u and builds nothing" \
+  "rc=1 args=0 err=cannot read the user id (id -u failed) to build the runner boundary" "$prt_ar_idfail"
+# The same fault at the orchestrator: it stops at start, before any call, and says why.
+prt_ar_idbin="$(mktemp -d)"
+printf '#!/bin/sh\nexit 1\n' > "$prt_ar_idbin/id"
+chmod 755 "$prt_ar_idbin/id"
+PRT_TEST_RUNNER_MODE=clean
+rm -f "$PRT_TEST_RUNNER_LOG".*
+rc="$(PATH="$prt_ar_idbin:$PATH" run_orchestrator advisory 0 0 0)"
+assert_eq "orchestrator, id -u fails: exits 1 at start, naming the failed read, no runner call" \
+  "1 true 0" "$rc $(grep -q 'ERROR: cannot read the user id (id -u failed)' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(prt_ar_calls)"
+rm -rf "$prt_ar_idbin"
+PRT_TEST_RUNNER_MODE=probe
+# Behind the real prefix a non-root runner has no_new_privs set, so a setuid or file-capability
+# binary it starts cannot gain anything. Needs the namespace; the root form is covered above.
+if $prt_ar_ns && [ "$(id -u)" != 0 ]; then
+  # shellcheck disable=SC2046 # the prefix is words
+  prt_ar_nnp="$(env -i "PATH=$PATH" $(prt_ar_prod_prefix) sed -n 's/^NoNewPrivs:[[:space:]]*//p' /proc/self/status 2>/dev/null)"
+  assert_eq "default boundary, non-root, started: the runner has NoNewPrivs 1" "1" "$prt_ar_nnp"
+fi
+
 # The check walks every ancestor, not only its own process. The probe it runs behind the prefix is
 # handed those pids (a prefix that logs its arguments shows which), and a prefix that hides only the
 # first of them must still be refused because the others stay readable.

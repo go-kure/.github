@@ -821,16 +821,22 @@ _prt_runner_env_build() {
 #     It always takes a user namespace that maps the current user to itself
 #     (the files it reads keep their owner), for root too: root in a user
 #     namespace could otherwise unmount the fresh /proc and see the host's
-#     again. Whoever the user is, the runner is left no capability: for root
-#     (uid 0 keeps the namespace's capabilities across exec) setpriv empties
-#     the bounding and inheritable sets and sets no_new_privs; any other user
-#     has none after exec.
+#     again. Whoever the user is, the runner is left no capability and gets
+#     no_new_privs (setpriv --no-new-privs), so a setuid or file-capability
+#     binary it starts gains nothing. For root (uid 0 keeps the namespace's
+#     capabilities across exec) setpriv also empties the bounding and
+#     inheritable sets; any other user has no effective capability after exec
+#     and cannot empty them (that needs CAP_SETPCAP), so those two stay
+#     root-only. A failing `id -u` returns 1 with the reason: it never
+#     builds the non-root form by guess.
 #   cmd: the words of PRT_ASSESS_RUNNER_BOUNDARY_CMD, a command the operator
 #     supplies (for instance one that switches to another user). Trusted
 #     configuration, never PR content. It is held to the same check as pidns,
 #     see _prt_runner_boundary_check: its own claim to isolate counts for nothing.
 # There is no form that runs the runner without one. Returns 1, with the reason
-# in PRT_RUNNER_BOUNDARY_ERROR, for an unknown value or a cmd form with no words.
+# in PRT_RUNNER_BOUNDARY_ERROR, for an unknown value, a cmd form with no words, or
+# a pidns form whose user id cannot be read. The cmd form's own no_new_privs is the
+# operator's responsibility: the per-call check below does not judge it.
 # shellcheck disable=SC2034 # PRT_RUNNER_BOUNDARY_ERROR is read by pr-review-threads.sh at start, not within this file
 _prt_runner_boundary_build() {
   local IFS=$' \t\n'
@@ -838,9 +844,15 @@ _prt_runner_boundary_build() {
   PRT_RUNNER_BOUNDARY_ERROR=""
   case "${PRT_ASSESS_RUNNER_BOUNDARY:-pidns}" in
     pidns)
-      PRT_RUNNER_BOUNDARY_ARGS=(unshare --user --map-current-user --pid --fork --mount-proc --kill-child)
-      if [ "$(id -u)" = 0 ]; then
-        PRT_RUNNER_BOUNDARY_ARGS+=(setpriv --no-new-privs --bounding-set=-all --inh-caps=-all)
+      local uid
+      if ! uid="$(id -u)"; then
+        PRT_RUNNER_BOUNDARY_ERROR="cannot read the user id (id -u failed) to build the runner boundary"
+        PRT_RUNNER_BOUNDARY_ARGS=()
+        return 1
+      fi
+      PRT_RUNNER_BOUNDARY_ARGS=(unshare --user --map-current-user --pid --fork --mount-proc --kill-child setpriv --no-new-privs)
+      if [ "$uid" = 0 ]; then
+        PRT_RUNNER_BOUNDARY_ARGS+=(--bounding-set=-all --inh-caps=-all)
       fi ;;
     cmd)
       read -rd '' -a PRT_RUNNER_BOUNDARY_ARGS <<< "${PRT_ASSESS_RUNNER_BOUNDARY_CMD:-}" || true
