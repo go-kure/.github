@@ -300,9 +300,11 @@ unset -f prt_swallow_scan
 # A plain `var="$(jq ...)"` (or gh, or prt_gh_*) whose status nothing tests reads a failed call as an
 # empty value, and the orchestrator (set -uo pipefail, no -e) carries on with it. The rule is in
 # docs/pr-review-threads.md ("Failures degrade"): a read whose empty value changes what is posted or
-# reconciled is checked on its own status. The scanner below lists every other site, and the
-# allow-list names each one with the reason an empty value is harmless there. A new unchecked site
-# fails this guard until it is checked or listed.
+# reconciled is checked on its own status. The scanner below lists the sites of one shape: a line
+# that begins `NAME="$(jq ...`, `NAME="$(gh ...` or `NAME="$(prt_gh_* ...` (no `local`, no
+# `export`, no unquoted form, no pipe in front of the command) and has no `||` or `&&` on its
+# statement. Another shape is not seen. A new site of that shape fails this guard until it is
+# checked or listed; an unterminated statement fails it too, so a scan that lost its place is loud.
 prt_unchecked_dir="$(mktemp -d)"
 cat > "$prt_unchecked_dir/scan.awk" <<'AWK'
 # Prints FILE:LINE:VARIABLE for each plain assignment of a jq/gh/prt_gh_* command substitution whose
@@ -311,7 +313,12 @@ cat > "$prt_unchecked_dir/scan.awk" <<'AWK'
 function start_match(line) {
   return line ~ /^[[:space:]]*[A-Za-z_][A-Za-z_0-9]*="\$\((jq|gh|prt_gh_[a-z_]+)([[:space:]]|\))/
 }
+FNR == 1 && in_stmt {
+  printf "%s:%d:UNCLOSED\n", pfile, start
+  in_stmt = 0
+}
 {
+  pfile = FILENAME
   if ($0 ~ /^[[:space:]]*#/) next
   if (!in_stmt) {
     if (!start_match($0)) next
@@ -347,16 +354,16 @@ AWK
 prt_unchecked_scan() { # FILE... -> FILE:VARIABLE for each unchecked substitution
   awk -f "$prt_unchecked_dir/scan.awk" "$@" | sed -E 's|^.*/([^/:]*):[0-9]+:|\1:|'
 }
-# One entry per site (a repeated name is a repeated site). Every list below reads a field of an
-# object an earlier, checked step produced; an empty value from a failed read fails the checks
-# that follow it (a field compared to true, a non-empty id, a fingerprint match) or is the fail-safe
-# path of the next line:
+# One entry per site (a repeated name is a repeated site). Each listed read takes a field of an
+# object an earlier step produced, and its status is not tested. Where it comes from:
 #   meta_json      validated as an object right after its fetch: PR_TITLE PR_DESC base_sha
-#   row            prt_persist_owned_collision's argument, a checked jq -ce result of its caller
-#   owned_match    the checked `jq -c ... | .[0] // empty` read of $OWNED, 13 field reads
+#   row            prt_persist_owned_collision's argument, the object its caller read
+#   owned_match    the `jq -c ... | .[0] // empty` read of $OWNED, 13 field reads
 #   th             the checked `jq -ce ".[$oi]"` read of the owned thread in the absence loop
 #   cur_resp       a failed GET gives an empty body, which the next `-z "$cur_body"` test reports
 #   stamp_known_stale  anything other than the word false is taken as true (re-stamp, never resolve)
+# An empty value from a listed read is not neutral in general; the list records which reads are left
+# as they are, not that each is safe.
 prt_unchecked_allow="
 pr-review-threads.sh:PR_TITLE pr-review-threads.sh:PR_DESC pr-review-threads.sh:base_sha
 pr-review-threads.sh:db_id pr-review-threads.sh:stale_fas pr-review-threads.sh:cfp
@@ -365,16 +372,15 @@ pr-review-threads.sh:thread_resolved pr-review-threads.sh:resolved_by_bot pr-rev
 pr-review-threads.sh:owned_collision pr-review-threads.sh:owned_collision_eff pr-review-threads.sh:owned_content_fp
 pr-review-threads.sh:owned_fas pr-review-threads.sh:can_resolve pr-review-threads.sh:can_unresolve
 pr-review-threads.sh:thread_id pr-review-threads.sh:db_id pr-review-threads.sh:thread_id pr-review-threads.sh:db_id
-pr-review-threads.sh:fp pr-review-threads.sh:collision pr-review-threads.sh:has_human_reply
-pr-review-threads.sh:thread_resolved pr-review-threads.sh:first_absent_sha pr-review-threads.sh:thread_id
+pr-review-threads.sh:first_absent_sha pr-review-threads.sh:thread_id
 pr-review-threads.sh:first_comment_db_id pr-review-threads.sh:content_fp pr-review-threads.sh:viewer_can_resolve
 pr-review-threads.sh:stamp_known_stale
 "
-prt_unchecked_found="$(prt_unchecked_scan "$ROOT/scripts/pr-review-threads.sh" "$LIB"/*.sh "$ROOT/scripts/eval/review-adapter.sh" | sort | tr '\n' ' ')"
+prt_unchecked_found="$(prt_unchecked_scan "$ROOT/scripts/pr-review-threads.sh" "$LIB"/*.sh | sort | tr '\n' ' ')"
 assert_eq "unchecked-read guard: every jq/gh substitution without a status test is a listed site" \
   "$(printf '%s\n' $prt_unchecked_allow | sort | tr '\n' ' ')" "$prt_unchecked_found"
 assert_eq "unchecked-read guard: the scan finds the listed sites (not a vacuous pass)" \
-  "true" "$([ "$(wc -w <<< "$prt_unchecked_found")" -ge 30 ] && echo true || echo false)"
+  "true" "$([ "$(wc -w <<< "$prt_unchecked_found")" -ge 25 ] && echo true || echo false)"
 cat > "$prt_unchecked_dir/probe.sh" <<'PROBE'
 a="$(jq -r '.a' <<< "$o")"
 b="$(jq -r '.b' <<< "$o")" || return 1
@@ -388,6 +394,17 @@ h="$(gh api /h)"
 PROBE
 assert_eq "unchecked-read guard: the scanner reports a bare read and a multi-line one, not a checked, fallback or commented one" \
   "probe.sh:a probe.sh:f probe.sh:h" "$(prt_unchecked_scan "$prt_unchecked_dir/probe.sh" | tr '\n' ' ' | sed 's/ $//')"
+# A statement the scan cannot close (here an apostrophe inside double quotes flips its quote state)
+# is reported as UNCLOSED, and the next file starts clean instead of inheriting it.
+cat > "$prt_unchecked_dir/open.sh" <<'PROBE'
+a="$(jq -r "can't" <<< "$o")"
+b="$(jq -r '.b' <<< "$o")"
+PROBE
+cat > "$prt_unchecked_dir/next.sh" <<'PROBE'
+c="$(jq -r '.c' <<< "$o")"
+PROBE
+assert_eq "unchecked-read guard: an unterminated statement is reported, and does not hide the next file" \
+  "open.sh:UNCLOSED next.sh:c" "$(prt_unchecked_scan "$prt_unchecked_dir/open.sh" "$prt_unchecked_dir/next.sh" | tr '\n' ' ' | sed 's/ $//')"
 find "$prt_unchecked_dir" -delete
 unset prt_unchecked_dir prt_unchecked_allow prt_unchecked_found
 unset -f prt_unchecked_scan
@@ -5200,9 +5217,10 @@ PRT_TEST_MODEL_RESPONSE_MODE=clean
 PRT_TEST_ASSESS_RESPONSE_MODE=clean
 PRT_TEST_OWNED_FP="deadbeefcafebabe"
 PRT_TEST_RECHECK_MODE=
-# The absence loop reads the owned threads with four jq calls. An empty result from any of them
-# would let an owned thread pass unreconciled while the run reads as complete, so each failure
-# marks the run incomplete. The default fixture has one owned thread that no finding matches;
+# The absence loop reads the owned threads with jq calls whose empty result would let a thread pass
+# unreconciled, or be acted on, while the run reads as complete: the count, the thread, its
+# fingerprint, the matched-by-this-run test and the collision, reply and resolved fields. Each
+# failure marks the run incomplete. The default fixture has one owned thread that no finding matches;
 # each case fails one read through the shim and checks the exit code and the reason on stderr.
 rc="$(PATH="$prt_orch_shim:$PATH" REAL_JQ="$prt_orch_real_jq" JQ_FAIL_MATCH='no-such-program-text' run_orchestrator enforce 0 0 0)"
 assert_eq "orchestrator: the absence loop through a pass-through shim exits 0 with no read fault (control)" \
@@ -5216,10 +5234,21 @@ assert_eq "orchestrator: a failed owned-thread read -> exits 1 and names the thr
 rc="$(PATH="$prt_orch_shim:$PATH" REAL_JQ="$prt_orch_real_jq" JQ_FAIL_MATCH='IN($arr[])' run_orchestrator enforce 0 0 0)"
 assert_eq "orchestrator: a failed matched-by-this-run read -> exits 1 and skips the thread" \
   "1 true" "$rc $(grep -qF 'could not tell whether this run matched the thread (local fault)' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+rc="$(PATH="$prt_orch_shim:$PATH" REAL_JQ="$prt_orch_real_jq" JQ_FAIL_EXACT='.fp' run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator: a failed owned-thread fingerprint read -> exits 1 and skips the thread" \
+  "1 true" "$rc $(grep -qF 'its fingerprint could not be read (local fault)' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+# .resolved is the third read of the same condition, but the shim cannot reach it alone: building the
+# owned list reads .resolved first (reconcile.sh) and stops the run before the absence loop.
+for prt_abs_field in .collision .has_human_reply; do
+  rc="$(PATH="$prt_orch_shim:$PATH" REAL_JQ="$prt_orch_real_jq" JQ_FAIL_EXACT="$prt_abs_field" run_orchestrator enforce 0 0 0)"
+  assert_eq "orchestrator: a failed owned-thread $prt_abs_field read -> exits 1 and skips the thread" \
+    "1 true" "$rc $(grep -qF 'its collision, reply or resolved state could not be read (local fault)' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+done
+unset prt_abs_field
 # A metadata response that cannot be checked as a JSON object stops the run before any field is read.
 rc="$(PATH="$prt_orch_shim:$PATH" REAL_JQ="$prt_orch_real_jq" JQ_FAIL_MATCH='type == "object"' run_orchestrator enforce 0 0 0)"
 assert_eq "orchestrator: PR metadata that fails the object check -> exits 1 before reading any field" \
-  "1 true" "$rc $(grep -qF 'PR metadata is not a JSON object' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+  "1 true" "$rc $(grep -qF 'PR metadata could not be read as a JSON object' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 # Advisory mode builds its table from the filtered findings; a failed filter must not post a table
 # that lists none and reads as a clean run.
 rc="$(PATH="$prt_orch_shim:$PATH" REAL_JQ="$prt_orch_real_jq" JQ_FAIL_MATCH='select(.verdict != "FALSE_POSITIVE")' run_orchestrator advisory 0 0 0)"
