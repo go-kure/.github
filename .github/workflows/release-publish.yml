@@ -346,7 +346,7 @@ jobs:
           # REQUIRED_GORELEASER_VERSION (org-wide authority) and what the GitLab
           # side already pins exactly. A float here means "whatever v2.x is newest
           # the moment this release job happens to run" — unreproducible builds.
-          version: "2.18.0"
+          version: "v2.19.0"
           args: release --clean --release-notes release-notes.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
