@@ -488,7 +488,7 @@ Inputs, all from the environment:
 | `PRT_ASSESS_RUNNER_BACKEND` | The runner's `--backend` value (action input `assess-runner-backend`). Required; its absence is refused at start. |
 | `PRT_ASSESS_RUNNER` | The runner executable (default `review-run`, found on `PATH`). |
 | `PRT_ASSESS_RUNNER_ROOT` | The checkout it reads (default: the working directory). |
-| `PRT_ASSESS_RUNNER_SECONDS` | Its deadline per call (default 600), clamped to what is left of the run's model deadline (`PRT_MODEL_DEADLINE_EPOCH`, the same one the proxy calls use). A call is refused as `deadline-exhausted` when less than the 30-second floor remains. Must be a whole number of seconds, at most nine digits and read as decimal (`060` is 60). It bounds the runner's own timed run; a separate outer bound covers the whole process tree (see "Outer time bound"). |
+| `PRT_ASSESS_RUNNER_SECONDS` | Its deadline per call (default 600), clamped to what is left of the run's model deadline (`PRT_MODEL_DEADLINE_EPOCH`, the same one the proxy calls use). A call is refused as `deadline-exhausted` when less than the 30-second floor remains, checked both before the boundary check and again after it, so the time the check used counts. Must be a whole number of seconds, at most nine digits and read as decimal (`060` is 60). It bounds the runner's own timed run; a separate outer bound covers the whole process tree (see "Outer time bound"). |
 | `PRT_ASSESS_RUNNER_ENV` | Variable names the runner may inherit, separated by any whitespace, newlines included (action input `assess-runner-env`), typically the metered model key. Every listed name must be set in the step, or the run fails at start naming it. |
 | `PRT_ASSESS_RUNNER_BOUNDARY`, `PRT_ASSESS_RUNNER_BOUNDARY_CMD` | The process boundary (action inputs `assess-runner-boundary`, `assess-runner-boundary-cmd`): `pidns` (the default, also when empty) or `cmd` with the command words in the second variable. Any other value, or `cmd` with no words, is refused at start. See "Process boundary". |
 | `PRT_BOUNDARY_CHECK_SECONDS` | The most seconds the boundary's check may run before each call (default 10), further cut to what the run's model deadline leaves after the runner's own time. A check that does not finish is a failed check: the call is refused as `runner-boundary`. |
@@ -505,7 +505,7 @@ must not hold a token that can write to the PR. It is started under `env -i` wit
 `PRT_GH_TOKEN`, `GITHUB_TOKEN`, `GH_TOKEN`, `GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`,
 `ACTIONS_RUNTIME_TOKEN` or `ACTIONS_ID_TOKEN_REQUEST_TOKEN` on any line, a name that is not a plain
 ASCII identifier, a name that bash would change or refuse to export (one that starts with an
-underscore or with `BASH`, or is exactly `SHLVL`, `OPTIND`, `UID`, `EUID`, `PPID`, `SHELLOPTS`,
+underscore or with `BASH`, or is exactly `IFS`, `SHLVL`, `OPTIND`, `UID`, `EUID`, `PPID`, `SHELLOPTS`,
 `GROUPS`, `DIRSTACK`, `FUNCNAME`, `PIPESTATUS`, `HISTCMD`, `LINENO`, `RANDOM`, `SRANDOM`,
 `SECONDS`, `EPOCHSECONDS`, `EPOCHREALTIME` or `EXECIGNORE`), or a name that is not set fails the run at start with
 `PRT_ASSESS_RUNNER_ENV` in the message, rather than being dropped. Those names and values (the metered model key among them) never appear in the
@@ -561,9 +561,11 @@ nothing, or leaves the runner able to undo it, fails. The probe is bounded as a 
 `timeout` with a kill after the first signal and writes to a file, so a prefix that ignores
 `TERM`, or leaves a helper holding the probe's output, cannot hold the check. If the ancestors
 cannot be listed the call is refused, never checked against fewer. The run's remaining budget is
-read before the check, not after: a call the deadline has no room for is refused as
-`deadline-exhausted` without spending the check, and the check is cut to what the budget leaves
-after the runner's own kill grace.
+read before the check: a call the deadline has no room for is refused as `deadline-exhausted`
+without spending the check, and the check is cut to what the budget leaves after the runner's own
+kill grace. It is read again after the check, and the minimum applies to that fresh reading too: a
+call that had 31 seconds before the check and 21 after it is refused as `deadline-exhausted`, not
+started.
 Lifetime: when the boundary command dies, `--kill-child` takes the namespace with it, and the
 outer time bound ends it when the call overruns. If the orchestrator itself is killed outright, the
 runner's tree is not signalled by it and runs until that outer bound fires (at most the call's
