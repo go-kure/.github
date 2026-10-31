@@ -1010,6 +1010,10 @@ _prt_call_runner() {
   # them open, and one the orchestrator holds (a credential file, a pipe) would be
   # readable to the runner. `exec` keeps the subshell's pid, so $! is still the
   # `timeout` that leads the process group.
+  # The runner's standard error goes to a file in $tmp and is never printed: it can hold raw
+  # assessment text and credential-bearing diagnostics, which the run's log must not carry
+  # (see "Never logged" in the guide). The cause is the closed reason set below, and the
+  # file goes with $tmp. The same file takes the diagnostics of `timeout` and the boundary.
   (
     for prt_fd_path in /proc/self/fd/*; do
       prt_fd="${prt_fd_path##*/}"
@@ -1019,7 +1023,7 @@ _prt_call_runner() {
       "$runner" --backend "$backend" --root "$root" --base "$PRT_REVIEW_BASE_SHA" \
       --seconds "$seconds" --sandbox none --out "$out" \
       -- "Perform the assessment described on the standard input. Answer with only the JSON object it asks for." \
-      < "$tmp/request" > /dev/null
+      < "$tmp/request" > /dev/null 2> "$tmp/runner.stderr"
   ) &
   runner_pid=$!
   wait "$runner_pid" || rc=$?
