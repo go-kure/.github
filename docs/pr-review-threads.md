@@ -588,9 +588,11 @@ every member with it. This depends on nothing inside the namespace. If the proce
 identified (the read fails, finds nothing, finds more than one, or finds something that is not a
 namespace's first process) or is still there after the kill, the call is abandoned as
 `runner-lifetime` and its answer is not read: a failed read is never taken for "nothing to end".
-`timeout` gone before the first process was named counts as "nothing to end" only if it went before
-its own bound: after the bound it ends by a KILL of its group, which a first process in a session of
-its own survives, so that case is abandoned as well.
+`timeout` gone before the first process was named counts as "nothing to end" only if it ended by
+itself, with an ordinary status below 124 or 125 to 127 (a launcher that failed or could not start).
+A status of 124 (the bound ran out) or of 128 and above (a signal) is abandoned as well: a first
+process that is already running shares the process group of `timeout` and the launcher, can end both
+with a KILL of the group, and then leaves the group and lives on.
 Not closed: the `cmd` boundary (it has no such process to name; the lifetime of what the command
 starts is the command's), a SIGKILL of the orchestrator itself (nothing is left to send the kill, and
 the runner then lives until the job timeout), and what a surviving runner does during the call. The
