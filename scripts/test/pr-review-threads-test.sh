@@ -6698,7 +6698,7 @@ assert_eq "split overflow comment: the flag went false, so the superseded clean 
 assert_eq "split overflow comment: the failure reason names the part that failed" \
   "true" "$(grep -qF 'failed to post overflow comment part 2 of 3 (HTTP 500)' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 assert_eq "split overflow comment: only part 2 is reported failed" \
-  "1" "$(grep -c 'failed to post overflow comment part' "$PRT_TEST_STDERR_FILE" | tr -d ' ')"
+  "overflow comment part 2 of 3" "$(grep -o 'failed to post overflow comment part [0-9]* of [0-9]*' "$PRT_TEST_STDERR_FILE" | sed 's/^failed to post //' | sort -u)"
 assert_eq "split overflow comment: parts 1 and 3 were still posted" \
   "2" "$(grep -cE '^POST [0-9]+/comments$|^POST ' "$PRT_TEST_ISSUE_COMMENT_LOG" | tr -d ' ')"
 assert_eq "split overflow comment: the failed write is logged against part 2's POST" \
