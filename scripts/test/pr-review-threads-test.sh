@@ -7349,7 +7349,9 @@ run_orchestrator advisory 0 0 0 > "$prt_ar_dir/linger.rc" &
 prt_ar_bg=$!
 for _ in $(seq 1 100); do [ -e "$PRT_TEST_RUNNER_LOG.started" ] && break; sleep 0.1; done
 # The wait above gives up after 10 s whether or not the runner started; a table read before the
-# start would show no key and pass. The marker is therefore checked at the moment of the read.
+# start would show no key and pass. The marker is therefore read once the wait is over: it shows
+# that the runner had started, not that it was still running when the table was read (it lingers
+# for a few seconds, and the gap before the read is small).
 prt_ar_started="$([ -e "$PRT_TEST_RUNNER_LOG.started" ] && echo true || echo false)"
 # Positive control: a process whose argv carries a canary built now. A table that cannot be read
 # (a `hidepid` mount, an empty glob) counts 0 for the key and would pass on nothing, so the canary
@@ -7937,7 +7939,7 @@ prt_ar_hand_over_refused "an environment file with fewer words than the call cou
 # names (`_w`, `_x`, `_e`, `_n`) must be in the refused set, so the reader cannot collide with a
 # pass-through name. The names are set (exported in the subshell) so that a refusal for "not set"
 # cannot stand in for the right one.
-for prt_ar_name in _prt_ar_us _w _x _e _n SHLVL OPTIND RANDOM SECONDS LINENO BASHOPTS BASH_ARGV0 UID; do
+for prt_ar_name in _prt_ar_us _w _x _e _n SHLVL OPTIND RANDOM SECONDS LINENO BASHOPTS BASH_ARGV0 UID EXECIGNORE; do
   rm -f "$PRT_TEST_RUNNER_LOG".*
   rc="$(export "$prt_ar_name=7" 2> /dev/null || true; PRT_TEST_ASSESS_RUNNER_ENV="$prt_ar_name"; run_orchestrator advisory 0 0 0)"
   assert_eq "assess runner scrub, a name bash would change or refuse ($prt_ar_name): fails closed before any call" \
