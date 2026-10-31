@@ -287,11 +287,15 @@ PRT_OVERFLOW_PART_MAX=60000
 # prt_render_overflow_parts FINDINGS_JSON QUARANTINED_JSON OUTDIR — renders the
 # overflow and withheld findings as one or more comment bodies, OUTDIR/part-1.md
 # ... part-M.md, and prints "M T" (parts, truncated findings) on stdout.
-# A body that fits is one part, byte-for-byte what prt_render_overflow_comment
-# prints. A larger one is split (go-kure/.github#307):
-# - Order: merge-gating withheld rows first, then every other row by severity
-#   (critical, high, medium, other), so part 1 opens with the blockers and goes
-#   on with the most severe advisory rows. Size never reorders a row.
+# A body GitHub accepts whole (PRT_COMMENT_LIMIT) is one part, byte-for-byte
+# what prt_render_overflow_comment prints. A larger one is split
+# (go-kure/.github#307):
+# - Order: merge-gating withheld rows are placed first across the parts, then
+#   every other row by severity (critical, high, medium, other), so part 1 holds
+#   the blockers and goes on with the most severe advisory rows. Size never
+#   reorders a row. Inside one part the renderer prints the advisory table
+#   before the withheld table, so the part lines say where the blockers are
+#   rather than claim they are on top.
 # - Part 1 carries every coverage caveat: it says how many parts follow, which
 #   parts hold the merge-gating rows (more than one only when they alone pass
 #   one part) and, when a finding was shortened, says so. Every later part
@@ -311,15 +315,18 @@ prt_render_overflow_parts() {
   local dummy_q='[{"severity":"","category":"","file":"","issue":"","fix":"","gating":true}]'
   [ -d "$outdir" ] || return 1
   body="$(prt_render_overflow_comment "$findings" "$quarantined")" || return 1
-  if [ "$(printf '%s' "$body" | jq -Rs "${_PRT_OVERFLOW_JQ_DEFS}"' u16len' 2>/dev/null)" -le "$PRT_OVERFLOW_PART_MAX" ] 2>/dev/null; then
+  # A body GitHub accepts whole stays one comment: the 60,000 margin below is for
+  # the parts of a split, which grow by a part line the whole body never has.
+  if [ "$(printf '%s' "$body" | jq -Rs "${_PRT_OVERFLOW_JQ_DEFS}"' u16len' 2>/dev/null)" -le "$PRT_COMMENT_LIMIT" ] 2>/dev/null; then
     printf '%s\n' "$body" > "$outdir/part-1.md" || return 1
     printf '1 0\n'
     return 0
   fi
   # Fixed cost of one part: both sections, the longest footer, and room for the
-  # part line (300 units, the line is about 150).
+  # part line (600 units; the longest, part 1 with a gating note spanning parts
+  # and the shortened-finding sentence, is about 410).
   overhead="$(prt_render_overflow_comment "$dummy_f" "$dummy_q" | jq -Rs "${_PRT_OVERFLOW_JQ_DEFS}"' u16len' 2>/dev/null)" || return 1
-  budget=$(( PRT_OVERFLOW_PART_MAX - overhead - 300 ))
+  budget=$(( PRT_OVERFLOW_PART_MAX - overhead - 600 ))
   [ "$budget" -gt 1000 ] || return 1
   # One jq pass plans the split on stdin: line 1 is "parts truncated", then one
   # JSON object per part {f: [...], q: [...]}.
@@ -384,7 +391,7 @@ prt_render_overflow_parts() {
       n="**Part 1 of 1.**"
       [ "$truncated" -eq 0 ] || n="${n} ${truncated} finding(s) were too long for one comment and were shortened: each shortened cell ends with a \"truncated\" marker, and the omitted text is not available elsewhere."
     elif [ "$i" -eq 1 ]; then
-      n="**Part 1 of ${total}.** These findings did not fit in one comment. ${gating_note} Merge-gating rows come first, then the most severe of the rest; parts 2 to ${total} continue the tables."
+      n="**Part 1 of ${total}.** These findings did not fit in one comment. ${gating_note} Merge-gating rows are placed in the earliest parts, then the most severe of the rest; inside a part the advisory table comes before the withheld table. Parts 2 to ${total} continue the tables."
       [ "$truncated" -eq 0 ] || n="${n} ${truncated} finding(s) were still too long for one comment and were shortened: each shortened cell ends with a \"truncated\" marker, and the omitted text is not available elsewhere."
     else
       n="**Part ${i} of ${total}.** Continued from part 1. ${gating_note}"
