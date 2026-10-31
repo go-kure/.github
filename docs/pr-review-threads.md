@@ -588,11 +588,14 @@ every member with it. This depends on nothing inside the namespace. If the proce
 identified (the read fails, finds nothing, finds more than one, or finds something that is not a
 namespace's first process) or is still there after the kill, the call is abandoned as
 `runner-lifetime` and its answer is not read: a failed read is never taken for "nothing to end".
+`timeout` gone before the first process was named counts as "nothing to end" only if it went before
+its own bound: after the bound it ends by a KILL of its group, which a first process in a session of
+its own survives, so that case is abandoned as well.
 Not closed: the `cmd` boundary (it has no such process to name; the lifetime of what the command
 starts is the command's), a SIGKILL of the orchestrator itself (nothing is left to send the kill, and
 the runner then lives until the job timeout), and what a surviving runner does during the call. The
-pid is checked against its start time, which narrows the reuse window of the group kill below but
-does not remove it. The `timeout` TERM is sent from outside the namespace, so a first process with
+pid is checked against its start time just before the kill, which leaves a small check-then-kill
+window, as the group kill below has (accepted there). The `timeout` TERM is sent from outside the namespace, so a first process with
 no TERM handler ignores it and the call then runs to the KILL, 5 seconds later.
 
 Hosts that forbid an unprivileged user namespace (for example Ubuntu 24.04 with its AppArmor
