@@ -8140,7 +8140,7 @@ prt_ar_pid1_case() { # label, expected rc, expected error fragment (or "-"), set
     eval "$3"
     _prt_runner_pid1_record "$tp"; echo "rc=$? pid1=${PRT_RUNNER_PID1:-} err=${PRT_RUNNER_PID1_ERROR:-}"
     kill -KILL $(jobs -p) 2>/dev/null' bash "$ROOT" x "$4" 2>/dev/null)"
-  assert_eq "pid pid1 finder, $1: rc $2" "true" "$([[ "$out" == "rc=$2 "* ]] && echo true || echo false)"
+  assert_eq "pid1 finder, $1: rc $2" "true" "$([[ "$out" == "rc=$2 "* ]] && echo true || echo false)"
   if [ "$3" != "-" ]; then
     assert_eq "pid1 finder, $1: the cause is named" "true" "$([[ "$out" == *"$3"* ]] && echo true || echo false)"
   fi
