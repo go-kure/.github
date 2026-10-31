@@ -304,7 +304,8 @@ unset -f prt_swallow_scan
 # that begins `NAME="$(jq ...`, `NAME="$(gh ...` or `NAME="$(prt_gh_* ...` (no `local`, no
 # `export`, no unquoted form, no pipe in front of the command) and has no `||` or `&&` on its
 # statement. Another shape is not seen. A new site of that shape fails this guard until it is
-# checked or listed; an unterminated statement fails it too, so a scan that lost its place is loud.
+# checked or listed. A statement still open when its file ends fails it too (UNCLOSED); one that
+# loses its place and closes later in the same file is not detected.
 prt_unchecked_dir="$(mktemp -d)"
 cat > "$prt_unchecked_dir/scan.awk" <<'AWK'
 # Prints FILE:LINE:VARIABLE for each plain assignment of a jq/gh/prt_gh_* command substitution whose
@@ -350,17 +351,21 @@ FNR == 1 && in_stmt {
     }
   }
 }
+END {
+  if (in_stmt) printf "%s:%d:UNCLOSED\n", pfile, start
+}
 AWK
 prt_unchecked_scan() { # FILE... -> FILE:VARIABLE for each unchecked substitution
   awk -f "$prt_unchecked_dir/scan.awk" "$@" | sed -E 's|^.*/([^/:]*):[0-9]+:|\1:|'
 }
 # One entry per site (a repeated name is a repeated site). Each listed read takes a field of an
-# object an earlier step produced, and its status is not tested. Where it comes from:
+# object an earlier step produced (the cur_resp GETs are the exception, see below), and its status
+# is not tested. Where it comes from:
 #   meta_json      validated as an object right after its fetch: PR_TITLE PR_DESC base_sha
 #   row            prt_persist_owned_collision's argument, the object its caller read
 #   owned_match    the `jq -c ... | .[0] // empty` read of $OWNED, 13 field reads
 #   th             the checked `jq -ce ".[$oi]"` read of the owned thread in the absence loop
-#   cur_resp       a failed GET gives an empty body, which the next `-z "$cur_body"` test reports
+#   cur_resp       a comment GET: a failed call gives an empty body, which the next `-z "$cur_body"` test reports
 #   stamp_known_stale  anything other than the word false is taken as true (re-stamp, never resolve)
 # An empty value from a listed read is not neutral in general; the list records which reads are left
 # as they are, not that each is safe.
@@ -405,6 +410,8 @@ c="$(jq -r '.c' <<< "$o")"
 PROBE
 assert_eq "unchecked-read guard: an unterminated statement is reported, and does not hide the next file" \
   "open.sh:UNCLOSED next.sh:c" "$(prt_unchecked_scan "$prt_unchecked_dir/open.sh" "$prt_unchecked_dir/next.sh" | tr '\n' ' ' | sed 's/ $//')"
+assert_eq "unchecked-read guard: an unterminated statement in the last file is reported too" \
+  "next.sh:c open.sh:UNCLOSED" "$(prt_unchecked_scan "$prt_unchecked_dir/next.sh" "$prt_unchecked_dir/open.sh" | tr '\n' ' ' | sed 's/ $//')"
 find "$prt_unchecked_dir" -delete
 unset prt_unchecked_dir prt_unchecked_allow prt_unchecked_found
 unset -f prt_unchecked_scan
