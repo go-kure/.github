@@ -8143,7 +8143,7 @@ PRT_TEST_RUNNER_MODE=probe
 # shellcheck disable=SC2016 # the program text of each case is evaluated by the child shell
 prt_ar_pid1_case() { # label, expected rc, expected error fragment (or "-"), setup command run in the child
   local out
-  out="$(PRT_RUNNER_PID1_POLLS=4 bash -c '
+  out="$(PRT_RUNNER_PID1_POLLS="${PRT_AR_POLLS:-4}" bash -c '
     source "$1/scripts/lib/prt/model.sh"
     _prt_runner_boundary_build
     eval "$3"
@@ -8165,9 +8165,11 @@ printf '#!/bin/sh\nsleep 8 &\necho $! >> "%s"\nwait\n' "$prt_ar_dir/sleepers" > 
 printf '#!/bin/sh\n"%s/chain-other/other" &\nwait\n' "$prt_ar_dir" > "$prt_ar_dir/chain-other/timeout"
 printf '#!/bin/sh\nsleep 8 &\necho $! >> "%s"\nwait\n' "$prt_ar_dir/sleepers" > "$prt_ar_dir/chain-other/other"
 chmod 755 "$prt_ar_dir"/chain-ok/* "$prt_ar_dir"/chain-other/*
-prt_ar_pid1_case "a child of the launcher that is not a namespace's first process" 1 \
+# These two build their chain of scripts while the finder polls, and answer as soon as the chain is
+# whole; the larger poll count only gives a loaded host room to build it.
+PRT_AR_POLLS=60 prt_ar_pid1_case "a child of the launcher that is not a namespace's first process" 1 \
   "not the first process of a namespace" "\"$prt_ar_dir/chain-ok/timeout\" & tp=\$!; sleep 0.2"
-prt_ar_pid1_case "a timeout process that runs something other than the launcher" 1 \
+PRT_AR_POLLS=60 prt_ar_pid1_case "a timeout process that runs something other than the launcher" 1 \
   "runs something other than the namespace launcher" "\"$prt_ar_dir/chain-other/timeout\" & tp=\$!; sleep 0.2"
 prt_ar_reap_sleepers
 # The end of the first process: gone after the kill is 0; still there after it is 1. The second
@@ -8189,6 +8191,32 @@ prt_ar_pid1_end_case "the process is still there after the kill" 1 'kill() { ret
 # space (a strict-mode IFS) the stat line was not split and every call was abandoned.
 # shellcheck disable=SC2016 # the text is evaluated by the child shell
 prt_ar_pid1_end_case "the process is killed and gone under a strict IFS" 0 'IFS=$(printf "\n\t")'
+# The children are listed whatever glob options the caller has set: noglob left the pattern
+# unexpanded and failglob made it an error, so a caller with either could never name a child.
+prt_ar_children_case() { # label, shell setting commands run before the read
+  local out
+  out="$(bash -c '
+    source "$1/scripts/lib/prt/model.sh"
+    sleep 30 & p=$!
+    eval "$2"
+    _prt_proc_children "$$"; echo "rc=$? kids=$PRT_PROC_KIDS p=$p"
+    builtin kill -KILL "$p" 2>/dev/null' bash "$ROOT" "$2" 2>/dev/null)"
+  assert_eq "proc children, $1: the child is listed" "true" \
+    "$([[ "$out" =~ ^rc=0\ kids=([0-9\ ]*)\ p=([0-9]+)$ && " ${BASH_REMATCH[1]} " == *" ${BASH_REMATCH[2]} "* ]] && echo true || echo false)"
+}
+prt_ar_children_gone_case() { # label, shell setting commands run before the read
+  local out
+  out="$(bash -c '
+    source "$1/scripts/lib/prt/model.sh"
+    eval "$2"
+    _prt_proc_children "$(< /proc/sys/kernel/pid_max)"; echo "rc=$?"' bash "$ROOT" "$2" 2> /dev/null)"
+  assert_eq "proc children, $1: a process that is not there cannot be read" "rc=1" "$out"
+}
+for prt_ar_opt in ':' 'set -f' 'shopt -s nullglob' 'shopt -s failglob'; do
+  prt_ar_children_case "$prt_ar_opt" "$prt_ar_opt"
+  prt_ar_children_gone_case "$prt_ar_opt" "$prt_ar_opt"
+done
+unset prt_ar_opt
 fi
 
 # go-kure/.github#309: the default prefix sets no_new_privs for every user, not only for root. The

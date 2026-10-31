@@ -952,16 +952,24 @@ _prt_proc_start() {
 
 # _prt_proc_children PID — sets PRT_PROC_KIDS to the direct children of PID, as a space-separated
 # string. Returns 1 when they cannot be read: /proc/PID/task/*/children is missing (a kernel built
-# without CONFIG_PROC_CHILDREN) or the process has gone.
+# without CONFIG_PROC_CHILDREN) or the process has gone. The pattern is expanded in a subshell
+# with the glob options at their defaults, so the result does not depend on the caller's
+# `set -f`, nullglob or failglob.
 _prt_proc_children() {
-  local f c
+  local out
   PRT_PROC_KIDS=""
-  for f in "/proc/$1"/task/*/children; do
-    [ -e "$f" ] || return 1
-    { c="$(< "$f")"; } 2> /dev/null || return 1
-    [ -z "$c" ] || PRT_PROC_KIDS="$PRT_PROC_KIDS $c"
-  done
-  PRT_PROC_KIDS="${PRT_PROC_KIDS# }"
+  out="$(
+    set +f
+    shopt -u nullglob failglob
+    kids=""
+    for f in "/proc/$1"/task/*/children; do
+      [ -e "$f" ] || exit 1
+      { c="$(< "$f")"; } 2> /dev/null || exit 1
+      [ -z "$c" ] || kids="$kids $c"
+    done
+    printf '%s' "${kids# }"
+  )" || return 1
+  PRT_PROC_KIDS="$out"
 }
 
 # _prt_runner_pid1_record TIMEOUT_PID — finds the first process of the runner's PID namespace
