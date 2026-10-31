@@ -2252,8 +2252,8 @@ assert_eq "prt_render_overflow_comment: quarantine_reason=content_mismatch -> Co
 # ============================================================ render.sh: prt_render_overflow_parts (go-kure/.github#307)
 # GitHub rejects a comment body past 65,536 characters. A body that fits stays one comment, byte for
 # byte; a larger one is split into parts under PRT_OVERFLOW_PART_MAX (60,000 UTF-16 units: a 5,536
-# margin for the part line, headings and footers). Part 1 holds every merge-gating row and every
-# coverage caveat; rows are ordered by severity, never by size; a single finding too large for any
+# margin for the part line, headings and footers). Merge-gating rows come first and part 1 says which
+# parts hold them, besides every coverage caveat; rows are ordered by severity, never by size; a single finding too large for any
 # part is shortened with a marker and counted, which makes the run incomplete (RULING-1031-1200-281).
 prt_parts_dir="$(mktemp -d)"
 prt_parts_clear() { find "$prt_parts_dir" -name 'part-*.md' -delete; }
