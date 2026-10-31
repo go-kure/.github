@@ -2250,8 +2250,8 @@ if [ "$PRT_MODE" = enforce ] && { [ "$overflow_len" -gt 0 ] || [ "$quarantined_l
       OVERFLOW_COMMENT_POSTED=false
     else
       if [ "$overflow_truncated" -gt 0 ]; then
-        # The cut text exists nowhere else on the PR: say so, and fail the run.
-        prt_mark_incomplete "${overflow_truncated} overflow or withheld finding(s) exceeded the size of one comment part and were shortened in the posted comment; the omitted text is not recorded elsewhere"
+        # The cut text is in no posted part: say so, and fail the run.
+        prt_mark_incomplete "${overflow_truncated} overflow or withheld finding(s) were too long for one comment part and were shortened in the posted comment; the omitted text is not in it"
       fi
       overflow_part=0
       while [ "$overflow_part" -lt "$overflow_parts" ]; do
@@ -2270,7 +2270,7 @@ if [ "$PRT_MODE" = enforce ] && { [ "$overflow_len" -gt 0 ] || [ "$quarantined_l
         overflow_payload=""
         if ! overflow_body="$(cat "$overflow_dir/part-${overflow_part}.md")" ||
            ! overflow_payload="$(prt_json_body_payload "$overflow_body")" || [ -z "$overflow_payload" ]; then
-          prt_mark_incomplete "the ${overflow_label} could not be rendered (local fault); nothing was posted for it"
+          prt_mark_incomplete "the ${overflow_label} could not be prepared for posting (local fault); nothing was posted for it"
           OVERFLOW_COMMENT_POSTED=false
           continue
         fi
