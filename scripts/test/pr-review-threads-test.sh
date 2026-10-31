@@ -7351,10 +7351,21 @@ for _ in $(seq 1 100); do [ -e "$PRT_TEST_RUNNER_LOG.started" ] && break; sleep 
 # The wait above gives up after 10 s whether or not the runner started; a table read before the
 # start would show no key and pass. The marker is therefore checked at the moment of the read.
 prt_ar_started="$([ -e "$PRT_TEST_RUNNER_LOG.started" ] && echo true || echo false)"
-# The pattern is spelled so that this very command line does not contain the key.
-prt_ar_cmdline_hits="$(cat /proc/[0-9]*/cmdline 2> /dev/null | tr '\0' '\n' | grep -c 'sentinel-model-[k]ey')"
+# Positive control: a process whose argv carries a canary built now. A table that cannot be read
+# (a `hidepid` mount, an empty glob) counts 0 for the key and would pass on nothing, so the canary
+# must be found in the very read that is searched for the key.
+# The patterns are spelled so that these very command lines do not contain what they look for.
+(exec -a "sentinel-ctl-$RANDOM$RANDOM" sleep 30) &
+prt_ar_ctl=$!
+sleep 0.3
+prt_ar_table="$(cat /proc/[0-9]*/cmdline 2> /dev/null | tr '\0' '\n')"
+prt_ar_ctl_hits="$(grep -c 'sentinel-ctl-[0-9]' <<< "$prt_ar_table")"
+prt_ar_cmdline_hits="$(grep -c 'sentinel-model-[k]ey' <<< "$prt_ar_table")"
+kill "$prt_ar_ctl" 2> /dev/null || true
 wait "$prt_ar_bg"
 PRT_TEST_RUNNER_MODE=clean
+assert_eq "assess runner scrub: the process table is readable (a canary in another process's argv is found)" \
+  "true" "$([ "$prt_ar_ctl_hits" -ge 1 ] && echo true || echo false)"
 assert_eq "assess runner scrub: the runner had started when the process table was read" "true" "$prt_ar_started"
 assert_eq "assess runner scrub: the model key is in no process's command line while the runner is up" \
   "0" "$prt_ar_cmdline_hits"
@@ -7899,16 +7910,41 @@ assert_eq "assess runner, empty environment list: refused before the environment
 prt_ar_hand_over_run "PRT_RUNNER_ENV_ARGS+=(weird)" ""
 prt_ar_hand_over_refused "an environment word that is not NAME=value"
 
-# A word whose name cannot be exported (a read-only shell variable, listed as a pass-through name).
-# Without the status check the runner starts without that variable.
-PRT_TEST_ASSESS_RUNNER_ENV="$PRT_TEST_ASSESS_RUNNER_ENV BASHOPTS"
-prt_ar_hand_over_run "" ""
-prt_ar_hand_over_refused "a pass-through name that cannot be exported"
-PRT_TEST_ASSESS_RUNNER_ENV="${PRT_TEST_ASSESS_RUNNER_ENV% BASHOPTS}"
+# A word whose name cannot be exported (UID is read-only). The start check refuses such a name in
+# the pass-through list, so it is added to the list the call built. Without the status check the
+# runner starts without that variable.
+prt_ar_hand_over_run "PRT_RUNNER_ENV_ARGS+=(UID=1)" ""
+prt_ar_hand_over_refused "a word whose name cannot be exported"
 
 # An environment file that cannot be written (its name is taken by a directory).
 prt_ar_hand_over_run "" "mkdir \"\$tmp/env\""
 prt_ar_hand_over_refused "an environment file that cannot be written"
+
+# A short read: the file holds fewer words than the call counted (here one default word is left
+# out of the write; `mapfile` returns 0 on a read error, so a truncated file looks like a good one).
+# The word is HOME, which the stub does not need, so without the count check the runner starts
+# with that variable missing, which is the failure this guards against. The shim redefines printf
+# for the one subshell that writes the file.
+# shellcheck disable=SC2016 # statement text for the shim, not an expansion
+prt_ar_shortread='printf() { shift; local w; for w in "$@"; do case "$w" in HOME=*) ;; *) builtin printf "%s\0" "$w";; esac; done; }'
+prt_ar_hand_over_run "" "$prt_ar_shortread"
+prt_ar_hand_over_refused "an environment file with fewer words than the call counted"
+
+# Names the hand-over cannot deliver unchanged: `export _w=v` assigns an element of the reader's own
+# array, `SHLVL` and `OPTIND` are reset by bash, the dynamic variables (`RANDOM`, `SECONDS`, ...)
+# do not keep an assigned value and `BASHOPTS` and `UID` are read-only. The old `env -i NAME=value`
+# delivered all of them, so each is refused at start, never silently dropped. The reader's own
+# names (`_w`, `_x`, `_e`, `_n`) must be in the refused set, so the reader cannot collide with a
+# pass-through name. The names are set (exported in the subshell) so that a refusal for "not set"
+# cannot stand in for the right one.
+for prt_ar_name in _prt_ar_us _w _x _e _n SHLVL OPTIND RANDOM SECONDS LINENO BASHOPTS BASH_ARGV0 UID; do
+  rm -f "$PRT_TEST_RUNNER_LOG".*
+  rc="$(export "$prt_ar_name=7" 2> /dev/null || true; PRT_TEST_ASSESS_RUNNER_ENV="$prt_ar_name"; run_orchestrator advisory 0 0 0)"
+  assert_eq "assess runner scrub, a name bash would change or refuse ($prt_ar_name): fails closed before any call" \
+    "1 0" "$rc $(prt_ar_calls)"
+  assert_eq "assess runner scrub, a name bash would change or refuse ($prt_ar_name): the error names it" \
+    "true" "$(grep -qF "PRT_ASSESS_RUNNER_ENV must not name $prt_ar_name " "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+done
 
 # An exported function of the boundary prefix does not reach the runner: `env -i` used to drop it,
 # and a function named like a builtin could shadow it inside the hand-over step.
