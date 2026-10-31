@@ -1164,7 +1164,7 @@ _prt_call_runner() {
   # the request have used time since the first one), and the same two refusals apply to it: a
   # call with less than the floor left, or one whose TERM-to-KILL grace no longer fits, is
   # refused, never run past the deadline or below the minimum a runner call is worth.
-  local outer runner_pid pid1_rc
+  local outer runner_pid pid1_rc launched
   if ! _prt_runner_clock_read; then
     rm -rf "$tmp"
     _prt_set_model_failure "deadline-exhausted"
@@ -1262,6 +1262,7 @@ READER
       < "$tmp/request" > /dev/null 2> "$tmp/runner.stderr"
   ) &
   runner_pid=$!
+  launched=$SECONDS
   # The runner is PID 1 of its namespace and can leave the process group and clear the
   # parent-death signal `--kill-child` relies on, so neither the group kill below nor the death
   # of the launcher ends it (go-kure/.github#304). Its host pid and start time are recorded now,
@@ -1274,6 +1275,15 @@ READER
   if [ "${PRT_ASSESS_RUNNER_BOUNDARY:-pidns}" = pidns ]; then
     pid1_rc=0
     _prt_runner_pid1_record "$runner_pid" || pid1_rc=$?
+    # `timeout` gone before the first process was named means the namespace went with it only
+    # while its own bound was still running: past that bound `timeout` ends by a KILL of its
+    # group, which a first process in a session of its own survives. Naming takes milliseconds,
+    # so this holds only on a pathologically slow host; it is then not "nothing to end". SECONDS
+    # counts whole seconds, so the comparison allows one second less than the bound.
+    if [ "$pid1_rc" -eq 3 ] && [ $((SECONDS - launched)) -ge $((outer - 1)) ]; then
+      PRT_RUNNER_PID1_ERROR="the timeout process ended after its bound, before the first process was named"
+      pid1_rc=1
+    fi
     if [ "$pid1_rc" -eq 1 ]; then
       echo "prt_model: the runner's namespace first process cannot be identified (${PRT_RUNNER_PID1_ERROR:-unknown}) — abandoning call" >&2
       kill -KILL -- "-$runner_pid" 2>/dev/null || true
