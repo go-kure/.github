@@ -17,7 +17,9 @@
 # Two hygiene items the literature asks for are NOT available through this backend, and are
 # recorded here rather than asserted: TEMPERATURE 0 and a PINNED JUDGE MODEL. The proxy
 # always routes through the Claude Code CLI on the Max subscription
-# (meta/ci-templates/mr-review.yml:14-20), and that CLI exposes no temperature control.
+# (meta/ci-templates/mr-review.yml:14-20, cited for that routing claim alone — the same
+# lines call the model field cosmetic, which the next sentence corrects), and that CLI
+# exposes no temperature control.
 # --judge-model is honoured only down to the model FAMILY: the proxy maps the name to an
 # opus/sonnet/haiku alias and the pinned CLI picks the version, so the suffix is recorded
 # for provenance and selects nothing. It is not ignored, though, which matters here: a name
@@ -66,7 +68,7 @@ usage: judge.sh --findings <file> --gold <file> [--out <file>] [--judge-model <n
   --findings     adapter output: {findings: [{file, line, issue, fix, ...}]}
   --gold         one gold document: {gold: [{file, lines, note, confirmed}]}
   --out          write the JSON here instead of stdout
-  --judge-model  recorded for provenance; the backend ignores it (see the header)
+  --judge-model  selects the model family only; an unmapped name falls back to opus (see the header)
 
 environment
   PRT_PROXY_URL          model proxy base URL (required)

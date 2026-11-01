@@ -10,7 +10,7 @@
 # out of the Service and failed every CI review in the fleet with curl exit 7.
 # The proxy exposes an OpenAI-compatible /v1/chat/completions endpoint.
 # PR_REVIEW_MODEL / PR_REVIEW_ASSESS_MODEL select only the model family, not a
-# version — and an unmapped name silently changes the family. See the defaults
+# version — and an unmapped name can silently change the family. See the defaults
 # note below before editing either.
 #
 # Requires a self-hosted runner with in-cluster access to claude-max-proxy.
@@ -120,8 +120,7 @@
 # maps that name to a Claude Code CLI family alias — opus, sonnet or haiku —
 # then spawns `claude --model <alias>`. Only the family is selectable, so the
 # version suffix records which model was asked for and selects nothing; the
-# alias and the pinned CLI decide which one answers. Two consequences that
-# have each already cost someone an hour:
+# alias and the pinned CLI decide which one answers. Two consequences:
 #
 #   - A name the backend's map does not hold falls back to `opus`, with no
 #     validation and no error. PR_REVIEW_ASSESS_MODEL must therefore keep a
@@ -133,6 +132,13 @@
 #     correct today and would break quietly if the backend ever changed its
 #     default family. The durable fix is upstream: teach the backend's map the
 #     5.x names. Until then, treat this line as intent, not as a binding.
+#
+# The composite action and scripts/pr-review-threads.sh keep `claude-opus-4` as
+# their own fallback defaults, so the repository holds two model labels. They are
+# delegate code under the pin-bump sequence, where a change needs its pin bumped
+# with it, and the fallback is reachable only by a caller that omits the `model`
+# input. It is the same family with a different label, visible only in the `model`
+# row of the clean-verdict comment.
 #
 # Bot identity (go-kure/.github#156): a caller without KURE_BOT_PAT passes its
 # own PAT as the BOT_PAT secret and the login that PAT posts as as the
