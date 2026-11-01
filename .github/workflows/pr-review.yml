@@ -91,10 +91,18 @@
 # Defaults below (only actually overridable via a `vars.*` repository variable
 # for PR_REVIEW_THREADS_MODE — see note above; every other one is env: only,
 # so overriding it means editing this file, not setting a repo variable):
-#   PR_REVIEW_MODEL             (default: claude-opus-4)
+#   PR_REVIEW_MODEL             (default: claude-opus-5-5)
 #   PR_REVIEW_MAX_DIFF_CHARS    (default: 50000)
 #   PR_REVIEW_MAX_TOKENS        (default: 1500)
 #   PR_REVIEW_ASSESS_MODEL      (default: claude-sonnet-4-6)
+#
+# Both model names are sent as the request's `model` field. The backend maps
+# the name to a Claude Code CLI family alias — opus, sonnet or haiku — and
+# spawns `claude --model <alias>`; a name its map does not hold falls back to
+# `opus`. So the version suffix selects nothing on its own: it records which
+# model was asked for, while the alias and the pinned CLI decide which one
+# answers. Never give PR_REVIEW_ASSESS_MODEL an unmapped name: the fallback
+# would silently promote the assessment pass from Sonnet to Opus.
 #   PR_REVIEW_ASSESS_MAX_TOKENS (default: 4096)
 #   PR_REVIEW_AGENTS_FILE       (default: AGENTS.md)
 #   PR_REVIEW_STANDARDS_FILE    (default: docs/standards.md; set from the
@@ -191,7 +199,7 @@ jobs:
       # Variable name is historical — it has not pointed at ccproxy for a long
       # time, and renaming it would break every caller that overrides it.
       CCPROXY_URL: "http://claude-proxy.claude-proxy.svc:3456"
-      PR_REVIEW_MODEL: "claude-opus-4"
+      PR_REVIEW_MODEL: "claude-opus-5-5"
       PR_REVIEW_MAX_DIFF_CHARS: "50000"
       PR_REVIEW_MAX_TOKENS: "1500"
       PR_REVIEW_CONTEXT: ${{ inputs.pr_review_context }}
