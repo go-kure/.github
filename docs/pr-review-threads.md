@@ -621,7 +621,7 @@ ancestor, no descriptor, no capability and a denied mount. The run without it mu
 through an ancestor, with numeric counts of at least 1: a missing, empty or malformed control report
 voids the result, and so does a count of more than 9 digits. For a stub that is not root, the `mount`
 tool refuses (`must be superuser`) before it asks the kernel, so a denial there says nothing about the
-kernel: that user's verdict rests on the capability sets, which must be empty. Only a refusal by `mount` itself is a
+kernel: that user's verdict rests on the effective capability set, which must be empty. Only a refusal by `mount` itself is a
 denial. A mount that could not be tried (no `mount` command, one that cannot be executed, an
 unreadable or shared mount namespace, no directory) is not. Inside the boundary the scan must also
 be able to find something. One scan of the process table produces the canary count: for each
