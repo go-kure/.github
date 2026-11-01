@@ -602,9 +602,10 @@ Known limit: a hostile runner can outlive its call in narrow windows. The runner
 namespace, so it can clear its parent-death signal and start a new session; killing the launcher or
 the `timeout` process group then does not stop it. The orchestrator therefore names the namespace's
 first process right after the launch and sends it SIGKILL when the call ends, which ends every
-member of the namespace. If that process cannot be named, if `timeout` is gone with the status of
-an expired bound or of a signal before it was named, or if the end of the process cannot be
-confirmed after the kill (it is still there, or its state cannot be read), the call is abandoned as `runner-lifetime` and its answer is not read. The windows that stay
+member of the namespace. If that process cannot be named, if the process launched for the call
+(it becomes `timeout`) is gone with the status of an expired bound or of a signal before it was
+named, or if the end of the process cannot be confirmed (its state cannot be read, before or after
+the kill, or it is still there after it), the call is abandoned as `runner-lifetime` and its answer is not read. The windows that stay
 open, and the fix for them, are tracked in go-kure/.github#319; one of them is a stop signal sent
 to `timeout` from inside the namespace, which also keeps the orchestrator waiting (and the kill
 from running) until the job timeout. Also not covered: the `cmd`
@@ -716,7 +717,7 @@ the id, so the case the signal exists for is unaffected. This window is accepted
 (`REVIEW_DEGRADED`, findings keep `verdict: null` and still gate, as `reconcile.sh` counts a null
 verdict like `VALID`), with the cause in brackets: `runner-boundary` (the process boundary could not
 be established or failed its check, with the check's cause on the log line; the runner was not started), `runner-lifetime` (the namespace's first
-process could not be named after the launch, or its end could not be confirmed after SIGKILL; the answer is not read), `runner-incomplete` (exit 2), `runner-quota`
+process could not be named after the launch, or its end could not be confirmed (its state cannot be read, before or after SIGKILL, or it is still there after it); the answer is not read), `runner-incomplete` (exit 2), `runner-quota`
 (3), `runner-launch` (4), `runner-usage` (64, which includes an input over the runner's size
 limit), `runner-timeout` (the outer bound below fired), `runner-failed` (any other non-zero exit), `runner-no-output` (no `review.md`, or one that cannot be read),
 `runner-empty`, `provenance-mismatch`, `deadline-exhausted`, `backend-config` (a required
