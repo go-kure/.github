@@ -14,7 +14,9 @@ permissions:
 jobs:
   probe:
     name: probe
-    runs-on: autops-kube-kure
+    # The review pool, not the general CI pool: only the review pool's nodes allow the user
+    # namespaces the boundary needs, so a run elsewhere would report nothing about it.
+    runs-on: autops-kube-review
     timeout-minutes: 15
     steps:
       - name: Checkout code
@@ -30,9 +32,14 @@ jobs:
       # The probe's own full-run cases need the same namespace. Without the switch they skip
       # on a lane that forbids it, and nothing would fail.
       - name: Probe fixture suite, full-run cases required
+        if: ${{ !cancelled() }}
         env:
           PRT_TEST_REQUIRE_NAMESPACE: "1"
         run: bash scripts/test/pr-review-runner-boundary-probe-test.sh .
 
+      # Runs after a failed suite step too: a lane without user namespaces fails the suites, and
+      # that is the case whose diagnostics and "not established" result this step exists to give.
+      # A failed suite step still fails the job; only a cancel skips this step.
       - name: Canary probe behind the default boundary
+        if: ${{ !cancelled() }}
         run: bash scripts/pr-review-runner-boundary-probe.sh

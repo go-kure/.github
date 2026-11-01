@@ -322,6 +322,9 @@ PR Review, Claude, the calling repository's CI and its Deploy Docs job run on
 services such as the PR review proxy. The runner image does not include `make` or `envsubst`;
 workflows install what they need or avoid it.
 
+The PR Review Runner Boundary Probe runs on `autops-kube-review`, a second scale set whose nodes allow
+the user namespaces the review boundary needs. No other workflow targets it.
+
 ## Reference
 
 - [`go-kure/.github`](https://github.com/go-kure/.github): shared workflows, composite actions

@@ -600,7 +600,10 @@ full-run cases, and the acceptance workflow sets it for both suites.
 
 **Acceptance run.** `scripts/pr-review-runner-boundary-probe.sh`, started by the manual workflow
 `PR Review Runner Boundary Probe` on the runner image the review job uses, shows whether the default
-boundary holds on that image. It uses a made-up canary in place of the posting token (placed in the
+boundary holds on that image. The workflow targets the review pool (`autops-kube-review`), whose
+nodes allow the user namespaces the boundary needs, and it runs the probe step after a failed suite
+step too (a failed suite step still fails the job), so a lane that cannot build the boundary still
+reports why. It uses a made-up canary in place of the posting token (placed in the
 script's own environment when it starts, where the token sits for the orchestrator) and a stub in
 place of the runner: no secret, no model call, no forge access. The stub reads `/proc` and makes one
 attempt to mount a `procfs`, and only inside the boundary's own mount namespace: it refuses to try in
