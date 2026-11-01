@@ -8430,6 +8430,14 @@ chmod 755 "$prt_ar_dir/boundary-nostart"
 prt_ar_why="$(prt_ar_check_why "$prt_ar_dir/boundary-nostart")"
 assert_eq "boundary check, cause launch: a prefix that cannot start the probe is refused with that cause, showing the prefix's own message" \
   "1 launch true" "${prt_ar_why%%|*} $(grep -qF 'boundary-launch-marker: cannot start' <<< "${prt_ar_why#*|}" && echo true || echo false)"
+printf '#!/bin/sh\nkill -KILL $$\n' > "$prt_ar_dir/boundary-killed"
+chmod 755 "$prt_ar_dir/boundary-killed"
+prt_ar_why="$(prt_ar_check_why "$prt_ar_dir/boundary-killed")"
+assert_eq "boundary check, a probe killed by a signal long before its deadline is a launch failure naming the signal, not a deadline" \
+  "1 launch true" "${prt_ar_why%%|*} $(grep -qF 'killed by signal 9' <<< "${prt_ar_why#*|}" && echo true || echo false)"
+prt_ar_why="$(PRT_ASSESS_RUNNER_BOUNDARY=bogus _prt_runner_boundary_build; _prt_boundary_refuse build "$PRT_RUNNER_BOUNDARY_ERROR"; printf '%s|%s' "$PRT_RUNNER_BOUNDARY_REASON" "$PRT_RUNNER_BOUNDARY_DETAIL")"
+assert_eq "boundary refusal, cause build: the build error is the detail, through the same sanitising" \
+  "build|PRT_ASSESS_RUNNER_BOUNDARY must be pidns or cmd, got 'bogus'" "$prt_ar_why"
 if $prt_ar_ns; then
   prt_ar_why="$(prt_ar_check_why unshare --user --map-root-user --pid --fork --mount-proc --kill-child)"
   assert_eq "boundary check, cause capability: a boundary that leaves a capability is refused with that cause" \

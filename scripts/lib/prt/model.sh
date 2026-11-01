@@ -907,7 +907,7 @@ _prt_boundary_refuse() {
 
 # shellcheck disable=SC2034 # the reset of REASON and DETAIL is read by _prt_call_runner, in another function
 _prt_runner_boundary_check() {
-  local ancestors=() q="$BASHPID" stat fields=() out err out_file err_file probe_pid rc=0 secs="${PRT_BOUNDARY_CHECK_SECONDS:-10}" cap="${1:-}"
+  local ancestors=() q="$BASHPID" stat fields=() out err out_file err_file probe_pid started rc=0 secs="${PRT_BOUNDARY_CHECK_SECONDS:-10}" cap="${1:-}"
   PRT_RUNNER_BOUNDARY_REASON=""
   PRT_RUNNER_BOUNDARY_DETAIL=""
   [[ "$secs" =~ ^[0-9]{1,3}$ ]] && [ "$secs" -ge 1 ] || secs=10
@@ -956,6 +956,7 @@ _prt_runner_boundary_check() {
       "${ancestors[@]}" < /dev/null > "$out_file" 2> "$err_file"
   ) &
   probe_pid=$!
+  started=$SECONDS
   wait "$probe_pid" || rc=$?
   kill -KILL -- "-$probe_pid" 2> /dev/null || true
   out="$(< "$out_file")"
@@ -967,7 +968,15 @@ _prt_runner_boundary_check() {
   case "$rc" in
     11) _prt_boundary_refuse ancestor-environ-readable "$err" ;;
     12) _prt_boundary_refuse capability "$err" ;;
-    124 | 137 | 143) _prt_boundary_refuse deadline "the probe did not finish within ${secs}s (exit $rc)" ;;
+    124) _prt_boundary_refuse deadline "the probe did not finish within ${secs}s" ;;
+    # 137 and 143 are a kill signal: the deadline's own kill only if the whole time ran out,
+    # else the probe died from outside it (an out-of-memory kill, a cancel).
+    137 | 143)
+      if [ $((SECONDS - started)) -ge "$secs" ]; then
+        _prt_boundary_refuse deadline "the probe did not finish within ${secs}s (exit $rc)"
+      else
+        _prt_boundary_refuse launch "the probe was killed by signal $((rc - 128)) after $((SECONDS - started))s, before its ${secs}s deadline${err:+: $err}"
+      fi ;;
     0) _prt_boundary_refuse launch "the probe exited 0 without boundary-ok${err:+: $err}" ;;
     *) _prt_boundary_refuse launch "the probe exited $rc${err:+: $err}" ;;
   esac
@@ -1026,18 +1035,15 @@ _prt_call_runner() {
   local preflight_max=$(( budget_left - 8 ))
   [ "$preflight_max" -ge 1 ] || preflight_max=1
   # A failure refuses whatever the cause says: the cause is only text for the log.
-  local why="" detail="" refused=0
+  local refused=0
   if ! _prt_runner_boundary_build; then
     refused=1
-    why="build"
-    detail="$PRT_RUNNER_BOUNDARY_ERROR"
+    _prt_boundary_refuse build "$PRT_RUNNER_BOUNDARY_ERROR" || true
   elif ! _prt_runner_boundary_check "$preflight_max"; then
     refused=1
-    why="${PRT_RUNNER_BOUNDARY_REASON:-unknown}"
-    detail="${PRT_RUNNER_BOUNDARY_DETAIL:-}"
   fi
   if [ "$refused" -eq 1 ]; then
-    echo "prt_model: the runner's process boundary cannot be established here (PRT_ASSESS_RUNNER_BOUNDARY=${PRT_ASSESS_RUNNER_BOUNDARY:-pidns}) — refusing call (cause: ${why}${detail:+; $detail})" >&2
+    echo "prt_model: the runner's process boundary cannot be established here (PRT_ASSESS_RUNNER_BOUNDARY=${PRT_ASSESS_RUNNER_BOUNDARY:-pidns}) — refusing call (cause: ${PRT_RUNNER_BOUNDARY_REASON:-unknown}${PRT_RUNNER_BOUNDARY_DETAIL:+; $PRT_RUNNER_BOUNDARY_DETAIL})" >&2
     _prt_set_model_failure "runner-boundary"
     return 1
   fi
