@@ -8435,9 +8435,9 @@ chmod 755 "$prt_ar_dir/boundary-killed"
 prt_ar_why="$(prt_ar_check_why "$prt_ar_dir/boundary-killed")"
 assert_eq "boundary check, a probe killed by a signal long before its deadline is a launch failure naming the signal, not a deadline" \
   "1 launch true" "${prt_ar_why%%|*} $(grep -qF 'killed by signal 9' <<< "${prt_ar_why#*|}" && echo true || echo false)"
-prt_ar_why="$(_prt_boundary_refuse x "$(printf 'a\tb\033[31m\nc\n\n\nd\n')"; printf '%s|%s' "$PRT_RUNNER_BOUNDARY_REASON" "$PRT_RUNNER_BOUNDARY_DETAIL")"
+prt_ar_why="$(_prt_boundary_refuse x "$(printf 'a\tb\033[31m\nc\nd\ne\n')"; printf '%s|%s' "$PRT_RUNNER_BOUNDARY_REASON" "$PRT_RUNNER_BOUNDARY_DETAIL")"
 assert_eq "boundary refusal detail: control characters become spaces and only the first three lines are kept" \
-  "x|a b [31m c" "$prt_ar_why"
+  "x|a b [31m c d" "$prt_ar_why"
 # The build step passed at start and fails at the call (an `id` that answers once): the refusal line
 # names the build cause and its message, through the same path as the check's causes.
 prt_ar_idbin="$(mktemp -d)"
