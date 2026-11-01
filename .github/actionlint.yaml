@@ -1,6 +1,7 @@
 self-hosted-runner:
   labels:
     - autops-kube-kure
+    - autops-kube-review
 paths:
   # job.workflow_repository and job.workflow_sha are documented job-context
   # properties (the repository and commit of the workflow file that defines the
