@@ -717,7 +717,7 @@ the id, so the case the signal exists for is unaffected. This window is accepted
 (`REVIEW_DEGRADED`, findings keep `verdict: null` and still gate, as `reconcile.sh` counts a null
 verdict like `VALID`), with the cause in brackets: `runner-boundary` (the process boundary could not
 be established or failed its check, with the check's cause on the log line; the runner was not started), `runner-lifetime` (the namespace's first
-process could not be named after the launch, or its end could not be confirmed (its state cannot be read, before or after SIGKILL, or it is still there after it); the answer is not read), `runner-incomplete` (exit 2), `runner-quota`
+process could not be named after the launch, or its end could not be confirmed (its state cannot be read, before or after the attempt to send SIGKILL, or it is still there after it); the answer is not read), `runner-incomplete` (exit 2), `runner-quota`
 (3), `runner-launch` (4), `runner-usage` (64, which includes an input over the runner's size
 limit), `runner-timeout` (the outer bound below fired), `runner-failed` (any other non-zero exit), `runner-no-output` (no `review.md`, or one that cannot be read),
 `runner-empty`, `provenance-mismatch`, `deadline-exhausted`, `backend-config` (a required

@@ -8446,7 +8446,7 @@ PRT_TEST_RUNNER_MODE=heartbeat
 PRT_TEST_MODEL_BUDGET_SECONDS=""
 rc="$(PATH="$prt_ar_dir/bin-gonelauncher:$PATH" run_orchestrator advisory 0 0 0)"
 assert_eq "assess runner, timeout killed with its group before the first process was named: degraded as runner-lifetime, the message names the status" \
-  "0 true true" "$rc $(prt_ar_reason runner-lifetime) $(grep -qF 'ended (status 137) before the runner' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+  "0 true true false" "$rc $(prt_ar_reason runner-lifetime) $(grep -qF 'the process launched for the call ended (status 137) before the runner' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(grep -qF 'becomes timeout' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 mkdir -p "$prt_ar_dir/bin-failedlauncher"
 # shellcheck disable=SC2016 # script text for the wrapper, not an expansion
 printf '#!/bin/bash\nfor a in "$@"; do\n  if [ "$a" = bash ]; then exit 3; fi\ndone\nexec %s "$@"\n' \
@@ -8471,7 +8471,7 @@ PRT_TEST_RUNNER_MODE=heartbeat
 PRT_TEST_MODEL_BUDGET_SECONDS=11
 rc="$(PATH="$prt_ar_dir/bin-slowlauncher:$PATH" PRT_RUNNER_PID1_POLLS=400 PRT_MODEL_TIMEOUT_FLOOR=1 run_orchestrator advisory 0 0 0)"
 assert_eq "assess runner, the bound runs out before the first process was named: degraded as runner-lifetime, the message names the status" \
-  "0 true true" "$rc $(prt_ar_reason runner-lifetime) $(grep -qF 'ended (status 124) before the runner' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+  "0 true true false" "$rc $(prt_ar_reason runner-lifetime) $(grep -qF 'the process launched for the call ended (status 124) before the runner' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(grep -qF 'becomes timeout' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 PRT_TEST_MODEL_BUDGET_SECONDS=""
 PRT_TEST_RUNNER_MODE=probe
 
@@ -8540,6 +8540,11 @@ prt_ar_pid1_case "the namespace ids of the launcher's child cannot be read" 1 \
 prt_ar_pid1_case "the stat of the launcher's child cannot be read" 1 \
   "the child of the namespace launcher cannot be read" \
   "$prt_ar_fake_chain command sleep 30 & K=\$!; _prt_proc_children() { if [ \"\$1\" = \"\$tp\" ]; then PRT_PROC_KIDS=\$L; else PRT_PROC_KIDS=\$K; fi; return 0; }; _prt_proc_start() { PRT_PROC_START=1; [ \"\$1\" != \"\$K\" ] || return 2; }"
+# The first poll runs while the process launched for the call may not have run `exec timeout` yet, so
+# a stat that cannot be read then must not be called the timeout process's.
+prt_ar_pid1_case "the stat of the process launched for the call cannot be read on the first poll" 1 \
+  "the process launched for the call cannot be read" \
+  "$prt_ar_fake_chain _prt_proc_start() { return 2; }"
 # The end of the first process: gone after the kill is 0; still there after it is 1. The second
 # case turns the kill into a no-op, so the process stays and the wait for it runs out.
 prt_ar_pid1_end_case() { # label, expected rc, prefix command for the child shell
@@ -8574,6 +8579,10 @@ prt_ar_pid1_end_err_case "the stat cannot be read before the signal" "no signal 
 prt_ar_pid1_end_err_case "the stat cannot be read after the signal" "SIGKILL was sent but its start time can no longer be read" \
   'n=0; _prt_proc_start() { n=$((n+1)); PRT_PROC_START=$PRT_RUNNER_PID1_START; [ "$n" -le 1 ] || return 2; }'
 prt_ar_pid1_end_err_case "the process outlives the signal" "it is still running 2 seconds after SIGKILL" ':'
+prt_ar_pid1_end_err_case "the kill fails and the stat cannot be read after it" "SIGKILL could not be sent and its start time can no longer be read" \
+  'kill() { echo "kill $*"; return 1; }; n=0; _prt_proc_start() { n=$((n+1)); PRT_PROC_START=$PRT_RUNNER_PID1_START; [ "$n" -le 1 ] || return 2; }'
+prt_ar_pid1_end_err_case "the kill fails and the process outlives it" "SIGKILL could not be sent and it is still running 2 seconds later" \
+  'kill() { echo "kill $*"; return 1; }'
 prt_ar_pid1_end_case "the process is killed and gone" 0 ':'
 prt_ar_pid1_end_case "the process is still there after the kill" 1 'kill() { return 0; }'
 # The helper reads /proc/PID/stat whatever separator its caller has set: with one that holds no
