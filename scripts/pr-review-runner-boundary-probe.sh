@@ -277,7 +277,8 @@ probe_judge() {
     esac
     v="$(get "$b" cap_bnd)"
     if ! is_caps "$v"; then unusable+=("boundary: cap_bnd is '${v:-empty}', not a capability set")
-    elif [ "$uid" = 0 ] && [ "$v" != 0000000000000000 ]; then leaks+=("boundary: root keeps the bounding set $v")
+    elif is_count "$uid" && [ "$((10#$uid))" -eq 0 ] && [ "$v" != 0000000000000000 ]; then
+      leaks+=("boundary: root keeps the bounding set $v")
     fi
     v="$(get "$b" proc_mount)"
     case "$v" in
