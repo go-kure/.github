@@ -266,6 +266,15 @@ probe_judge() {
     if ! is_caps "$v"; then unusable+=("boundary: cap_eff is '${v:-empty}', not a capability set")
     elif [ "$v" != 0000000000000000 ]; then leaks+=("boundary: effective capabilities are $v")
     fi
+    # The default boundary sets no-new-privs for every user (go-kure/.github#309): a stub that
+    # could still gain privileges through a setuid or file-capability binary is a leak, and a
+    # value that is not 0 or 1 says nothing.
+    v="$(get "$b" no_new_privs)"
+    case "$v" in
+      1) ;;
+      0) leaks+=("boundary: no_new_privs is 0") ;;
+      *) unusable+=("boundary: no_new_privs is '${v:-empty}', not 0 or 1") ;;
+    esac
     v="$(get "$b" cap_bnd)"
     if ! is_caps "$v"; then unusable+=("boundary: cap_bnd is '${v:-empty}', not a capability set")
     elif [ "$uid" = 0 ] && [ "$v" != 0000000000000000 ]; then leaks+=("boundary: root keeps the bounding set $v")

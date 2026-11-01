@@ -642,10 +642,10 @@ the lane lines lose their absolute paths like the orchestrator's. Its parent-dea
 reported: it can be read only by the process that holds it, and a child starts with it cleared.
 Limits of the probe: it tests the default boundary and a canary placed in the environment (a token in
 an argument, a descriptor or a file is not covered); the control proves that `environ` of an ancestor
-is readable without the boundary, not `mem`; and `no_new_privs` and the bounding set are reported for a
-non-root orchestrator but not judged, because the default boundary sets no-new-privs only for root
-(go-kure/.github#309). For root the bounding set is judged; the no-new-privs flag is reported but
-never judged, for any user (its judgement waits for go-kure/.github#309).
+is readable without the boundary, not `mem`; and the bounding set is judged only for root, because the
+default boundary clears it only for root (it is reported for any other user). The `no_new_privs` flag is
+judged for every user: the default boundary sets it for all of them (go-kure/.github#309), so a value of 0
+is a leak and a value that is not 0 or 1 voids the result.
 Exit codes: 0 holds; 1 the boundary leaks, or the production call failed after the boundary was
 established (a `runner-*` reason or `provenance-mismatch`); 2 the boundary cannot be established on
 that lane; 3 inconclusive (the control, a field or the mount result gave no usable answer, or the call
