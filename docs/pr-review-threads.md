@@ -599,9 +599,11 @@ run them cannot pass by skipping. The probe's own fixture suite has the same swi
 full-run cases, and the acceptance workflow sets it for both suites.
 
 **Acceptance run.** `scripts/pr-review-runner-boundary-probe.sh`, started by the manual workflow
-`PR Review Runner Boundary Probe` on the runner image the review job uses, shows whether the default
-boundary holds on that image. The workflow targets the review pool (`autops-kube-review`), whose
-nodes allow the user namespaces the boundary needs, and it runs the probe step after a failed suite
+`PR Review Runner Boundary Probe` shows whether the default boundary holds on the lane it runs on.
+The workflow targets the review pool (`autops-kube-review`), whose nodes allow the user namespaces
+the boundary needs. A result therefore applies to that pool only. The review job itself still runs
+on `autops-kube-kure`, so the runner backend stays unaccepted there until that job moves to a pool
+where this probe passes. The workflow runs the probe step after a failed suite
 step too (a failed suite step still fails the job), so a lane that cannot build the boundary still
 reports why. It uses a made-up canary in place of the posting token (placed in the
 script's own environment when it starts, where the token sits for the orchestrator) and a stub in
@@ -617,7 +619,9 @@ the capability
 sets and whether the `procfs` mount was denied. The boundary must show no canary, no readable
 ancestor, no descriptor, no capability and a denied mount. The run without it must show the canary
 through an ancestor, with numeric counts of at least 1: a missing, empty or malformed control report
-voids the result, and so does a count of more than 9 digits. Only a refusal by `mount` itself is a
+voids the result, and so does a count of more than 9 digits. For a stub that is not root, the `mount`
+tool refuses (`must be superuser`) before it asks the kernel, so a denial there says nothing about the
+kernel: that user's verdict rests on the capability sets, which must be empty. Only a refusal by `mount` itself is a
 denial. A mount that could not be tried (no `mount` command, one that cannot be executed, an
 unreadable or shared mount namespace, no directory) is not. Inside the boundary the scan must also
 be able to find something. One scan of the process table produces the canary count: for each
