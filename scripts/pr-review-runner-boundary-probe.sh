@@ -394,7 +394,14 @@ probe_run() {
   # runs here only, in the namespace the boundary gives the stub.
   export PRT_PROBE_REPORT="$work/report.boundary"
   export PRT_PROBE_MOUNT=try
+  # A descriptor above 2 that the call must not hand on. Without one, the probe's shell holds
+  # nothing the descriptor closing could fail to close (an Actions step passes down only 0 to 2,
+  # and bash marks its own script descriptor close-on-exec), and "no descriptor" would pass with
+  # the closing broken. A descriptor opened with `exec` is inherited by every child.
+  local plant
+  exec {plant}< "$work/canary" || { echo "probe: cannot open the planted descriptor" >&2; return 4; }
   _prt_call_runner "request for the boundary probe" > "$work/answer" 2> "$work/call.stderr" || call_rc=$?
+  exec {plant}<&-
   failure="$(cat "$work/failure" 2> /dev/null || true)"
   if [ "$call_rc" -ne 0 ] || [ ! -s "$work/report.boundary" ]; then
     echo "boundary: call failed rc=$call_rc reason=${failure:-none}"

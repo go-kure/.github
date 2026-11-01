@@ -611,7 +611,9 @@ any other, so nothing it does outlives it. The stub runs twice, both times behin
 environment scrub and descriptor closing: once through the production call (the default boundary,
 checked and bounded) and once with `env -i` only. Its report lists whether the canary is in any
 readable `/proc/<pid>/environ`, whether an ancestor's `environ` or `mem` can be opened (an ancestor
-is named by pid and start time), every descriptor above 2 it holds apart from its own, the capability
+is named by pid and start time), every descriptor above 2 it holds apart from its own (the probe
+holds one open across the production call, so a descriptor closing that stopped working would show),
+the capability
 sets and whether the `procfs` mount was denied. The boundary must show no canary, no readable
 ancestor, no descriptor, no capability and a denied mount. The run without it must show the canary
 through an ancestor, with numeric counts of at least 1: a missing, empty or malformed control report

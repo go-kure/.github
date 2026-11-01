@@ -384,6 +384,22 @@ if [ -z "${PRT_TEST_FORCE_NO_NAMESPACE:-}" ] && unshare --user --map-current-use
     "$(mkdir -p "$dir/un" && printf '#!/bin/sh\nexit 1\n' > "$dir/un/unshare" && chmod 755 "$dir/un/unshare" && run_rc PATH="$dir/un:$PATH")"
   assert_eq "run: a call that succeeds but whose stub cannot write its report is inconclusive, not a leak" 3 \
     "$(mkdir -p "$dir/sh" && printf '#!/bin/sh\nexit 1\n' > "$dir/sh/mv" && chmod 755 "$dir/sh/mv" && run_rc PATH="$dir/sh:$PATH")"
+  # The "no descriptor" judgement needs something to find: the probe holds a descriptor open across
+  # the production call. With the call's descriptor closing switched off in a copy of the
+  # orchestrator, that descriptor reaches the stub and the run must report it as a leak.
+  mkdir -p "$dir/mut/scripts/lib"
+  cp "$PROBE" "$dir/mut/scripts/"
+  cp -R "$(dirname "$PROBE")/lib/prt" "$dir/mut/scripts/lib/"
+  # shellcheck disable=SC2016 # the pattern is the orchestrator's own text, not an expansion here
+  sed -i 's/if \[ "\$prt_fd" -gt 2 \] 2>\/dev\/null; then eval "exec \$prt_fd>&-"; fi/:/' "$dir/mut/scripts/lib/prt/model.sh"
+  # shellcheck disable=SC2016 # same: a literal pattern
+  assert_eq "run: the descriptor-closing mutant is really in the copy" 0 \
+    "$(grep -c 'eval "exec \$prt_fd>&-"' "$dir/mut/scripts/lib/prt/model.sh" || true)"
+  mut_out="$(env bash "$dir/mut/scripts/$(basename "$PROBE")" run 2> /dev/null)"
+  mut_rc=$?
+  assert_eq "run: a call that keeps the probe's open descriptor is a leak (1)" 1 "$mut_rc"
+  assert_eq "run: ... and the leak names the descriptor count" "true" \
+    "$([[ "$mut_out" == *"LEAK: boundary: fd_above_2 is "* ]] && echo true || echo false)"
   # A call that fails after the boundary stands: the stub cannot make its output directory, so the
   # call ends as runner-no-output behind the production boundary.
   assert_eq "run: a call that fails after the boundary stands is a failure" 1 \
