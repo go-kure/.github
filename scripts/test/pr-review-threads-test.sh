@@ -38,15 +38,15 @@ pass_count=0
 # case that degraded (a refused boundary, a stub that never started) failed with counts and no reason.
 # The file belongs to the last run_orchestrator call, which is not always the run behind the failing
 # assertion (a case that starts the stub directly runs none), so the heading says "last". Shown once
-# per distinct content, at most 15 lines of 300 bytes, so a group of cases that fail for one reason
-# prints that reason once.
-prt_ctx_last=""
+# per distinct content for the whole suite (every printed checksum is remembered, so A, B, A prints A
+# once), at most 15 lines of 300 bytes, so cases that fail for one reason print that reason once.
+prt_ctx_seen="|"
 prt_test_failure_context() {
   local f="${PRT_TEST_STDERR_FILE:-}" sum
   [ -n "$f" ] && [ -s "$f" ] || return 0
   sum="$(cksum < "$f")"
-  [ "$sum" != "$prt_ctx_last" ] || return 0
-  prt_ctx_last="$sum"
+  case "$prt_ctx_seen" in *"|$sum|"*) return 0 ;; esac
+  prt_ctx_seen="$prt_ctx_seen$sum|"
   echo "  stderr of the last orchestrator run, which may not be the one behind this assertion (first 15 lines):" >&2
   head -n 15 "$f" | cut -c1-300 | sed 's/^/    | /' >&2
 }
