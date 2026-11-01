@@ -748,7 +748,7 @@ not something the initial `github_org:` block did.
 |-----------------------------------------|---------|
 | `actions.enabled_repositories`           | `all`   |
 | `actions.allowed_actions`                | `all`   |
-| `actions.sha_pinning_required`           | `false` |
+| `actions.sha_pinning_required`           | `true`  |
 | `actions.default_workflow_permissions`   | `read`  |
 | `actions.can_approve_pull_request_reviews` | `false` |
 | `actions.approval_policy`                | `all_external_contributors` |
