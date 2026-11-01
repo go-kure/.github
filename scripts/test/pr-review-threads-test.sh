@@ -8508,6 +8508,29 @@ PRT_AR_POLLS=60 prt_ar_pid1_case "a child of the launcher that is not a namespac
 PRT_AR_POLLS=60 prt_ar_pid1_case "a timeout process that runs something other than the launcher" 1 \
   "runs something other than the namespace launcher" "\"$prt_ar_dir/chain-other/timeout\" & tp=\$!; sleep 0.2"
 prt_ar_reap_sleepers
+# A stat that cannot be read (2) is not a process that has gone (1): gone is "timeout went first",
+# which the caller reads as nothing to end when the exit is an ordinary one, so an unreadable stat
+# at either site must be a failed read with its cause. A launcher that is gone is looked at again
+# on the next poll and spends one, and a poll count with a leading zero is a decimal number. The
+# processes are copies of `sleep` under the names of the chain and the answers of the two /proc
+# helpers are stubbed. The stubbed `sleep` ends a loop that never spends a poll (so a failing case
+# is red at once and does not hang the run).
+mkdir -p "$prt_ar_dir/fake-chain"
+ln -sf "$(command -v sleep)" "$prt_ar_dir/fake-chain/timeout"
+ln -sf "$(command -v sleep)" "$prt_ar_dir/fake-chain/unshare"
+prt_ar_loop_guard='n=0; sleep() { n=$((n+1)); if [ "$n" -ge 60 ]; then echo looped; kill -KILL $(jobs -p) 2> /dev/null; exit 0; fi; command sleep 0.01; }'
+prt_ar_fake_chain="\"$prt_ar_dir/fake-chain/timeout\" 30 & tp=\$!; \"$prt_ar_dir/fake-chain/unshare\" 30 & L=\$!; sleep 0.2; $prt_ar_loop_guard; "
+prt_ar_pid1_case "the children of timeout cannot be read and its stat cannot be read either" 1 \
+  "the children of the timeout process cannot be read" \
+  "$prt_ar_fake_chain _prt_proc_children() { return 1; }; m=0; _prt_proc_start() { m=\$((m+1)); PRT_PROC_START=1; [ \"\$m\" -le 1 ] || return 2; }"
+prt_ar_pid1_case "the children of the launcher cannot be read and its stat cannot be read either" 1 \
+  "the children of the namespace launcher cannot be read" \
+  "$prt_ar_fake_chain _prt_proc_children() { if [ \"\$1\" = \"\$tp\" ]; then PRT_PROC_KIDS=\$L; return 0; fi; return 1; }; _prt_proc_start() { PRT_PROC_START=1; [ \"\$1\" != \"\$L\" ] || return 2; }"
+prt_ar_pid1_case "the launcher is gone: the poll is spent, the finder ends" 1 \
+  "no namespace first process was found in time" \
+  "$prt_ar_fake_chain _prt_proc_children() { if [ \"\$1\" = \"\$tp\" ]; then PRT_PROC_KIDS=\$L; return 0; fi; return 1; }; _prt_proc_start() { PRT_PROC_START=1; [ \"\$1\" != \"\$L\" ] || return 1; }"
+PRT_AR_POLLS=08 prt_ar_pid1_case "a poll count with a leading zero is decimal" 1 \
+  "no namespace first process was found in time" "sleep 30 & tp=\$!; sleep 0.1; $prt_ar_loop_guard"
 # The end of the first process: gone after the kill is 0; still there after it is 1. The second
 # case turns the kill into a no-op, so the process stays and the wait for it runs out.
 prt_ar_pid1_end_case() { # label, expected rc, prefix command for the child shell

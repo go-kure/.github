@@ -1008,11 +1008,13 @@ _prt_proc_children() {
 # alive), 1 for everything else, with the cause in PRT_RUNNER_PID1_ERROR.
 # shellcheck disable=SC2034 # the PRT_RUNNER_PID1* variables are read by _prt_call_runner
 _prt_runner_pid1_record() {
-  local IFS=$' \t\n' tp="$1" polls="${PRT_RUNNER_PID1_POLLS:-100}" comm launcher pid1 key nspid rc kids=()
+  local IFS=$' \t\n' tp="$1" polls="${PRT_RUNNER_PID1_POLLS:-100}" comm launcher launcher_gone pid1 key nspid rc kids=()
   PRT_RUNNER_PID1=""
   PRT_RUNNER_PID1_START=""
   PRT_RUNNER_PID1_ERROR=""
   [[ "$polls" =~ ^[0-9]{1,5}$ ]] && [ "$polls" -ge 1 ] || polls=100
+  # A leading zero must not read as octal in the arithmetic below ("08").
+  polls=$((10#$polls))
   while :; do
     rc=0; _prt_proc_start "$tp" || rc=$?
     case "$rc" in
@@ -1025,7 +1027,9 @@ _prt_runner_pid1_record() {
     comm=""; { IFS= read -r comm < "/proc/$tp/comm"; } 2> /dev/null || true
     if [ "$comm" = timeout ]; then
       if ! _prt_proc_children "$tp"; then
-        _prt_proc_start "$tp" || return 3
+        # Gone (1) is "timeout went first"; a stat that cannot be read (2) is a failed read.
+        rc=0; _prt_proc_start "$tp" || rc=$?
+        [ "$rc" -ne 1 ] || return 3
         PRT_RUNNER_PID1_ERROR="the children of the timeout process cannot be read"; return 1
       fi
       read -ra kids <<< "$PRT_PROC_KIDS"
@@ -1041,15 +1045,21 @@ _prt_runner_pid1_record() {
           if [ "$comm" != "${PRT_RUNNER_BOUNDARY_ARGS[0]##*/}" ]; then
             PRT_RUNNER_PID1_ERROR="the timeout process runs something other than the namespace launcher"; return 1
           fi
+          launcher_gone=false
           if ! _prt_proc_children "$launcher"; then
-            _prt_proc_start "$launcher" || { sleep 0.05; continue; }
-            PRT_RUNNER_PID1_ERROR="the children of the namespace launcher cannot be read"; return 1
+            # A launcher that is gone is looked at again on the next poll (spending one); a stat
+            # that cannot be read is a failed read.
+            rc=0; _prt_proc_start "$launcher" || rc=$?
+            [ "$rc" -eq 1 ] || { PRT_RUNNER_PID1_ERROR="the children of the namespace launcher cannot be read"; return 1; }
+            launcher_gone=true
+            kids=()
+          else
+            read -ra kids <<< "$PRT_PROC_KIDS"
           fi
-          read -ra kids <<< "$PRT_PROC_KIDS"
           if [ "${#kids[@]}" -gt 1 ]; then
             PRT_RUNNER_PID1_ERROR="the namespace launcher has more than one child"; return 1
           fi
-          if [ "${#kids[@]}" -eq 1 ]; then
+          if ! $launcher_gone && [ "${#kids[@]}" -eq 1 ]; then
             pid1="${kids[0]}"
             nspid=""
             { while IFS=$'\t' read -r key nspid; do [ "$key" = "NSpid:" ] && break; nspid=""; done < "/proc/$pid1/status"; } 2> /dev/null || nspid=""
