@@ -741,8 +741,8 @@ _prt_runner_clock_read() {
 # established or fails its check; see _prt_runner_boundary_build),
 # runner-lifetime (the call's end could not be guaranteed: the first process of the
 # runner's namespace could not be identified after the launch, or its end could not be
-# confirmed (its state cannot be read, before or after SIGKILL, or it is still there after
-# it); see _prt_runner_pid1_record and _prt_runner_pid1_end),
+# confirmed (its state cannot be read, before or after the attempt to send SIGKILL, or it is
+# still there after it); see _prt_runner_pid1_record and _prt_runner_pid1_end),
 # runner-incomplete (review-run exit 2), runner-quota (3), runner-launch (4),
 # runner-usage (64, includes an input over its ceiling), runner-timeout (the outer
 # bound on the whole process tree fired; see the call below), runner-failed (any other
@@ -1103,7 +1103,7 @@ _prt_runner_pid1_record() {
     case "$rc" in
       0) ;;
       1) return 3 ;;
-      *) PRT_RUNNER_PID1_ERROR="the timeout process cannot be read"; return 1 ;;
+      *) PRT_RUNNER_PID1_ERROR="the process launched for the call cannot be read"; return 1 ;;
     esac
     # The launch subshell runs a few helpers of its own before it becomes `timeout`; until then
     # its children are not the chain.
@@ -1180,9 +1180,9 @@ _prt_runner_pid1_record() {
 # gone, or the pid belongs to another process now) and when it has been ended; 1 when its end is
 # not confirmed, with the cause in PRT_RUNNER_PID1_END_ERROR: its stat cannot be read (before the
 # signal, so none was sent; or after it, so its end is not seen), or it is still there after the
-# kill.
+# kill. A `kill` that fails is named as such: the causes then say SIGKILL could not be sent.
 _prt_runner_pid1_end() {
-  local rc tries=40
+  local rc kill_rc tries=40
   PRT_RUNNER_PID1_END_ERROR=""
   [ -n "${PRT_RUNNER_PID1:-}" ] || return 0
   rc=0; _prt_proc_start "$PRT_RUNNER_PID1" || rc=$?
@@ -1193,13 +1193,19 @@ _prt_runner_pid1_end() {
     return 1
   fi
   [ "$PRT_PROC_START" = "$PRT_RUNNER_PID1_START" ] || return 0
-  kill -KILL "$PRT_RUNNER_PID1" 2> /dev/null || true
+  # A `kill` that fails (the process went in between, or it may not be signalled) is not a signal
+  # sent: the causes below say so, and the loop still looks for the end.
+  kill_rc=0; kill -KILL "$PRT_RUNNER_PID1" 2> /dev/null || kill_rc=$?
   while [ "$tries" -gt 0 ]; do
     rc=0; _prt_proc_start "$PRT_RUNNER_PID1" || rc=$?
     [ "$rc" -ne 1 ] || return 0
     if [ "$rc" -ne 0 ]; then
       # shellcheck disable=SC2034 # read by _prt_call_runner
-      PRT_RUNNER_PID1_END_ERROR="SIGKILL was sent but its start time can no longer be read, so its end is not confirmed"
+      if [ "$kill_rc" -eq 0 ]; then
+        PRT_RUNNER_PID1_END_ERROR="SIGKILL was sent but its start time can no longer be read, so its end is not confirmed"
+      else
+        PRT_RUNNER_PID1_END_ERROR="SIGKILL could not be sent and its start time can no longer be read, so its end is not confirmed"
+      fi
       return 1
     fi
     [ "$PRT_PROC_START" = "$PRT_RUNNER_PID1_START" ] || return 0
@@ -1207,7 +1213,11 @@ _prt_runner_pid1_end() {
     sleep 0.05
   done
   # shellcheck disable=SC2034 # read by _prt_call_runner
-  PRT_RUNNER_PID1_END_ERROR="it is still running 2 seconds after SIGKILL"
+  if [ "$kill_rc" -eq 0 ]; then
+    PRT_RUNNER_PID1_END_ERROR="it is still running 2 seconds after SIGKILL"
+  else
+    PRT_RUNNER_PID1_END_ERROR="SIGKILL could not be sent and it is still running 2 seconds later"
+  fi
   return 1
 }
 
@@ -1458,7 +1468,7 @@ READER
   # "nothing to end". A launcher that failed on its own (an ordinary status below 124, or 125 to
   # 127 for a command that could not start) left no namespace behind.
   if [ "${pid1_rc:-0}" -eq 3 ] && { [ "$rc" -eq 124 ] || [ "$rc" -ge 128 ]; }; then
-    echo "prt_model: the process launched for the call (it becomes timeout) ended (status $rc) before the runner's namespace first process was named — abandoning call" >&2
+    echo "prt_model: the process launched for the call ended (status $rc) before the runner's namespace first process was named — abandoning call" >&2
     kill -KILL -- "-$runner_pid" 2>/dev/null || true
     rm -rf "$tmp"
     _prt_set_model_failure "runner-lifetime"
