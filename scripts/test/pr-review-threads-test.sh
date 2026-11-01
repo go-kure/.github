@@ -8492,13 +8492,19 @@ while [ "$(wc -l < "/proc/$prt_ar_holder/stat" 2> /dev/null || echo 0)" -lt 2 ] 
   sleep 0.1
   prt_ar_i=$((prt_ar_i + 1))
 done
+# The record must really run over two lines before the probe is tried: a holder that has not set
+# its name yet would be a readable ancestor to the first version of the probe too.
+prt_ar_shape=single
+if [ "$(wc -l < "/proc/$prt_ar_holder/stat" 2> /dev/null || echo 0)" -ge 2 ]; then
+  prt_ar_shape=multiline
+fi
 prt_ar_tick="$(tr '\n' ' ' < "/proc/$prt_ar_holder/stat" | sed 's/^.*) //' | cut -d' ' -f20)"
 prt_ar_rc=0
 prt_ar_out="$(env -i "PATH=$PATH" sh -c "$_PRT_BOUNDARY_PROBE" sh "$prt_ar_holder:$prt_ar_tick" 2>&1)" || prt_ar_rc=$?
 kill "$prt_ar_holder" 2> /dev/null
 wait "$prt_ar_holder" 2> /dev/null
 assert_eq "boundary probe: a live ancestor whose process name holds a newline is still a readable ancestor" \
-  "11 true" "$prt_ar_rc $(grep -qF "ancestor $prt_ar_holder:$prt_ar_tick: environ readable" <<< "$prt_ar_out" && echo true || echo false)"
+  "multiline 11 true" "$prt_ar_shape $prt_ar_rc $(grep -qF "ancestor $prt_ar_holder:$prt_ar_tick: environ readable" <<< "$prt_ar_out" && echo true || echo false)"
 # The prefix can exit 11 or 12 itself before the probe ran: that is a launch failure, not the
 # probe's finding. Only the probe's own message makes it one.
 printf '#!/bin/sh\nexit 11\n' > "$prt_ar_dir/boundary-exit11"
