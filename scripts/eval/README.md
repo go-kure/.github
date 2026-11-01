@@ -199,10 +199,10 @@ issue?" is a biased instrument. Three controls are implemented:
 
 Two further controls the literature asks for are **not available through this backend** and
 are recorded here rather than asserted. The proxy routes every call through the Claude Code
-CLI on the Max subscription, and that CLI exposes no temperature control. It maps the
+CLI on the Max subscription, and that CLI exposes no temperature control. The proxy maps the
 request's `model` field to a family alias — `opus`, `sonnet` or `haiku` — so the field
-selects the family and nothing finer, and a name its map does not hold falls back to `opus`
-with no error. So neither **temperature 0** nor a **pinned judge model** can be enforced:
+selects the family and nothing finer, and a name the proxy's map does not hold falls back to
+`opus` with no error. So neither **temperature 0** nor a **pinned judge model** can be enforced:
 `--judge-model` chooses the family, the pinned CLI chooses the version, and an unmapped
 value would quietly move the judge from Sonnet to Opus. The remaining control for judge
 variance is repetition, which is what `--runs` and the reported spread are for.

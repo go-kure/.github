@@ -131,14 +131,22 @@
 #     through that same fallback rather than through a map entry, which is
 #     correct today and would break quietly if the backend ever changed its
 #     default family. The durable fix is upstream: teach the backend's map the
-#     5.x names. Until then, treat this line as intent, not as a binding.
+#     5.x names. Until then, treat the `PR_REVIEW_MODEL` value in this job's env
+#     block as intent, not as a binding.
+#
+#     Both claims about that map (that `claude-sonnet-4-6` is an entry, and that
+#     a name the map does not hold falls back to `opus`) were read in the backend
+#     adapter's own source on 2026-11-01. That source is not in this repository,
+#     nothing here rechecks it, and it will go stale without anyone noticing.
+#     Reread it before relying on either claim.
 #
 # The composite action and scripts/pr-review-threads.sh keep `claude-opus-4` as
-# their own fallback defaults, so the repository holds two model labels. They are
+# their own fallback defaults, so the repository holds two model labels. Both are
 # delegate code under the pin-bump sequence, where a change needs its pin bumped
-# with it, and the fallback is reachable only by a caller that omits the `model`
-# input. It is the same family with a different label, visible only in the `model`
-# row of the clean-verdict comment.
+# with it, and that cost is why they were left unchanged here. The fallback is
+# reached by a caller that omits or empties the `model` input, and by a direct run
+# of the script. It is the same family with a different label, most visibly in the
+# `model` row of the clean-verdict comment.
 #
 # Bot identity (go-kure/.github#156): a caller without KURE_BOT_PAT passes its
 # own PAT as the BOT_PAT secret and the login that PAT posts as as the
@@ -217,6 +225,8 @@ jobs:
       # Variable name is historical — it has not pointed at ccproxy for a long
       # time, and renaming it would break every caller that overrides it.
       CCPROXY_URL: "http://claude-proxy.claude-proxy.svc:3456"
+      # Selects the Opus family only, and through the backend's fallback rather
+      # than a map entry. See the defaults note in the file header before editing.
       PR_REVIEW_MODEL: "claude-opus-5-5"
       PR_REVIEW_MAX_DIFF_CHARS: "50000"
       PR_REVIEW_MAX_TOKENS: "1500"
