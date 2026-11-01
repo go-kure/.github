@@ -886,28 +886,53 @@ _prt_runner_boundary_build() {
 # waits for its child) would otherwise keep the posting token in its own environment.
 # This check does not make an arbitrary prefix trustworthy: it shows that ancestors are
 # hidden and that no capability is held, nothing about what else the prefix does.
+#
+# A refusal names its cause, so a degraded run says which condition stopped the check
+# and not only that one did: PRT_RUNNER_BOUNDARY_REASON is ancestor-list (the pids
+# cannot be listed), launch (the prefix or the probe did not start or did not finish
+# its job), ancestor-environ-readable, capability or deadline, and
+# PRT_RUNNER_BOUNDARY_DETAIL holds the first lines of what the probe said. Both are
+# empty when the check passes. The cause changes no result: the return codes are the same.
+# shellcheck disable=SC2034 # PRT_RUNNER_BOUNDARY_REASON and _DETAIL are read by _prt_call_runner below, in another function
+_prt_boundary_refuse() {
+  local d
+  PRT_RUNNER_BOUNDARY_REASON="$1"
+  # Three lines of at most 200 bytes each, control characters turned into spaces:
+  # the text came from a process the operator supplies and ends in a log line.
+  d="$(printf '%s\n' "${2:-}" | head -n 3 | cut -b1-200 | LC_ALL=C tr -c '[:print:]' ' ')"
+  d="${d%"${d##*[![:space:]]}"}"
+  PRT_RUNNER_BOUNDARY_DETAIL="${d#"${d%%[![:space:]]*}"}"
+  return 1
+}
+
+# shellcheck disable=SC2034 # the reset of REASON and DETAIL is read by _prt_call_runner, in another function
 _prt_runner_boundary_check() {
-  local ancestors=() q="$BASHPID" stat fields=() out out_file probe_pid rc=0 secs="${PRT_BOUNDARY_CHECK_SECONDS:-10}" cap="${1:-}"
+  local ancestors=() q="$BASHPID" stat fields=() out err out_file err_file probe_pid started rc=0 secs="${PRT_BOUNDARY_CHECK_SECONDS:-10}" cap="${1:-}"
+  PRT_RUNNER_BOUNDARY_REASON=""
+  PRT_RUNNER_BOUNDARY_DETAIL=""
   [[ "$secs" =~ ^[0-9]{1,3}$ ]] && [ "$secs" -ge 1 ] || secs=10
   if [[ "$cap" =~ ^[0-9]+$ ]]; then
     [ "$cap" -ge 1 ] || cap=1
     [ "$secs" -le "$cap" ] || secs="$cap"
   fi
   while [ "$q" -ge 1 ]; do
-    [ "${#ancestors[@]}" -lt 256 ] || return 1
+    [ "${#ancestors[@]}" -lt 256 ] || { _prt_boundary_refuse ancestor-list "more than 256 ancestors, the limit is 256"; return 1; }
     # The command name is in parentheses and may hold spaces and parentheses, so the
     # fields start after the last ") ": state, parent pid, ... start time (index 19).
-    { stat="$(< "/proc/$q/stat")"; } 2> /dev/null || return 1
+    { stat="$(< "/proc/$q/stat")"; } 2> /dev/null || { _prt_boundary_refuse ancestor-list "cannot read /proc/$q/stat"; return 1; }
     read -ra fields <<< "${stat##*) }"
-    [[ "${fields[1]:-}" =~ ^[0-9]+$ && "${fields[19]:-}" =~ ^[0-9]+$ ]] || return 1
+    [[ "${fields[1]:-}" =~ ^[0-9]+$ && "${fields[19]:-}" =~ ^[0-9]+$ ]] || { _prt_boundary_refuse ancestor-list "cannot parse /proc/$q/stat"; return 1; }
     # Each ancestor is named by pid and start time: behind a PID namespace its pid number
     # can belong to the probe's own neighbours (pid 1 always does), and only the same start
     # time shows it is the ancestor itself.
     ancestors+=("$q:${fields[19]}")
     q="${fields[1]}"
   done
-  command -v "${PRT_RUNNER_BOUNDARY_ARGS[0]}" > /dev/null 2>&1 || return 1
-  out_file="$(mktemp)" || return 1
+  command -v "${PRT_RUNNER_BOUNDARY_ARGS[0]}" > /dev/null 2>&1 || { _prt_boundary_refuse launch "command not found: ${PRT_RUNNER_BOUNDARY_ARGS[0]}"; return 1; }
+  out_file="$(mktemp)" || { _prt_boundary_refuse launch "mktemp failed for the probe's output file"; return 1; }
+  err_file="$(mktemp)" || { rm -f "$out_file"; _prt_boundary_refuse launch "mktemp failed for the probe's error file"; return 1; }
+  # The probe exits 11 when it can read an ancestor's environ and 12 when it holds a
+  # capability, so the cause survives; its messages go to err_file, shown on a refusal.
   # shellcheck disable=SC2016 # the probe is the child shell's program, not an expansion here
   (
     exec env -i "PATH=$PATH" timeout -k 2 "$secs" "${PRT_RUNNER_BOUNDARY_ARGS[@]}" env -i "PATH=$PATH" sh -c \
@@ -916,19 +941,51 @@ _prt_runner_boundary_check() {
          if ( : < "/proc/$p/environ" ) 2> /dev/null; then
            s="$(sed "s/^.*) //" "/proc/$p/stat" 2> /dev/null)"
            set -- $s
-           if [ -z "$s" ] || [ "${20:-}" = "${a##*:}" ]; then exit 1; fi
+           if [ -z "$s" ] || [ "${20:-}" = "${a##*:}" ]; then
+             c="$(sed "s/^[0-9]* (\(.*\)) .*/\1/" "/proc/$p/stat" 2> /dev/null)"
+             na="$(readlink "/proc/$p/ns/pid" 2> /dev/null)"
+             ns="$(readlink /proc/self/ns/pid 2> /dev/null)"
+             echo "ancestor $a: environ readable (comm=${c:-?} ppid=${2:-?}; probe pid=$$ ns=${ns:-?}; ancestor ns=${na:-?})" >&2
+             exit 11
+           fi
          fi
        done
-       [ "$(sed -n "s/^CapEff:[[:space:]]*//p" /proc/self/status)" = 0000000000000000 ] || exit 1
+       c="$(sed -n "s/^CapEff:[[:space:]]*//p" /proc/self/status)"
+       if [ "$c" != 0000000000000000 ]; then
+         echo "CapEff is ${c:-unreadable}, not 0000000000000000" >&2
+         exit 12
+       fi
        echo boundary-ok' sh \
-      "${ancestors[@]}" < /dev/null > "$out_file" 2> /dev/null
+      "${ancestors[@]}" < /dev/null > "$out_file" 2> "$err_file"
   ) &
   probe_pid=$!
+  started=$SECONDS
   wait "$probe_pid" || rc=$?
   kill -KILL -- "-$probe_pid" 2> /dev/null || true
   out="$(< "$out_file")"
-  rm -f "$out_file"
-  [ "$rc" -eq 0 ] && [ "$out" = boundary-ok ]
+  err="$(head -c 1000 "$err_file")"
+  rm -f "$out_file" "$err_file"
+  if [ "$rc" -eq 0 ] && [ "$out" = boundary-ok ]; then
+    return 0
+  fi
+  case "$rc" in
+    11) _prt_boundary_refuse ancestor-environ-readable "$err" ;;
+    12) _prt_boundary_refuse capability "$err" ;;
+    124) _prt_boundary_refuse deadline "the probe did not finish within ${secs}s" ;;
+    # 137 and 143 are a kill signal: the deadline's own kill only if the whole time ran out,
+    # else the probe died from outside it (an out-of-memory kill, a cancel). The exit code cannot
+    # tell the two apart (timeout reports 137 for its own KILL and for an outside one) and SECONDS
+    # counts whole seconds, so an outside kill in the last second before the deadline reads as a
+    # deadline: a wrong word in one log line, never a different decision.
+    137 | 143)
+      if [ $((SECONDS - started)) -ge "$secs" ]; then
+        _prt_boundary_refuse deadline "the probe did not finish within ${secs}s (exit $rc)"
+      else
+        _prt_boundary_refuse launch "the probe was killed by signal $((rc - 128)) after $((SECONDS - started))s, before its ${secs}s deadline${err:+: $err}"
+      fi ;;
+    0) _prt_boundary_refuse launch "the probe exited 0 without boundary-ok${err:+: $err}" ;;
+    *) _prt_boundary_refuse launch "the probe exited $rc${err:+: $err}" ;;
+  esac
 }
 
 _prt_call_runner() {
@@ -983,8 +1040,16 @@ _prt_call_runner() {
   # check's own 2 s kill grace.
   local preflight_max=$(( budget_left - 8 ))
   [ "$preflight_max" -ge 1 ] || preflight_max=1
-  if ! _prt_runner_boundary_build || ! _prt_runner_boundary_check "$preflight_max"; then
-    echo "prt_model: the runner's process boundary cannot be established here (PRT_ASSESS_RUNNER_BOUNDARY=${PRT_ASSESS_RUNNER_BOUNDARY:-pidns}) — refusing call" >&2
+  # A failure refuses whatever the cause says: the cause is only text for the log.
+  local refused=0
+  if ! _prt_runner_boundary_build; then
+    refused=1
+    _prt_boundary_refuse build "$PRT_RUNNER_BOUNDARY_ERROR" || true
+  elif ! _prt_runner_boundary_check "$preflight_max"; then
+    refused=1
+  fi
+  if [ "$refused" -eq 1 ]; then
+    echo "prt_model: the runner's process boundary cannot be established here (PRT_ASSESS_RUNNER_BOUNDARY=${PRT_ASSESS_RUNNER_BOUNDARY:-pidns}) — refusing call (cause: ${PRT_RUNNER_BOUNDARY_REASON:-unknown}${PRT_RUNNER_BOUNDARY_DETAIL:+; $PRT_RUNNER_BOUNDARY_DETAIL})" >&2
     _prt_set_model_failure "runner-boundary"
     return 1
   fi

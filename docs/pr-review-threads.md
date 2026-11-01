@@ -566,7 +566,21 @@ apart by its start time) and that its own capability set is empty. A command tha
 nothing, or leaves the runner able to undo it, fails. The probe is bounded as a whole: it runs under
 `timeout` with a kill after the first signal and writes to a file, so a prefix that ignores
 `TERM`, or leaves a helper holding the probe's output, cannot hold the check. If the ancestors
-cannot be listed the call is refused, never checked against fewer. The run's remaining budget is
+cannot be listed the call is refused, never checked against fewer. A refusal names its cause on the
+log line, `(cause: <name>; <detail>)`, where the detail is the check's own message or the first
+lines of what the probe printed (at most three lines of 200 bytes, control characters shown as
+spaces). The names are `build` (the boundary could not be built), `ancestor-list` (more than 256
+ancestors, or a stat that cannot be read or parsed), `launch` (the prefix is not found, a temporary
+file could not be made, the probe did not start, was killed by a signal before its deadline, or
+ended without `boundary-ok`), `ancestor-environ-readable` (the probe could read an ancestor's
+environ), `capability` (the probe holds a capability, or its capability set cannot be read) and
+`deadline` (the probe was still running when the time ran out). For `ancestor-environ-readable` the
+detail also gives the readable process's command name and parent pid, the probe's own pid, and the
+pid namespace of the probe and of that process, so a process that merely shares a pid number with
+an ancestor inside a fresh namespace can be told from a namespace that hides nothing. A kill in the
+last second before the deadline can read as `deadline`, because the exit code of an outside kill
+equals the one `timeout` gives its own kill and the clock counts whole seconds. The cause is text
+for the log only: it changes no result and no failure label. The run's remaining budget is
 read before the check: a call the deadline has no room for is refused as `deadline-exhausted`
 without spending the check, and the check is cut to what the budget leaves after the runner's own
 kill grace. It is read again after the check, and the minimum applies to that fresh reading too: a
@@ -688,7 +702,7 @@ the id, so the case the signal exists for is unaffected. This window is accepted
 **Failures degrade, never abort.** Each ends as an assessment transport failure
 (`REVIEW_DEGRADED`, findings keep `verdict: null` and still gate, as `reconcile.sh` counts a null
 verdict like `VALID`), with the cause in brackets: `runner-boundary` (the process boundary could not
-be established or failed its check; the runner was not started), `runner-incomplete` (exit 2), `runner-quota`
+be established or failed its check, with the check's cause on the log line; the runner was not started), `runner-incomplete` (exit 2), `runner-quota`
 (3), `runner-launch` (4), `runner-usage` (64, which includes an input over the runner's size
 limit), `runner-timeout` (the outer bound below fired), `runner-failed` (any other non-zero exit), `runner-no-output` (no `review.md`, or one that cannot be read),
 `runner-empty`, `provenance-mismatch`, `deadline-exhausted`, `backend-config` (a required
