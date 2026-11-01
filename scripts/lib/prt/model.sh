@@ -741,7 +741,8 @@ _prt_runner_clock_read() {
 # established or fails its check; see _prt_runner_boundary_build),
 # runner-lifetime (the call's end could not be guaranteed: the first process of the
 # runner's namespace could not be identified after the launch, or its end could not be
-# confirmed after SIGKILL; see _prt_runner_pid1_record and _prt_runner_pid1_end),
+# confirmed (its state cannot be read, before or after SIGKILL, or it is still there after
+# it); see _prt_runner_pid1_record and _prt_runner_pid1_end),
 # runner-incomplete (review-run exit 2), runner-quota (3), runner-launch (4),
 # runner-usage (64, includes an input over its ceiling), runner-timeout (the outer
 # bound on the whole process tree fired; see the call below), runner-failed (any other
@@ -1083,10 +1084,11 @@ _prt_proc_children() {
 # the first process of a namespace (NSpid ends in 1): a read that finds nothing, finds more than
 # one, or finds something else is not "no process to end", it is a call whose end cannot be
 # guaranteed. Polls (PRT_RUNNER_PID1_POLLS times 50 ms, default 100): the chain is built by the
-# process that was just launched. Returns 0 when recorded, 3 when `timeout` has gone first (the
-# caller judges that by the exit status of `timeout`: an ordinary one means the namespace went
-# with it and there is nothing to end, 124 or 128 and above means the first process may still be
-# alive), 1 for everything else, with the cause in PRT_RUNNER_PID1_ERROR.
+# process that was just launched. Returns 0 when recorded, 3 when the launched process (it becomes
+# `timeout`, but may be gone before it has run `exec timeout`) has gone first (the caller judges
+# that by its exit status: an ordinary one means the namespace went with it and there is nothing
+# to end, 124 or 128 and above means the first process may still be alive), 1 for everything
+# else, with the cause in PRT_RUNNER_PID1_ERROR.
 # shellcheck disable=SC2034 # the PRT_RUNNER_PID1* variables are read by _prt_call_runner
 _prt_runner_pid1_record() {
   local IFS=$' \t\n' tp="$1" polls="${PRT_RUNNER_PID1_POLLS:-100}" comm launcher launcher_gone pid1 key nspid rc kids=()
@@ -1456,7 +1458,7 @@ READER
   # "nothing to end". A launcher that failed on its own (an ordinary status below 124, or 125 to
   # 127 for a command that could not start) left no namespace behind.
   if [ "${pid1_rc:-0}" -eq 3 ] && { [ "$rc" -eq 124 ] || [ "$rc" -ge 128 ]; }; then
-    echo "prt_model: the timeout process ended (status $rc) before the runner's namespace first process was named — abandoning call" >&2
+    echo "prt_model: the process launched for the call (it becomes timeout) ended (status $rc) before the runner's namespace first process was named — abandoning call" >&2
     kill -KILL -- "-$runner_pid" 2>/dev/null || true
     rm -rf "$tmp"
     _prt_set_model_failure "runner-lifetime"
