@@ -740,8 +740,8 @@ _prt_runner_clock_read() {
 # runner-boundary (the process boundary in front of the runner cannot be
 # established or fails its check; see _prt_runner_boundary_build),
 # runner-lifetime (the call's end could not be guaranteed: the first process of the
-# runner's namespace could not be identified after the launch, or was still running
-# after SIGKILL; see _prt_runner_pid1_record),
+# runner's namespace could not be identified after the launch, or its end could not be
+# confirmed after SIGKILL; see _prt_runner_pid1_record and _prt_runner_pid1_end),
 # runner-incomplete (review-run exit 2), runner-quota (3), runner-launch (4),
 # runner-usage (64, includes an input over its ceiling), runner-timeout (the outer
 # bound on the whole process tree fired; see the call below), runner-failed (any other
@@ -1147,13 +1147,18 @@ _prt_runner_pid1_record() {
             rc=0; _prt_proc_start "$pid1" || rc=$?
             if [ "$rc" -eq 0 ]; then
               if [ "$nspid" != "$pid1"$'\t'1 ]; then
-                PRT_RUNNER_PID1_ERROR="the child of the namespace launcher is not the first process of a namespace"; return 1
+                if [ -z "$nspid" ]; then
+                  PRT_RUNNER_PID1_ERROR="the namespace process ids of the child of the namespace launcher cannot be read"
+                else
+                  PRT_RUNNER_PID1_ERROR="the child of the namespace launcher is not the first process of a namespace"
+                fi
+                return 1
               fi
               PRT_RUNNER_PID1="$pid1"
               PRT_RUNNER_PID1_START="$PRT_PROC_START"
               return 0
             fi
-            [ "$rc" -eq 1 ] || { PRT_RUNNER_PID1_ERROR="the namespace's first process cannot be read"; return 1; }
+            [ "$rc" -eq 1 ] || { PRT_RUNNER_PID1_ERROR="the child of the namespace launcher cannot be read"; return 1; }
           fi
         fi
       fi
@@ -1170,24 +1175,37 @@ _prt_runner_pid1_record() {
 # same process (same start time), and waits for it to go. SIGKILL sent from outside a PID
 # namespace is always delivered to its first process, and its end takes every member with it. It
 # depends on nothing inside the namespace. Returns 0 when there is nothing to end (none recorded,
-# gone, or the pid belongs to another process now) and when it has been ended; 1 when it is still
-# there after the kill, or its stat cannot be read.
+# gone, or the pid belongs to another process now) and when it has been ended; 1 when its end is
+# not confirmed, with the cause in PRT_RUNNER_PID1_END_ERROR: its stat cannot be read (before the
+# signal, so none was sent; or after it, so its end is not seen), or it is still there after the
+# kill.
 _prt_runner_pid1_end() {
   local rc tries=40
+  PRT_RUNNER_PID1_END_ERROR=""
   [ -n "${PRT_RUNNER_PID1:-}" ] || return 0
   rc=0; _prt_proc_start "$PRT_RUNNER_PID1" || rc=$?
   [ "$rc" -ne 1 ] || return 0
-  [ "$rc" -eq 0 ] || return 1
+  if [ "$rc" -ne 0 ]; then
+    # shellcheck disable=SC2034 # read by _prt_call_runner
+    PRT_RUNNER_PID1_END_ERROR="its start time cannot be read, so no signal was sent"
+    return 1
+  fi
   [ "$PRT_PROC_START" = "$PRT_RUNNER_PID1_START" ] || return 0
   kill -KILL "$PRT_RUNNER_PID1" 2> /dev/null || true
   while [ "$tries" -gt 0 ]; do
     rc=0; _prt_proc_start "$PRT_RUNNER_PID1" || rc=$?
     [ "$rc" -ne 1 ] || return 0
-    [ "$rc" -eq 0 ] || return 1
+    if [ "$rc" -ne 0 ]; then
+      # shellcheck disable=SC2034 # read by _prt_call_runner
+      PRT_RUNNER_PID1_END_ERROR="SIGKILL was sent but its start time can no longer be read, so its end is not confirmed"
+      return 1
+    fi
     [ "$PRT_PROC_START" = "$PRT_RUNNER_PID1_START" ] || return 0
     tries=$((tries - 1))
     sleep 0.05
   done
+  # shellcheck disable=SC2034 # read by _prt_call_runner
+  PRT_RUNNER_PID1_END_ERROR="it is still running 2 seconds after SIGKILL"
   return 1
 }
 
@@ -1448,7 +1466,7 @@ READER
   # its end takes the rest of the namespace with it. Whatever the exit, and before anything is
   # read from the call: a runner that is still alive could still be writing.
   if ! _prt_runner_pid1_end; then
-    echo "prt_model: the runner's namespace first process ($PRT_RUNNER_PID1) is still running after SIGKILL — abandoning call" >&2
+    echo "prt_model: the end of the runner's namespace first process ($PRT_RUNNER_PID1) is not confirmed (${PRT_RUNNER_PID1_END_ERROR:-unknown}) — abandoning call" >&2
     kill -KILL -- "-$runner_pid" 2>/dev/null || true
     rm -rf "$tmp"
     _prt_set_model_failure "runner-lifetime"

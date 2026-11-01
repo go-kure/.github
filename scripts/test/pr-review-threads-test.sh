@@ -8531,6 +8531,15 @@ prt_ar_pid1_case "the launcher is gone: the poll is spent, the finder ends" 1 \
   "$prt_ar_fake_chain _prt_proc_children() { if [ \"\$1\" = \"\$tp\" ]; then PRT_PROC_KIDS=\$L; return 0; fi; return 1; }; _prt_proc_start() { PRT_PROC_START=1; [ \"\$1\" != \"\$L\" ] || return 1; }"
 PRT_AR_POLLS=08 prt_ar_pid1_case "a poll count with a leading zero is decimal" 1 \
   "no namespace first process was found in time" "sleep 30 & tp=\$!; sleep 0.1; $prt_ar_loop_guard"
+# A message says what the code has established when it prints it: a child of the launcher whose
+# namespace ids cannot be read is not "not the first process", and a child whose stat cannot be read
+# is not "the namespace's first process".
+prt_ar_pid1_case "the namespace ids of the launcher's child cannot be read" 1 \
+  "the namespace process ids of the child of the namespace launcher cannot be read" \
+  "$prt_ar_fake_chain P=\$(< /proc/sys/kernel/pid_max); _prt_proc_children() { if [ \"\$1\" = \"\$tp\" ]; then PRT_PROC_KIDS=\$L; else PRT_PROC_KIDS=\$P; fi; return 0; }; _prt_proc_start() { PRT_PROC_START=1; return 0; }"
+prt_ar_pid1_case "the stat of the launcher's child cannot be read" 1 \
+  "the child of the namespace launcher cannot be read" \
+  "$prt_ar_fake_chain command sleep 30 & K=\$!; _prt_proc_children() { if [ \"\$1\" = \"\$tp\" ]; then PRT_PROC_KIDS=\$L; else PRT_PROC_KIDS=\$K; fi; return 0; }; _prt_proc_start() { PRT_PROC_START=1; [ \"\$1\" != \"\$K\" ] || return 2; }"
 # The end of the first process: gone after the kill is 0; still there after it is 1. The second
 # case turns the kill into a no-op, so the process stays and the wait for it runs out.
 prt_ar_pid1_end_case() { # label, expected rc, prefix command for the child shell
@@ -8544,6 +8553,27 @@ prt_ar_pid1_end_case() { # label, expected rc, prefix command for the child shel
     builtin kill -KILL "$p" 2>/dev/null' bash "$ROOT" "$3" 2>/dev/null)"
   assert_eq "pid1 end, $1: rc $2" "true" "$([[ "$out" == "rc=$2" ]] && echo true || echo false)"
 }
+# The cause of a failed end says what happened: no signal was sent, or one was sent and its end is
+# not seen, or the process outlived it. The first case also checks that no signal went out.
+prt_ar_pid1_end_err_case() { # label, expected error fragment, prefix command for the child shell
+  local out
+  out="$(bash -c '
+    source "$1/scripts/lib/prt/model.sh"
+    sleep 30 & p=$!
+    _prt_proc_start "$p" && PRT_RUNNER_PID1="$p" && PRT_RUNNER_PID1_START="$PRT_PROC_START"
+    kill() { echo "kill $*"; return 0; }
+    eval "$2"
+    _prt_runner_pid1_end; echo "rc=$? err=$PRT_RUNNER_PID1_END_ERROR"
+    builtin kill -KILL "$p" 2>/dev/null' bash "$ROOT" "$3" 2>/dev/null)"
+  assert_eq "pid1 end, $1: rc 1 and the cause is named" "true" "$([[ "$out" == *"rc=1 err="*"$2"* ]] && echo true || echo false)"
+  if [ "${4:-}" = nosignal ]; then
+    assert_eq "pid1 end, $1: no signal was sent" "false" "$([[ "$out" == *"kill -KILL"* ]] && echo true || echo false)"
+  fi
+}
+prt_ar_pid1_end_err_case "the stat cannot be read before the signal" "no signal was sent" '_prt_proc_start() { return 2; }' nosignal
+prt_ar_pid1_end_err_case "the stat cannot be read after the signal" "SIGKILL was sent but its start time can no longer be read" \
+  'n=0; _prt_proc_start() { n=$((n+1)); PRT_PROC_START=$PRT_RUNNER_PID1_START; [ "$n" -le 1 ] || return 2; }'
+prt_ar_pid1_end_err_case "the process outlives the signal" "it is still running 2 seconds after SIGKILL" ':'
 prt_ar_pid1_end_case "the process is killed and gone" 0 ':'
 prt_ar_pid1_end_case "the process is still there after the kill" 1 'kill() { return 0; }'
 # The helper reads /proc/PID/stat whatever separator its caller has set: with one that holds no
