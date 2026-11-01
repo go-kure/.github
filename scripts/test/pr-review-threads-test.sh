@@ -2520,6 +2520,31 @@ prt_parts_clear
 assert_eq "prt_render_overflow_parts: with no merge-gating row the part 1 line says none is" \
   "true" "$(prt_render_overflow_parts '[]' "$prt_parts_nogate" "$prt_parts_dir" >/dev/null; head -1 "$prt_parts_dir/part-1.md" | grep -qF 'None of the withheld findings is merge-gating.' && echo true || echo false)"
 
+# Longest CONTIGUOUS run of each given character on the line read from stdin, space separated, in
+# argument order. This is the property the full-text assertion below needs (an unbroken run of
+# 27000 characters, not 27000 matching characters spread over the line). It scans the line once, so
+# its memory does not depend on the run length; the former `grep -oE 'i{27000}'` built an automaton
+# of that size and needed about 5 GB, which killed a 4Gi runner container. A run longer than the
+# expected length is reported as such rather than clipped to it. The assertion is exact on purpose:
+# the fixture generates exactly 27000, so a different number means the generator or the renderer
+# changed, not that this helper is wrong.
+prt_test_longest_runs() {
+  awk -v chars="$*" '
+    {
+      n = split(chars, want, " ")
+      len = length($0)
+      out = ""
+      for (k = 1; k <= n; k++) {
+        best = 0; run = 0
+        for (p = 1; p <= len; p++) {
+          if (substr($0, p, 1) == want[k]) { run++; if (run > best) best = run } else run = 0
+        }
+        out = out (k > 1 ? " " : "") best
+      }
+      print out
+    }'
+}
+
 # The largest single finding that still fits one part is not shortened, and its part fits the limit.
 prt_parts_big_q="$(jq -n '[{file:"big.go", line:1, severity:"high", category:"big", issue:("BIGQ " + ("i" * 27000)), fix:("f" * 27000), quarantine_reason:"this_run", gating:true}]')"
 prt_parts_big_f="$(jq -n '[{file:"s.go", severity:"low", category:"s", issue:("small " + ("s" * 14000))}]')"
@@ -2527,7 +2552,7 @@ prt_parts_clear
 assert_eq "prt_render_overflow_parts: a withheld finding of 54000 characters (issue and fix) fits one part, none shortened" \
   "2 0" "$(prt_render_overflow_parts "$prt_parts_big_f" "$prt_parts_big_q" "$prt_parts_dir")"
 assert_eq "prt_render_overflow_parts: that finding's full issue and fix text are in the posted part" \
-  "27000 27000" "$(grep -m1 'BIGQ' "$prt_parts_dir/part-1.md" | grep -oE 'i{27000}|f{27000}' | awk '{print length($0)}' | paste -sd' ')"
+  "27000 27000" "$(grep -m1 'BIGQ' "$prt_parts_dir/part-1.md" | prt_test_longest_runs i f)"
 assert_eq "prt_render_overflow_parts: the part built from the largest fitting finding is under the real limit" \
   "true" "$([ "$(prt_parts_max_u16)" -le "$PRT_COMMENT_LIMIT" ] && echo true || echo false)"
 
