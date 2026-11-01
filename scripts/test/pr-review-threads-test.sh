@@ -8780,7 +8780,7 @@ assert_eq "response class: overloaded is backend-overloaded" "backend-overloaded
 assert_eq "response class: auth failure is backend-auth" "backend-auth" \
   "$(prt_response_class "Could not resolve credentials for the upstream account")"
 assert_eq "response class: unknown model is backend-model" "backend-model" \
-  "$(prt_response_class "invalid model: claude-opus-4")"
+  "$(prt_response_class "invalid model: claude-opus-5-5")"
 assert_eq "response class: context overflow is backend-context" "backend-context" \
   "$(prt_response_class "prompt is too long: maximum context is 200000 tokens")"
 assert_eq "response class: a genuine refusal is model-refusal, not a backend fault" "model-refusal" \

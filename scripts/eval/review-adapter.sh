@@ -45,7 +45,7 @@ usage: review-adapter.sh --diff <file> --title <text> [options]
 
 environment (same names and defaults as scripts/pr-review-threads.sh)
   PRT_PROXY_URL           model proxy base URL (required)
-  PRT_MODEL               default: claude-opus-4
+  PRT_MODEL               default: claude-opus-5-5
   PRT_MAX_TOKENS          default: 1500
   PRT_ASSESS_MODEL        default: claude-sonnet-4-6
   PRT_ASSESS_MAX_TOKENS   default: 4096
@@ -111,7 +111,7 @@ done
 # shellcheck source=/dev/null
 . "$lib_dir/json.sh"
 
-: "${PRT_MODEL:=claude-opus-4}"
+: "${PRT_MODEL:=claude-opus-5-5}"
 : "${PRT_MAX_TOKENS:=1500}"
 : "${PRT_ASSESS_MODEL:=claude-sonnet-4-6}"
 : "${PRT_ASSESS_MAX_TOKENS:=4096}"
