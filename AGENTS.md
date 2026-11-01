@@ -92,8 +92,8 @@ wiki/issues/discussions/projects toggles, commit-title/message formats — see `
 in the script), the `secret_scanning` / `secret_scanning_push_protection` /
 `dependabot_security_updates` security trio, opt-in per-repo Actions permissions (an optional
 `actions:` block: `sha_pinning_required`, `default_workflow_permissions`,
-`can_approve_pull_request_reviews` — `REPO_ACTIONS_*_KEYS` in the script; a repo with no key
-declared is never read or written), labels (`standards/labels.json`), and branch
+`can_approve_pull_request_reviews`, `approval_policy` — `REPO_ACTIONS_*_KEYS` in the script; a
+repo with no key declared is never read or written; the policy sets `approval_policy` per repo), labels (`standards/labels.json`), and branch
 rulesets (rule types are a registry in the script — `RULE_TYPE_ORDER`/`RULE_KIND` — not a
 hardcoded list; adding a new rule type means adding a registry entry). See `docs/standards.md`
 § "Repository Settings" for the full governed key list, and that same script's plan file

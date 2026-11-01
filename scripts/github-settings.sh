@@ -169,7 +169,7 @@ ORG_READONLY_KEYS=(
     "members_allowed_repository_creation_type"
 )
 
-# Organization Actions permissions, split across two endpoints (both PUT
+# Organization Actions permissions, split across three endpoints (all PUT
 # full-replace, so apply always sends every key, not just drifted ones).
 ORG_ACTIONS_PERMISSIONS_KEYS=(
     "enabled_repositories"
@@ -180,10 +180,21 @@ ORG_ACTIONS_WORKFLOW_KEYS=(
     "default_workflow_permissions"
     "can_approve_pull_request_reviews"
 )
+# A third org Actions endpoint, .../permissions/fork-pr-contributor-approval
+# (go-kure/.github#336): which outside contributors' fork PRs need a
+# maintainer to approve their workflow runs. One field, so its PUT is a plain
+# replace with no other live value to resend.
+ORG_ACTIONS_FORK_KEYS=(
+    "approval_policy"
+)
+# The endpoint's path below /actions/ at both tiers, and the values GitHub
+# accepts for approval_policy (mirrored in the policy schema).
+ACTIONS_FORK_ENDPOINT="permissions/fork-pr-contributor-approval"
 
 # Repository Actions permissions (audit_repo_actions + import_repo), the
-# per-repo counterpart of the two lists above, on
-# repos/{owner}/{repo}/actions/permissions[/workflow] (go-kure/.github#158).
+# per-repo counterpart of the lists above, on
+# repos/{owner}/{repo}/actions/permissions[/workflow|/fork-pr-contributor-approval]
+# (go-kure/.github#158, #336).
 # Opt-in: the policy's `actions` block is optional at both tiers, and a key
 # no tier declares is not managed, so a policy without the block reads and
 # writes neither endpoint. allowed_actions and enabled stay unmanaged here —
@@ -197,6 +208,9 @@ REPO_ACTIONS_PERMISSIONS_KEYS=(
 REPO_ACTIONS_WORKFLOW_KEYS=(
     "default_workflow_permissions"
     "can_approve_pull_request_reviews"
+)
+REPO_ACTIONS_FORK_KEYS=(
+    "approval_policy"
 )
 
 # Rule-type registry. This is the single source of truth for which ruleset
@@ -1551,6 +1565,17 @@ repo_actions_managed_keys() {
     return 0
 }
 
+# The managed keys of one repo Actions endpoint ("permissions",
+# "permissions/workflow" or $ACTIONS_FORK_ENDPOINT), one per line.
+repo_actions_endpoint_keys() {
+    local repo="$1" endpoint="$2"
+    case "$endpoint" in
+        permissions) repo_actions_managed_keys "$repo" "${REPO_ACTIONS_PERMISSIONS_KEYS[@]}" ;;
+        permissions/workflow) repo_actions_managed_keys "$repo" "${REPO_ACTIONS_WORKFLOW_KEYS[@]}" ;;
+        "$ACTIONS_FORK_ENDPOINT") repo_actions_managed_keys "$repo" "${REPO_ACTIONS_FORK_KEYS[@]}" ;;
+    esac
+}
+
 # GET one repo Actions endpoint and print its body. Fails, printing nothing,
 # when gh fails (it writes an HTTP error body to stdout, so the output is
 # kept only on success) or when the body is not an object carrying the
@@ -1560,6 +1585,7 @@ repo_actions_get() {
     local repo="$1" endpoint="$2" out required
     case "$endpoint" in
         permissions) required='(.enabled | type) == "boolean"' ;;
+        "$ACTIONS_FORK_ENDPOINT") required='(.approval_policy | type) == "string"' ;;
         *) required='(.default_workflow_permissions | type) == "string"' ;;
     esac
     out=$(gh api "repos/$GITHUB_ORG/$repo/actions/$endpoint" 2>/dev/null) || return 1
@@ -1569,37 +1595,36 @@ repo_actions_get() {
 
 # Audit repository Actions permissions (go-kure/.github#158): the per-repo
 # counterpart of audit_org_actions, on repos/{owner}/{repo}/actions/
-# permissions (sha_pinning_required) and .../permissions/workflow
-# (default_workflow_permissions, can_approve_pull_request_reviews). Only the
-# keys policy declares for this repo are read or written; with none, neither
-# endpoint is called and nothing is printed. An endpoint that cannot be read
-# is a failure in both modes, like an unreadable default branch: audit
+# permissions (sha_pinning_required), .../permissions/workflow
+# (default_workflow_permissions, can_approve_pull_request_reviews) and
+# .../permissions/fork-pr-contributor-approval (approval_policy, #336). Only
+# the keys policy declares for this repo are read or written; with none,
+# no endpoint is called and nothing is printed. An endpoint that cannot be
+# read is a failure in both modes, like an unreadable default branch: audit
 # counts it as drift, apply records it, and nothing is written on a guess.
 #
-# Both endpoints are PUT. The permissions PUT requires enabled and resets an
-# omitted allowed_actions, so its body resends both as read live and changes
+# All three endpoints are PUT. The permissions PUT requires enabled and resets
+# an omitted allowed_actions, so its body resends both as read live and changes
 # only sha_pinning_required; the workflow PUT resends the live value of a key
-# that did not drift. Each endpoint is written only when one of its keys
-# drifted.
+# that did not drift; the fork-PR approval PUT carries its one key alone. Each
+# endpoint is written only when one of its keys drifted.
 audit_repo_actions() {
     local repo="$1"
     local apply="$2"
 
-    local -a perm_keys workflow_keys
-    mapfile -t perm_keys < <(repo_actions_managed_keys "$repo" "${REPO_ACTIONS_PERMISSIONS_KEYS[@]}")
-    mapfile -t workflow_keys < <(repo_actions_managed_keys "$repo" "${REPO_ACTIONS_WORKFLOW_KEYS[@]}")
-    [ "${#perm_keys[@]}" -eq 0 ] && [ "${#workflow_keys[@]}" -eq 0 ] && return 0
+    local endpoint managed=0
+    local -a keys
+    for endpoint in permissions permissions/workflow "$ACTIONS_FORK_ENDPOINT"; do
+        mapfile -t keys < <(repo_actions_endpoint_keys "$repo" "$endpoint")
+        managed=$((managed + ${#keys[@]}))
+    done
+    [ "$managed" -eq 0 ] && return 0
 
     echo -e "\n${BLUE}=== Actions Permissions: $GITHUB_ORG/$repo ===${NC}"
 
-    local endpoint live key fixes
-    for endpoint in permissions permissions/workflow; do
-        local -a keys
-        if [ "$endpoint" = permissions ]; then
-            keys=("${perm_keys[@]}")
-        else
-            keys=("${workflow_keys[@]}")
-        fi
+    local live key fixes
+    for endpoint in permissions permissions/workflow "$ACTIONS_FORK_ENDPOINT"; do
+        mapfile -t keys < <(repo_actions_endpoint_keys "$repo" "$endpoint")
         [ "${#keys[@]}" -eq 0 ] && continue
 
         if ! live=$(repo_actions_get "$repo" "$endpoint"); then
@@ -1644,15 +1669,16 @@ audit_repo_actions() {
 # PUT would otherwise reset, overlaid with FIXES (the drifted keys and their
 # policy values). For permissions that is enabled (required by the PUT) and
 # allowed_actions, which this script does not manage; for the workflow
-# endpoint, both of its keys. A field the live read did not carry is left out
-# rather than sent as null.
+# endpoint, both of its keys; for the fork-PR approval endpoint, nothing, since
+# its one key is the whole body. A field the live read did not carry is left
+# out rather than sent as null.
 repo_actions_put_body() {
     local endpoint="$1" live="$2" fixes="$3" keep
-    if [ "$endpoint" = permissions ]; then
-        keep='["enabled", "allowed_actions"]'
-    else
-        keep='["default_workflow_permissions", "can_approve_pull_request_reviews"]'
-    fi
+    case "$endpoint" in
+        permissions) keep='["enabled", "allowed_actions"]' ;;
+        "$ACTIONS_FORK_ENDPOINT") keep='[]' ;;
+        *) keep='["default_workflow_permissions", "can_approve_pull_request_reviews"]' ;;
+    esac
     jq -c --argjson keep "$keep" --argjson fixes "$fixes" '
         with_entries(select(.key as $k | $keep | index($k) != null) | select(.value != null)) + $fixes
     ' <<<"$live"
@@ -1726,21 +1752,34 @@ audit_org_settings() {
     fi
 }
 
-# Audit organization-wide Actions permissions, two flat objects on two PUT
-# full-replace endpoints. Both PUTs always send every governed key, not just
-# the drifted ones — a partial PUT to either endpoint would reset the
-# unlisted fields to GitHub's default, not leave them alone.
+# Audit organization-wide Actions permissions, three flat objects on three PUT
+# full-replace endpoints. Each PUT always sends every governed key of its
+# endpoint, not just the drifted ones — a partial PUT would reset the unlisted
+# fields to GitHub's default, not leave them alone.
 audit_org_actions() {
     local apply="$1"
 
     echo -e "\n${BLUE}=== Organization Actions Permissions: $GITHUB_ORG ===${NC}"
 
-    local perms workflow
+    local perms workflow fork
     perms=$(gh api "orgs/$GITHUB_ORG/actions/permissions")
     workflow=$(gh api "orgs/$GITHUB_ORG/actions/permissions/workflow")
+    # A failed read leaves $fork without the field, which the check below
+    # reports; under errexit a bare assignment would abort the audit first.
+    fork=$(gh api "orgs/$GITHUB_ORG/actions/$ACTIONS_FORK_ENDPOINT") || fork=""
 
-    local perms_drift=false workflow_drift=false
+    local perms_drift=false workflow_drift=false fork_drift=false fork_readable=true
     local key
+
+    # A failed read, or a 200 without the field this endpoint always returns,
+    # is a failure, never a match and never drift to write over: {} would
+    # otherwise compare approval_policy against null and PUT on it.
+    if ! jq -e '(.approval_policy | type) == "string"' <<<"$fork" >/dev/null 2>&1; then
+        fork_readable=false
+        SETTINGS_MISSING=$((SETTINGS_MISSING + 1))
+        echo -e "  ${RED}FAILED${NC}: Could not read orgs/$GITHUB_ORG/actions/$ACTIONS_FORK_ENDPOINT — $(printf 'actions.%s ' "${ORG_ACTIONS_FORK_KEYS[@]}")not audited"
+        [ "$apply" = "true" ] && record_apply_failure "org $GITHUB_ORG: actions/$ACTIONS_FORK_ENDPOINT unreadable, fork-PR approval policy not audited"
+    fi
 
     for key in "${ORG_ACTIONS_PERMISSIONS_KEYS[@]}"; do
         local expected_json actual_json
@@ -1780,6 +1819,26 @@ audit_org_actions() {
         fi
     done
 
+    for key in "${ORG_ACTIONS_FORK_KEYS[@]}"; do
+        [ "$fork_readable" = "true" ] || break
+        local expected_json actual_json
+        expected_json=$(org_policy_json "actions.$key")
+        actual_json=$(jq -c ".$key" <<<"$fork")
+
+        if [ "$actual_json" = "$expected_json" ]; then
+            echo -e "  ${GREEN}OK${NC}: actions.$key = $(jq -r '.' <<<"$expected_json")"
+            SETTINGS_OK=$((SETTINGS_OK + 1))
+        else
+            SETTINGS_MISSING=$((SETTINGS_MISSING + 1))
+            fork_drift=true
+            if [ "$apply" = "true" ]; then
+                echo -e "  ${YELLOW}SETTING${NC}: actions.$key to $(jq -r '.' <<<"$expected_json") (was: $(jq -r '.' <<<"$actual_json"))"
+            else
+                echo -e "  ${RED}WRONG${NC}: actions.$key = $(jq -r '.' <<<"$actual_json") (should be $(jq -r '.' <<<"$expected_json"))"
+            fi
+        fi
+    done
+
     if [ "$apply" = "true" ] && [ "$perms_drift" = "true" ]; then
         local body="{}"
         for key in "${ORG_ACTIONS_PERMISSIONS_KEYS[@]}"; do
@@ -1799,6 +1858,17 @@ audit_org_actions() {
         if ! gh api "orgs/$GITHUB_ORG/actions/permissions/workflow" --method PUT --input - <<<"$body" --silent; then
             echo -e "  ${RED}FAILED${NC}: Could not apply organization Actions workflow permissions"
             record_apply_failure "org $GITHUB_ORG: apply Actions workflow permissions"
+        fi
+    fi
+
+    if [ "$apply" = "true" ] && [ "$fork_drift" = "true" ]; then
+        local body="{}"
+        for key in "${ORG_ACTIONS_FORK_KEYS[@]}"; do
+            body=$(jq --arg k "$key" --argjson v "$(org_policy_json "actions.$key")" '. + {($k): $v}' <<<"$body")
+        done
+        if ! gh api "orgs/$GITHUB_ORG/actions/$ACTIONS_FORK_ENDPOINT" --method PUT --input - <<<"$body" --silent; then
+            echo -e "  ${RED}FAILED${NC}: Could not apply organization fork-PR approval policy"
+            record_apply_failure "org $GITHUB_ORG: apply Actions fork-PR approval policy"
         fi
     fi
 }
@@ -2144,13 +2214,9 @@ import_repo() {
     # that cannot be read is warned about and keeps the "nothing to import"
     # line from printing — an unknown is not a match.
     local actions_json="{}" actions_fetch_ok=true endpoint live
-    for endpoint in permissions permissions/workflow; do
+    for endpoint in permissions permissions/workflow "$ACTIONS_FORK_ENDPOINT"; do
         local -a keys
-        if [ "$endpoint" = permissions ]; then
-            mapfile -t keys < <(repo_actions_managed_keys "$repo" "${REPO_ACTIONS_PERMISSIONS_KEYS[@]}")
-        else
-            mapfile -t keys < <(repo_actions_managed_keys "$repo" "${REPO_ACTIONS_WORKFLOW_KEYS[@]}")
-        fi
+        mapfile -t keys < <(repo_actions_endpoint_keys "$repo" "$endpoint")
         [ "${#keys[@]}" -eq 0 ] && continue
         if ! live=$(repo_actions_get "$repo" "$endpoint"); then
             actions_fetch_ok=false
@@ -2316,10 +2382,11 @@ import_repo_checked() {
 import_org() {
     echo "# ---- drift from policy (settings/actions): org $GITHUB_ORG ($(date -u +%Y-%m-%dT%H:%M:%SZ)) ----"
 
-    local settings actions_perms actions_workflow
+    local settings actions_perms actions_workflow actions_fork
     settings=$(gh api "orgs/$GITHUB_ORG")
     actions_perms=$(gh api "orgs/$GITHUB_ORG/actions/permissions")
     actions_workflow=$(gh api "orgs/$GITHUB_ORG/actions/permissions/workflow")
+    actions_fork=$(gh api "orgs/$GITHUB_ORG/actions/$ACTIONS_FORK_ENDPOINT") || actions_fork=""
 
     local settings_json="{}"
     local key
@@ -2349,8 +2416,30 @@ import_org() {
             actions_json=$(jq --arg k "$key" --argjson v "$actual_json" '. + {($k): $v}' <<<"$actions_json")
         fi
     done
+    # An unreadable fork-PR approval endpoint (an error, or a response without
+    # approval_policy) is warned about and left out, never imported as null.
+    local fork_readable=true
+    if ! jq -e '(.approval_policy | type) == "string"' <<<"$actions_fork" >/dev/null 2>&1; then
+        fork_readable=false
+        echo "# WARNING: orgs/$GITHUB_ORG/actions/$ACTIONS_FORK_ENDPOINT unreadable: $(printf 'actions.%s ' "${ORG_ACTIONS_FORK_KEYS[@]}")left out of the import"
+    fi
+    for key in "${ORG_ACTIONS_FORK_KEYS[@]}"; do
+        [ "$fork_readable" = "true" ] || break
+        local expected_json actual_json
+        expected_json=$(org_policy_json "actions.$key")
+        actual_json=$(jq -c ".$key" <<<"$actions_fork")
+        if [ "$actual_json" != "$expected_json" ]; then
+            actions_json=$(jq --arg k "$key" --argjson v "$actual_json" '. + {($k): $v}' <<<"$actions_json")
+        fi
+    done
 
     if [ "$settings_json" = "{}" ] && [ "$actions_json" = "{}" ]; then
+        # An unreadable endpoint is not "matches policy": say nothing of the
+        # kind and exit 1.
+        if [ "$fork_readable" != "true" ]; then
+            echo ""
+            return 1
+        fi
         echo "# org: settings/actions match policy — nothing to import"
         echo ""
         return 0
@@ -2361,6 +2450,7 @@ import_org() {
 
     jq -n --argjson body "$body" '{github_org: $body}' | yq -p=json -o=yaml -
     echo ""
+    [ "$fork_readable" = "true" ]
 }
 
 # Audit a single repository

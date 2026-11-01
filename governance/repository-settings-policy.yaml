@@ -157,6 +157,17 @@ github_repos:
   # and would default the release-bot bypass actor onto .github too.
   kure:
     has_discussions: true
+    # Fork PR approval (go-kure/.github#336): every go-kure CI job runs on
+    # self-hosted runners, so a fork PR's workflows execute outside code on
+    # our infrastructure. Approval is required for ALL outside contributors,
+    # not only first-time ones. Declared per repo, as an anchor shared by all
+    # four governed repos, rather than as a github_defaults actions block: a
+    # defaults block must set every actions key, which would also put
+    # sha_pinning_required, default_workflow_permissions and
+    # can_approve_pull_request_reviews under management on every repo, a
+    # separate decision. A repo added to GITHUB_REPOS needs this block too.
+    actions: &fork_pr_approval
+      approval_policy: all_external_contributors
     # Renovate's vulnerabilityAlerts lane covers this repo (extends the shared
     # preset) — see the github_defaults.security comment above for the
     # kure#742/#743 proof. gh_policy_value() resolves this leaf independently
@@ -211,6 +222,7 @@ github_repos:
       release-protection:
         bypass_actors: *release_bot_bypass
   launcher:
+    actions: *fork_pr_approval
     # Same rationale as kure above — extends the shared preset.
     security:
       dependabot_security_updates: disabled
@@ -226,6 +238,12 @@ github_repos:
     # key — this is the first non-ruleset override .github needs).
     security:
       dependabot_security_updates: disabled
+    actions: *fork_pr_approval
+  # go-kure.github.io is governed (GITHUB_REPOS_DEFAULT) but needs no override
+  # beyond the fork PR approval: it takes every other setting from
+  # github_defaults, and carries no ruleset of its own (see main-protection).
+  go-kure.github.io:
+    actions: *fork_pr_approval
 
 # Organization-level settings — no per-repo override tier (an org has no
 # per-repo variants), so unlike github_defaults/github_repos above these are
@@ -283,10 +301,14 @@ github_org:
   advanced_security_enabled_for_new_repositories: false
   default_repository_branch: main
   members_allowed_repository_creation_type: all
-  # -> /orgs/{org}/actions/permissions[/workflow], both PUT full-replace
+  # -> /orgs/{org}/actions/permissions[/workflow|/fork-pr-contributor-approval],
+  # all PUT full-replace
   actions:
     enabled_repositories: all
     allowed_actions: all
     sha_pinning_required: true
     default_workflow_permissions: read
     can_approve_pull_request_reviews: false
+    # go-kure/.github#336: approval is required for ALL outside contributors'
+    # fork PRs (self-hosted runners), see github_repos.kure.actions.
+    approval_policy: all_external_contributors
