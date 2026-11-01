@@ -567,13 +567,15 @@ nothing, or leaves the runner able to undo it, fails. The probe is bounded as a 
 `timeout` with a kill after the first signal and writes to a file, so a prefix that ignores
 `TERM`, or leaves a helper holding the probe's output, cannot hold the check. If the ancestors
 cannot be listed the call is refused, never checked against fewer. A refusal names its cause on the
-log line, `(cause: <name>; <detail>)`, where the detail is the first lines of what the probe printed
-(at most three lines of 200 bytes, control characters shown as spaces). The names are `build` (the
-boundary could not be built), `ancestor-list` (more than 256 ancestors, or a stat that cannot be
-read or parsed), `launch` (the prefix is not found, a temporary file could not be made, or the probe
-did not start or ended without `boundary-ok`), `ancestor-environ-readable` (the probe could read an
-ancestor's environ), `capability` (the probe holds a capability) and `deadline` (the probe did not
-finish in time). The cause is text for the log only: it changes no result and no failure label. The run's remaining budget is
+log line, `(cause: <name>; <detail>)`, where the detail is the check's own message or the first
+lines of what the probe printed (at most three lines of 200 bytes, control characters shown as
+spaces). The names are `build` (the boundary could not be built), `ancestor-list` (more than 256
+ancestors, or a stat that cannot be read or parsed), `launch` (the prefix is not found, a temporary
+file could not be made, the probe did not start, was killed by a signal before its deadline, or
+ended without `boundary-ok`), `ancestor-environ-readable` (the probe could read an ancestor's
+environ), `capability` (the probe holds a capability, or its capability set cannot be read) and
+`deadline` (the probe was still running when the time ran out). The cause is text for the log only:
+it changes no result and no failure label. The run's remaining budget is
 read before the check: a call the deadline has no room for is refused as `deadline-exhausted`
 without spending the check, and the check is cut to what the budget leaves after the runner's own
 kill grace. It is read again after the check, and the minimum applies to that fresh reading too: a
