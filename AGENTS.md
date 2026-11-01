@@ -326,7 +326,8 @@ uses: go-kure/.github/.github/workflows/<name>.yml@main
 secrets: inherit
 ```
 
-`ci.yml`, `settings.yml`, `pr-ci-health.yml` and `pr-review-digest.yml` are **not** reusable —
+`ci.yml`, `settings.yml`, `pr-ci-health.yml`, `pr-review-digest.yml` and
+`pr-review-runner-boundary-probe.yml` are **not** reusable —
 `ci.yml` is this repo's own self-CI (`pull_request` + `workflow_dispatch`), `settings.yml` is this
 repo's own org-settings audit/apply (push to `governance`/`standards`, daily schedule and
 `workflow_dispatch`; see above), and `pr-ci-health.yml` is an unrelated org-wide open-PR CI-health
@@ -334,7 +335,9 @@ check (daily schedule and `workflow_dispatch`; see `docs/standards.md` § "PR CI
 two used to share one workflow, so a red run of either looked like one problem; they are separate
 so the Org Settings status means settings only. `pr-review-digest.yml` is this repo's own daily
 org-wide scan for fail-closed `pr-review-threads` events (schedule + `workflow_dispatch`; see
-`docs/pr-review-threads.md` § Fail-closed alerting). None of the four is consumed by
+`docs/pr-review-threads.md` § Fail-closed alerting). `pr-review-runner-boundary-probe.yml` is a
+manual acceptance run (`workflow_dispatch` only) of the runner's process boundary on the review
+pool; see `docs/pr-review-threads.md` § Process boundary. None of the five is consumed by
 kure/launcher.
 
 ### When updating a reusable workflow
