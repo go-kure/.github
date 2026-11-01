@@ -558,8 +558,8 @@ rule, in its place. Values are typed, and enums hold wherever `--apply` would ac
 as `disabled`, which for `dependabot_security_updates` is a live DELETE. `github_defaults` must
 declare every repo setting and all three `security:` keys, because the audit skips a security key
 no tier declares; a `github_repos` override may set any subset. The `actions:` block is optional,
-but a `github_defaults` one must set all three of its keys, with `default_workflow_permissions`
-`read` or `write`. The labels file must
+but a `github_defaults` one must set all four of its keys, with `default_workflow_permissions`
+`read` or `write` and `approval_policy` one of the three values the API accepts. The labels file must
 hold a non-empty `labels` list whose entries carry a name, a description and a `#RRGGBB`
 colour. What a schema cannot express is checked alongside: `github_repos` keys and every
 `repos:` scope name governed repos, label names are unique, every governed repo keeps at
@@ -619,10 +619,11 @@ grpc bump within hours of each other.
 
 Per-repository GitHub Actions permissions are opt-in: the policy may declare an `actions:` block
 under `github_defaults`, under a `github_repos.<repo>` override, or both, resolved like
-`security:` (the override wins, key by key). This policy declares none yet, so the script reads
-and writes no repository's Actions permissions. Declaring a `github_defaults` block means adding
-a `Setting | Default` table of its keys here, like the tables around it:
-`scripts/check-settings-doc.sh` compares this section with that block in both directions. Three
+`security:` (the override wins, key by key). This policy declares no `github_defaults` block, so
+the only repository Actions key it manages is `actions.approval_policy`, set by a per-repo
+override on each governed repo (see the bullet below). Declaring a `github_defaults` block means
+adding a `Setting | Default` table of its keys here, like the tables around it:
+`scripts/check-settings-doc.sh` compares this section with that block in both directions. Four
 keys are modeled:
 
 - `actions.sha_pinning_required` (boolean): actions must be referenced by a full commit SHA,
@@ -631,13 +632,22 @@ keys are modeled:
   permissions, on `repos/{owner}/{repo}/actions/permissions/workflow`.
 - `actions.can_approve_pull_request_reviews` (boolean): whether workflows may approve pull
   requests, on the same workflow endpoint.
+- `actions.approval_policy` (`first_time_contributors_new_to_github`, `first_time_contributors`
+  or `all_external_contributors`): which outside contributors' fork pull requests need a
+  maintainer's approval before their workflows run, on
+  `repos/{owner}/{repo}/actions/permissions/fork-pr-contributor-approval`. This policy sets
+  `all_external_contributors` on every governed repo and on the organization, so no outside
+  contributor's workflow runs unapproved. It is declared as a per-repo override (one shared
+  anchor in the policy file), not in a `github_defaults` block, because a defaults block must set
+  every key. A repo added to `GITHUB_REPOS` therefore needs its own `actions` override.
 
-A `github_defaults` `actions:` block must set all three keys; an override may set any subset. A
-key no tier declares is not managed for that repo, and when a repo has none, neither endpoint is
+A `github_defaults` `actions:` block must set all four keys; an override may set any subset. A
+key no tier declares is not managed for that repo, and when a repo has none, no endpoint is
 called. Audit and `--apply` compare each managed key against the live value and `--apply`
 writes only an endpoint with a drifted key. The permissions write resends the live `enabled`
 and `allowed_actions` unchanged, since that endpoint requires the first and would reset the
-second; the workflow write resends the live value of a key that did not drift. An endpoint that
+second; the workflow write resends the live value of a key that did not drift; the fork-PR
+approval write carries its one key alone. An endpoint that
 cannot be read (an error, or a response without the field that endpoint always returns) is a
 failure in both modes, never a match: audit counts it as drift and apply exits 1 without writing
 to it. `--import` prints the live value of each drifted managed key under `actions:`. The allowed
@@ -741,6 +751,7 @@ not something the initial `github_org:` block did.
 | `actions.sha_pinning_required`           | `false` |
 | `actions.default_workflow_permissions`   | `read`  |
 | `actions.can_approve_pull_request_reviews` | `false` |
+| `actions.approval_policy`                | `all_external_contributors` |
 
 ## PR CI Health
 

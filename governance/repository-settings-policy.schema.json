@@ -111,25 +111,32 @@
       }
     },
     "status": { "type": "string", "enum": ["enabled", "disabled"] },
+    "approval_policy": {
+      "description": "Which outside contributors' fork pull requests need a maintainer to approve their workflow runs (the fork-pr-contributor-approval endpoint's approval_policy).",
+      "type": "string",
+      "enum": ["first_time_contributors_new_to_github", "first_time_contributors", "all_external_contributors"]
+    },
     "actions": {
-      "description": "Repository Actions permissions (REPO_ACTIONS_PERMISSIONS_KEYS and REPO_ACTIONS_WORKFLOW_KEYS), read by audit_repo_actions. A key no tier declares is not managed: its endpoint is neither read nor written.",
+      "description": "Repository Actions permissions (REPO_ACTIONS_PERMISSIONS_KEYS, REPO_ACTIONS_WORKFLOW_KEYS and REPO_ACTIONS_FORK_KEYS), read by audit_repo_actions. A key no tier declares is not managed: its endpoint is neither read nor written.",
       "type": ["object", "null"],
       "additionalProperties": false,
       "properties": {
         "sha_pinning_required": { "type": "boolean" },
         "default_workflow_permissions": { "type": "string", "enum": ["read", "write"] },
-        "can_approve_pull_request_reviews": { "type": "boolean" }
+        "can_approve_pull_request_reviews": { "type": "boolean" },
+        "approval_policy": { "$ref": "#/definitions/approval_policy" }
       }
     },
     "actions_defaults": {
-      "description": "The github_defaults actions block, optional as a whole. Declared, it must set all three keys, as the security block does: an omitted key would silently stay unmanaged on every repo that does not override it.",
+      "description": "The github_defaults actions block, optional as a whole. Declared, it must set all four keys, as the security block does: an omitted key would silently stay unmanaged on every repo that does not override it.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["sha_pinning_required", "default_workflow_permissions", "can_approve_pull_request_reviews"],
+      "required": ["sha_pinning_required", "default_workflow_permissions", "can_approve_pull_request_reviews", "approval_policy"],
       "properties": {
         "sha_pinning_required": { "type": "boolean" },
         "default_workflow_permissions": { "type": "string", "enum": ["read", "write"] },
-        "can_approve_pull_request_reviews": { "type": "boolean" }
+        "can_approve_pull_request_reviews": { "type": "boolean" },
+        "approval_policy": { "$ref": "#/definitions/approval_policy" }
       }
     },
     "ruleset_default": {
@@ -301,14 +308,16 @@
           "additionalProperties": false,
           "required": [
             "enabled_repositories", "allowed_actions", "sha_pinning_required",
-            "default_workflow_permissions", "can_approve_pull_request_reviews"
+            "default_workflow_permissions", "can_approve_pull_request_reviews",
+            "approval_policy"
           ],
           "properties": {
             "enabled_repositories": { "type": "string", "enum": ["all", "none", "selected"] },
             "allowed_actions": { "type": "string", "enum": ["all", "local_only", "selected"] },
             "sha_pinning_required": { "type": "boolean" },
             "default_workflow_permissions": { "type": "string", "enum": ["read", "write"] },
-            "can_approve_pull_request_reviews": { "type": "boolean" }
+            "can_approve_pull_request_reviews": { "type": "boolean" },
+            "approval_policy": { "$ref": "#/definitions/approval_policy" }
           }
         }
       }

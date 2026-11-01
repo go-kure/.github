@@ -229,10 +229,10 @@ assert_eq "schema: github_org declares exactly ORG_SETTING_KEYS + ORG_READONLY_K
     "$(jq -c '.definitions.org.properties | keys - ["actions"] | sort' <<<"$policy_schema_json")"
 assert_eq "schema: github_org requires every one of them plus actions" "$org_keys_json" \
     "$(jq -c '.definitions.org.required - ["actions"] | sort' <<<"$policy_schema_json")"
-actions_keys_json=$(bash_array_to_json "${ORG_ACTIONS_PERMISSIONS_KEYS[@]}" "${ORG_ACTIONS_WORKFLOW_KEYS[@]}" | jq -c 'sort')
-assert_eq "schema: github_org.actions declares exactly the two actions key lists" "$actions_keys_json" \
+actions_keys_json=$(bash_array_to_json "${ORG_ACTIONS_PERMISSIONS_KEYS[@]}" "${ORG_ACTIONS_WORKFLOW_KEYS[@]}" "${ORG_ACTIONS_FORK_KEYS[@]}" | jq -c 'sort')
+assert_eq "schema: github_org.actions declares exactly the three actions key lists" "$actions_keys_json" \
     "$(jq -c '.definitions.org.properties.actions.properties | keys | sort' <<<"$policy_schema_json")"
-assert_eq "schema: github_org.actions requires every key (both endpoints are PUT full-replace)" "$actions_keys_json" \
+assert_eq "schema: github_org.actions requires every key (every endpoint is PUT full-replace)" "$actions_keys_json" \
     "$(jq -c '.definitions.org.properties.actions.required | sort' <<<"$policy_schema_json")"
 
 rule_types_json=$(bash_array_to_json "${RULE_TYPE_ORDER[@]}" | jq -c 'sort')
@@ -257,9 +257,9 @@ assert_eq "schema: security declares exactly the three keys audit_security_setti
 assert_eq "schema: the defaults security block types the same three keys and requires them all" "true" \
     "$(jq -c '.definitions | .security_defaults.properties == .security.properties
         and (.security_defaults.required | sort) == (.security.properties | keys | sort)' <<<"$policy_schema_json")"
-# go-kure/.github#158: the repo actions block is pinned to the two repo
+# go-kure/.github#158, #336: the repo actions block is pinned to the three repo
 # registries the same way, at both tiers.
-repo_actions_keys_json=$(bash_array_to_json "${REPO_ACTIONS_PERMISSIONS_KEYS[@]}" "${REPO_ACTIONS_WORKFLOW_KEYS[@]}" | jq -c 'sort')
+repo_actions_keys_json=$(bash_array_to_json "${REPO_ACTIONS_PERMISSIONS_KEYS[@]}" "${REPO_ACTIONS_WORKFLOW_KEYS[@]}" "${REPO_ACTIONS_FORK_KEYS[@]}" | jq -c 'sort')
 assert_eq "schema: a repo override's actions declares exactly REPO_ACTIONS_*_KEYS" "$repo_actions_keys_json" \
     "$(jq -c '.definitions.actions.properties | keys | sort' <<<"$policy_schema_json")"
 assert_eq "schema: a repo override's actions requires nothing" "null" \
@@ -370,9 +370,19 @@ schema_reject "github_defaults security without dependabot_security_updates" 'de
     'github_defaults.security: missing required key "dependabot_security_updates"'
 
 # go-kure/.github#158: the repo actions block. Optional as a whole, closed,
-# typed; declared in github_defaults it must set all three keys, or the
+# typed; declared in github_defaults it must set all four keys, or the
 # omitted one would stay unmanaged on every repo without an override.
-ACTIONS_DEFAULTS='{sha_pinning_required: true, default_workflow_permissions: "read", can_approve_pull_request_reviews: false}'
+ACTIONS_DEFAULTS='{sha_pinning_required: true, default_workflow_permissions: "read", can_approve_pull_request_reviews: false, approval_policy: "all_external_contributors"}'
+schema_reject "an approval_policy GitHub does not accept" '.github_repos.kure.actions = {approval_policy: "everyone"}' \
+    'github_repos.kure.actions.approval_policy: "everyone" is not one of'
+schema_reject "a boolean approval_policy in an override" '.github_repos.kure.actions = {approval_policy: true}' \
+    "github_repos.kure.actions.approval_policy: expected string, got boolean"
+schema_reject "a github_defaults actions block missing approval_policy" ".github_defaults.actions = $ACTIONS_DEFAULTS | del(.github_defaults.actions.approval_policy)" \
+    'github_defaults.actions: missing required key "approval_policy"'
+schema_reject "a github_org actions block missing approval_policy" 'del(.github_org.actions.approval_policy)' \
+    'github_org.actions: missing required key "approval_policy"'
+schema_reject "an org approval_policy GitHub does not accept" '.github_org.actions.approval_policy = "none"' \
+    'github_org.actions.approval_policy: "none" is not one of'
 schema_reject "a default_workflow_permissions outside read|write" ".github_defaults.actions = $ACTIONS_DEFAULTS | .github_defaults.actions.default_workflow_permissions = \"admin\"" \
     'github_defaults.actions.default_workflow_permissions: "admin" is not one of'
 schema_reject "a string sha_pinning_required in an override" '.github_repos.kure.actions = {sha_pinning_required: "true"}' \
@@ -389,8 +399,17 @@ assert_eq "validate_policy accepts a full defaults actions block with a partial 
 override_only_json=$(jq '.github_repos.kure.actions = {default_workflow_permissions: "write"}' <<<"$POLICY_JSON")
 (POLICY_JSON="$override_only_json" validate_policy) >/dev/null 2>&1
 assert_eq "validate_policy accepts an override actions block with no defaults block" "0" "$?"
-assert_eq "this repo's own policy declares no actions block (Actions permissions not managed yet)" "null" \
-    "$(jq -c '[.github_defaults.actions, (.github_repos // {} | .[] | .actions?)] | map(select(. != null)) | if length == 0 then null else . end' <<<"$POLICY_JSON")"
+assert_eq "this repo's own policy declares no github_defaults actions block (only the fork PR approval is managed per repo)" "null" \
+    "$(jq -c '.github_defaults.actions' <<<"$POLICY_JSON")"
+# go-kure/.github#336: every governed repo requires approval for all outside
+# contributors, and that is the only repo Actions key the policy manages.
+for governed_repo in $GITHUB_REPOS_DEFAULT; do
+    assert_eq "this repo's own policy requires fork PR approval for all outside contributors on $governed_repo, and manages no other repo Actions key" \
+        '{"approval_policy":"all_external_contributors"}' \
+        "$(jq -c --arg r "$governed_repo" '.github_repos[$r].actions' <<<"$POLICY_JSON")"
+done
+assert_eq "this repo's own policy requires the same of the organization" "all_external_contributors" \
+    "$(jq -r '.github_org.actions.approval_policy' <<<"$POLICY_JSON")"
 
 # Every actor type the rulesets API accepts passes, User included, and the
 # payload carries it unchanged.
@@ -1316,8 +1335,10 @@ assert_contains "and audits as OK against its declaration, not MISSING" "${resul
 # ---------------------------------------------------------------------------
 
 # fail_writes_gh — the stub. GETs: the rulesets list returns $STUB_RULESETS,
-# classic protection exists, the issue-count query returns 0, and every other
-# read returns {}. Anything carrying --method (all writes here) fails.
+# classic protection exists, the issue-count query returns 0, the fork-PR
+# approval read returns a valid drifted policy (an empty body is an unreadable
+# endpoint and no write is attempted), and every other read returns {}.
+# Anything carrying --method (all writes here) fails.
 fail_writes_gh() {
     # shellcheck disable=SC2317,SC2329 # invoked indirectly by the functions under test
     gh() {
@@ -1326,6 +1347,7 @@ fail_writes_gh() {
             *"issue list"*) echo 0 ;;
             *"/rulesets?includes_parents=false"*) printf '%s\n' "${STUB_RULESETS:-[]}" ;;
             *"/branches/main/protection"*) return 0 ;;
+            *"/actions/permissions/fork-pr-contributor-approval "*) echo '{"approval_policy": "first_time_contributors"}' ;;
             *) echo '{}' ;;
         esac
     }
@@ -1622,6 +1644,7 @@ act_gh() {
                 [ "${ACT_PUT_FAIL:-0}" = 1 ] && { echo "HTTP 422: stub write refused" >&2; return 1; }
                 return 0
                 ;;
+            *"/actions/permissions/fork-pr-contributor-approval "*) body="${ACT_FORK-$ACT_LIVE_FORK}" ;;
             *"/actions/permissions/workflow "*) body="$ACT_WF" ;;
             *"/actions/permissions "*) body="$ACT_PERMS" ;;
             *"/rulesets?includes_parents=false "*) body="${ACT_RULESETS:-[]}" ;;
@@ -1658,11 +1681,15 @@ run_repo_actions() {
 }
 ACT_LIVE_PERMS='{"enabled": true, "allowed_actions": "selected", "selected_actions_url": "https://example.invalid/x", "sha_pinning_required": false}'
 ACT_LIVE_WF='{"default_workflow_permissions": "write", "can_approve_pull_request_reviews": false}'
+ACT_LIVE_FORK='{"approval_policy": "all_external_contributors"}'
 act_policy=$(jq ".github_defaults.actions = $ACTIONS_DEFAULTS" <<<"$POLICY_JSON")
+# The shipped policy declares approval_policy per repo; act_bare is that policy
+# with every repo's actions override removed, the "no actions block" baseline.
+act_bare=$(jq 'del(.github_repos[].actions)' <<<"$POLICY_JSON")
 
-# No actions block anywhere: neither endpoint is called and nothing prints —
+# No actions block anywhere: no endpoint is called and nothing prints —
 # a policy without the block is unaffected.
-act_out="$(ACT_PERMS="$ACT_LIVE_PERMS" ACT_WF="$ACT_LIVE_WF" run_repo_actions kure true "$POLICY_JSON")"
+act_out="$(ACT_PERMS="$ACT_LIVE_PERMS" ACT_WF="$ACT_LIVE_WF" run_repo_actions kure true "$act_bare")"
 assert_eq "#158: no actions block: no Actions endpoint is read or written" "" "$(cat "$ACT_LOG")"
 assert_eq "#158: no actions block: nothing is counted" "OK=0 MISSING=0" "$(head -n1 <<<"$act_out")"
 assert_eq "#158: no actions block: nothing is printed" "1" "$(grep -c . <<<"$act_out")"
@@ -1671,7 +1698,8 @@ assert_eq "#158: no actions block: nothing is printed" "1" "$(grep -c . <<<"$act
 # default_workflow_permissions (write live, read wanted) drift;
 # can_approve_pull_request_reviews matches. Nothing is written.
 act_out="$(ACT_PERMS="$ACT_LIVE_PERMS" ACT_WF="$ACT_LIVE_WF" run_repo_actions kure false "$act_policy")"
-assert_eq "#158: audit counts one match and two drifts" "OK=1 MISSING=2" "$(head -n1 <<<"$act_out")"
+assert_eq "#158: audit counts two matches and two drifts" "OK=2 MISSING=2" "$(head -n1 <<<"$act_out")"
+assert_contains "#336: audit reports the matching approval_policy OK" "$act_out" "OK: actions.approval_policy = all_external_contributors"
 assert_contains "#158: audit reports sha_pinning_required drift" "$act_out" "WRONG: actions.sha_pinning_required = false (should be true)"
 assert_contains "#158: audit reports default_workflow_permissions drift" "$act_out" "WRONG: actions.default_workflow_permissions = write (should be read)"
 assert_contains "#158: audit reports the matching key OK" "$act_out" "OK: actions.can_approve_pull_request_reviews = false"
@@ -1704,7 +1732,7 @@ assert_contains "#158: a repo without the override keeps the default" "$act_out"
 # An override with no defaults block manages just its own key on its own
 # repo: only that endpoint is read, the workflow PUT resends the live value
 # of the key it does not manage, and other repos read nothing.
-act_only=$(jq '.github_repos.kure.actions = {default_workflow_permissions: "read"}' <<<"$POLICY_JSON")
+act_only=$(jq '.github_repos.kure.actions = {default_workflow_permissions: "read"}' <<<"$act_bare")
 act_out="$(ACT_PERMS="$ACT_LIVE_PERMS" ACT_WF='{"default_workflow_permissions": "write", "can_approve_pull_request_reviews": true}' run_repo_actions kure true "$act_only")"
 assert_eq "#158: an override-only key reads only its own endpoint" "0" "$(grep -cE 'actions/permissions( |$)' "$ACT_LOG")"
 assert_eq "#158: the workflow PUT resends the unmanaged key as read live" \
@@ -1717,7 +1745,7 @@ assert_eq "#158: a repo the override does not name reads nothing" "" "$(cat "$AC
 # comparison: audit counts it, apply records it and writes nothing to that
 # endpoint (the other endpoint is still audited).
 act_out="$(ACT_PERMS=FAIL ACT_WF="$ACT_LIVE_WF" run_repo_actions kure false "$act_policy")"
-assert_eq "#158: an unreadable endpoint counts as drift in audit mode" "OK=1 MISSING=2" "$(head -n1 <<<"$act_out")"
+assert_eq "#158: an unreadable endpoint counts as drift in audit mode" "OK=2 MISSING=2" "$(head -n1 <<<"$act_out")"
 assert_contains "#158: and says which endpoint and keys" "$act_out" "FAILED: Could not read repos/$GITHUB_ORG/kure/actions/permissions — actions.sha_pinning_required not audited"
 # The summary's exit status comes from the counters this audit run left, in
 # the same subshell; the matching-live control shows the status can be 0.
@@ -1755,6 +1783,98 @@ act_out="$(ACT_PERMS="$ACT_LIVE_PERMS" ACT_WF="$ACT_LIVE_WF" ACT_PUT_FAIL=1 run_
 assert_contains "#158: a failed permissions PUT is recorded" "$act_out" "FAILURE kure: apply actions/permissions (sha_pinning_required)"
 assert_contains "#158: a failed workflow PUT is recorded" "$act_out" "FAILURE kure: apply actions/permissions/workflow (default_workflow_permissions)"
 
+# Fork-PR contributor approval (go-kure/.github#336): the third endpoint.
+# Live first_time_contributors drifts from all_external_contributors. Audit
+# reports it and writes nothing; apply PUTs just the one key.
+ACT_FORK_DRIFT='{"approval_policy": "first_time_contributors"}'
+act_out="$(ACT_PERMS="$ACT_LIVE_PERMS" ACT_WF="$ACT_LIVE_WF" ACT_FORK="$ACT_FORK_DRIFT" run_repo_actions kure false "$act_policy")"
+assert_eq "#336: a drifted approval_policy is one more drift" "OK=1 MISSING=3" "$(head -n1 <<<"$act_out")"
+assert_contains "#336: audit reports the drifted approval_policy" "$act_out" "WRONG: actions.approval_policy = first_time_contributors (should be all_external_contributors)"
+assert_eq "#336: audit writes nothing" "" "$(cat "$ACT_PUTS")"
+act_out="$(ACT_PERMS="$ACT_LIVE_PERMS" ACT_WF="$ACT_LIVE_WF" ACT_FORK="$ACT_FORK_DRIFT" run_repo_actions kure true "$act_policy")"
+assert_eq "#336: apply PUTs the fork-PR approval endpoint with the policy value only" \
+    'PUT kure/actions/permissions/fork-pr-contributor-approval {"approval_policy":"all_external_contributors"}' \
+    "$(grep '^PUT kure/actions/permissions/fork-pr-contributor-approval ' "$ACT_PUTS")"
+assert_contains "#336: apply prints what it sets" "$act_out" "SETTING: actions.approval_policy to all_external_contributors (was: first_time_contributors)"
+# A matching live value is not written, whatever else drifts.
+act_out="$(ACT_PERMS="$ACT_LIVE_PERMS" ACT_WF="$ACT_LIVE_WF" run_repo_actions kure true "$act_policy")"
+assert_eq "#336: a matching approval_policy is not written" "0" "$(grep -c 'fork-pr-contributor-approval' "$ACT_PUTS")"
+# The shipped policy alone (no defaults block) manages approval_policy on
+# every governed repo and nothing else: one endpoint read, no drift live.
+for act_repo in $GITHUB_REPOS_DEFAULT; do
+    act_out="$(ACT_PERMS=FAIL ACT_WF=FAIL run_repo_actions "$act_repo" false "$POLICY_JSON")"
+    assert_eq "#336: the shipped policy counts $act_repo's approval_policy as the only managed key" "OK=1 MISSING=0" "$(head -n1 <<<"$act_out")"
+    assert_eq "#336: and reads only the fork-PR approval endpoint on $act_repo" "1" "$(grep -c 'actions/permissions' "$ACT_LOG")"
+done
+# Unreadable, wrong-shape and refused-PUT cases are failures, never clean.
+act_out="$(ACT_PERMS="$ACT_LIVE_PERMS" ACT_WF="$ACT_LIVE_WF" ACT_FORK=FAIL run_repo_actions kure true "$act_policy")"
+assert_contains "#336: apply records an unreadable fork-PR approval endpoint" "$act_out" "FAILURE kure: actions/permissions/fork-pr-contributor-approval unreadable, Actions permissions not audited"
+assert_eq "#336: and writes nothing to it" "0" "$(grep -c 'fork-pr-contributor-approval' "$ACT_PUTS")"
+act_out="$(ACT_PERMS="$ACT_LIVE_PERMS" ACT_WF="$ACT_LIVE_WF" ACT_FORK='{}' run_repo_actions kure true "$act_policy")"
+assert_contains "#336: a body of the wrong shape is a failed read" "$act_out" "FAILURE kure: actions/permissions/fork-pr-contributor-approval unreadable"
+act_out="$(ACT_PERMS="$ACT_LIVE_PERMS" ACT_WF="$ACT_LIVE_WF" ACT_FORK="$ACT_FORK_DRIFT" ACT_PUT_FAIL=1 run_repo_actions kure true "$act_policy")"
+assert_contains "#336: a failed fork-PR approval PUT is recorded" "$act_out" "FAILURE kure: apply actions/permissions/fork-pr-contributor-approval (approval_policy)"
+
+# The org endpoint gets the same read validation: an unreadable body or one
+# without approval_policy is a failure, never drift to PUT over. run_org_actions
+# APPLY prints "OK=<n> MISSING=<n>", the PUTs, the recorded failures, then the
+# audit output.
+run_org_actions() {
+    local apply="$1"
+    : >"$ACT_LOG"
+    : >"$ACT_PUTS"
+    (
+        act_gh
+        # The script runs under errexit; a failed read must be recorded, not
+        # abort the audit before the counters are printed below.
+        set -e
+        APPLY_FAILURES=()
+        SETTINGS_OK=0
+        SETTINGS_MISSING=0
+        audit_org_actions "$apply" >"$ACT_OUT" 2>&1
+        echo "OK=$SETTINGS_OK MISSING=$SETTINGS_MISSING"
+        cat "$ACT_PUTS"
+        for f in "${APPLY_FAILURES[@]}"; do echo "FAILURE $f"; done
+        cat "$ACT_OUT"
+    )
+}
+act_org_perms='{"enabled_repositories": "all", "allowed_actions": "all", "sha_pinning_required": true}'
+act_org_wf='{"default_workflow_permissions": "read", "can_approve_pull_request_reviews": false}'
+act_out="$(ACT_PERMS="$act_org_perms" ACT_WF="$act_org_wf" run_org_actions false)"
+assert_contains "#336: org audit reports the matching approval_policy OK" "$act_out" "OK: actions.approval_policy = all_external_contributors"
+act_out="$(ACT_PERMS="$act_org_perms" ACT_WF="$act_org_wf" ACT_FORK="$ACT_FORK_DRIFT" run_org_actions true)"
+assert_eq "#336: org apply PUTs the fork-PR approval endpoint with the policy value only" \
+    "PUT orgs/$GITHUB_ORG/actions/permissions/fork-pr-contributor-approval {\"approval_policy\":\"all_external_contributors\"}" \
+    "$(grep 'fork-pr-contributor-approval' "$ACT_PUTS")"
+for act_bad in FAIL '{}' '[]'; do
+    act_out="$(ACT_PERMS="$act_org_perms" ACT_WF="$act_org_wf" ACT_FORK="$act_bad" run_org_actions true)"
+    assert_eq "#336: an unreadable org fork-PR approval body ($act_bad) writes nothing to it" "0" "$(grep -c 'fork-pr-contributor-approval' "$ACT_PUTS")"
+    assert_contains "#336: and is recorded as a failure ($act_bad)" "$act_out" "FAILURE org $GITHUB_ORG: actions/permissions/fork-pr-contributor-approval unreadable"
+    assert_eq "#336: and counts as one missing, not a match ($act_bad)" "1" "$(head -n1 <<<"$act_out" | sed 's/.*MISSING=//')"
+done
+# --import leaves an unreadable org endpoint out (never approval_policy: null),
+# names it, and does not report nothing to import.
+run_import_org() {
+    : >"$ACT_LOG"
+    (
+        act_gh
+        # errexit on in the inner subshell, as in the script; the status is
+        # read outside it, where a failing command is not exempt from -e.
+        (
+            set -e
+            import_org 2>&1
+        )
+        echo "import_org rc=$?"
+    )
+}
+for act_bad in FAIL '{}'; do
+    act_out="$(ACT_PERMS="$act_org_perms" ACT_WF="$act_org_wf" ACT_FORK="$act_bad" run_import_org)"
+    assert_contains "#336: org --import warns about the unreadable endpoint ($act_bad)" "$act_out" "# WARNING: orgs/$GITHUB_ORG/actions/permissions/fork-pr-contributor-approval unreadable"
+    assert_eq "#336: and never imports approval_policy: null ($act_bad)" "0" "$(grep -cE '^[[:space:]]*approval_policy:' <<<"$act_out")"
+    assert_eq "#336: and does not report nothing to import ($act_bad)" "0" "$(grep -c 'nothing to import' <<<"$act_out")"
+    assert_contains "#336: and exits 1 ($act_bad)" "$act_out" "import_org rc=1"
+done
+
 # --import captures the live value of each drifted managed key into an
 # actions block; a failed read warns and suppresses "nothing to import".
 run_import_actions() {
@@ -1770,9 +1890,17 @@ imp_out="$(ACT_PERMS="$ACT_LIVE_PERMS" ACT_WF="$ACT_LIVE_WF" run_import_actions 
 assert_eq "#158: --import writes the drifted live values into an actions block" \
     '{"default_workflow_permissions":"write","sha_pinning_required":false}' \
     "$(grep -v '^#' <<<"$imp_out" | yq -oj -I0 '.kure.actions' | jq -Sc .)"
-imp_out="$(ACT_PERMS="$ACT_LIVE_PERMS" ACT_WF="$ACT_LIVE_WF" run_import_actions kure "$POLICY_JSON")"
+imp_out="$(ACT_PERMS="$ACT_LIVE_PERMS" ACT_WF="$ACT_LIVE_WF" run_import_actions kure "$act_bare")"
 assert_eq "#158: --import without an actions block reads no Actions endpoint" "0" "$(grep -c 'actions/permissions' "$ACT_LOG")"
 assert_eq "#158: and prints no actions block" "null" "$(grep -v '^#' <<<"$imp_out" | yq -oj -I0 '.kure.actions')"
+# #336: a drifted live approval_policy is imported on its own; a matching one
+# adds nothing to the block.
+imp_out="$(ACT_PERMS="$ACT_LIVE_PERMS" ACT_WF="$ACT_LIVE_WF" ACT_FORK="$ACT_FORK_DRIFT" run_import_actions kure "$act_policy")"
+assert_eq "#336: --import writes the drifted approval_policy into the actions block" "first_time_contributors" \
+    "$(grep -v '^#' <<<"$imp_out" | yq -oj -I0 '.kure.actions.approval_policy' | jq -r .)"
+imp_out="$(ACT_PERMS="$ACT_LIVE_PERMS" ACT_WF="$ACT_LIVE_WF" run_import_actions kure "$act_policy")"
+assert_eq "#336: --import leaves a matching approval_policy out" "null" \
+    "$(grep -v '^#' <<<"$imp_out" | yq -oj -I0 '.kure.actions.approval_policy')"
 # #279: an override cannot remove a parameterized rule an applicable
 # github_defaults ruleset declares, so a live ruleset lacking one is left out
 # of the YAML and the import exits 1, instead of being offered as paste-ready.
@@ -1944,6 +2072,7 @@ org_out="$( (fail_writes_gh; APPLY_FAILURES=(); audit_org_settings true >/dev/nu
 assert_contains "a failed organization settings PATCH is recorded" "$org_out" "org go-kure: apply organization settings ("
 assert_contains "a failed Actions permissions PUT is recorded" "$org_out" "org go-kure: apply Actions permissions"
 assert_contains "a failed Actions workflow permissions PUT is recorded" "$org_out" "org go-kure: apply Actions workflow permissions"
+assert_contains "#336: a failed Actions fork-PR approval PUT is recorded" "$org_out" "org go-kure: apply Actions fork-PR approval policy"
 
 # print_summary: apply mode returns 1 and lists each failure; with none it
 # still returns 0, and audit mode's own rule is unchanged.
