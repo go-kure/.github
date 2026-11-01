@@ -33,11 +33,13 @@ source "$LIB/render.sh"
 failures=0
 pass_count=0
 
-# prt_test_failure_context — after a failed assertion, shows what the orchestrator run behind it wrote
-# to standard error. run_orchestrator keeps that in PRT_TEST_STDERR_FILE and nothing printed it, so a
+# prt_test_failure_context — after a failed assertion, shows what the last orchestrator run wrote to
+# standard error. run_orchestrator keeps that in PRT_TEST_STDERR_FILE and nothing printed it, so a
 # case that degraded (a refused boundary, a stub that never started) failed with counts and no reason.
-# Shown once per distinct content, at most 15 lines of 300 characters, so a group of cases that fail
-# for one reason prints that reason once.
+# The file belongs to the last run_orchestrator call, which is not always the run behind the failing
+# assertion (a case that starts the stub directly runs none), so the heading says "last". Shown once
+# per distinct content, at most 15 lines of 300 bytes, so a group of cases that fail for one reason
+# prints that reason once.
 prt_ctx_last=""
 prt_test_failure_context() {
   local f="${PRT_TEST_STDERR_FILE:-}" sum
@@ -45,7 +47,7 @@ prt_test_failure_context() {
   sum="$(cksum < "$f")"
   [ "$sum" != "$prt_ctx_last" ] || return 0
   prt_ctx_last="$sum"
-  echo "  stderr of the run behind that assertion (first 15 lines):" >&2
+  echo "  stderr of the last orchestrator run, which may not be the one behind this assertion (first 15 lines):" >&2
   head -n 15 "$f" | cut -c1-300 | sed 's/^/    | /' >&2
 }
 
