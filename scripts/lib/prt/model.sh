@@ -942,7 +942,10 @@ _prt_runner_boundary_check() {
            s="$(sed "s/^.*) //" "/proc/$p/stat" 2> /dev/null)"
            set -- $s
            if [ -z "$s" ] || [ "${20:-}" = "${a##*:}" ]; then
-             echo "ancestor $a: environ readable" >&2
+             c="$(sed "s/^[0-9]* (\(.*\)) .*/\1/" "/proc/$p/stat" 2> /dev/null)"
+             na="$(readlink "/proc/$p/ns/pid" 2> /dev/null)"
+             ns="$(readlink /proc/self/ns/pid 2> /dev/null)"
+             echo "ancestor $a: environ readable (comm=${c:-?} ppid=${2:-?}; probe pid=$$ ns=${ns:-?}; ancestor ns=${na:-?})" >&2
              exit 11
            fi
          fi
@@ -970,7 +973,10 @@ _prt_runner_boundary_check() {
     12) _prt_boundary_refuse capability "$err" ;;
     124) _prt_boundary_refuse deadline "the probe did not finish within ${secs}s" ;;
     # 137 and 143 are a kill signal: the deadline's own kill only if the whole time ran out,
-    # else the probe died from outside it (an out-of-memory kill, a cancel).
+    # else the probe died from outside it (an out-of-memory kill, a cancel). The exit code cannot
+    # tell the two apart (timeout reports 137 for its own KILL and for an outside one) and SECONDS
+    # counts whole seconds, so an outside kill in the last second before the deadline reads as a
+    # deadline: a wrong word in one log line, never a different decision.
     137 | 143)
       if [ $((SECONDS - started)) -ge "$secs" ]; then
         _prt_boundary_refuse deadline "the probe did not finish within ${secs}s (exit $rc)"
