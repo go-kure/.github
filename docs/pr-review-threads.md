@@ -584,7 +584,9 @@ first process right after the launch and sends it SIGKILL when the call ends, wh
 member of the namespace. If that process cannot be named, if `timeout` is gone with the status of
 an expired bound or of a signal before it was named, or if the process is still there after the
 kill, the call is abandoned as `runner-lifetime` and its answer is not read. The windows that stay
-open, and the fix for them, are tracked in go-kure/.github#319. Also not covered: the `cmd`
+open, and the fix for them, are tracked in go-kure/.github#319; one of them is a stop signal sent
+to `timeout` from inside the namespace, which also keeps the orchestrator waiting (and the kill
+from running) until the job timeout. Also not covered: the `cmd`
 boundary (it has no such process to name), a SIGKILL of the orchestrator itself (nothing is left to
 send the kill), and what a surviving runner does while it is still running.
 

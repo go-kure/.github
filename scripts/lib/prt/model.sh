@@ -1321,7 +1321,11 @@ READER
     # own ends both and leaves it alive.
     if [ "$pid1_rc" -eq 1 ]; then
       echo "prt_model: the runner's namespace first process cannot be identified (${PRT_RUNNER_PID1_ERROR:-unknown}) — abandoning call" >&2
+      # `timeout` makes the group that carries this id when it starts, so before that the group
+      # kill reaches nothing and the launch subshell would go on to start the runner: the pid
+      # itself is killed as well.
       kill -KILL -- "-$runner_pid" 2>/dev/null || true
+      kill -KILL "$runner_pid" 2>/dev/null || true
       wait "$runner_pid" 2>/dev/null || true
       rm -rf "$tmp"
       _prt_set_model_failure "runner-lifetime"
