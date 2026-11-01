@@ -43,7 +43,9 @@ usage: review-adapter.sh --diff <file> --title <text> [options]
   --assess      also run the assessment pass and join verdicts by fp
   --out         write the JSON here instead of stdout
 
-environment (same names and defaults as scripts/pr-review-threads.sh)
+environment (same names as scripts/pr-review-threads.sh; the defaults below follow
+.github/workflows/pr-review.yml, so PRT_MODEL and the budget differ from that script's
+own fallbacks)
   PRT_PROXY_URL           model proxy base URL (required)
   PRT_MODEL               default: claude-opus-5-5
   PRT_MAX_TOKENS          default: 1500
