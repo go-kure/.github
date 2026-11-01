@@ -8407,6 +8407,28 @@ assert_eq "assess runner, the launcher has two children: the abandoned runner's 
 prt_ar_reap_sleepers
 PRT_TEST_RUNNER_MODE=probe
 
+# A discovery that fails before `timeout` has started: no process group with the launch pid exists
+# yet (`timeout` creates it), so the group kill reaches nothing and the launch subshell would go on
+# to start the runner and let it run to its bound. The pid itself is killed as well. The wrapper
+# delays the start of `timeout` by a second and one poll finds nothing, so the failure comes first.
+rm -f "$PRT_TEST_RUNNER_LOG".*
+mkdir -p "$prt_ar_dir/bin-slowstart"
+# shellcheck disable=SC2016 # script text for the wrapper, not an expansion
+printf '#!/bin/sh\n[ "$3" = timeout ] && sleep 1\nexec %s "$@"\n' "$(command -v env)" > "$prt_ar_dir/bin-slowstart/env"
+chmod 755 "$prt_ar_dir/bin-slowstart/env"
+PRT_TEST_RUNNER_MODE=heartbeat
+PRT_TEST_MODEL_BUDGET_SECONDS=12
+prt_ar_t0=$SECONDS
+rc="$(PATH="$prt_ar_dir/bin-slowstart:$PATH" PRT_RUNNER_PID1_POLLS=1 PRT_MODEL_TIMEOUT_FLOOR=1 run_orchestrator advisory 0 0 0)"
+prt_ar_elapsed=$((SECONDS - prt_ar_t0))
+PRT_TEST_MODEL_BUDGET_SECONDS=""
+assert_eq "assess runner, discovery fails before timeout has started: degraded as runner-lifetime, the call ends at once" \
+  "0 true true" "$rc $(prt_ar_reason runner-lifetime) $([ "$prt_ar_elapsed" -lt 4 ] && echo true || echo false)"
+sleep 2
+assert_eq "assess runner, discovery fails before timeout has started: the runner is never started" \
+  "false" "$([ -e "$PRT_TEST_RUNNER_LOG.hb" ] && echo true || echo false)"
+PRT_TEST_RUNNER_MODE=probe
+
 # `timeout` gone before the first process was named is "nothing to end" only if it ended by itself.
 # A first process that is already running shares the process group of `timeout` and the launcher,
 # and can end both with a KILL of the group while it lives on; so a `timeout` that went with the
