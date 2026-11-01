@@ -16,10 +16,15 @@
 #
 # Two hygiene items the literature asks for are NOT available through this backend, and are
 # recorded here rather than asserted: TEMPERATURE 0 and a PINNED JUDGE MODEL. The proxy
-# ignores the request's `model` field and always routes through the Claude Code CLI on the
-# Max subscription (meta/ci-templates/mr-review.yml:14-20), and that CLI exposes no
-# temperature control. --judge-model is therefore recorded in the output for provenance, not
-# obeyed. The remaining control for judge variance is repetition: run.sh runs the whole
+# always routes through the Claude Code CLI on the Max subscription
+# (meta/ci-templates/mr-review.yml:14-20), and that CLI exposes no temperature control.
+# --judge-model is honoured only down to the model FAMILY: the proxy maps the name to an
+# opus/sonnet/haiku alias and the pinned CLI picks the version, so the suffix is recorded
+# for provenance and selects nothing. It is not ignored, though, which matters here: a name
+# the proxy's map does not hold falls back to `opus` with no error, so an unmapped
+# --judge-model would quietly replace this Sonnet judge with an Opus one. Keep the default
+# `claude-sonnet-4-6`, or any other mapped Sonnet name, unless an Opus judge is what you
+# want. The remaining control for judge variance is repetition: run.sh runs the whole
 # harness >=3 times and reports the spread, which is what the spread is FOR.
 #
 # Input:  --findings  the adapter's document ({findings: [...]})

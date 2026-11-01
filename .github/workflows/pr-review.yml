@@ -9,7 +9,9 @@
 # StatefulSet on 2026-08-21, where any openclaw restart dropped the only pod
 # out of the Service and failed every CI review in the fleet with curl exit 7.
 # The proxy exposes an OpenAI-compatible /v1/chat/completions endpoint.
-# PR_REVIEW_MODEL / PR_REVIEW_ASSESS_MODEL are cosmetic labels only.
+# PR_REVIEW_MODEL / PR_REVIEW_ASSESS_MODEL select only the model family, not a
+# version — and an unmapped name silently changes the family. See the defaults
+# note below before editing either.
 #
 # Requires a self-hosted runner with in-cluster access to claude-max-proxy.
 # No API key secrets needed — the proxy uses the host's Claude Max credentials.
@@ -95,14 +97,6 @@
 #   PR_REVIEW_MAX_DIFF_CHARS    (default: 50000)
 #   PR_REVIEW_MAX_TOKENS        (default: 1500)
 #   PR_REVIEW_ASSESS_MODEL      (default: claude-sonnet-4-6)
-#
-# Both model names are sent as the request's `model` field. The backend maps
-# the name to a Claude Code CLI family alias — opus, sonnet or haiku — and
-# spawns `claude --model <alias>`; a name its map does not hold falls back to
-# `opus`. So the version suffix selects nothing on its own: it records which
-# model was asked for, while the alias and the pinned CLI decide which one
-# answers. Never give PR_REVIEW_ASSESS_MODEL an unmapped name: the fallback
-# would silently promote the assessment pass from Sonnet to Opus.
 #   PR_REVIEW_ASSESS_MAX_TOKENS (default: 4096)
 #   PR_REVIEW_AGENTS_FILE       (default: AGENTS.md)
 #   PR_REVIEW_STANDARDS_FILE    (default: docs/standards.md; set from the
@@ -121,6 +115,24 @@
 #                                 repository's checkout)
 #   PR_REVIEW_THREADS_MODE      (default: enforce; vars.PR_REVIEW_THREADS_MODE overrides — see note above)
 #   PR_REVIEW_MAX_FINDINGS_TOTAL (default: 5)
+#
+# Both model names are sent as the request's `model` field, and the backend
+# maps that name to a Claude Code CLI family alias — opus, sonnet or haiku —
+# then spawns `claude --model <alias>`. Only the family is selectable, so the
+# version suffix records which model was asked for and selects nothing; the
+# alias and the pinned CLI decide which one answers. Two consequences that
+# have each already cost someone an hour:
+#
+#   - A name the backend's map does not hold falls back to `opus`, with no
+#     validation and no error. PR_REVIEW_ASSESS_MODEL must therefore keep a
+#     mapped name: `claude-sonnet-4-6` is mapped, and renaming it to an
+#     unmapped form would silently promote the assessment pass to Opus.
+#   - PR_REVIEW_MODEL's own `claude-opus-5-5` is itself unmapped at the pinned
+#     backend, whose newest Opus entry is `claude-opus-4-6`. It reaches Opus
+#     through that same fallback rather than through a map entry, which is
+#     correct today and would break quietly if the backend ever changed its
+#     default family. The durable fix is upstream: teach the backend's map the
+#     5.x names. Until then, treat this line as intent, not as a binding.
 #
 # Bot identity (go-kure/.github#156): a caller without KURE_BOT_PAT passes its
 # own PAT as the BOT_PAT secret and the login that PAT posts as as the
