@@ -98,6 +98,8 @@ write_report "$dir/b7" boundary uid=0 cap_bnd=000001ffffffffff
 assert_eq "judge: root with a full bounding set behind the boundary fails" 1 "$(judge_rc "$dir/b7" "$dir/c")"
 write_report "$dir/b8" boundary uid=0 cap_bnd=0000000000000000
 assert_eq "judge: root with an empty bounding set passes" 0 "$(judge_rc "$dir/b8" "$dir/c")"
+write_report "$dir/b11" boundary uid=00 cap_bnd=000001ffffffffff
+assert_eq "judge: root written with a leading zero keeps the root check" 1 "$(judge_rc "$dir/b11" "$dir/c")"
 write_report "$dir/b9" boundary no_new_privs=0
 assert_eq "judge: a boundary without no-new-privs fails" 1 "$(judge_rc "$dir/b9" "$dir/c")"
 write_report "$dir/b10" boundary uid=0 cap_bnd=0000000000000000 no_new_privs=0
