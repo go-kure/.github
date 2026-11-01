@@ -254,7 +254,7 @@ jobs:
           done
 
       - name: Run PR review threads
-        uses: go-kure/.github/.github/actions/pr-review-threads@23566a15867f311c1105cb7fb836cee42128d041 # placeholder pending PR2 (pin-bump PR1 of the runner boundary check cause — base-ref tip, see docs/standards.md "GitHub Actions pinning")
+        uses: go-kure/.github/.github/actions/pr-review-threads@c449f9eb57fe64fc8d4492de47767cbf61ab6be1 # placeholder pending PR2 (pin-bump PR1 of the runner boundary probe fix — base-ref tip, stacked on the cause-reporting PR; see docs/standards.md "GitHub Actions pinning")
         with:
           # github-token / bot-login: GITHUB_TOKEN always gets viewerCanResolve:false
           # on threads it authors (GitHub rejects bot/App actors for

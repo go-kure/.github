@@ -905,6 +905,39 @@ _prt_boundary_refuse() {
   return 1
 }
 
+# The probe's program, run by `sh -c` with the ancestors ("pid:start time") as arguments.
+# For each it reads the stat first and goes on only when a live process under that pid in
+# the probe's own namespace has that start time. In a fresh namespace pids are small and
+# sequential, so an ancestor's pid number can be one the probe itself handed to a short-lived
+# child: that child can open its own environ, but is gone when its stat is read. Opening the
+# environ first would count it as the ancestor and refuse a boundary that holds. A stat that
+# cannot be read means there is no such process, so nothing there can be read either. The
+# whole record is read, not its first line: a process name can contain a newline, and the fields
+# that follow the name sit after the last closing parenthesis.
+# shellcheck disable=SC2016 # the probe is the child shell's program, not an expansion here
+_PRT_BOUNDARY_PROBE='for a; do
+  p="${a%%:*}"
+  l=
+  { while IFS= read -r x; do l="$l$x
+"; done < "/proc/$p/stat"; } 2> /dev/null
+  [ -n "$l" ] || continue
+  set -- ${l##*) }
+  [ "${20:-}" = "${a##*:}" ] || continue
+  if ( : < "/proc/$p/environ" ) 2> /dev/null; then
+    c="${l#*(}"
+    na="$(readlink "/proc/$p/ns/pid" 2> /dev/null)"
+    ns="$(readlink /proc/self/ns/pid 2> /dev/null)"
+    echo "ancestor $a: environ readable (comm=${c%) *} ppid=${2:-?}; probe pid=$$ ns=${ns:-?}; ancestor ns=${na:-?})" >&2
+    exit 11
+  fi
+done
+c="$(sed -n "s/^CapEff:[[:space:]]*//p" /proc/self/status)"
+if [ "$c" != 0000000000000000 ]; then
+  echo "CapEff is ${c:-unreadable}, not 0000000000000000" >&2
+  exit 12
+fi
+echo boundary-ok'
+
 # shellcheck disable=SC2034 # the reset of REASON and DETAIL is read by _prt_call_runner, in another function
 _prt_runner_boundary_check() {
   local ancestors=() q="$BASHPID" stat fields=() out err out_file err_file probe_pid started rc=0 secs="${PRT_BOUNDARY_CHECK_SECONDS:-10}" cap="${1:-}"
@@ -933,30 +966,9 @@ _prt_runner_boundary_check() {
   err_file="$(mktemp)" || { rm -f "$out_file"; _prt_boundary_refuse launch "mktemp failed for the probe's error file"; return 1; }
   # The probe exits 11 when it can read an ancestor's environ and 12 when it holds a
   # capability, so the cause survives; its messages go to err_file, shown on a refusal.
-  # shellcheck disable=SC2016 # the probe is the child shell's program, not an expansion here
   (
     exec env -i "PATH=$PATH" timeout -k 2 "$secs" "${PRT_RUNNER_BOUNDARY_ARGS[@]}" env -i "PATH=$PATH" sh -c \
-      'for a; do
-         p="${a%%:*}"
-         if ( : < "/proc/$p/environ" ) 2> /dev/null; then
-           s="$(sed "s/^.*) //" "/proc/$p/stat" 2> /dev/null)"
-           set -- $s
-           if [ -z "$s" ] || [ "${20:-}" = "${a##*:}" ]; then
-             c="$(sed "s/^[0-9]* (\(.*\)) .*/\1/" "/proc/$p/stat" 2> /dev/null)"
-             na="$(readlink "/proc/$p/ns/pid" 2> /dev/null)"
-             ns="$(readlink /proc/self/ns/pid 2> /dev/null)"
-             echo "ancestor $a: environ readable (comm=${c:-?} ppid=${2:-?}; probe pid=$$ ns=${ns:-?}; ancestor ns=${na:-?})" >&2
-             exit 11
-           fi
-         fi
-       done
-       c="$(sed -n "s/^CapEff:[[:space:]]*//p" /proc/self/status)"
-       if [ "$c" != 0000000000000000 ]; then
-         echo "CapEff is ${c:-unreadable}, not 0000000000000000" >&2
-         exit 12
-       fi
-       echo boundary-ok' sh \
-      "${ancestors[@]}" < /dev/null > "$out_file" 2> "$err_file"
+      "$_PRT_BOUNDARY_PROBE" sh "${ancestors[@]}" < /dev/null > "$out_file" 2> "$err_file"
   ) &
   probe_pid=$!
   started=$SECONDS
@@ -969,8 +981,20 @@ _prt_runner_boundary_check() {
     return 0
   fi
   case "$rc" in
-    11) _prt_boundary_refuse ancestor-environ-readable "$err" ;;
-    12) _prt_boundary_refuse capability "$err" ;;
+    # 11 and 12 are the probe's own codes, but the prefix can exit with them too, before the probe
+    # ran: only the probe's own message, at the start of a line, makes it the probe's finding.
+    11)
+      if [[ "$err" =~ (^|$'\n')'ancestor '[0-9]+:[0-9]+': environ readable' ]]; then
+        _prt_boundary_refuse ancestor-environ-readable "$err"
+      else
+        _prt_boundary_refuse launch "the prefix exited 11 without the probe's message${err:+: $err}"
+      fi ;;
+    12)
+      if [[ "$err" =~ (^|$'\n')'CapEff is ' ]]; then
+        _prt_boundary_refuse capability "$err"
+      else
+        _prt_boundary_refuse launch "the prefix exited 12 without the probe's message${err:+: $err}"
+      fi ;;
     124) _prt_boundary_refuse deadline "the probe did not finish within ${secs}s" ;;
     # 137 and 143 are a kill signal: the deadline's own kill only if the whole time ran out,
     # else the probe died from outside it (an out-of-memory kill, a cancel). The exit code cannot

@@ -562,8 +562,14 @@ holds (a credential file, a pipe) would be readable to the runner.
 The check runs for every call, whichever form: a probe is started behind the boundary with every
 process from this one up to pid 1, each named by pid and start time, and it must find that none
 has a readable `/proc/<pid>/environ` (a pid that belongs to a neighbour inside a namespace is told
-apart by its start time) and that its own capability set is empty. A command that starts but hides
-nothing, or leaves the runner able to undo it, fails. The probe is bounded as a whole: it runs under
+apart by its start time) and that its own capability set is empty. For each ancestor the probe
+reads the `stat` first and goes on to the environ only when a live process under that pid has that
+start time: inside a fresh namespace the pids are small and sequential, so an ancestor's pid number
+can be one the probe has just handed to a short-lived child of its own, which can open its own
+environ and is gone when its stat is read, and counting that child as the ancestor would refuse a
+boundary that holds. It reads the whole `stat` record, not its first line, because a process name
+can contain a newline and the fields that matter follow the last closing parenthesis. A command
+that starts but hides nothing, or leaves the runner able to undo it, fails. The probe is bounded as a whole: it runs under
 `timeout` with a kill after the first signal and writes to a file, so a prefix that ignores
 `TERM`, or leaves a helper holding the probe's output, cannot hold the check. If the ancestors
 cannot be listed the call is refused, never checked against fewer. A refusal names its cause on the
@@ -571,9 +577,10 @@ log line, `(cause: <name>; <detail>)`, where the detail is the check's own messa
 lines of what the probe printed (at most three lines of 200 bytes, control characters shown as
 spaces). The names are `build` (the boundary could not be built), `ancestor-list` (more than 256
 ancestors, or a stat that cannot be read or parsed), `launch` (the prefix is not found, a temporary
-file could not be made, the probe did not start, was killed by a signal before its deadline, or
-ended without `boundary-ok`), `ancestor-environ-readable` (the probe could read an ancestor's
-environ), `capability` (the probe holds a capability, or its capability set cannot be read) and
+file could not be made, the probe did not start, was killed by a signal before its deadline,
+ended without `boundary-ok`, or the prefix itself exited 11 or 12 without the probe's own
+message), `ancestor-environ-readable` (the probe could read an ancestor's environ),
+`capability` (the probe holds a capability, or its capability set cannot be read) and
 `deadline` (the probe was still running when the time ran out). For `ancestor-environ-readable` the
 detail also gives the readable process's command name and parent pid, the probe's own pid, and the
 pid namespace of the probe and of that process, so a process that merely shares a pid number with
