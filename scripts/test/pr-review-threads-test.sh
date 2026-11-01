@@ -8435,9 +8435,22 @@ chmod 755 "$prt_ar_dir/boundary-killed"
 prt_ar_why="$(prt_ar_check_why "$prt_ar_dir/boundary-killed")"
 assert_eq "boundary check, a probe killed by a signal long before its deadline is a launch failure naming the signal, not a deadline" \
   "1 launch true" "${prt_ar_why%%|*} $(grep -qF 'killed by signal 9' <<< "${prt_ar_why#*|}" && echo true || echo false)"
-prt_ar_why="$(PRT_ASSESS_RUNNER_BOUNDARY=bogus _prt_runner_boundary_build; _prt_boundary_refuse build "$PRT_RUNNER_BOUNDARY_ERROR"; printf '%s|%s' "$PRT_RUNNER_BOUNDARY_REASON" "$PRT_RUNNER_BOUNDARY_DETAIL")"
-assert_eq "boundary refusal, cause build: the build error is the detail, through the same sanitising" \
-  "build|PRT_ASSESS_RUNNER_BOUNDARY must be pidns or cmd, got 'bogus'" "$prt_ar_why"
+prt_ar_why="$(_prt_boundary_refuse x "$(printf 'a\tb\033[31m\nc\n\n\nd\n')"; printf '%s|%s' "$PRT_RUNNER_BOUNDARY_REASON" "$PRT_RUNNER_BOUNDARY_DETAIL")"
+assert_eq "boundary refusal detail: control characters become spaces and only the first three lines are kept" \
+  "x|a b [31m c" "$prt_ar_why"
+# The build step passed at start and fails at the call (an `id` that answers once): the refusal line
+# names the build cause and its message, through the same path as the check's causes.
+prt_ar_idbin="$(mktemp -d)"
+# shellcheck disable=SC2016 # the shim is a program text: its $ are for the shim's shell
+printf '#!/bin/sh\nn="$(cat "%s/n" 2> /dev/null || echo 0)"\necho $((n + 1)) > "%s/n"\n[ "$n" -lt 1 ] && exec /usr/bin/id "$@"\nexit 1\n' "$prt_ar_idbin" "$prt_ar_idbin" > "$prt_ar_idbin/id"
+chmod 755 "$prt_ar_idbin/id"
+PRT_TEST_RUNNER_MODE=clean
+rm -f "$PRT_TEST_RUNNER_LOG".*
+rc="$(PATH="$prt_ar_idbin:$PATH" run_orchestrator advisory 0 0 0)"
+assert_eq "assess runner, the boundary build fails at the call: no runner call, degraded as runner-boundary, the refusal line names the build cause and message" \
+  "0 true true" "$(prt_ar_calls) $(prt_ar_reason runner-boundary) $(grep -qF 'refusing call (cause: build; cannot read the user id (id -u failed)' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+rm -rf "$prt_ar_idbin"
+PRT_TEST_RUNNER_MODE=probe
 if $prt_ar_ns; then
   prt_ar_why="$(prt_ar_check_why unshare --user --map-root-user --pid --fork --mount-proc --kill-child)"
   assert_eq "boundary check, cause capability: a boundary that leaves a capability is refused with that cause" \
