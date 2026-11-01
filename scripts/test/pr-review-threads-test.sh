@@ -33,12 +33,29 @@ source "$LIB/render.sh"
 failures=0
 pass_count=0
 
+# prt_test_failure_context — after a failed assertion, shows what the orchestrator run behind it wrote
+# to standard error. run_orchestrator keeps that in PRT_TEST_STDERR_FILE and nothing printed it, so a
+# case that degraded (a refused boundary, a stub that never started) failed with counts and no reason.
+# Shown once per distinct content, at most 15 lines of 300 characters, so a group of cases that fail
+# for one reason prints that reason once.
+prt_ctx_last=""
+prt_test_failure_context() {
+  local f="${PRT_TEST_STDERR_FILE:-}" sum
+  [ -n "$f" ] && [ -s "$f" ] || return 0
+  sum="$(cksum < "$f")"
+  [ "$sum" != "$prt_ctx_last" ] || return 0
+  prt_ctx_last="$sum"
+  echo "  stderr of the run behind that assertion (first 15 lines):" >&2
+  head -n 15 "$f" | cut -c1-300 | sed 's/^/    | /' >&2
+}
+
 assert_eq() {
   local desc="$1" expected="$2" actual="$3"
   if [ "$expected" = "$actual" ]; then
     pass_count=$((pass_count + 1))
   else
     echo "FAIL: $desc — expected [$expected], got [$actual]" >&2
+    prt_test_failure_context
     failures=$((failures + 1))
   fi
 }
