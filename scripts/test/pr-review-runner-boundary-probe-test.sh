@@ -39,7 +39,7 @@ write_report() { # write_report FILE KIND [KEY=VALUE...]
   local -a lines
   if [ "$kind" = boundary ]; then
     lines=(canary_hits=0 ancestor_environ_open=0 ancestor_mem_open=0 fd_above_2=0
-      uid=1000 cap_eff=0000000000000000 cap_bnd=000001ffffffffff no_new_privs=0
+      uid=1000 cap_eff=0000000000000000 cap_bnd=000001ffffffffff no_new_privs=1
       proc_mount=denied canary_state=ok own_environ_open=1 own_environ_marker=1
       environ_entries=40 own_environ_listed=1)
   else
@@ -98,6 +98,10 @@ write_report "$dir/b7" boundary uid=0 cap_bnd=000001ffffffffff
 assert_eq "judge: root with a full bounding set behind the boundary fails" 1 "$(judge_rc "$dir/b7" "$dir/c")"
 write_report "$dir/b8" boundary uid=0 cap_bnd=0000000000000000
 assert_eq "judge: root with an empty bounding set passes" 0 "$(judge_rc "$dir/b8" "$dir/c")"
+write_report "$dir/b9" boundary no_new_privs=0
+assert_eq "judge: a boundary without no-new-privs fails" 1 "$(judge_rc "$dir/b9" "$dir/c")"
+write_report "$dir/b10" boundary uid=0 cap_bnd=0000000000000000 no_new_privs=0
+assert_eq "judge: root without no-new-privs fails" 1 "$(judge_rc "$dir/b10" "$dir/c")"
 
 # A step that could not be tried is not a step that was denied.
 write_report "$dir/m1" boundary proc_mount=untried:no-mount-command
@@ -110,6 +114,12 @@ write_report "$dir/m4" boundary fd_above_2=@
 assert_eq "judge: a boundary report missing a field is inconclusive" 3 "$(judge_rc "$dir/m4" "$dir/c")"
 write_report "$dir/m5" boundary cap_eff=zz
 assert_eq "judge: a boundary report with a malformed capability set is inconclusive" 3 "$(judge_rc "$dir/m5" "$dir/c")"
+write_report "$dir/m6" boundary no_new_privs=
+assert_eq "judge: an empty no-new-privs value is inconclusive" 3 "$(judge_rc "$dir/m6" "$dir/c")"
+write_report "$dir/m7" boundary no_new_privs=@
+assert_eq "judge: a missing no-new-privs line is inconclusive" 3 "$(judge_rc "$dir/m7" "$dir/c")"
+write_report "$dir/m8" boundary no_new_privs=2
+assert_eq "judge: a no-new-privs value of 2 is inconclusive" 3 "$(judge_rc "$dir/m8" "$dir/c")"
 assert_eq "judge: no boundary report is inconclusive" 3 "$(judge_rc "$dir/none" "$dir/c")"
 assert_eq "judge: a leak is still a leak when the control is missing" 1 "$(judge_rc "$dir/b1" "$dir/none")"
 
