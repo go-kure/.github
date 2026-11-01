@@ -574,16 +574,21 @@ call that had 31 seconds before the check and 21 after it is refused as `deadlin
 started.
 Lifetime: when the boundary command dies, `--kill-child` takes the namespace with it, and the
 outer time bound ends it when the call overruns. If the orchestrator itself is killed outright, the
-runner's tree is not signalled by it and runs until that outer bound fires (at most the call's
-seconds plus 30, within the run's deadline).
+runner's tree is not signalled by it and a cooperative runner runs until that outer bound fires (at
+most the call's seconds plus 30, within the run's deadline).
 
-Known limit: that cleanup holds against a cooperative runner and against a SIGKILL of the namespace
-launcher, nothing more. The runner is PID 1 of its namespace, so a hostile runner can clear its
-parent-death signal and start a new session; killing the launcher or the timeout process group then
-does not stop it, and it can outlive its call. The posting token stays unreadable, so this is a
-lifetime problem, not a token leak. The only outer bound for such a runner is the job timeout. A
-protected supervisor, or an external lifetime mechanism the runner cannot leave, is the follow-up
-(go-kure/.github#304).
+Known limit: a hostile runner can outlive its call in narrow windows. The runner is PID 1 of its
+namespace, so it can clear its parent-death signal and start a new session; killing the launcher or
+the `timeout` process group then does not stop it. The orchestrator therefore names the namespace's
+first process right after the launch and sends it SIGKILL when the call ends, which ends every
+member of the namespace. If that process cannot be named, if `timeout` is gone with the status of
+an expired bound or of a signal before it was named, or if the process is still there after the
+kill, the call is abandoned as `runner-lifetime` and its answer is not read. The windows that stay
+open, and the fix for them, are tracked in go-kure/.github#319; one of them is a stop signal sent
+to `timeout` from inside the namespace, which also keeps the orchestrator waiting (and the kill
+from running) until the job timeout. Also not covered: the `cmd`
+boundary (it has no such process to name), a SIGKILL of the orchestrator itself (nothing is left to
+send the kill), and what a surviving runner does while it is still running.
 
 Hosts that forbid an unprivileged user namespace (for example Ubuntu 24.04 with its AppArmor
 restriction, or a container whose seccomp profile blocks `unshare`) cannot establish `pidns`,
@@ -678,8 +683,9 @@ would not fit; so is a call made when the clock cannot be read as a whole number
 cannot then be known. A hit is `runner-timeout`. When the call ends, whatever its exit, the whole process
 group is killed, so a child that ignored the signal does not outlive it. A descendant that leaves
 the process group (for example with `setsid`) is not reached by the group signal; the default
-`pidns` boundary closes that, since ending the namespace's first process ends every member (a `cmd`
-boundary does so only if the command does).
+`pidns` boundary closes that, since ending the namespace's first process ends every member, and the
+orchestrator ends that process itself (see "Known limit" above); a `cmd` boundary does so only if the
+command does.
 The group is signalled after the shell has already reaped `timeout`. With no member left, the group
 id is free, and the signal could reach an unrelated group only if that id were allocated again as a
 group leader within microseconds, which takes a full wrap of the pid space; a surviving member pins
@@ -688,7 +694,8 @@ the id, so the case the signal exists for is unaffected. This window is accepted
 **Failures degrade, never abort.** Each ends as an assessment transport failure
 (`REVIEW_DEGRADED`, findings keep `verdict: null` and still gate, as `reconcile.sh` counts a null
 verdict like `VALID`), with the cause in brackets: `runner-boundary` (the process boundary could not
-be established or failed its check; the runner was not started), `runner-incomplete` (exit 2), `runner-quota`
+be established or failed its check; the runner was not started), `runner-lifetime` (the namespace's first
+process could not be named after the launch, or was still running after SIGKILL; the answer is not read), `runner-incomplete` (exit 2), `runner-quota`
 (3), `runner-launch` (4), `runner-usage` (64, which includes an input over the runner's size
 limit), `runner-timeout` (the outer bound below fired), `runner-failed` (any other non-zero exit), `runner-no-output` (no `review.md`, or one that cannot be read),
 `runner-empty`, `provenance-mismatch`, `deadline-exhausted`, `backend-config` (a required

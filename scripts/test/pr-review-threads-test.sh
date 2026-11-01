@@ -7407,6 +7407,23 @@ case "$mode" in
   heartbeat)
     ( while :; do date +%s%N > "$log.hb"; sleep 0.1; done ) &
     sleep 300; exit 0 ;;
+  # hostile: the runner is PID 1 of its namespace and escapes everything the launcher's death and
+  # the process group reach: it clears its parent-death signal (what --kill-child sets), starts a
+  # session of its own and keeps rewriting a counter file, never exiting (go-kure/.github#304).
+  # It ends when "$log.stop" exists, so a test can reap it, and after two minutes in any case.
+  hostile)
+    exec python3 -I -c '
+import ctypes, os, sys, time
+ctypes.CDLL(None).prctl(1, 0, 0, 0, 0)  # PR_SET_PDEATHSIG, 0
+os.setsid()
+hb, stop = sys.argv[1], sys.argv[2]
+end = time.time() + 120
+while time.time() < end and not os.path.exists(stop):
+    with open(hb + ".tmp", "w") as f:
+        f.write(str(time.time_ns()))
+    os.replace(hb + ".tmp", hb)
+    time.sleep(0.1)
+' "$log.hb" "$log.stop" ;;
   garbage_then_exit4) if [ "$n" -ge 2 ]; then exit 4; fi; mode=garbage ;;
   garbage_then_clean) if [ "$n" -ge 2 ]; then mode=clean; else mode=garbage; fi ;;
 esac
@@ -8115,6 +8132,12 @@ prt_ar_hb_stopped() {
   a="$(cat "$PRT_TEST_RUNNER_LOG.hb")"; sleep 1; b="$(cat "$PRT_TEST_RUNNER_LOG.hb")"
   [ "$a" = "$b" ] && echo true || echo false
 }
+# prt_ar_hb_not_running: nothing is advancing the counter, whether or not it ever started.
+prt_ar_hb_not_running() {
+  local a b
+  a="$(cat "$PRT_TEST_RUNNER_LOG.hb" 2>/dev/null)"; sleep 1; b="$(cat "$PRT_TEST_RUNNER_LOG.hb" 2>/dev/null)"
+  [ "$a" = "$b" ] && echo true || echo false
+}
 prt_ar_child_gone() { # label
   assert_eq "$1: the stub's child was seen running" "true" "$([ -s "$PRT_TEST_RUNNER_LOG.hb" ] && echo true || echo false)"
   assert_eq "$1: the runner's own child is gone with it" "true" "$(prt_ar_hb_stopped)"
@@ -8311,6 +8334,396 @@ assert_eq "assess runner, detached TERM-resistant helper, default boundary: the 
 sleep 0.5
 assert_eq "assess runner, detached TERM-resistant helper, default boundary: nothing of it is left running" "true" "$(prt_ar_hb_stopped)"
 PRT_TEST_RUNNER_MODE=probe
+
+# A hostile PID 1 (go-kure/.github#304): the runner itself clears its parent-death signal and starts
+# a session of its own, so neither the death of the namespace launcher nor the process group reaches
+# it, and ending the namespace's first process is the only thing that ends it. The control runs the
+# stub the way the call did before: behind the production prefix, under `timeout`, with the group
+# killed afterwards and nothing else. The heartbeat then keeps advancing, which shows the stub
+# escapes and the heartbeat can show it. A reaper file ends any survivor.
+prt_ar_hostile_reap() { : > "$PRT_TEST_RUNNER_LOG.stop"; sleep 0.5; }
+rm -f "$PRT_TEST_RUNNER_LOG".*
+_prt_runner_boundary_build
+( exec env -i "PATH=$PATH" PRT_TEST_RUNNER_LOG="$PRT_TEST_RUNNER_LOG" PRT_TEST_RUNNER_MODE=hostile \
+    timeout --kill-after=2 2 "${PRT_RUNNER_BOUNDARY_ARGS[@]}" "$prt_ar_dir/review-run" \
+    --out "$prt_ar_dir/hostile-control-out" --root . --base x -- p < /dev/null > /dev/null 2>&1 ) &
+prt_ar_cpid=$!
+wait "$prt_ar_cpid" 2>/dev/null
+kill -KILL -- "-$prt_ar_cpid" 2>/dev/null
+sleep 0.5
+assert_eq "assess runner, hostile PID 1, control (timeout and the group kill alone): the runner outlives the call" \
+  "true" "$(prt_ar_hb_advancing)"
+prt_ar_hostile_reap
+rm -rf "$prt_ar_dir/hostile-control-out"
+
+# The call itself: the runner never exits, the outer bound fires, and the namespace's first process
+# is killed by the orchestrator. The heartbeat must have started, and must stop at once (within
+# about a second of the call returning, which prt_ar_hb_stopped checks over one second).
+rm -f "$PRT_TEST_RUNNER_LOG".*
+PRT_TEST_RUNNER_MODE=hostile
+PRT_TEST_MODEL_BUDGET_SECONDS=12
+prt_ar_t0=$SECONDS
+rc="$(PRT_MODEL_TIMEOUT_FLOOR=1 run_orchestrator advisory 0 0 0)"
+prt_ar_elapsed=$((SECONDS - prt_ar_t0))
+# A first process that installs no TERM handler ignores the TERM `timeout` sends from outside its
+# namespace, so the call runs to the KILL, 5 s after the TERM: at the deadline, not inside it. That
+# is the existing bound; the cleanup after it is quick, which the margin of three seconds checks (the
+# deadline and this clock count whole seconds from different instants, so it allows for one more).
+assert_eq "assess runner, hostile PID 1: one call, ends within three seconds of the 12s deadline, degraded as runner-timeout" \
+  "0 1 true true" "$rc $(prt_ar_calls) $([ "$prt_ar_elapsed" -lt 15 ] && echo true || echo false) $(prt_ar_reason runner-timeout)"
+assert_eq "assess runner, hostile PID 1: the runner was seen running, and nothing of it is left once the call has returned" \
+  "true" "$(prt_ar_hb_stopped)"
+prt_ar_hostile_reap
+PRT_TEST_MODEL_BUDGET_SECONDS=""
+
+# A failed discovery is not "nothing to end". A launcher with a second child leaves two candidates
+# for the namespace's first process: the call is abandoned as runner-lifetime, the runner's tree is
+# stopped, and no answer is read.
+rm -f "$PRT_TEST_RUNNER_LOG".*
+mkdir -p "$prt_ar_dir/bin-twokids"
+# shellcheck disable=SC2016 # script text for the wrapper, not an expansion
+printf '#!/bin/sh\nsleep 20 < /dev/null > /dev/null 2>&1 &\necho $! >> "%s"\nexec %s "$@"\n' "$prt_ar_dir/sleepers" "$(command -v unshare)" > "$prt_ar_dir/bin-twokids/unshare"
+chmod 755 "$prt_ar_dir/bin-twokids/unshare"
+# The wrapper runs for the boundary preflight as well as for the call, and records the pid of each
+# extra child it starts: the test ends those and no other process.
+prt_ar_reap_sleepers() {
+  local p
+  if [ -f "$prt_ar_dir/sleepers" ]; then
+    while read -r p; do kill -KILL "$p" 2> /dev/null || true; done < "$prt_ar_dir/sleepers"
+    : > "$prt_ar_dir/sleepers"
+  fi
+}
+PRT_TEST_RUNNER_MODE=heartbeat
+PRT_TEST_MODEL_BUDGET_SECONDS=""
+rc="$(PATH="$prt_ar_dir/bin-twokids:$PATH" run_orchestrator advisory 0 0 0)"
+# The wrapper starts its extra child a few milliseconds before it execs `unshare`, so a poll can
+# land in that gap and see the extra child alone: it is not a namespace's first process, which the
+# finder refuses with its own cause. Either way the call is abandoned and the cause is named. The
+# abandonment comes within one poll of the launch, before the runner's heartbeat may have started,
+# so the check is that nothing is running, not that something was seen running first.
+assert_eq "assess runner, the launcher has two children: degraded as runner-lifetime, the run still exits 0, the message names the cause" \
+  "0 true true" "$rc $(prt_ar_reason runner-lifetime) $(grep -qE 'namespace launcher has more than one child|not the first process of a namespace' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "assess runner, the launcher has two children: the abandoned runner's tree is stopped" "true" "$(prt_ar_hb_not_running)"
+prt_ar_reap_sleepers
+PRT_TEST_RUNNER_MODE=probe
+
+# A discovery that fails before `timeout` has started: no process group with the launch pid exists
+# yet (`timeout` creates it), so the group kill reaches nothing and the launch subshell would go on
+# to start the runner and let it run to its bound. The pid itself is killed as well. The wrapper
+# delays the start of `timeout` by a second and one poll finds nothing, so the failure comes first.
+rm -f "$PRT_TEST_RUNNER_LOG".*
+mkdir -p "$prt_ar_dir/bin-slowstart"
+# shellcheck disable=SC2016 # script text for the wrapper, not an expansion
+printf '#!/bin/sh\n[ "$3" = timeout ] && sleep 1\nexec %s "$@"\n' "$(command -v env)" > "$prt_ar_dir/bin-slowstart/env"
+chmod 755 "$prt_ar_dir/bin-slowstart/env"
+PRT_TEST_RUNNER_MODE=heartbeat
+PRT_TEST_MODEL_BUDGET_SECONDS=12
+prt_ar_t0=$SECONDS
+rc="$(PATH="$prt_ar_dir/bin-slowstart:$PATH" PRT_RUNNER_PID1_POLLS=1 PRT_MODEL_TIMEOUT_FLOOR=1 run_orchestrator advisory 0 0 0)"
+prt_ar_elapsed=$((SECONDS - prt_ar_t0))
+PRT_TEST_MODEL_BUDGET_SECONDS=""
+assert_eq "assess runner, discovery fails before timeout has started: degraded as runner-lifetime, the call ends at once" \
+  "0 true true" "$rc $(prt_ar_reason runner-lifetime) $([ "$prt_ar_elapsed" -lt 4 ] && echo true || echo false)"
+sleep 2
+assert_eq "assess runner, discovery fails before timeout has started: the runner is never started" \
+  "false" "$([ -e "$PRT_TEST_RUNNER_LOG.hb" ] && echo true || echo false)"
+PRT_TEST_RUNNER_MODE=probe
+
+# `timeout` gone before the first process was named is "nothing to end" only if it ended by itself.
+# A first process that is already running shares the process group of `timeout` and the launcher,
+# and can end both with a KILL of the group while it lives on; so a `timeout` that went with the
+# status of a signal (128 and above) or of an expired bound (124) is abandoned as runner-lifetime,
+# and one that went with an ordinary status (a launcher that failed) is not. The launchers below
+# pass the boundary preflight (its probe is a `sh`) and act only on the call's own command (a `bash`
+# reader).
+mkdir -p "$prt_ar_dir/bin-gonelauncher"
+# shellcheck disable=SC2016 # script text for the wrapper, not an expansion
+printf '#!/bin/bash\nfor a in "$@"; do\n  if [ "$a" = bash ]; then %s; fi\ndone\nexec %s "$@"\n' \
+  'kill -KILL 0' "$(command -v unshare)" > "$prt_ar_dir/bin-gonelauncher/unshare"
+chmod 755 "$prt_ar_dir/bin-gonelauncher/unshare"
+rm -f "$PRT_TEST_RUNNER_LOG".*
+PRT_TEST_RUNNER_MODE=heartbeat
+PRT_TEST_MODEL_BUDGET_SECONDS=""
+rc="$(PATH="$prt_ar_dir/bin-gonelauncher:$PATH" run_orchestrator advisory 0 0 0)"
+assert_eq "assess runner, timeout killed with its group before the first process was named: degraded as runner-lifetime, the message names the status" \
+  "0 true true" "$rc $(prt_ar_reason runner-lifetime) $(grep -qF 'ended (status 137) before the runner' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+mkdir -p "$prt_ar_dir/bin-failedlauncher"
+# shellcheck disable=SC2016 # script text for the wrapper, not an expansion
+printf '#!/bin/bash\nfor a in "$@"; do\n  if [ "$a" = bash ]; then exit 3; fi\ndone\nexec %s "$@"\n' \
+  "$(command -v unshare)" > "$prt_ar_dir/bin-failedlauncher/unshare"
+chmod 755 "$prt_ar_dir/bin-failedlauncher/unshare"
+rm -f "$PRT_TEST_RUNNER_LOG".*
+rc="$(PATH="$prt_ar_dir/bin-failedlauncher:$PATH" run_orchestrator advisory 0 0 0)"
+assert_eq "assess runner, the launcher fails by itself (status 3): nothing to end, not abandoned as runner-lifetime" \
+  "0 false" "$rc $(prt_ar_reason runner-lifetime)"
+
+# The same with the bound running out: a launcher that never starts a child keeps the finder polling;
+# the bound fires, `timeout` ends with status 124, and the call is abandoned. The polling is
+# lengthened so that it outlasts the bound (6 s here).
+rm -f "$PRT_TEST_RUNNER_LOG".*
+mkdir -p "$prt_ar_dir/bin-slowlauncher"
+mkfifo "$prt_ar_dir/slow.fifo"
+# shellcheck disable=SC2016 # script text for the wrapper, not an expansion
+printf '#!/bin/bash\nfor a in "$@"; do\n  if [ "$a" = bash ]; then read -r -t 30 _ 0<> "%s"; exit 0; fi\ndone\nexec %s "$@"\n' \
+  "$prt_ar_dir/slow.fifo" "$(command -v unshare)" > "$prt_ar_dir/bin-slowlauncher/unshare"
+chmod 755 "$prt_ar_dir/bin-slowlauncher/unshare"
+PRT_TEST_RUNNER_MODE=heartbeat
+PRT_TEST_MODEL_BUDGET_SECONDS=11
+rc="$(PATH="$prt_ar_dir/bin-slowlauncher:$PATH" PRT_RUNNER_PID1_POLLS=400 PRT_MODEL_TIMEOUT_FLOOR=1 run_orchestrator advisory 0 0 0)"
+assert_eq "assess runner, the bound runs out before the first process was named: degraded as runner-lifetime, the message names the status" \
+  "0 true true" "$rc $(prt_ar_reason runner-lifetime) $(grep -qF 'ended (status 124) before the runner' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_MODEL_BUDGET_SECONDS=""
+PRT_TEST_RUNNER_MODE=probe
+
+# The finder on its own, against process trees the test builds. Short polling keeps the cases quick.
+# shellcheck disable=SC2016 # the program text of each case is evaluated by the child shell
+prt_ar_pid1_case() { # label, expected rc, expected error fragment (or "-"), setup command run in the child
+  local out
+  out="$(PRT_RUNNER_PID1_POLLS="${PRT_AR_POLLS:-4}" bash -c '
+    source "$1/scripts/lib/prt/model.sh"
+    _prt_runner_boundary_build
+    eval "$3"
+    _prt_runner_pid1_record "$tp"; echo "rc=$? pid1=${PRT_RUNNER_PID1:-} err=${PRT_RUNNER_PID1_ERROR:-}"
+    kill -KILL $(jobs -p) 2>/dev/null' bash "$ROOT" x "$4" 2>/dev/null)"
+  assert_eq "pid1 finder, $1: rc $2" "true" "$([[ "$out" == "rc=$2 "* ]] && echo true || echo false)"
+  if [ "$3" != "-" ]; then
+    assert_eq "pid1 finder, $1: the cause is named" "true" "$([[ "$out" == *"$3"* ]] && echo true || echo false)"
+  fi
+}
+prt_ar_pid1_case "a process that is not timeout" 1 "no namespace first process was found in time" 'sleep 30 & tp=$!; sleep 0.1'
+# A pid above the kernel's largest pid cannot exist, whatever the host's pid_max.
+prt_ar_pid1_case "a pid that is not there" 3 - 'tp=$(< /proc/sys/kernel/pid_max)'
+# A chain of the right shape whose last link is not a namespace's first process: scripts named for
+# the processes of the chain (the kernel names a script's process after the script).
+mkdir -p "$prt_ar_dir/chain-ok" "$prt_ar_dir/chain-other"
+printf '#!/bin/sh\n"%s/chain-ok/unshare" &\nwait\n' "$prt_ar_dir" > "$prt_ar_dir/chain-ok/timeout"
+printf '#!/bin/sh\nsleep 8 &\necho $! >> "%s"\nwait\n' "$prt_ar_dir/sleepers" > "$prt_ar_dir/chain-ok/unshare"
+printf '#!/bin/sh\n"%s/chain-other/other" &\nwait\n' "$prt_ar_dir" > "$prt_ar_dir/chain-other/timeout"
+printf '#!/bin/sh\nsleep 8 &\necho $! >> "%s"\nwait\n' "$prt_ar_dir/sleepers" > "$prt_ar_dir/chain-other/other"
+chmod 755 "$prt_ar_dir"/chain-ok/* "$prt_ar_dir"/chain-other/*
+# These two build their chain of scripts while the finder polls, and answer as soon as the chain is
+# whole; the larger poll count only gives a loaded host room to build it.
+PRT_AR_POLLS=60 prt_ar_pid1_case "a child of the launcher that is not a namespace's first process" 1 \
+  "not the first process of a namespace" "\"$prt_ar_dir/chain-ok/timeout\" & tp=\$!; sleep 0.2"
+PRT_AR_POLLS=60 prt_ar_pid1_case "a timeout process that runs something other than the launcher" 1 \
+  "runs something other than the namespace launcher" "\"$prt_ar_dir/chain-other/timeout\" & tp=\$!; sleep 0.2"
+prt_ar_reap_sleepers
+# A stat that cannot be read (2) is not a process that has gone (1): gone is "timeout went first",
+# which the caller reads as nothing to end when the exit is an ordinary one, so an unreadable stat
+# at either site must be a failed read with its cause. A launcher that is gone is looked at again
+# on the next poll and spends one, and a poll count with a leading zero is a decimal number. The
+# processes are copies of `sleep` under the names of the chain and the answers of the two /proc
+# helpers are stubbed. The stubbed `sleep` ends a loop that never spends a poll (so a failing case
+# is red at once and does not hang the run).
+mkdir -p "$prt_ar_dir/fake-chain"
+ln -sf "$(command -v sleep)" "$prt_ar_dir/fake-chain/timeout"
+ln -sf "$(command -v sleep)" "$prt_ar_dir/fake-chain/unshare"
+prt_ar_loop_guard='n=0; sleep() { n=$((n+1)); if [ "$n" -ge 60 ]; then echo looped; kill -KILL $(jobs -p) 2> /dev/null; exit 0; fi; command sleep 0.01; }'
+prt_ar_fake_chain="\"$prt_ar_dir/fake-chain/timeout\" 30 & tp=\$!; \"$prt_ar_dir/fake-chain/unshare\" 30 & L=\$!; sleep 0.2; $prt_ar_loop_guard; "
+prt_ar_pid1_case "the children of timeout cannot be read and its stat cannot be read either" 1 \
+  "the children of the timeout process cannot be read" \
+  "$prt_ar_fake_chain _prt_proc_children() { return 1; }; m=0; _prt_proc_start() { m=\$((m+1)); PRT_PROC_START=1; [ \"\$m\" -le 1 ] || return 2; }"
+prt_ar_pid1_case "the children of the launcher cannot be read and its stat cannot be read either" 1 \
+  "the children of the namespace launcher cannot be read" \
+  "$prt_ar_fake_chain _prt_proc_children() { if [ \"\$1\" = \"\$tp\" ]; then PRT_PROC_KIDS=\$L; return 0; fi; return 1; }; _prt_proc_start() { PRT_PROC_START=1; [ \"\$1\" != \"\$L\" ] || return 2; }"
+prt_ar_pid1_case "the launcher is gone: the poll is spent, the finder ends" 1 \
+  "no namespace first process was found in time" \
+  "$prt_ar_fake_chain _prt_proc_children() { if [ \"\$1\" = \"\$tp\" ]; then PRT_PROC_KIDS=\$L; return 0; fi; return 1; }; _prt_proc_start() { PRT_PROC_START=1; [ \"\$1\" != \"\$L\" ] || return 1; }"
+PRT_AR_POLLS=08 prt_ar_pid1_case "a poll count with a leading zero is decimal" 1 \
+  "no namespace first process was found in time" "sleep 30 & tp=\$!; sleep 0.1; $prt_ar_loop_guard"
+# The end of the first process: gone after the kill is 0; still there after it is 1. The second
+# case turns the kill into a no-op, so the process stays and the wait for it runs out.
+prt_ar_pid1_end_case() { # label, expected rc, prefix command for the child shell
+  local out
+  out="$(bash -c '
+    source "$1/scripts/lib/prt/model.sh"
+    sleep 30 & p=$!
+    _prt_proc_start "$p" && PRT_RUNNER_PID1="$p" && PRT_RUNNER_PID1_START="$PRT_PROC_START"
+    eval "$2"
+    _prt_runner_pid1_end; echo "rc=$?"
+    builtin kill -KILL "$p" 2>/dev/null' bash "$ROOT" "$3" 2>/dev/null)"
+  assert_eq "pid1 end, $1: rc $2" "true" "$([[ "$out" == "rc=$2" ]] && echo true || echo false)"
+}
+prt_ar_pid1_end_case "the process is killed and gone" 0 ':'
+prt_ar_pid1_end_case "the process is still there after the kill" 1 'kill() { return 0; }'
+# The helper reads /proc/PID/stat whatever separator its caller has set: with one that holds no
+# space (a strict-mode IFS) the stat line was not split and every call was abandoned.
+# shellcheck disable=SC2016 # the text is evaluated by the child shell
+prt_ar_pid1_end_case "the process is killed and gone under a strict IFS" 0 'IFS=$(printf "\n\t")'
+# A caller under `set -e` is not ended by the helpers: a command substitution that reads a file
+# which is no longer there (`$(< /proc/PID/stat)`) exits such a shell even inside `||`, so the
+# end of a killed process, and a process that is gone, must not use one.
+prt_ar_pid1_end_case "the process is killed and gone under errexit" 0 'set -e'
+# The descriptors above 2 are closed whatever glob settings the caller has: `set -f` leaves the
+# /proc/self/fd/* pattern unexpanded and a GLOBIGNORE that matches it removes every entry, and
+# either would leave a credential file the orchestrator holds readable to the runner.
+prt_ar_closefds_case() { # label, shell setting commands run before the launch subshell
+  local out
+  out="$(bash -c '
+    source "$1/scripts/lib/prt/model.sh"
+    exec 9< /dev/null
+    eval "$2"
+    ( _prt_close_fds; if [ -e /proc/self/fd/9 ]; then echo open; else echo closed; fi )' bash "$ROOT" "$2" 2> /dev/null)"
+  assert_eq "close fds, $1: descriptor 9 is closed in the launch subshell" "closed" "$out"
+}
+prt_ar_closefds_case "default options" ':'
+prt_ar_closefds_case "set -f" 'set -f'
+prt_ar_closefds_case "GLOBIGNORE" "GLOBIGNORE='/proc/*'"
+# A start time that cannot be read is not "not there" unless the process has gone: with no
+# descriptor to open the file (EMFILE), a live process is a failed read (2), never a gone one (1).
+prt_ar_unreadable_case() {
+  local out
+  out="$(bash -c '
+    source "$1/scripts/lib/prt/model.sh"
+    rc=0; ( ulimit -n 3; _prt_proc_start "$$" ) || rc=$?
+    echo "unreadable=$rc"
+    rc=0; _prt_proc_start "$(< /proc/sys/kernel/pid_max)" || rc=$?
+    echo "gone=$rc"' bash "$ROOT" 2> /dev/null | tr '\n' ' ')"
+  assert_eq "a live process whose stat cannot be opened is unreadable, not gone" "unreadable=2 gone=1 " "$out"
+}
+prt_ar_unreadable_case
+# A process can end its main thread alone (the system call `exit`, not `exit_group`): the group
+# leader becomes a zombie and /proc/PID/stat says Z, while the other threads run on, inside a
+# namespace that stays alive. Such a first process is not gone and must still be killed.
+prt_ar_zombie_leader_case() {
+  local out prt_ar_zf
+  prt_ar_zf="$(mktemp)"
+  out="$(bash -c '
+    source "$1/scripts/lib/prt/model.sh"
+    python3 -I -c "
+import ctypes, os, threading, time
+nr = {\"x86_64\": 60, \"aarch64\": 93}.get(os.uname().machine)
+if nr is None:
+    print(\"skip\")
+else:
+    threading.Thread(target=time.sleep, args=(60,)).start()
+    time.sleep(0.3)
+    ctypes.CDLL(None).syscall(nr, 0)" > "$2" 2> /dev/null < /dev/null &
+    p=$!
+    seen=no
+    for _ in $(seq 200); do
+      st=""; IFS= read -r -d "" st < "/proc/$p/stat" 2> /dev/null; st="${st##*) }"
+      case "$st" in Z*) seen=yes; break ;; esac
+      [ -s "$2" ] && break
+      sleep 0.05
+    done
+    if [ -s "$2" ]; then echo skip; builtin kill -KILL "$p" 2> /dev/null; exit 0; fi
+    if [ "$seen" != yes ]; then echo "no zombie leader appeared"; builtin kill -KILL "$p" 2> /dev/null; exit 0; fi
+    s_rc=0; _prt_proc_start "$p" || s_rc=$?
+    PRT_RUNNER_PID1="$p"; PRT_RUNNER_PID1_START="$PRT_PROC_START"
+    e_rc=0; _prt_runner_pid1_end || e_rc=$?
+    st=""; IFS= read -r -d "" st < "/proc/$p/stat" 2> /dev/null || :
+    st="${st##*) }"; set -- $st
+    left=0; [ -z "$st" ] || left="${18:-0}"
+    echo "live=$s_rc end=$e_rc threads=$([ "$left" -le 1 ] && echo none || echo "$left")"
+    builtin kill -KILL "$p" 2> /dev/null || :' bash "$ROOT" "$prt_ar_zf" 2> /dev/null | tail -n 1)"
+  rm -f "$prt_ar_zf"
+  [ "$out" = skip ] && return 0
+  assert_eq "a first process that ended its main thread and left others running is live, killed, and has no thread left" \
+    "live=0 end=0 threads=none" "$out"
+}
+prt_ar_zombie_leader_case
+# A process can name itself with a newline in it (`prctl(PR_SET_NAME)`, no privilege), and
+# /proc/PID/stat prints the name as it is: "PID (a\nb) S ...". The helpers read the whole file, so
+# a hostile first process cannot make its start time unreadable and escape the kill that way.
+prt_ar_newline_name_case() {
+  local out
+  out="$(bash -c '
+    source "$1/scripts/lib/prt/model.sh"
+    python3 -I -c "
+import os, time
+fd = os.open(\"/proc/self/comm\", os.O_WRONLY)
+os.write(fd, b\"a\\nb\")
+os.close(fd)
+time.sleep(30)" < /dev/null > /dev/null 2>&1 &
+    p=$!
+    for _ in $(seq 100); do IFS= read -r c < "/proc/$p/comm" 2> /dev/null; [ "$c" = a ] && break; sleep 0.05; done
+    s_rc=0; _prt_proc_start "$p" || s_rc=$?
+    PRT_RUNNER_PID1="$p"; PRT_RUNNER_PID1_START="$PRT_PROC_START"
+    e_rc=0; _prt_runner_pid1_end || e_rc=$?
+    a_rc=0; _prt_proc_start "$p" || a_rc=$?
+    builtin kill -KILL "$p" 2> /dev/null || :
+    echo "name=$c start=$s_rc end=$e_rc after=$a_rc"' bash "$ROOT" 2> /dev/null | tail -n 1)"
+  assert_eq "a process named with a newline: its start time is read and it is killed and gone" \
+    "name=a start=0 end=0 after=1" "$out"
+}
+prt_ar_newline_name_case
+prt_ar_gone_errexit_case() { # label, command run under `set -e` against a pid that is not there
+  local out
+  out="$(bash -c '
+    source "$1/scripts/lib/prt/model.sh"
+    set -e
+    gone="$(< /proc/sys/kernel/pid_max)"
+    rc=0; eval "$2" || rc=$?
+    echo "rc=$rc"' bash "$ROOT" "$3" 2> /dev/null)"
+  assert_eq "errexit, $1: the caller goes on" "rc=$2" "$out"
+}
+# shellcheck disable=SC2016 # the text is evaluated by the child shell
+prt_ar_gone_errexit_case "a process that is not there has no start time" 1 '_prt_proc_start "$gone"'
+# shellcheck disable=SC2016 # the text is evaluated by the child shell
+prt_ar_gone_errexit_case "a timeout process that is gone is reported as gone" 3 '_prt_runner_pid1_record "$gone"'
+# The children are listed whatever glob options the caller has set: noglob left the pattern
+# unexpanded and failglob made it an error, so a caller with either could never name a child.
+prt_ar_children_case() { # label, shell setting commands run before the read
+  local out
+  out="$(bash -c '
+    source "$1/scripts/lib/prt/model.sh"
+    sleep 30 & p=$!
+    eval "$2"
+    _prt_proc_children "$$"; echo "rc=$? kids=$PRT_PROC_KIDS p=$p"
+    builtin kill -KILL "$p" 2>/dev/null' bash "$ROOT" "$2" 2>/dev/null)"
+  assert_eq "proc children, $1: the child is listed" "true" \
+    "$([[ "$out" =~ ^rc=0\ kids=([0-9\ ]*)\ p=([0-9]+)$ && " ${BASH_REMATCH[1]} " == *" ${BASH_REMATCH[2]} "* ]] && echo true || echo false)"
+}
+prt_ar_children_gone_case() { # label, shell setting commands run before the read
+  local out
+  out="$(bash -c '
+    source "$1/scripts/lib/prt/model.sh"
+    eval "$2"
+    _prt_proc_children "$(< /proc/sys/kernel/pid_max)"; echo "rc=$?"' bash "$ROOT" "$2" 2> /dev/null)"
+  assert_eq "proc children, $1: a process that is not there cannot be read" "rc=1" "$out"
+}
+for prt_ar_opt in ':' 'set -f' 'shopt -s nullglob' 'shopt -s failglob' "GLOBIGNORE='/proc/*'"; do
+  prt_ar_children_case "$prt_ar_opt" "$prt_ar_opt"
+  prt_ar_children_gone_case "$prt_ar_opt" "$prt_ar_opt"
+done
+unset prt_ar_opt
+# The matrix: the helpers give the same answers whatever state the caller's shell is in. One
+# probe runs each helper that reads /proc (the start time, the children, the end of a recorded
+# process, the boundary check) after a state is set, and its line must equal the line of a clean
+# shell. The states are the ones a sourcing script can have: the field separator, the glob
+# settings, the match settings, the error, unset and clobber options, and the locale. A helper
+# that depends on one of them fails here by name, not in a run that happens to set it.
+prt_ar_state_probe() { # shell commands that set the state
+  bash -c '
+    source "$1/scripts/lib/prt/model.sh"
+    sleep 30 & p=$!
+    disown "$p"
+    eval "$2"
+    s_rc=0; _prt_proc_start "$p" || s_rc=$?; s_val=$PRT_PROC_START
+    c_rc=0; _prt_proc_children "$$" || c_rc=$?
+    c_has=no; case " $PRT_PROC_KIDS " in *" $p "*) c_has=yes ;; esac
+    PRT_RUNNER_PID1="$p"; PRT_RUNNER_PID1_START="$s_val"
+    e_rc=0; _prt_runner_pid1_end || e_rc=$?
+    alive=no; { builtin kill -0 "$p"; } 2> /dev/null && alive=yes
+    builtin kill -KILL "$p" 2> /dev/null || :
+    b_rc=0; _prt_runner_boundary_build && { _prt_runner_boundary_check > /dev/null 2>&1 || b_rc=$?; } || b_rc=build
+    echo "start=$s_rc children=$c_rc has=$c_has end=$e_rc alive=$alive boundary=$b_rc"' bash "$ROOT" "$1" 2> /dev/null | tail -n 1
+}
+prt_ar_state_base="$(prt_ar_state_probe ':')"
+assert_eq "state matrix: the clean shell answers" "true" \
+  "$([[ "$prt_ar_state_base" == "start=0 children=0 has=yes end=0 alive=no boundary=0" ]] && echo true || echo false)"
+for prt_ar_opt in 'IFS=' 'IFS=:' 'IFS=x' "IFS=\$'\\n'" "IFS=\$'\\n\\t'" 'IFS=0123456789' \
+  'set -f' 'shopt -s nullglob' 'shopt -s failglob' 'shopt -s dotglob' 'shopt -s nocaseglob' 'shopt -s extglob' \
+  'shopt -s globstar' "GLOBIGNORE='*'" "GLOBIGNORE='/proc/*'" 'shopt -s nocasematch' 'shopt -s nocasematch extglob' \
+  'set -e' 'set -eE -o pipefail' 'shopt -s inherit_errexit; set -e' 'set -u' 'set -C' 'set -o posix' \
+  'shopt -s lastpipe' 'shopt -s nullglob extglob nocasematch; set -efu' \
+  'LC_ALL=C' 'LC_ALL=en_US.utf8' 'LC_ALL=nl_BE.utf8' 'LC_ALL=C.utf8' 'LANG=nl_BE.utf8' 'LC_COLLATE=en_US.utf8' \
+  'LC_NUMERIC=nl_BE.utf8' 'LC_CTYPE=en_US.utf8'; do
+  assert_eq "state matrix, $prt_ar_opt: the helpers answer as in a clean shell" "$prt_ar_state_base" \
+    "$(prt_ar_state_probe "$prt_ar_opt")"
+done
+unset prt_ar_opt prt_ar_state_base
 fi
 
 # go-kure/.github#309: the default prefix sets no_new_privs for every user, not only for root. The
