@@ -574,8 +574,13 @@ ancestors, or a stat that cannot be read or parsed), `launch` (the prefix is not
 file could not be made, the probe did not start, was killed by a signal before its deadline, or
 ended without `boundary-ok`), `ancestor-environ-readable` (the probe could read an ancestor's
 environ), `capability` (the probe holds a capability, or its capability set cannot be read) and
-`deadline` (the probe was still running when the time ran out). The cause is text for the log only:
-it changes no result and no failure label. The run's remaining budget is
+`deadline` (the probe was still running when the time ran out). For `ancestor-environ-readable` the
+detail also gives the readable process's command name and parent pid, the probe's own pid, and the
+pid namespace of the probe and of that process, so a process that merely shares a pid number with
+an ancestor inside a fresh namespace can be told from a namespace that hides nothing. A kill in the
+last second before the deadline can read as `deadline`, because the exit code of an outside kill
+equals the one `timeout` gives its own kill and the clock counts whole seconds. The cause is text
+for the log only: it changes no result and no failure label. The run's remaining budget is
 read before the check: a call the deadline has no room for is refused as `deadline-exhausted`
 without spending the check, and the check is cut to what the budget leaves after the runner's own
 kill grace. It is read again after the check, and the minimum applies to that fresh reading too: a

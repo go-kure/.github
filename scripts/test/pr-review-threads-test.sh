@@ -8416,6 +8416,16 @@ chmod 755 "$prt_ar_dir/boundary-passthru"
 prt_ar_why="$(prt_ar_check_why "$prt_ar_dir/boundary-passthru")"
 assert_eq "boundary check, cause ancestor-environ-readable: a prefix that hides nothing is refused with that cause, naming an ancestor" \
   "1 ancestor-environ-readable true" "${prt_ar_why%%|*} $(grep -qE 'ancestor [0-9]+:[0-9]+' <<< "${prt_ar_why#*|}" && echo true || echo false)"
+# The detail separates a process that only shares a pid number inside a fresh namespace from a
+# namespace that hides nothing: it names the readable process, the probe and both pid namespaces.
+# With no boundary the probe and the ancestor share one namespace.
+prt_ar_re='comm=.+ ppid=[0-9]+; probe pid=[0-9]+ ns=(pid:\[[0-9]+\]); ancestor ns=(pid:\[[0-9]+\])\)'
+prt_ar_ns_same=none
+if [[ "${prt_ar_why#*|}" =~ $prt_ar_re ]]; then
+  if [ "${BASH_REMATCH[1]}" = "${BASH_REMATCH[2]}" ]; then prt_ar_ns_same=same; else prt_ar_ns_same=differ; fi
+fi
+assert_eq "boundary check, cause ancestor-environ-readable: the detail names the readable process, the probe's pid and both pid namespaces, equal when nothing isolates" \
+  "same" "$prt_ar_ns_same"
 prt_ar_deep() { # n: nests n subshells, then runs the check there
   if [ "$1" -le 0 ]; then prt_ar_check_why "$prt_ar_dir/boundary-passthru"; else ( prt_ar_deep $(($1 - 1)) ); fi
 }
