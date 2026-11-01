@@ -911,11 +911,16 @@ _prt_boundary_refuse() {
 # sequential, so an ancestor's pid number can be one the probe itself handed to a short-lived
 # child: that child can open its own environ, but is gone when its stat is read. Opening the
 # environ first would count it as the ancestor and refuse a boundary that holds. A stat that
-# cannot be read means there is no such process, so nothing there can be read either.
+# cannot be read means there is no such process, so nothing there can be read either. The
+# whole record is read, not its first line: a process name can contain a newline, and the fields
+# that follow the name sit after the last closing parenthesis.
 # shellcheck disable=SC2016 # the probe is the child shell's program, not an expansion here
 _PRT_BOUNDARY_PROBE='for a; do
   p="${a%%:*}"
-  { IFS= read -r l < "/proc/$p/stat"; } 2> /dev/null || continue
+  l=
+  { while IFS= read -r x; do l="$l$x
+"; done < "/proc/$p/stat"; } 2> /dev/null
+  [ -n "$l" ] || continue
   set -- ${l##*) }
   [ "${20:-}" = "${a##*:}" ] || continue
   if ( : < "/proc/$p/environ" ) 2> /dev/null; then
