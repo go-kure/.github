@@ -567,8 +567,9 @@ reads the `stat` first and goes on to the environ only when a live process under
 start time: inside a fresh namespace the pids are small and sequential, so an ancestor's pid number
 can be one the probe has just handed to a short-lived child of its own, which can open its own
 environ and is gone when its stat is read, and counting that child as the ancestor would refuse a
-boundary that holds. A command that starts but hides
-nothing, or leaves the runner able to undo it, fails. The probe is bounded as a whole: it runs under
+boundary that holds. It reads the whole `stat` record, not its first line, because a process name
+can contain a newline and the fields that matter follow the last closing parenthesis. A command
+that starts but hides nothing, or leaves the runner able to undo it, fails. The probe is bounded as a whole: it runs under
 `timeout` with a kill after the first signal and writes to a file, so a prefix that ignores
 `TERM`, or leaves a helper holding the probe's output, cannot hold the check. If the ancestors
 cannot be listed the call is refused, never checked against fewer. A refusal names its cause on the
