@@ -1,8 +1,8 @@
 name: PR Review Runner Boundary Probe
 
 # Acceptance run for the runner's process boundary (docs/pr-review-threads.md,
-# "Process boundary"). Manual only: it runs on the self-hosted runner image that the
-# review job uses, because only that image shows whether the boundary holds there.
+# "Process boundary"). Manual only: it runs on the review pool, and its result applies to
+# that pool only (the review job itself still runs on the general CI pool).
 # It holds no secret and calls no model: a made-up canary stands in for the posting
 # token and a stub for the runner. A red run is a result, not a flake.
 on:
