@@ -8401,6 +8401,43 @@ assert_eq "boundary check: a raw prefix that maps root and keeps every capabilit
   "1" "$(prt_ar_check unshare --user --map-root-user --pid --fork --mount-proc --kill-child)"
 fi
 
+# A refusal names the condition that stopped the check and shows the head of the probe's standard
+# error: a pool where every call was refused showed only "cannot be established here", and the
+# probe's own messages went to /dev/null. One case per condition, each with the cause a reader acts on.
+prt_ar_check_why() { # args: the boundary command words; prints "<rc> <reason>|<detail>"
+  # shellcheck disable=SC2034 # both are read by the sourced boundary functions
+  ( export PRT_TEST_RUNNER_LOG; PRT_ASSESS_RUNNER_BOUNDARY=cmd; PRT_ASSESS_RUNNER_BOUNDARY_CMD="$*"
+    _prt_runner_boundary_build
+    _prt_runner_boundary_check > /dev/null 2>&1; prt_ar_why_rc=$?
+    echo "$prt_ar_why_rc ${PRT_RUNNER_BOUNDARY_REASON:-}|${PRT_RUNNER_BOUNDARY_DETAIL:-}" )
+}
+printf '#!/bin/sh\nexec "$@"\n' > "$prt_ar_dir/boundary-passthru"
+chmod 755 "$prt_ar_dir/boundary-passthru"
+prt_ar_why="$(prt_ar_check_why "$prt_ar_dir/boundary-passthru")"
+assert_eq "boundary check, cause ancestor-environ-readable: a prefix that hides nothing is refused with that cause, naming an ancestor" \
+  "1 ancestor-environ-readable true" "${prt_ar_why%%|*} $(grep -qE 'ancestor [0-9]+:[0-9]+' <<< "${prt_ar_why#*|}" && echo true || echo false)"
+prt_ar_deep() { # n: nests n subshells, then runs the check there
+  if [ "$1" -le 0 ]; then prt_ar_check_why "$prt_ar_dir/boundary-passthru"; else ( prt_ar_deep $(($1 - 1)) ); fi
+}
+prt_ar_why="$(prt_ar_deep 260)"
+assert_eq "boundary check, cause ancestor-list: more ancestors than the walk allows is refused with that cause, never checked against fewer" \
+  "1 ancestor-list true" "${prt_ar_why%%|*} $(grep -qF '256' <<< "${prt_ar_why#*|}" && echo true || echo false)"
+prt_ar_why="$(PRT_BOUNDARY_CHECK_SECONDS=2 prt_ar_check_why "$prt_ar_dir/boundary-term-ignore")"
+assert_eq "boundary check, cause deadline: a probe that outlives its deadline is refused with that cause" \
+  "1 deadline" "${prt_ar_why%%|*}"
+printf '#!/bin/sh\necho "boundary-launch-marker: cannot start" >&2\nexit 3\n' > "$prt_ar_dir/boundary-nostart"
+chmod 755 "$prt_ar_dir/boundary-nostart"
+prt_ar_why="$(prt_ar_check_why "$prt_ar_dir/boundary-nostart")"
+assert_eq "boundary check, cause launch: a prefix that cannot start the probe is refused with that cause, showing the prefix's own message" \
+  "1 launch true" "${prt_ar_why%%|*} $(grep -qF 'boundary-launch-marker: cannot start' <<< "${prt_ar_why#*|}" && echo true || echo false)"
+if $prt_ar_ns; then
+  prt_ar_why="$(prt_ar_check_why unshare --user --map-root-user --pid --fork --mount-proc --kill-child)"
+  assert_eq "boundary check, cause capability: a boundary that leaves a capability is refused with that cause" \
+    "1 capability" "${prt_ar_why%%|*}"
+  assert_eq "boundary check, control: an accepted boundary leaves no reason and no detail" \
+    "0 |" "$(prt_ar_check_why "$(prt_ar_prod_prefix)")"
+fi
+
 # Root. A runner with the capabilities of a user namespace's root could unmount the fresh /proc and
 # see the host's, so the boundary must also leave it no capability. A non-root test host cannot be
 # root, but it can be root of a user namespace, and the boundary builder picks its prefix from
@@ -8429,12 +8466,14 @@ rm -f "$prt_ar_dir/rootsim.sh"
 # A boundary that cannot be established refuses the call and keeps the finding unverdicted
 # (REVIEW_DEGRADED, still gating); it never falls back to running the runner unbounded.
 prt_ar_fake="$(mktemp -d)"
-printf '#!/bin/sh\nexit 1\n' > "$prt_ar_fake/unshare"
+printf '#!/bin/sh\necho "unshare: fake failure" >&2\nexit 1\n' > "$prt_ar_fake/unshare"
 chmod 755 "$prt_ar_fake/unshare"
 rm -f "$PRT_TEST_RUNNER_LOG".*
 rc="$(PATH="$prt_ar_fake:$PATH" run_orchestrator advisory 0 0 0)"
 assert_eq "assess runner, default boundary fails to start: no runner call, degraded as runner-boundary" \
   "0 0 true" "$rc $(prt_ar_calls) $(prt_ar_reason runner-boundary)"
+assert_eq "assess runner, default boundary fails to start: the refusal line names the cause and shows the prefix's own message" \
+  "true true" "$(grep -qF 'refusing call (cause: launch;' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(grep -qF 'unshare: fake failure' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 assert_eq "assess runner, default boundary fails to start: the run is degraded, the finding stays unverdicted" \
   "true" "$(grep -qF 'REVIEW_DEGRADED:' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 # A boundary that starts but isolates nothing must fail the check, not just the start.
