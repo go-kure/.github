@@ -8471,9 +8471,12 @@ if $prt_ar_ns; then
   # the first one is pid 2 and, behind eight absent pids, the ninth is pid 10. An ancestor whose
   # pid number is one of those, with a start time no process has, is not in the namespace and
   # must not be taken for a readable ancestor (the review pool refused every call this way).
+  # The production prefix is used, not a bare unshare: for root it also drops the capabilities
+  # the probe's second check refuses.
   prt_ar_probe() { # args: the ancestors; prints "<exit code> <standard output>"
     local o rc=0
-    o="$(unshare --user --map-current-user --pid --fork --mount-proc --kill-child env -i "PATH=$PATH" sh -c "$_PRT_BOUNDARY_PROBE" sh "$@" 2> /dev/null)" || rc=$?
+    # shellcheck disable=SC2046 # the prefix is words
+    o="$($(prt_ar_prod_prefix) env -i "PATH=$PATH" sh -c "$_PRT_BOUNDARY_PROBE" sh "$@" 2> /dev/null)" || rc=$?
     echo "$rc $o"
   }
   assert_eq "boundary probe: an ancestor whose pid number is the probe's own first child, but not its start time, is no readable ancestor" \
