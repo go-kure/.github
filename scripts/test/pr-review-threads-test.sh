@@ -8376,6 +8376,58 @@ assert_eq "assess runner, hostile PID 1: the runner was seen running, and nothin
 prt_ar_hostile_reap
 PRT_TEST_MODEL_BUDGET_SECONDS=""
 
+# The end of the first process failing inside the call: the message the caller prints, the closed
+# reason and the order of the two signals. The shims are defined from strings and exported into the
+# orchestrator, and act only for the helper that names them: `kill` records which signal it is
+# (the group kill of the call, or the kill of the first process) and in one case fails the second,
+# and `read`, which `_prt_proc_start` uses to read the stat, fails the first read the end makes
+# ("before") or every one after it ("after"). The runner is the hostile stub, so the first process
+# is there to be ended. The group signal must come first: the wait for the first process takes up to
+# two seconds and must not widen the window in which the group id could be reused.
+prt_ar_shim_src='kill() {
+  case "${FUNCNAME[1]:-}" in
+    _prt_runner_pid1_end)
+      echo pid1 >> "$PRT_AR_SIG_LOG"
+      if [ "${PRT_AR_SHIM:-}" = nokill ]; then return 1; fi ;;
+    _prt_call_runner) echo group >> "$PRT_AR_SIG_LOG" ;;
+  esac
+  builtin kill "$@"
+}
+read() {
+  if [ "${FUNCNAME[1]:-}" = _prt_proc_start ] && [ "${FUNCNAME[2]:-}" = _prt_runner_pid1_end ]; then
+    PRT_AR_N=$((${PRT_AR_N:-0} + 1))
+    case "${PRT_AR_SHIM:-}" in
+      before) return 1 ;;
+      after) if [ "$PRT_AR_N" -gt 1 ]; then return 1; fi ;;
+    esac
+  fi
+  builtin read "$@"
+}'
+prt_ar_end_fails() { # label, shim mode, expected message fragment
+  rm -f "$PRT_TEST_RUNNER_LOG".*
+  : > "$prt_ar_dir/sig-order"
+  PRT_TEST_RUNNER_MODE=hostile
+  PRT_TEST_MODEL_BUDGET_SECONDS=12
+  rc="$(
+    export PRT_AR_SIG_LOG="$prt_ar_dir/sig-order" PRT_AR_SHIM="$2"
+    eval "$prt_ar_shim_src"
+    export -f kill read
+    PRT_MODEL_TIMEOUT_FLOOR=1 run_orchestrator advisory 0 0 0
+  )"
+  PRT_TEST_MODEL_BUDGET_SECONDS=""
+  assert_eq "assess runner, the end of the first process fails ($1): one call, degraded as runner-lifetime and not as runner-timeout" \
+    "0 1 true false" "$rc $(prt_ar_calls) $(prt_ar_reason runner-lifetime) $(prt_ar_reason runner-timeout)"
+  assert_eq "assess runner, the end of the first process fails ($1): the message names the cause as the helper found it" \
+    "true" "$(grep -qF "is not confirmed ($3) — abandoning call" "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+  assert_eq "assess runner, the end of the first process fails ($1): the group is signalled before the first process" \
+    "group pid1" "$(head -n 2 "$prt_ar_dir/sig-order" | paste -sd ' ')"
+  prt_ar_hostile_reap
+}
+prt_ar_end_fails "its state cannot be read before the signal" before "its start time cannot be read, so no signal was sent"
+prt_ar_end_fails "its state cannot be read after the signal" after "SIGKILL was sent but its start time can no longer be read, so its end is not confirmed"
+prt_ar_end_fails "the signal cannot be sent" nokill "SIGKILL could not be sent and it is still running 2 seconds later"
+PRT_TEST_RUNNER_MODE=probe
+
 # A failed discovery is not "nothing to end". A launcher with a second child leaves two candidates
 # for the namespace's first process: the call is abandoned as runner-lifetime, the runner's tree is
 # stopped, and no answer is read.
