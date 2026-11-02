@@ -8383,16 +8383,17 @@ PRT_TEST_MODEL_BUDGET_SECONDS=""
 # and `read`, which `_prt_proc_start` uses to read the stat file (the `-d ''` read; the later split
 # of its fields is left alone), gives the first stat read the end makes ("before", so no signal is
 # sent to the first process) or every one after it ("after") text that is not a stat line. The
-# state is then unreadable whether or not the process is still there: an empty read would count as
-# a gone process once the kill has taken effect and the process has been reaped. The runner is the hostile stub, so
-# the first process is there to be ended. The group signal must come first: the wait for the first
-# process takes up to two seconds and must not widen the window in which the group id could be
-# reused.
+# state is then unreadable, as long as the process is still in /proc: the shell opens the stat file
+# for the read before the shim runs, and a process that has gone reads as gone. So in "after" the
+# kill of the first process is recorded and reports success but does not deliver the signal, and the
+# test ends the process itself. The runner is the hostile stub, so the first process is there to be
+# ended. The group signal must come first: the wait for the first process takes up to two seconds
+# and must not widen the window in which the group id could be reused.
 prt_ar_shim_src='kill() {
   case "${FUNCNAME[1]:-}" in
     _prt_runner_pid1_end)
       echo pid1 >> "$PRT_AR_SIG_LOG"
-      if [ "${PRT_AR_SHIM:-}" = nokill ]; then return 1; fi ;;
+      case "${PRT_AR_SHIM:-}" in nokill) return 1 ;; after) return 0 ;; esac ;;
     _prt_call_runner) echo group >> "$PRT_AR_SIG_LOG" ;;
   esac
   builtin kill "$@"
