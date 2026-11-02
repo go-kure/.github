@@ -1474,24 +1474,25 @@ READER
     _prt_set_model_failure "runner-lifetime"
     return 1
   fi
-  # The namespace's first process goes first: it is the one the group signal cannot reach, and
-  # its end takes the rest of the namespace with it. Whatever the exit, and before anything is
-  # read from the call: a runner that is still alive could still be writing.
-  if ! _prt_runner_pid1_end; then
-    echo "prt_model: the end of the runner's namespace first process ($PRT_RUNNER_PID1) is not confirmed (${PRT_RUNNER_PID1_END_ERROR:-unknown}) — abandoning call" >&2
-    kill -KILL -- "-$runner_pid" 2>/dev/null || true
-    rm -rf "$tmp"
-    _prt_set_model_failure "runner-lifetime"
-    return 1
-  fi
   # Nothing in the group survives the call, whatever its exit; no member left is fine.
   # Known window: bash has already reaped `timeout` (its SIGCHLD handler does, before
   # `wait` runs), so with no member left the group id is free, and this signal would
   # reach an unrelated group only if that exact id were allocated again as a group
   # leader in the microseconds between the reap and this line. Ids are handed out
   # sequentially, so that takes a full wrap of the pid space. While any member lives
-  # (the case this line exists for) the id is pinned and cannot be reused.
+  # (the case this line exists for) the id is pinned and cannot be reused. This signal
+  # goes before the wait for the namespace's first process below, which can take up to two
+  # seconds, so that wait does not widen the window.
   kill -KILL -- "-$runner_pid" 2>/dev/null || true
+  # The namespace's first process next: it is the one the group signal cannot reach, and its
+  # end takes the rest of the namespace with it. Whatever the exit, and before anything is read
+  # from the call: a runner that is still alive could still be writing.
+  if ! _prt_runner_pid1_end; then
+    echo "prt_model: the end of the runner's namespace first process ($PRT_RUNNER_PID1) is not confirmed (${PRT_RUNNER_PID1_END_ERROR:-unknown}) — abandoning call" >&2
+    rm -rf "$tmp"
+    _prt_set_model_failure "runner-lifetime"
+    return 1
+  fi
   if [ "$rc" -ne 0 ]; then
     rm -rf "$tmp"
     case "$rc" in
