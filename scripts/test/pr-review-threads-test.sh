@@ -8380,10 +8380,12 @@ PRT_TEST_MODEL_BUDGET_SECONDS=""
 # reason and the order of the two signals. The shims are defined from strings and exported into the
 # orchestrator, and act only for the helper that names them: `kill` records which signal it is
 # (the group kill of the call, or the kill of the first process) and in one case fails the second,
-# and `read`, which `_prt_proc_start` uses to read the stat, fails the first read the end makes
-# ("before") or every one after it ("after"). The runner is the hostile stub, so the first process
-# is there to be ended. The group signal must come first: the wait for the first process takes up to
-# two seconds and must not widen the window in which the group id could be reused.
+# and `read`, which `_prt_proc_start` uses to read the stat file (the `-d ''` read; the later split
+# of its fields is left alone), fails the first stat read the end makes ("before", so no signal is
+# sent to the first process) or every one after it ("after"). The runner is the hostile stub, so
+# the first process is there to be ended. The group signal must come first: the wait for the first
+# process takes up to two seconds and must not widen the window in which the group id could be
+# reused.
 prt_ar_shim_src='kill() {
   case "${FUNCNAME[1]:-}" in
     _prt_runner_pid1_end)
@@ -8394,7 +8396,9 @@ prt_ar_shim_src='kill() {
   builtin kill "$@"
 }
 read() {
-  if [ "${FUNCNAME[1]:-}" = _prt_proc_start ] && [ "${FUNCNAME[2]:-}" = _prt_runner_pid1_end ]; then
+  local shim_arg shim_stat=0
+  for shim_arg in "$@"; do [ "$shim_arg" != -d ] || shim_stat=1; done
+  if [ "$shim_stat" = 1 ] && [ "${FUNCNAME[1]:-}" = _prt_proc_start ] && [ "${FUNCNAME[2]:-}" = _prt_runner_pid1_end ]; then
     PRT_AR_N=$((${PRT_AR_N:-0} + 1))
     case "${PRT_AR_SHIM:-}" in
       before) return 1 ;;
@@ -8403,7 +8407,7 @@ read() {
   fi
   builtin read "$@"
 }'
-prt_ar_end_fails() { # label, shim mode, expected message fragment
+prt_ar_end_fails() { # label, shim mode, expected message fragment, expected signals in order
   rm -f "$PRT_TEST_RUNNER_LOG".*
   : > "$prt_ar_dir/sig-order"
   PRT_TEST_RUNNER_MODE=hostile
@@ -8419,13 +8423,13 @@ prt_ar_end_fails() { # label, shim mode, expected message fragment
     "0 1 true false" "$rc $(prt_ar_calls) $(prt_ar_reason runner-lifetime) $(prt_ar_reason runner-timeout)"
   assert_eq "assess runner, the end of the first process fails ($1): the message names the cause as the helper found it" \
     "true" "$(grep -qF "is not confirmed ($3) — abandoning call" "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
-  assert_eq "assess runner, the end of the first process fails ($1): the group is signalled before the first process" \
-    "group pid1" "$(head -n 2 "$prt_ar_dir/sig-order" | paste -sd ' ')"
+  assert_eq "assess runner, the end of the first process fails ($1): the signals sent, in order" \
+    "$4" "$(head -n 2 "$prt_ar_dir/sig-order" | paste -sd ' ')"
   prt_ar_hostile_reap
 }
-prt_ar_end_fails "its state cannot be read before the signal" before "its start time cannot be read, so no signal was sent"
-prt_ar_end_fails "its state cannot be read after the signal" after "SIGKILL was sent but its start time can no longer be read, so its end is not confirmed"
-prt_ar_end_fails "the signal cannot be sent" nokill "SIGKILL could not be sent and it is still running 2 seconds later"
+prt_ar_end_fails "its state cannot be read before the signal" before "its start time cannot be read, so no signal was sent" "group"
+prt_ar_end_fails "its state cannot be read after the signal" after "SIGKILL was sent but its start time can no longer be read, so its end is not confirmed" "group pid1"
+prt_ar_end_fails "the signal cannot be sent" nokill "SIGKILL could not be sent and it is still running 2 seconds later" "group pid1"
 PRT_TEST_RUNNER_MODE=probe
 
 # A failed discovery is not "nothing to end". A launcher with a second child leaves two candidates
