@@ -8381,8 +8381,10 @@ PRT_TEST_MODEL_BUDGET_SECONDS=""
 # orchestrator, and act only for the helper that names them: `kill` records which signal it is
 # (the group kill of the call, or the kill of the first process) and in one case fails the second,
 # and `read`, which `_prt_proc_start` uses to read the stat file (the `-d ''` read; the later split
-# of its fields is left alone), fails the first stat read the end makes ("before", so no signal is
-# sent to the first process) or every one after it ("after"). The runner is the hostile stub, so
+# of its fields is left alone), gives the first stat read the end makes ("before", so no signal is
+# sent to the first process) or every one after it ("after") text that is not a stat line. The
+# state is then unreadable whether or not the process is still there: an empty read would count as
+# a gone process once the kill has taken effect and the process has been reaped. The runner is the hostile stub, so
 # the first process is there to be ended. The group signal must come first: the wait for the first
 # process takes up to two seconds and must not widen the window in which the group id could be
 # reused.
@@ -8401,8 +8403,8 @@ read() {
   if [ "$shim_stat" = 1 ] && [ "${FUNCNAME[1]:-}" = _prt_proc_start ] && [ "${FUNCNAME[2]:-}" = _prt_runner_pid1_end ]; then
     PRT_AR_N=$((${PRT_AR_N:-0} + 1))
     case "${PRT_AR_SHIM:-}" in
-      before) return 1 ;;
-      after) if [ "$PRT_AR_N" -gt 1 ]; then return 1; fi ;;
+      before) builtin read "$@" <<< unreadable; return ;;
+      after) if [ "$PRT_AR_N" -gt 1 ]; then builtin read "$@" <<< unreadable; return; fi ;;
     esac
   fi
   builtin read "$@"
