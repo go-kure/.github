@@ -7412,7 +7412,7 @@ case "$mode" in
   # session of its own and keeps rewriting a counter file, never exiting (go-kure/.github#304).
   # It ends when "$log.stop" exists, so a test can reap it, and after two minutes in any case.
   hostile)
-    exec python3 -I -c '
+    exec "${PRT_TEST_PYTHON:-python3}" -I -c '
 import ctypes, os, sys, time
 ctypes.CDLL(None).prctl(1, 0, 0, 0, 0)  # PR_SET_PDEATHSIG, 0
 os.setsid()
@@ -8314,10 +8314,31 @@ fi
 # runner. Control: started directly, it outlives the stub that started it. Behind the default
 # boundary it must be gone after the call: the namespace dies with the runner.
 if $prt_ar_ns; then
+# prt_ar_hb_advancing: the counter file exists and its value changes, within ten seconds (a loaded
+# host is slow, not wrong). It prints true, or false with what was seen, so a failure names its own
+# cause: whether the file ever appeared, and the first and last value read.
 prt_ar_hb_advancing() {
-  local a b
-  a="$(cat "$PRT_TEST_RUNNER_LOG.hb" 2>/dev/null)"; sleep 0.5; b="$(cat "$PRT_TEST_RUNNER_LOG.hb" 2>/dev/null)"
-  [ -n "$a" ] && [ "$a" != "$b" ] && echo true || echo false
+  local first="" last="" i
+  for i in $(seq 1 100); do
+    last="$(cat "$PRT_TEST_RUNNER_LOG.hb" 2>/dev/null)"
+    if [ -n "$last" ]; then
+      [ -n "$first" ] || first="$last"
+      if [ "$last" != "$first" ]; then echo true; return; fi
+    fi
+    sleep 0.1
+  done
+  echo "false (heartbeat file $([ -e "$PRT_TEST_RUNNER_LOG.hb" ] && echo present || echo never appeared), first='$first' last='$last')"
+}
+# prt_ar_hb_wait: the counter file has appeared, within twenty seconds. The stub writes it only after
+# it has cleared its parent-death signal and started its session, so its first appearance shows the
+# stub is up and has escaped. Prints true or false.
+prt_ar_hb_wait() {
+  local i
+  for i in $(seq 1 200); do
+    if [ -s "$PRT_TEST_RUNNER_LOG.hb" ]; then echo true; return; fi
+    sleep 0.1
+  done
+  echo false
 }
 rm -f "$PRT_TEST_RUNNER_LOG".*
 PRT_TEST_RUNNER_LOG="$PRT_TEST_RUNNER_LOG" PRT_TEST_RUNNER_MODE=detach "$prt_ar_dir/review-run" --out "$prt_ar_dir/detach-control-out" --root . --base x -- p \
@@ -8344,13 +8365,22 @@ PRT_TEST_RUNNER_MODE=probe
 prt_ar_hostile_reap() { : > "$PRT_TEST_RUNNER_LOG.stop"; sleep 0.5; }
 rm -f "$PRT_TEST_RUNNER_LOG".*
 _prt_runner_boundary_build
-( exec env -i "PATH=$PATH" PRT_TEST_RUNNER_LOG="$PRT_TEST_RUNNER_LOG" PRT_TEST_RUNNER_MODE=hostile \
-    timeout --kill-after=2 2 "${PRT_RUNNER_BOUNDARY_ARGS[@]}" "$prt_ar_dir/review-run" \
+# The stub's interpreter is named here, outside the scrubbed environment below: a python3 that is a
+# version-manager shim needs variables the control does not pass (HOME), and then never starts.
+prt_ar_py="$(python3 -c 'import sys; print(sys.executable)')"
+# The bound is long and the stub's readiness decides when it fires: the TERM sent below is the one
+# the expiry sends, so the control does not depend on how fast the stub starts on a loaded host.
+( exec env -i "PATH=$PATH" PRT_TEST_PYTHON="$prt_ar_py" PRT_TEST_RUNNER_LOG="$PRT_TEST_RUNNER_LOG" PRT_TEST_RUNNER_MODE=hostile \
+    timeout --kill-after=2 30 "${PRT_RUNNER_BOUNDARY_ARGS[@]}" "$prt_ar_dir/review-run" \
     --out "$prt_ar_dir/hostile-control-out" --root . --base x -- p < /dev/null > /dev/null 2>&1 ) &
 prt_ar_cpid=$!
+prt_ar_up="$(prt_ar_hb_wait)"
+kill -TERM "$prt_ar_cpid" 2>/dev/null
 wait "$prt_ar_cpid" 2>/dev/null
 kill -KILL -- "-$prt_ar_cpid" 2>/dev/null
 sleep 0.5
+assert_eq "assess runner, hostile PID 1, control (timeout and the group kill alone): the stub started and escaped" \
+  "true" "$prt_ar_up"
 assert_eq "assess runner, hostile PID 1, control (timeout and the group kill alone): the runner outlives the call" \
   "true" "$(prt_ar_hb_advancing)"
 prt_ar_hostile_reap
