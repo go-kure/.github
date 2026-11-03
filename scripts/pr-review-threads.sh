@@ -34,7 +34,7 @@
 #                               PRT_ASSESS_RUNNER_BOUNDARY_CMD) or is refused.
 #                               Refused in enforce mode until that boundary is
 #                               shown to hold on the runner image.
-#   PRT_MODEL                   default: claude-opus-4
+#   PRT_MODEL                   default: claude-opus-5-5
 #   PRT_MAX_TOKENS               default: 1500
 #   PRT_ASSESS_MODEL             default: claude-sonnet-4-6
 #   PRT_ASSESS_MAX_TOKENS        default: 4096
@@ -104,7 +104,7 @@ source "$PRT_LIB_DIR/model.sh"
 source "$PRT_LIB_DIR/reconcile.sh"
 
 : "${PRT_MODE:=advisory}"
-: "${PRT_MODEL:=claude-opus-4}"
+: "${PRT_MODEL:=claude-opus-5-5}"
 : "${PRT_MAX_TOKENS:=1500}"
 : "${PRT_ASSESS_MODEL:=claude-sonnet-4-6}"
 : "${PRT_ASSESS_MAX_TOKENS:=4096}"
