@@ -590,7 +590,7 @@ _prt_call_file() {
        || ! jq -c -n --argjson n "$n" --slurpfile index "$tmp/index.json" --slurpfile files "$tmp/files.json" \
             '{idx: $n, index: $index[0], files: $files[0]}' >> "$tmp/chunks.jsonl"; then
       rm -rf "$tmp"
-      _prt_set_model_failure "backend-config"
+      _prt_set_model_failure "payload-build"
       return 1
     fi
     n=$((n + 1))

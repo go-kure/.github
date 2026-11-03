@@ -6768,7 +6768,7 @@ assert_eq "file backend: chunk 0 holds the findings inside its hunks, the in-fil
 assert_eq "file backend: chunk 1 holds big.go's second hunk and the file-level finding of c.go" \
   "big.go:51,c.go:null" "$(prt_fb_keys "$prt_fb_out1")"
 assert_eq "file backend: six findings in, six answered across the chunks, none twice" "6" \
-  "$(jq -s '[.[].findings[] | .issue] | unique | length' <<< "$prt_fb_out0 $prt_fb_out1")"
+  "$(jq -s '[.[].findings[]] | length' <<< "$prt_fb_out0 $prt_fb_out1")"
 assert_eq "file backend: an answered finding keeps the six fields the normalizer reads" "true" \
   "$(jq -s 'all(.[].findings[]; (keys - ["file","line","severity","category","issue","fix"]) == [])' <<< "$prt_fb_out0 $prt_fb_out1")"
 assert_eq "file backend: the answer normalizes clean (rc 0)" "0" \
@@ -6912,6 +6912,13 @@ prt_fb_restore
 jq -c '.format = "review-run-v0"' "$prt_fb_dir/art/provider.json" > "$prt_fb_dir/art/p.tmp" && mv "$prt_fb_dir/art/p.tmp" "$prt_fb_dir/art/provider.json"
 prt_fb_refuse "unknown provenance format" "provenance-mismatch"
 prt_fb_restore
+
+# A chunk whose line index cannot be built is a local fault, not an input this mode lacks
+# (go-kure/.github#306): the reason is payload-build, as for the other local faults.
+: > "$prt_fb_dir/failure"
+( prt_build_line_index() { return 1; }; PRT_REVIEW_BACKEND="file" prt_fb_review 0 > /dev/null 2>&1 ); prt_fb_rc=$?
+assert_eq "file backend refusal: a line index that cannot be built: rc" "1" "$prt_fb_rc"
+assert_eq "file backend refusal: a line index that cannot be built: reason" "payload-build" "$(cat "$prt_fb_dir/failure")"
 
 # Misconfiguration fails closed too, and says so.
 : > "$prt_fb_dir/failure"
