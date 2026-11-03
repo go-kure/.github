@@ -145,5 +145,11 @@ assert_rc "diff mode flags an added camelCase hit" 1 \
 assert_rc "diff mode passes an added line without a hit" 0 \
   "$(run_diff_fixture "func staleProfile() {}")"
 
+# The checker runs by hand on the stock Bash 3.2 of macOS, where Bash 4's case-conversion
+# expansions abort with `bad substitution` (go-kure/.github#305). The behaviour above is
+# unchanged by the portable form; this pins that none of them returns.
+bash4_hits="$(grep -nE '\$\{[A-Za-z_][A-Za-z_0-9]*(\^\^?|,,?)[^}]*\}' "$CHECKER" || true)"
+assert_rc "the checker uses no Bash 4 case-conversion expansion" 0 "$([ -z "$bash4_hits" ] && echo 0 || echo 1)"
+
 echo "passed: $pass_count, failed: $failures"
 [ "$failures" -eq 0 ]
