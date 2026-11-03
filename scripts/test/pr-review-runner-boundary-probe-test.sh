@@ -104,6 +104,10 @@ assert_eq "judge: root written with a leading zero keeps the root check" 1 "$(ju
 # so a high uid used to be called "not a number" and the run inconclusive (go-kure/.github#328).
 write_report "$dir/b12" boundary uid=4294967295
 assert_eq "judge: the largest 32-bit uid behind the boundary is judged, not inconclusive" 0 "$(judge_rc "$dir/b12" "$dir/c")"
+# A value above the 32-bit range is not a uid: reading one means the report is broken, so the
+# answer is inconclusive, never a verdict.
+write_report "$dir/b14" boundary uid=4294967296
+assert_eq "judge: a uid above the 32-bit range is inconclusive" 3 "$(judge_rc "$dir/b14" "$dir/c")"
 write_report "$dir/b13" boundary uid=0000000000 cap_bnd=000001ffffffffff
 assert_eq "judge: root written with ten digits keeps the root check" 1 "$(judge_rc "$dir/b13" "$dir/c")"
 write_report "$dir/b9" boundary no_new_privs=0

@@ -34,9 +34,9 @@ self="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]
 get() { sed -n "s/^$2=//p" "$1" 2> /dev/null | head -1; }
 # At most 9 digits: a longer string would make bash arithmetic comparisons error out.
 is_count() { [[ "${1:-}" =~ ^[0-9]{1,9}$ ]]; }
-# A uid is up to 10 digits (4294967295): ten digits still fit bash arithmetic, which is all the
-# root check does with it.
-is_uid() { [[ "${1:-}" =~ ^[0-9]{1,10}$ ]]; }
+# A uid is 32 bits unsigned: up to 10 digits and at most 4294967295. Ten digits fit bash arithmetic,
+# which is all the root check does with it; a larger value is not a uid, so it is not judged.
+is_uid() { [[ "${1:-}" =~ ^[0-9]{1,10}$ ]] && [ "$((10#$1))" -le 4294967295 ]; }
 # A start time is in clock ticks since boot and passes 9 digits after about 115 days at 100 Hz.
 is_digits() { [[ "${1:-}" =~ ^[0-9]{1,20}$ ]]; }
 # stat_fields LINE: the parent pid and start time of a /proc/PID/stat line, into STAT_PPID and
