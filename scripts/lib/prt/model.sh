@@ -18,7 +18,7 @@
 # (backend-config, local-tempdir, payload-build, findings-file-missing,
 # findings-file-malformed, provenance-mismatch; PRT_REVIEW_BACKEND=file) or
 # _prt_call_runner produced (backend-config, local-tempdir, deadline-exhausted,
-# runner-boundary, runner-lifetime, runner-incomplete, runner-quota, runner-launch, runner-usage, runner-timeout, runner-failed,
+# runner-boundary, runner-lifetime, runner-pid1-unread, runner-incomplete, runner-quota, runner-launch, runner-usage, runner-timeout, runner-failed,
 # runner-no-output, runner-empty, provenance-mismatch; PRT_ASSESS_BACKEND=runner). Read by callers in
 # pr-review-threads.sh to annotate a bare "exit 1" with which of several
 # unrelated causes actually fired — same cross-file pattern as
@@ -743,6 +743,10 @@ _prt_runner_clock_read() {
 # runner's namespace could not be identified after the launch, or its end could not be
 # confirmed (its state cannot be read, before or after the attempt to send SIGKILL, or it is
 # still there after it); see _prt_runner_pid1_record and _prt_runner_pid1_end),
+# runner-pid1-unread (the child of the namespace launcher was there, but its namespace process
+# ids read empty: a first process that is going away and a live one that cannot be identified
+# look the same, so the call is abandoned without saying which; the boundary probe reports it
+# as inconclusive, not as a leak; see _prt_runner_pid1_record),
 # runner-incomplete (review-run exit 2), runner-quota (3), runner-launch (4),
 # runner-usage (64, includes an input over its ceiling), runner-timeout (the outer
 # bound on the whole process tree fired; see the call below), runner-failed (any other
@@ -1087,8 +1091,10 @@ _prt_proc_children() {
 # process that was just launched. Returns 0 when recorded, 3 when the launched process (it becomes
 # `timeout`, but may be gone before it has run `exec timeout`) has gone first (the caller judges
 # that by its exit status: an ordinary one means the namespace went with it and there is nothing
-# to end, 124 or 128 and above means the first process may still be alive), 1 for everything
-# else, with the cause in PRT_RUNNER_PID1_ERROR.
+# to end, 124 or 128 and above means the first process may still be alive), 2 when the child of
+# the namespace launcher is there but its namespace process ids read empty (the call cannot say
+# whether that process is one that is going away or a live one it cannot identify), 1 for
+# everything else, with the cause in PRT_RUNNER_PID1_ERROR for 1 and 2.
 # shellcheck disable=SC2034 # the PRT_RUNNER_PID1* variables are read by _prt_call_runner
 _prt_runner_pid1_record() {
   local IFS=$' \t\n' tp="$1" polls="${PRT_RUNNER_PID1_POLLS:-100}" comm launcher launcher_gone pid1 key nspid rc kids=()
@@ -1150,10 +1156,13 @@ _prt_runner_pid1_record() {
             if [ "$rc" -eq 0 ]; then
               if [ "$nspid" != "$pid1"$'\t'1 ]; then
                 if [ -z "$nspid" ]; then
+                  # A process that is going away reads empty here while its stat is still there,
+                  # which a live process that cannot be identified does too: the two cannot be told
+                  # apart, and a retry would not settle which one this is.
                   PRT_RUNNER_PID1_ERROR="the namespace process ids of the child of the namespace launcher cannot be read"
-                else
-                  PRT_RUNNER_PID1_ERROR="the child of the namespace launcher is not the first process of a namespace"
+                  return 2
                 fi
+                PRT_RUNNER_PID1_ERROR="the child of the namespace launcher is not the first process of a namespace"
                 return 1
               fi
               PRT_RUNNER_PID1="$pid1"
@@ -1448,7 +1457,10 @@ READER
     # itself (checked below, once its status is known): a first process that is already running
     # shares the process group of `timeout` and the launcher, and a `kill(0, SIGKILL)` of its
     # own ends both and leaves it alive.
-    if [ "$pid1_rc" -eq 1 ]; then
+    # rc 2 is the one read that may be a race (a first process going away) rather than a fault;
+    # the call is abandoned the same way, but under its own reason so the boundary probe can
+    # call it inconclusive instead of a leak.
+    if [ "$pid1_rc" -eq 1 ] || [ "$pid1_rc" -eq 2 ]; then
       echo "prt_model: the runner's namespace first process cannot be identified (${PRT_RUNNER_PID1_ERROR:-unknown}) — abandoning call" >&2
       # `timeout` makes the group that carries this id when it starts, so before that the group
       # kill reaches nothing and the launch subshell would go on to start the runner: the pid
@@ -1457,7 +1469,11 @@ READER
       kill -KILL "$runner_pid" 2>/dev/null || true
       wait "$runner_pid" 2>/dev/null || true
       rm -rf "$tmp"
-      _prt_set_model_failure "runner-lifetime"
+      if [ "$pid1_rc" -eq 2 ]; then
+        _prt_set_model_failure "runner-pid1-unread"
+      else
+        _prt_set_model_failure "runner-lifetime"
+      fi
       return 1
     fi
   fi

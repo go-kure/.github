@@ -7757,6 +7757,16 @@ assert_eq "assess runner unreadable review.md: the failure reason is runner-no-o
 assert_eq "assess runner unreadable review.md: the verdicts are not used" \
   "false" "$(grep -qE 'coverage: [0-9]+/[0-9]+ chunks review\+assess ok' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 
+# The runner failure reasons as they are printed, in brackets. The closing bracket is the boundary,
+# so the pattern takes a whole reason or none; a reason with a digit or more than one hyphen
+# (runner-no-output, runner-pid1-unread) was not matched by the earlier runner-[a-z]+, and a
+# negative check built on it passed without looking.
+prt_ar_reason_re='\[(runner-[a-z0-9]+(-[a-z0-9]+)*|provenance-mismatch|local-tempdir)\]'
+assert_eq "assess runner reason pattern: takes every runner reason whole and nothing partial" \
+  "true true true true false false" \
+  "$(for r in '[runner-lifetime]' '[runner-no-output]' '[runner-pid1-unread]' '[local-tempdir]' '[runner-pid1-unread-x' '[runner-]'; do
+    printf '%s\n' "$r" | grep -qE "$prt_ar_reason_re" && printf 'true ' || printf 'false '; done | sed 's/ $//')"
+
 # A good answer that was printed stays good when the cleanup after it fails: the status of the call
 # is not the status of the temporary directory's removal.
 rm -f "$PRT_TEST_RUNNER_LOG".*
@@ -7774,7 +7784,7 @@ assert_eq "assess runner failed cleanup after a good answer: exits 0, one call" 
 assert_eq "assess runner failed cleanup after a good answer: the verdicts are used" \
   "true" "$(grep -qE 'coverage: [0-9]+/[0-9]+ chunks review\+assess ok' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 assert_eq "assess runner failed cleanup after a good answer: no runner failure reason" \
-  "false" "$(grep -qE '\[(runner-[a-z]+|provenance-mismatch|local-tempdir)\]' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+  "false" "$(grep -qE "$prt_ar_reason_re" "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 
 # What the runner writes to standard error is never printed: it can hold raw assessment text and
 # credential-bearing diagnostics, and the run's log is not the place for either. Only the closed
@@ -8525,6 +8535,40 @@ assert_eq "assess runner, the launcher has two children: the abandoned runner's 
 prt_ar_reap_sleepers
 PRT_TEST_RUNNER_MODE=probe
 
+# The child of the launcher is there and its stat reads, but its namespace ids read empty (a first
+# process that is going away reads the same as a live one that cannot be identified): the call is
+# abandoned like any other that cannot name its first process, but under its own reason, so the
+# boundary probe can call it inconclusive instead of a leak. The shim gives the finder's one read of
+# the status file (the `read -r key nspid` loop; no other read in the finder names `key`) an empty
+# status, so the chain is real and only that read is empty.
+rm -f "$PRT_TEST_RUNNER_LOG".*
+# shellcheck disable=SC2016 # shim text evaluated in the child, not an expansion
+prt_ar_nspid_shim_src='read() {
+  local shim_arg
+  for shim_arg in "$@"; do
+    if [ "$shim_arg" = key ] && [ "${FUNCNAME[1]:-}" = _prt_runner_pid1_record ]; then
+      # End of file at once: the loop that reads the status file ends with an empty answer. A
+      # successful read of an empty line would keep that loop reading for ever.
+      builtin read "$@" < /dev/null
+      return
+    fi
+  done
+  builtin read "$@"
+}'
+PRT_TEST_RUNNER_MODE=heartbeat
+rc="$(
+  eval "$prt_ar_nspid_shim_src"
+  export -f read
+  run_orchestrator advisory 0 0 0
+)"
+assert_eq "assess runner, the namespace ids of the first process read empty: degraded as runner-pid1-unread and not as runner-lifetime, the run still exits 0" \
+  "0 true false" "$rc $(prt_ar_reason runner-pid1-unread) $(prt_ar_reason runner-lifetime)"
+assert_eq "assess runner, the namespace ids of the first process read empty: the message names the cause" \
+  "true" "$(grep -qF 'the namespace process ids of the child of the namespace launcher cannot be read) — abandoning call' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "assess runner, the namespace ids of the first process read empty: the abandoned runner's tree is stopped" "true" "$(prt_ar_hb_not_running)"
+prt_ar_reap_sleepers
+PRT_TEST_RUNNER_MODE=probe
+
 # A discovery that fails before `timeout` has started: no process group with the launch pid exists
 # yet (`timeout` creates it), so the group kill reaches nothing and the launch subshell would go on
 # to start the runner and let it run to its bound. The pid itself is killed as well. The wrapper
@@ -8651,8 +8695,9 @@ PRT_AR_POLLS=08 prt_ar_pid1_case "a poll count with a leading zero is decimal" 1
   "no namespace first process was found in time" "sleep 30 & tp=\$!; sleep 0.1; $prt_ar_loop_guard"
 # A message says what the code has established when it prints it: a child of the launcher whose
 # namespace ids cannot be read is not "not the first process", and a child whose stat cannot be read
-# is not "the namespace's first process".
-prt_ar_pid1_case "the namespace ids of the launcher's child cannot be read" 1 \
+# is not "the namespace's first process". The empty read is rc 2, not 1: a first process that is going
+# away reads the same, so the caller must not call it a failed lifetime.
+prt_ar_pid1_case "the namespace ids of the launcher's child cannot be read" 2 \
   "the namespace process ids of the child of the namespace launcher cannot be read" \
   "$prt_ar_fake_chain P=\$(< /proc/sys/kernel/pid_max); _prt_proc_children() { if [ \"\$1\" = \"\$tp\" ]; then PRT_PROC_KIDS=\$L; else PRT_PROC_KIDS=\$P; fi; return 0; }; _prt_proc_start() { PRT_PROC_START=1; return 0; }"
 prt_ar_pid1_case "the stat of the launcher's child cannot be read" 1 \
