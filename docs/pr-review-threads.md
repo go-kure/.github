@@ -435,7 +435,7 @@ array, a finding whose `file` is missing, empty or over 4096 bytes, a `line` tha
 nor `null`, or a `severity`, `category`, `issue` or `fix` that is not a string; every field is checked
 before any chunk is served, so one malformed row refuses the whole run), and
 `provenance-mismatch`; and, for a local fault while building the answer, `local-tempdir` (no
-temporary directory) and `payload-build` (the answer could not be assembled). The orchestrator hands
+temporary directory) and `payload-build` (the answer could not be assembled, which includes a chunk's line index or file list that cannot be built). The orchestrator hands
 the chunk directory to the call as
 `PRT_CHUNK_DIR` and the chunk's position as the twelfth argument. The failure line keeps the
 shared wording `review call failed (transport/proxy error, exit 1)` that the rest of this
