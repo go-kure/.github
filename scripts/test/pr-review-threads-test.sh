@@ -8470,15 +8470,25 @@ PRT_TEST_RUNNER_MODE=probe
 # stopped, and no answer is read.
 rm -f "$PRT_TEST_RUNNER_LOG".*
 mkdir -p "$prt_ar_dir/bin-twokids"
+# Each extra child is recorded as "<pid> <start time>", the start time being field 22 of its stat
+# file (field 20 once the "pid (comm) " prefix is cut off). The fixtures' scripts call this helper.
+# shellcheck disable=SC2016 # script text for the helper, not an expansion
+printf '#!/bin/sh\nset -- "$1" "$(sed "s/.*) //" /proc/$1/stat 2> /dev/null | cut -d" " -f20)"\necho "$1 $2" >> "%s"\n' "$prt_ar_dir/sleepers" > "$prt_ar_dir/record-sleeper"
+chmod 755 "$prt_ar_dir/record-sleeper"
 # shellcheck disable=SC2016 # script text for the wrapper, not an expansion
-printf '#!/bin/sh\nsleep 20 < /dev/null > /dev/null 2>&1 &\necho $! >> "%s"\nexec %s "$@"\n' "$prt_ar_dir/sleepers" "$(command -v unshare)" > "$prt_ar_dir/bin-twokids/unshare"
+printf '#!/bin/sh\nsleep 20 < /dev/null > /dev/null 2>&1 &\n"%s/record-sleeper" $!\nexec %s "$@"\n' "$prt_ar_dir" "$(command -v unshare)" > "$prt_ar_dir/bin-twokids/unshare"
 chmod 755 "$prt_ar_dir/bin-twokids/unshare"
-# The wrapper runs for the boundary preflight as well as for the call, and records the pid of each
-# extra child it starts: the test ends those and no other process.
+# The wrapper runs for the boundary preflight as well as for the call, and records each extra child
+# it starts. The test ends a recorded process only while its start time still matches the record,
+# as the code under test does, so a pid the kernel has since reused is never signalled.
 prt_ar_reap_sleepers() {
-  local p
+  local p st now
   if [ -f "$prt_ar_dir/sleepers" ]; then
-    while read -r p; do kill -KILL "$p" 2> /dev/null || true; done < "$prt_ar_dir/sleepers"
+    while read -r p st; do
+      [ -n "$st" ] || continue
+      now="$(sed 's/.*) //' "/proc/$p/stat" 2> /dev/null | cut -d' ' -f20)"
+      if [ "$now" = "$st" ]; then kill -KILL "$p" 2> /dev/null || true; fi
+    done < "$prt_ar_dir/sleepers"
     : > "$prt_ar_dir/sleepers"
   fi
 }
@@ -8586,9 +8596,9 @@ prt_ar_pid1_case "a pid that is not there" 3 - 'tp=$(< /proc/sys/kernel/pid_max)
 # the processes of the chain (the kernel names a script's process after the script).
 mkdir -p "$prt_ar_dir/chain-ok" "$prt_ar_dir/chain-other"
 printf '#!/bin/sh\n"%s/chain-ok/unshare" &\nwait\n' "$prt_ar_dir" > "$prt_ar_dir/chain-ok/timeout"
-printf '#!/bin/sh\nsleep 8 &\necho $! >> "%s"\nwait\n' "$prt_ar_dir/sleepers" > "$prt_ar_dir/chain-ok/unshare"
+printf '#!/bin/sh\nsleep 8 &\n"%s/record-sleeper" $!\nwait\n' "$prt_ar_dir" > "$prt_ar_dir/chain-ok/unshare"
 printf '#!/bin/sh\n"%s/chain-other/other" &\nwait\n' "$prt_ar_dir" > "$prt_ar_dir/chain-other/timeout"
-printf '#!/bin/sh\nsleep 8 &\necho $! >> "%s"\nwait\n' "$prt_ar_dir/sleepers" > "$prt_ar_dir/chain-other/other"
+printf '#!/bin/sh\nsleep 8 &\n"%s/record-sleeper" $!\nwait\n' "$prt_ar_dir" > "$prt_ar_dir/chain-other/other"
 chmod 755 "$prt_ar_dir"/chain-ok/* "$prt_ar_dir"/chain-other/*
 # These two build their chain of scripts while the finder polls, and answer as soon as the chain is
 # whole; the larger poll count only gives a loaded host room to build it.
