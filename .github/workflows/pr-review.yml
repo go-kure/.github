@@ -140,13 +140,10 @@
 #     nothing here rechecks it, and it will go stale without anyone noticing.
 #     Reread it before relying on either claim.
 #
-# The composite action and scripts/pr-review-threads.sh keep `claude-opus-4` as
-# their own fallback defaults, so the repository holds two model labels. Both are
-# delegate code under the pin-bump sequence, where a change needs its pin bumped
-# with it, and that cost is why they were left unchanged here. The fallback is
-# reached by a caller that omits or empties the `model` input, and by a direct run
-# of the script. It is the same family with a different label, most visibly in the
-# `model` row of the clean-verdict comment.
+# The composite action and scripts/pr-review-threads.sh default to the same
+# `claude-opus-5-5`, so a caller that omits or empties the `model` input, and a
+# direct run of the script, are labelled as this job is. This job still passes the
+# value explicitly below, so the pin it uses never decides its model.
 #
 # Bot identity (go-kure/.github#156): a caller without KURE_BOT_PAT passes its
 # own PAT as the BOT_PAT secret and the login that PAT posts as as the

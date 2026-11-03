@@ -107,7 +107,7 @@ inputs:
   model:
     description: Review model.
     required: false
-    default: "claude-opus-4"
+    default: "claude-opus-5-5"
   max-tokens:
     description: Review call max_tokens.
     required: false

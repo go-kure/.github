@@ -43,10 +43,9 @@ usage: review-adapter.sh --diff <file> --title <text> [options]
   --assess      also run the assessment pass and join verdicts by fp
   --out         write the JSON here instead of stdout
 
-environment (same names as scripts/pr-review-threads.sh, but two defaults below are this
-harness's own: PRT_MODEL follows .github/workflows/pr-review.yml rather than that script's
-claude-opus-4 fallback, and PRT_MODEL_BUDGET_SECONDS is the harness's own value, explained
-where it is set below, not the script's 1020, which is what CI actually runs)
+environment (same names as scripts/pr-review-threads.sh, but one default below is this
+harness's own: PRT_MODEL_BUDGET_SECONDS is the harness's own value, explained where it is
+set below, not the script's 1020, which is what CI actually runs)
   PRT_PROXY_URL           model proxy base URL (required)
   PRT_MODEL               default: claude-opus-5-5
   PRT_MAX_TOKENS          default: 1500

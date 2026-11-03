@@ -6530,6 +6530,17 @@ assert_eq "wiring #156: standards-file declared by pr-review.yml, bound to its e
 assert_eq "wiring #156: standards-source declared by pr-review.yml (default action), bound to its env, passed to the action, declared there and bound to PRT_STANDARDS_SOURCE" \
   "'action' true true \"action\" true" "$(prt_wiring standards-source PR_REVIEW_STANDARDS_SOURCE PRT_STANDARDS_SOURCE)"
 
+# go-kure/.github#335: the action and the script fall back to the model the workflow passes, so a
+# caller that omits `model` and a direct run of the script review with what the repository's own job
+# reviews with. The workflow's value is read from its job env, the others from their own default lines.
+# shellcheck disable=SC2016  # the ${ in the pattern is literal script text, not an expansion
+prt_script_default_model="$(sed -n 's/^: "\${PRT_MODEL:=\(.*\)}"$/\1/p' "$ROOT/scripts/pr-review-threads.sh")"
+prt_wf_model="$(sed -n 's/^      PR_REVIEW_MODEL: "\(.*\)"$/\1/p' "$prt_wf")"
+assert_eq "model default #335: the action's input default and the script's fallback are the model the workflow passes" \
+  "$prt_wf_model $prt_wf_model" "$(prt_input_default "$prt_act" '  ' model | tr -d '"') $prt_script_default_model"
+assert_eq "model default #335: the script's usage text names the same default" "true" \
+  "$(grep -qxF -- "#   PRT_MODEL                   default: $prt_wf_model" "$ROOT/scripts/pr-review-threads.sh" && echo true || echo false)"
+
 # The job checks out the head it attributes its results
 # to. Under pull_request the default ref is the temporary merge commit, at
 # depth 1; the head step takes the PR head and the full history, so a later
