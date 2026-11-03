@@ -428,6 +428,11 @@ probe_run() {
       runner-boundary)
         echo "RESULT: not-established (the default boundary cannot be set up or fails its own check on this lane)"
         return 2 ;;
+      runner-pid1-unread)
+        # Must stay above the runner-* branch below. The first process could not be read, which a
+        # process going away also causes: nothing says the boundary leaked.
+        echo "RESULT: inconclusive (the namespace first process could not be identified: $failure)"
+        return 3 ;;
       runner-*|provenance-mismatch)
         # The boundary was established and the stub ran (or should have): the call failed after it.
         echo "RESULT: fail (the call failed after the boundary was established: $failure)"

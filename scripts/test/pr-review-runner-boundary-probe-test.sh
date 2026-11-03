@@ -426,6 +426,23 @@ if [ -z "${PRT_TEST_FORCE_NO_NAMESPACE:-}" ] && unshare --user --map-current-use
   # call ends as runner-no-output behind the production boundary.
   assert_eq "run: a call that fails after the boundary stands is a failure" 1 \
     "$(mkdir -p "$dir/nm" && printf '#!/bin/sh\nexit 1\n' > "$dir/nm/mkdir" && chmod 755 "$dir/nm/mkdir" && run_rc PATH="$dir/nm:$PATH")"
+  # A call that could not read the namespace ids of the first process (a process going away reads the
+  # same as a live one that cannot be identified) is inconclusive, never a leak and never the failure
+  # above: the branch for it must come before the runner-* branch, which answers 1. A copy of the
+  # orchestrator whose finder returns that answer builds the case; exactly 3 is asserted, so a wrong
+  # order (1) or a missing branch (4) fails.
+  mkdir -p "$dir/p1/scripts/lib"
+  cp "$PROBE" "$dir/p1/scripts/"
+  cp -R "$(dirname "$PROBE")/lib/prt" "$dir/p1/scripts/lib/"
+  printf '%s\n' '_prt_runner_pid1_record() {' \
+    '  PRT_RUNNER_PID1=""; PRT_RUNNER_PID1_START=""' \
+    '  PRT_RUNNER_PID1_ERROR="the namespace process ids of the child of the namespace launcher cannot be read"' \
+    '  return 2' '}' >> "$dir/p1/scripts/lib/prt/model.sh"
+  p1_out="$(env bash "$dir/p1/scripts/$(basename "$PROBE")" run 2> /dev/null)"
+  p1_rc=$?
+  assert_eq "run: a call abandoned because the first process's namespace ids read empty is inconclusive (3), not a leak or a failure" 3 "$p1_rc"
+  assert_eq "run: ... and it names the reason" "true" \
+    "$([[ "$p1_out" == *"RESULT: inconclusive (the namespace first process could not be identified: runner-pid1-unread)"* ]] && echo true || echo false)"
 else
   # A silent skip would read as a pass. PRT_TEST_REQUIRE_NAMESPACE=1 (set by the lane that must run
   # these cases) turns it into a failure.
