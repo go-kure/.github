@@ -22,7 +22,8 @@
 # Exit codes: 0 the boundary holds and the control saw the canary; 1 the boundary leaks (or
 # the call failed after the boundary was established); 2 the boundary cannot be established
 # here; 3 inconclusive: the control, a field or the mount experiment did not give a usable
-# answer, so no pass can be claimed; 4 the probe could not set itself up (or the call was
+# answer, or the call was abandoned as runner-pid1-unread (the namespace first process could
+# not be identified), so no pass can be claimed; 4 the probe could not set itself up (or the call was
 # refused before the stub could run, which says nothing about the boundary).
 set -uo pipefail
 

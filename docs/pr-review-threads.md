@@ -674,9 +674,11 @@ default boundary clears it only for root (it is reported for any other user). Th
 judged for every user: the default boundary sets it for all of them (go-kure/.github#309), so a value of 0
 is a leak and a value that is not 0 or 1 voids the result.
 Exit codes: 0 holds; 1 the boundary leaks, or the production call failed after the boundary was
-established (a `runner-*` reason or `provenance-mismatch`); 2 the boundary cannot be established on
-that lane; 3 inconclusive (the control, a field or the mount result gave no usable answer, or the call
-succeeded but left no report, so no pass can be claimed); 4 the probe could not set itself up, or the
+established (a `runner-*` reason other than `runner-pid1-unread`, or `provenance-mismatch`); 2 the
+boundary cannot be established on that lane; 3 inconclusive (the control, a field or the mount result
+gave no usable answer, the call succeeded but left no report, or the call was abandoned as
+`runner-pid1-unread` because the namespace first process could not be identified, so no pass can be
+claimed); 4 the probe could not set itself up, or the
 orchestrator refused the call before the stub could run (`backend-config`, `deadline-exhausted`,
 `local-tempdir`), which says nothing about the boundary. A re-exec that cannot start and a
 `/proc/<pid>/stat` line without a numeric parent and start time (which would end the ancestor chain
