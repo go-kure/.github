@@ -8480,7 +8480,8 @@ printf '#!/bin/sh\nsleep 20 < /dev/null > /dev/null 2>&1 &\n"%s/record-sleeper" 
 chmod 755 "$prt_ar_dir/bin-twokids/unshare"
 # The wrapper runs for the boundary preflight as well as for the call, and records each extra child
 # it starts. The test ends a recorded process only while its start time still matches the record,
-# as the code under test does, so a pid the kernel has since reused is never signalled.
+# as the code under test does. That leaves only the instant between reading the start time and the
+# kill, in which the pid would have to exit and be reassigned; a pid already reused is not signalled.
 prt_ar_reap_sleepers() {
   local p st now
   if [ -f "$prt_ar_dir/sleepers" ]; then
