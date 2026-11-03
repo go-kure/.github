@@ -34,6 +34,9 @@ self="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]
 get() { sed -n "s/^$2=//p" "$1" 2> /dev/null | head -1; }
 # At most 9 digits: a longer string would make bash arithmetic comparisons error out.
 is_count() { [[ "${1:-}" =~ ^[0-9]{1,9}$ ]]; }
+# A uid is up to 10 digits (4294967295): ten digits still fit bash arithmetic, which is all the
+# root check does with it.
+is_uid() { [[ "${1:-}" =~ ^[0-9]{1,10}$ ]]; }
 # A start time is in clock ticks since boot and passes 9 digits after about 115 days at 100 Hz.
 is_digits() { [[ "${1:-}" =~ ^[0-9]{1,20}$ ]]; }
 # stat_fields LINE: the parent pid and start time of a /proc/PID/stat line, into STAT_PPID and
@@ -243,10 +246,10 @@ probe_judge() {
   if [ ! -s "$b" ]; then
     unusable+=("the boundary report is missing or empty")
   else
-    for k in canary_hits ancestor_environ_open ancestor_mem_open fd_above_2 uid; do
+    for k in canary_hits ancestor_environ_open ancestor_mem_open fd_above_2; do
       v="$(get "$b" "$k")"
       if ! is_count "$v"; then unusable+=("boundary: $k is '${v:-empty}', not a number")
-      elif [ "$k" != uid ] && [ "$v" -ne 0 ]; then leaks+=("boundary: $k is $v")
+      elif [ "$v" -ne 0 ]; then leaks+=("boundary: $k is $v")
       fi
     done
     # A scan that found nothing counts only if it could have found something: inside the
@@ -262,6 +265,7 @@ probe_judge() {
       fi
     done
     uid="$(get "$b" uid)"
+    is_uid "$uid" || unusable+=("boundary: uid is '${uid:-empty}', not a number")
     v="$(get "$b" cap_eff)"
     if ! is_caps "$v"; then unusable+=("boundary: cap_eff is '${v:-empty}', not a capability set")
     elif [ "$v" != 0000000000000000 ]; then leaks+=("boundary: effective capabilities are $v")
@@ -277,7 +281,7 @@ probe_judge() {
     esac
     v="$(get "$b" cap_bnd)"
     if ! is_caps "$v"; then unusable+=("boundary: cap_bnd is '${v:-empty}', not a capability set")
-    elif is_count "$uid" && [ "$((10#$uid))" -eq 0 ] && [ "$v" != 0000000000000000 ]; then
+    elif is_uid "$uid" && [ "$((10#$uid))" -eq 0 ] && [ "$v" != 0000000000000000 ]; then
       leaks+=("boundary: root keeps the bounding set $v")
     fi
     v="$(get "$b" proc_mount)"

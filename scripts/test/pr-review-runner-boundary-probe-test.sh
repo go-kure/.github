@@ -100,6 +100,12 @@ write_report "$dir/b8" boundary uid=0 cap_bnd=0000000000000000
 assert_eq "judge: root with an empty bounding set passes" 0 "$(judge_rc "$dir/b8" "$dir/c")"
 write_report "$dir/b11" boundary uid=00 cap_bnd=000001ffffffffff
 assert_eq "judge: root written with a leading zero keeps the root check" 1 "$(judge_rc "$dir/b11" "$dir/c")"
+# A uid is up to 10 digits (4294967295 is the largest 32-bit one): the count validator stops at 9,
+# so a high uid used to be called "not a number" and the run inconclusive (go-kure/.github#328).
+write_report "$dir/b12" boundary uid=4294967295
+assert_eq "judge: the largest 32-bit uid behind the boundary is judged, not inconclusive" 0 "$(judge_rc "$dir/b12" "$dir/c")"
+write_report "$dir/b13" boundary uid=0000000000 cap_bnd=000001ffffffffff
+assert_eq "judge: root written with ten digits keeps the root check" 1 "$(judge_rc "$dir/b13" "$dir/c")"
 write_report "$dir/b9" boundary no_new_privs=0
 assert_eq "judge: a boundary without no-new-privs fails" 1 "$(judge_rc "$dir/b9" "$dir/c")"
 write_report "$dir/b10" boundary uid=0 cap_bnd=0000000000000000 no_new_privs=0
