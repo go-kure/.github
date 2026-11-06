@@ -218,7 +218,11 @@ github_repos:
             max_entries_to_merge: 1
             max_entries_to_build: 1              # tune up after observing runner load
             min_entries_to_merge_wait_minutes: 0
-            check_response_timeout_minutes: 60
+            # 120, not 60: kure and launcher share one self-hosted runner pool, and a
+            # merge_group run queues behind PR jobs from both repos for up to 30
+            # minutes per job wave. At 60 the queue dropped PRs as checks_timed_out
+            # (go-kure/launcher#1270, go-kure/launcher#1273) while their CI was still running.
+            check_response_timeout_minutes: 120
       release-protection:
         bypass_actors: *release_bot_bypass
   launcher:
