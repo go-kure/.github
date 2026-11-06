@@ -37,10 +37,9 @@ To release the version in `VERSION` on `main`:
    on `release`, tick **Dry run**, and run it. The run's summary shows the tag it would make and the
    `VERSION` that would follow.
 2. If that is what you want, run it again with **Dry run** unticked.
-3. Wait for the run to go green. The checks take about a minute. The run then waits for CI on the
-   commit, which takes as long as this repository's longest CI job, and after that for
-   Release / Publish. The release workflow sets a limit on each wait, and
-   "What happens after you click" gives those limits.
+3. Wait for the run to go green. The checks take about a minute. The run then waits for the whole CI
+   workflow to finish on the commit, and after that for Release / Publish. The release workflow sets
+   a limit on each wait, and "What happens after you click" gives those limits.
 
 That is the whole procedure for an ordinary prerelease. The rest of this guide is for moving
 between stages, patch releases on a release branch, and failures.
