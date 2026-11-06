@@ -169,9 +169,9 @@ Release: release-as-stable (later)
    other than `release` on a release branch.
 2. **Wait for CI on this commit** — real runs of the `release…` options only. The workflow waits up
    to 30 minutes for CI to pass on the commit being released. A failed or unfinished CI run stops
-   the release with nothing tagged, and so does a commit with no CI run at all after two minutes. A
-   CI run that needs more than 30 minutes stops the release the same way, so the job limits in
-   `ci.yml` must stay under that wait.
+   the release with nothing tagged, and so does a commit with no CI run at all after two minutes.
+   The wait starts here, not at the push, so a CI run that already passed is accepted at once. If CI
+   does not finish before this wait ends, the release stops with nothing tagged.
 3. **Release** — runs the release script against this repository:
    - refuses if the branch moved on since the run started (start the release again);
    - refuses if the tag, or the `VERSION` that would follow it, already exists as a tag;
