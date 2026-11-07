@@ -8684,12 +8684,13 @@ prt_ar_t0=$SECONDS
 rc="$(PATH="$prt_ar_dir/bin-slowstart:$PATH" PRT_RUNNER_PID1_POLLS=1 PRT_MODEL_TIMEOUT_FLOOR=1 run_orchestrator advisory 0 0 0)"
 prt_ar_elapsed=$((SECONDS - prt_ar_t0))
 PRT_TEST_MODEL_BUDGET_SECONDS=""
-# "Ends at once" means the call returned before the runner's own bound, which is the run budget the
-# case hands the orchestrator, so the bound is that budget and not a hand-picked number. The wrapper
-# delays `timeout` by a second, so a few seconds are normal and a tight bound failed under load. The
-# reason, and the runner never started (below), are what the case is about.
-assert_eq "assess runner, discovery fails before timeout has started: degraded as runner-lifetime, the call returned before the runner's own bound" \
-  "0 true true" "$rc $(prt_ar_reason runner-lifetime) $([ "$prt_ar_elapsed" -lt "$prt_ar_budget" ] && echo true || echo false)"
+# What the case is about is the reason (runner-lifetime, not runner-timeout) and that the runner never
+# started (below). The elapsed time covers the whole orchestrator call, which on a loaded host can
+# take as long as the 12 s budget by itself, so a bound at the budget decided the case on load; it
+# is the shared backstop instead. A call that nothing ended runs to the runner's own bound and
+# degrades as runner-timeout, which the reason catches.
+assert_eq "assess runner, discovery fails before timeout has started: degraded as runner-lifetime, and the call returned (backstop ${prt_ar_backstop}s)" \
+  "0 true true" "$rc $(prt_ar_reason runner-lifetime) $([ "$prt_ar_elapsed" -lt "$prt_ar_backstop" ] && echo true || echo false)"
 sleep 2
 assert_eq "assess runner, discovery fails before timeout has started: the runner is never started" \
   "false" "$([ -e "$PRT_TEST_RUNNER_LOG.hb" ] && echo true || echo false)"
@@ -9108,16 +9109,17 @@ prt_ar_elapsed=$((SECONDS - prt_ar_t0))
 assert_eq "boundary check: a prefix that ignores TERM is refused, and the check was cut short before the prefix's own 60s end (backstop 45s)" \
   "1 true" "$prt_ar_rc $([ "$prt_ar_elapsed" -lt 45 ] && echo true || echo false)"
 if $prt_ar_ns; then
-printf '#!/bin/sh\nsetsid sleep 15 &\nexec %s "$@"\n' "$(prt_ar_prod_prefix)" > "$prt_ar_dir/boundary-hold-stdout"
+printf '#!/bin/sh\nsetsid sleep 60 &\nexec %s "$@"\n' "$(prt_ar_prod_prefix)" > "$prt_ar_dir/boundary-hold-stdout"
 chmod 755 "$prt_ar_dir/boundary-hold-stdout"
 prt_ar_t0=$SECONDS
 prt_ar_rc="$(PRT_BOUNDARY_CHECK_SECONDS=2 prt_ar_check "$prt_ar_dir/boundary-hold-stdout")"
 prt_ar_elapsed=$((SECONDS - prt_ar_t0))
-# The helper sleeps 15 s in a session of its own and outlives the check on a passing run too, so its
-# sleep is not lengthened: a longer one would cost every run. The backstop is therefore 13 s, below
-# that sleep, against a check deadline of 2 s.
-assert_eq "boundary check: a helper holding the probe's output does not hold the check; a prefix that does isolate is accepted (backstop 13s, below the helper's 15s)" \
-  "0 true" "$prt_ar_rc $([ "$prt_ar_elapsed" -lt 13 ] && echo true || echo false)"
+# The helper sleeps 60 s in a session of its own, so it outlives the check; the check writes the
+# probe's output to files and waits only for its own process, so a passing run does not wait for the
+# helper. A check that waited for it would end after 60 s, far above the 45 s backstop and the 2 s
+# check deadline.
+assert_eq "boundary check: a helper holding the probe's output does not hold the check; a prefix that does isolate is accepted (backstop 45s, below the helper's 60s)" \
+  "0 true" "$prt_ar_rc $([ "$prt_ar_elapsed" -lt 45 ] && echo true || echo false)"
 
 # A raw privileged prefix (root of a user namespace, every capability) is refused, with the
 # availability of the namespace proven by the control: the production prefix is accepted.
