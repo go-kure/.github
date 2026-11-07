@@ -81,6 +81,42 @@ prt_test_real_jq() {
   return 1
 }
 
+# prt_test_pin_jq — resolves jq once and puts it first on PATH, so the thousands of jq calls in this
+# suite (the libraries, the orchestrator script and the stubs all read PATH) skip a version-manager
+# shim. A shim looks the real binary up again on every call: about 200 ms per call against about
+# 3 ms for the binary on the host that measured it (go-kure/.github#317), the difference between a
+# local run of about 40 minutes and one of about 6. It links the first jq that prt_test_real_jq
+# accepts from a new directory, `prt_jq_pin_dir`, and puts only that directory on PATH, so no other
+# tool changes place on PATH. It does nothing when that jq is already the one PATH names (CI), and
+# when PATH holds no jq outside a shim it warns and leaves PATH alone: the suite then runs slowly
+# instead of failing, and the one case that needs a real binary still stops with its own FATAL.
+# The pinned jq is the same binary the shim would run unless the shim picks a version by directory,
+# and the repository's mise.toml pins no jq.
+prt_jq_pin_dir=""
+prt_test_pin_jq() {
+  local current real
+  current="$(command -v jq)" || return 0
+  if ! real="$(prt_test_real_jq)"; then
+    echo "NOTE: no jq outside a version-manager shim on PATH; the suite stays slow (go-kure/.github#317)" >&2
+    return 0
+  fi
+  [ "$real" = "$current" ] && return 0
+  case "$real" in /*) ;; *) return 0 ;; esac
+  prt_jq_pin_dir="$(mktemp -d)" || { prt_jq_pin_dir=""; return 0; }
+  if ln -s "$real" "$prt_jq_pin_dir/jq"; then
+    PATH="$prt_jq_pin_dir:$PATH"
+    export PATH
+  else
+    rmdir "$prt_jq_pin_dir"
+    prt_jq_pin_dir=""
+  fi
+  return 0
+}
+prt_test_pin_jq
+if [ -n "$prt_jq_pin_dir" ]; then
+  trap 'rm -f "$prt_jq_pin_dir/jq"; rmdir "$prt_jq_pin_dir" 2> /dev/null' EXIT
+fi
+
 assert_ne() {
   local desc="$1" a="$2" b="$3"
   if [ "$a" != "$b" ]; then
@@ -100,6 +136,54 @@ assert_true() {
     failures=$((failures + 1))
   fi
 }
+
+# ============================================================ prt_test_pin_jq
+# Each case is a function with its own `local PATH`, called in a command substitution, so the suite's
+# PATH and pin directory are untouched. The "real" jq is a fixture that prints `real`, and the shim a
+# fixture under a `shims` directory that prints `shim`, so a call that reaches the wrong one shows in
+# the output.
+pin_dir="$(mktemp -d)"
+mkdir -p "$pin_dir/shims" "$pin_dir/bin"
+printf '#!/bin/sh\necho shim\n' > "$pin_dir/shims/jq"
+printf '#!/bin/sh\necho real\n' > "$pin_dir/bin/jq"
+chmod +x "$pin_dir/shims/jq" "$pin_dir/bin/jq"
+# A shim ahead of a real jq: prints what a bare `jq` prints, where the pin directory's link points,
+# and whether the pin directory comes first.
+pin_case_shim_first() {
+  local PATH="$pin_dir/shims:$pin_dir/bin:$PATH"
+  prt_jq_pin_dir=""
+  prt_test_pin_jq
+  [ -n "$prt_jq_pin_dir" ] || { echo "no pin directory"; return 0; }
+  echo "$(jq) $(readlink "$prt_jq_pin_dir/jq") $([ "$(command -v jq)" = "$prt_jq_pin_dir/jq" ] && echo first)"
+  rm -f "$prt_jq_pin_dir/jq"
+  rmdir "$prt_jq_pin_dir"
+}
+# The real jq already first: prints the pin directory (empty) and the jq PATH names.
+pin_case_real_first() {
+  local PATH="$pin_dir/bin:$pin_dir/shims:$PATH"
+  prt_jq_pin_dir=""
+  prt_test_pin_jq
+  echo "[$prt_jq_pin_dir] $(command -v jq)"
+}
+# Only a shim on PATH: prints the pin directory (empty), the jq PATH names and PATH itself.
+pin_case_shim_only() {
+  local PATH="$pin_dir/shims"
+  prt_jq_pin_dir=""
+  prt_test_pin_jq 2> "$pin_dir/note"
+  echo "[$prt_jq_pin_dir] $(command -v jq) $PATH"
+}
+assert_eq "pin_jq: a shim ahead of a real jq -> the call reaches the real jq through a pin directory that links it" \
+  "real $pin_dir/bin/jq first" "$(pin_case_shim_first)"
+assert_eq "pin_jq: the real jq already first on PATH -> nothing is created and PATH is left alone" \
+  "[] $pin_dir/bin/jq" "$(pin_case_real_first)"
+assert_eq "pin_jq: no jq outside a shim on PATH -> PATH is left alone and the function still returns 0" \
+  "[] $pin_dir/shims/jq $pin_dir/shims" "$(pin_case_shim_only)"
+assert_eq "pin_jq: no jq outside a shim on PATH -> it warns on standard error" \
+  "true" "$(grep -qF 'the suite stays slow' "$pin_dir/note" && echo true || echo false)"
+rm -f "$pin_dir/shims/jq" "$pin_dir/bin/jq" "$pin_dir/note"
+rmdir "$pin_dir/shims" "$pin_dir/bin" "$pin_dir"
+unset pin_dir
+unset -f pin_case_shim_first pin_case_real_first pin_case_shim_only
 
 # ============================================================ stdin JSON collection helpers
 json_left='[{"id":1}]'
