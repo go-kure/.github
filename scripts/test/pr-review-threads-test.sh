@@ -117,6 +117,13 @@ if [ -n "$prt_jq_pin_dir" ]; then
   trap 'rm -f "$prt_jq_pin_dir/jq"; rmdir "$prt_jq_pin_dir" 2> /dev/null' EXIT
 fi
 
+# prt_test_fill VAR CHAR COUNT — sets VAR to COUNT copies of CHAR. Bash `${v// /x}` on a string of
+# about 100000 characters or more takes seconds in a UTF-8 locale, so the large fixtures use tr
+# (go-kure/.github#317).
+prt_test_fill() {
+  printf -v "$1" '%s' "$(printf '%*s' "$3" '' | tr ' ' "$2")"
+}
+
 assert_ne() {
   local desc="$1" a="$2" b="$3"
   if [ "$a" != "$b" ]; then
@@ -215,8 +222,7 @@ assert_eq "json comments: rejects an out-of-range thread index" "true" \
 
 # Each individual JSON value is above Linux's 131072-byte MAX_ARG_STRLEN.
 # A real jq subprocess can consume them only if the helper keeps both off argv.
-printf -v json_big_payload '%*s' 180000 ''
-json_big_payload="${json_big_payload// /x}"
+prt_test_fill json_big_payload x 180000
 json_big_left="[\"$json_big_payload\"]"
 json_big_right="[\"$json_big_payload\"]"
 json_big_merged="$(prt_json_concat_arrays "$json_big_left" "$json_big_right")"
@@ -241,16 +247,14 @@ for json_bad_list in '' 'null' '{"a":1}' '[1'; do
   assert_eq "json append_item: refuses the list [$json_bad_list] with no output" \
     "fail-empty" "$([ "$json_bad_rc" -ne 0 ] && [ -z "$json_out" ] && echo fail-empty || echo "rc=$json_bad_rc out=$json_out")"
 done
-printf -v json_big_payload '%*s' 180000 ''
-json_big_payload="${json_big_payload// /x}"
+prt_test_fill json_big_payload x 180000
 json_out="$(prt_json_append_item '[]' "{\"big\":\"$json_big_payload\"}")"
 assert_eq "json append_item: accepts an item above the kernel single-argument limit" "180000" \
   "$(jq -r '.[0].big | length' <<< "$json_out")"
 unset json_list json_one json_bad_item json_bad_list json_out json_bad_rc json_big_payload
 
 # prt_json_body_payload: the body travels on stdin, so a body above the limit still builds.
-printf -v json_big_payload '%*s' 180000 ''
-json_big_payload="${json_big_payload// /y}"
+prt_test_fill json_big_payload y 180000
 json_out="$(prt_json_body_payload "$json_big_payload" --arg in_reply_to_marker x)"
 assert_eq "json body_payload: builds a payload from a body above the kernel single-argument limit" \
   "180000 x" "$(jq -r '[(.body | length), .in_reply_to_marker] | join(" ")' <<< "$json_out")"
@@ -737,8 +741,7 @@ unset render_q render_f render_x render_state
 # A numeric line is canonicalized at ingress to a bounded integer; anything else is no line
 # (the finding becomes a file-level one). A jq 1.7 literal keeps its spelling, so 1. followed
 # by 140000 zeros would otherwise reach --argjson as one oversized argument.
-printf -v line_zeros '%*s' 140000 ''
-line_zeros="${line_zeros// /0}"
+prt_test_fill line_zeros 0 140000
 unset PRT_TEST_JQ_FAIL
 line_out=""
 for line_spelling in "7" "7.0" "1.${line_zeros}" "1.5" "1e400" "-3" "12345678901" "\"7\""; do

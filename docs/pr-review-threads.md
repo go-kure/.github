@@ -61,7 +61,11 @@ This is the design/operations reference the code cites but didn't yet have:
   call, which cost about 200 ms per call against about 3 ms on one host. The pinned `jq` is the one
   `PATH` names first outside the shims, so a host whose shim selects a different `jq` version than
   that one runs the suite on the other version. When `PATH` holds no such `jq`, the suite warns and
-  runs unchanged. In CI, where `jq` is a plain binary, it changes nothing.
+  runs unchanged. In CI, where `jq` is a plain binary, it changes nothing. The suite builds its
+  fixtures of 140000 characters and more with `prt_test_fill`, which uses `tr`. The bash form
+  `${v// /x}` took 12.9 s on a string of 180000 characters in the `en_GB.UTF-8` locale. The `tr`
+  form took 3.5 ms. Fixtures under 10000 characters keep the bash form, because it costs less than
+  25 ms there.
 
 ## Token and bot identity
 
