@@ -7611,6 +7611,15 @@ PRT_TEST_MODEL_RESPONSE_MODE=clean_with_finding
 # are passed through to the stub, besides the always-passed PATH and HOME.
 PRT_TEST_ASSESS_RUNNER_ENV="PRT_TEST_RUNNER_LOG PRT_TEST_RUNNER_MODE PRT_TEST_RUNNER_PROV PRT_HEAD_SHA PRT_REVIEW_BASE_SHA PRT_REVIEW_MATERIAL_SHA256"
 prt_ar_calls() { cat "$PRT_TEST_RUNNER_LOG.count" 2>/dev/null || echo 0; }
+# Wall-clock bounds (go-kure/.github#344). A case that must end a call early asserts what it is about:
+# the reason the run degraded, a heartbeat that stopped, a runner log never created. An elapsed time
+# stays only as a backstop, and a backstop on a loaded host must not decide the case: a tight one
+# failed an idle-correct call at load 28. prt_ar_budget is the run budget the hang cases hand the
+# orchestrator. prt_ar_backstop sits far above any deadline the cases set and far below the time
+# the stubs take when nothing cuts the call short (300 s for a hanging runner, 120 s for the hostile
+# one, 100 s for the hanging boundary check), so a call that was not cut short still fails it.
+prt_ar_budget=12
+prt_ar_backstop=60
 # Enforce refuses the runner (see below), so these cases run in advisory and read the
 # comment it posts: the number of findings it reports, 0 when none survive.
 prt_ar_found() { local n; n="$(sed -n "s/.*advisory mode — \([0-9]*\) finding.*/\1/p" "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" | head -1)"; echo "${n:-0}"; }
@@ -8259,14 +8268,16 @@ prt_ar_child_gone() { # label
 }
 prt_ar_hang_case() { # mode label
   rm -f "$PRT_TEST_RUNNER_LOG".*
-  PRT_TEST_MODEL_BUDGET_SECONDS=12
+  PRT_TEST_MODEL_BUDGET_SECONDS=$prt_ar_budget
   PRT_TEST_RUNNER_MODE="$1"
   prt_ar_t0=$SECONDS
   rc="$(PRT_MODEL_TIMEOUT_FLOOR=1 run_orchestrator advisory 0 0 0)"
   prt_ar_elapsed=$((SECONDS - prt_ar_t0))
   assert_eq "$2: the run still exits 0 after one runner call" "0 1" "$rc $(prt_ar_calls)"
-  assert_eq "$2: the whole call ends inside the run deadline (12s budget)" \
-    "true" "$([ "$prt_ar_elapsed" -lt 12 ] && echo true || echo false)"
+  # The deadline itself is shown by the reason below and by the child that is gone; the elapsed time
+  # is only the backstop against a call nothing cut short (the stub hangs for 300 s).
+  assert_eq "$2: the whole call was cut short, not left to run (backstop ${prt_ar_backstop}s, budget ${prt_ar_budget}s)" \
+    "true" "$([ "$prt_ar_elapsed" -lt "$prt_ar_backstop" ] && echo true || echo false)"
   assert_eq "$2: degraded as runner-timeout" \
     "true" "$(grep -qF '[runner-timeout]' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
   prt_ar_child_gone "$2"
@@ -8393,13 +8404,13 @@ rm -f "$prt_ar_fdfile"
 # Lifetime: the proof that nothing of the runner's tree outlives the call is a heartbeat file that
 # stops advancing (prt_ar_hb_stopped, above).
   PRT_TEST_RUNNER_MODE=heartbeat
-  PRT_TEST_MODEL_BUDGET_SECONDS=12
+  PRT_TEST_MODEL_BUDGET_SECONDS=$prt_ar_budget
   rm -f "$PRT_TEST_RUNNER_LOG".*
   prt_ar_t0=$SECONDS
   rc="$(PRT_MODEL_TIMEOUT_FLOOR=1 run_orchestrator advisory 0 0 0)"
   prt_ar_elapsed=$((SECONDS - prt_ar_t0))
-  assert_eq "assess runner hangs behind the default boundary: one call, ends inside the 12s deadline, degraded as runner-timeout" \
-    "0 1 true true" "$rc $(prt_ar_calls) $([ "$prt_ar_elapsed" -lt 12 ] && echo true || echo false) $(prt_ar_reason runner-timeout)"
+  assert_eq "assess runner hangs behind the default boundary: one call, cut short before the stub's 300s, degraded as runner-timeout" \
+    "0 1 true true" "$rc $(prt_ar_calls) $([ "$prt_ar_elapsed" -lt "$prt_ar_backstop" ] && echo true || echo false) $(prt_ar_reason runner-timeout)"
   assert_eq "assess runner hangs behind the default boundary: nothing of its tree is left running" "true" "$(prt_ar_hb_stopped)"
   PRT_TEST_MODEL_BUDGET_SECONDS=""
   PRT_TEST_RUNNER_MODE=probe
@@ -8506,16 +8517,18 @@ rm -rf "$prt_ar_dir/hostile-control-out"
 # about a second of the call returning, which prt_ar_hb_stopped checks over one second).
 rm -f "$PRT_TEST_RUNNER_LOG".*
 PRT_TEST_RUNNER_MODE=hostile
-PRT_TEST_MODEL_BUDGET_SECONDS=12
+PRT_TEST_MODEL_BUDGET_SECONDS=$prt_ar_budget
 prt_ar_t0=$SECONDS
 rc="$(PRT_MODEL_TIMEOUT_FLOOR=1 run_orchestrator advisory 0 0 0)"
 prt_ar_elapsed=$((SECONDS - prt_ar_t0))
 # A first process that installs no TERM handler ignores the TERM `timeout` sends from outside its
-# namespace, so the call runs to the KILL, 5 s after the TERM: at the deadline, not inside it. That
-# is the existing bound; the cleanup after it is quick, which the margin of three seconds checks (the
-# deadline and this clock count whole seconds from different instants, so it allows for one more).
-assert_eq "assess runner, hostile PID 1: one call, ends within three seconds of the 12s deadline, degraded as runner-timeout" \
-  "0 1 true true" "$rc $(prt_ar_calls) $([ "$prt_ar_elapsed" -lt 15 ] && echo true || echo false) $(prt_ar_reason runner-timeout)"
+# namespace, so the call runs to the KILL, 5 s after the TERM: at the deadline, not inside it. The
+# cleanup after it is quick, and the heartbeat check below shows nothing of the runner survives. The
+# elapsed time is a backstop, not that margin: a margin of three seconds failed on a loaded host
+# while the call had done the right thing. The hostile runner ends on its own after 120 s, so a call
+# that nothing cut short ends no sooner than that, far above the backstop.
+assert_eq "assess runner, hostile PID 1: one call, cut short before the stub's own 120s, degraded as runner-timeout" \
+  "0 1 true true" "$rc $(prt_ar_calls) $([ "$prt_ar_elapsed" -lt "$prt_ar_backstop" ] && echo true || echo false) $(prt_ar_reason runner-timeout)"
 assert_eq "assess runner, hostile PID 1: the runner was seen running, and nothing of it is left once the call has returned" \
   "true" "$(prt_ar_hb_stopped)"
 prt_ar_hostile_reap
@@ -8666,13 +8679,17 @@ mkdir -p "$prt_ar_dir/bin-slowstart"
 printf '#!/bin/sh\n[ "$3" = timeout ] && sleep 1\nexec %s "$@"\n' "$(command -v env)" > "$prt_ar_dir/bin-slowstart/env"
 chmod 755 "$prt_ar_dir/bin-slowstart/env"
 PRT_TEST_RUNNER_MODE=heartbeat
-PRT_TEST_MODEL_BUDGET_SECONDS=12
+PRT_TEST_MODEL_BUDGET_SECONDS=$prt_ar_budget
 prt_ar_t0=$SECONDS
 rc="$(PATH="$prt_ar_dir/bin-slowstart:$PATH" PRT_RUNNER_PID1_POLLS=1 PRT_MODEL_TIMEOUT_FLOOR=1 run_orchestrator advisory 0 0 0)"
 prt_ar_elapsed=$((SECONDS - prt_ar_t0))
 PRT_TEST_MODEL_BUDGET_SECONDS=""
-assert_eq "assess runner, discovery fails before timeout has started: degraded as runner-lifetime, the call ends at once" \
-  "0 true true" "$rc $(prt_ar_reason runner-lifetime) $([ "$prt_ar_elapsed" -lt 4 ] && echo true || echo false)"
+# "Ends at once" means the call returned before the runner's own bound, which is the run budget the
+# case hands the orchestrator, so the bound is that budget and not a hand-picked number. The wrapper
+# delays `timeout` by a second, so a few seconds are normal and a tight bound failed under load. The
+# reason, and the runner never started (below), are what the case is about.
+assert_eq "assess runner, discovery fails before timeout has started: degraded as runner-lifetime, the call returned before the runner's own bound" \
+  "0 true true" "$rc $(prt_ar_reason runner-lifetime) $([ "$prt_ar_elapsed" -lt "$prt_ar_budget" ] && echo true || echo false)"
 sleep 2
 assert_eq "assess runner, discovery fails before timeout has started: the runner is never started" \
   "false" "$([ -e "$PRT_TEST_RUNNER_LOG.hb" ] && echo true || echo false)"
@@ -9078,23 +9095,29 @@ assert_eq "boundary check: a prefix that hides only the first pid but leaves its
   "1" "$(prt_ar_check "$prt_ar_dir/boundary-hide-first")"
 
 # The probe is bounded as a whole. A prefix that ignores TERM would keep a plain `timeout` waiting
-# until it ends on its own (20 s here); with a kill-after the check ends shortly after its deadline.
+# until it ends on its own (60 s here); with a kill-after the check ends shortly after its deadline.
 # A prefix that leaves a helper holding the probe's standard output must not hold the check either.
-printf '#!/bin/sh\ntrap "" TERM\nsleep 20\n' > "$prt_ar_dir/boundary-term-ignore"
+# The prefix sleeps 60 s, not the 20 s it once did, so that the backstop below (45 s) can sit far above
+# the check's 2 s deadline plus its kill grace and still below the sleep. The prefix is killed with
+# the check, so a passing run does not wait for the sleep: only a failing one does.
+printf '#!/bin/sh\ntrap "" TERM\nsleep 60\n' > "$prt_ar_dir/boundary-term-ignore"
 chmod 755 "$prt_ar_dir/boundary-term-ignore"
 prt_ar_t0=$SECONDS
 prt_ar_rc="$(PRT_BOUNDARY_CHECK_SECONDS=2 prt_ar_check "$prt_ar_dir/boundary-term-ignore")"
 prt_ar_elapsed=$((SECONDS - prt_ar_t0))
-assert_eq "boundary check: a prefix that ignores TERM is refused, and the check ends within its deadline plus the kill grace" \
-  "1 true" "$prt_ar_rc $([ "$prt_ar_elapsed" -lt 10 ] && echo true || echo false)"
+assert_eq "boundary check: a prefix that ignores TERM is refused, and the check was cut short before the prefix's own 60s end (backstop 45s)" \
+  "1 true" "$prt_ar_rc $([ "$prt_ar_elapsed" -lt 45 ] && echo true || echo false)"
 if $prt_ar_ns; then
 printf '#!/bin/sh\nsetsid sleep 15 &\nexec %s "$@"\n' "$(prt_ar_prod_prefix)" > "$prt_ar_dir/boundary-hold-stdout"
 chmod 755 "$prt_ar_dir/boundary-hold-stdout"
 prt_ar_t0=$SECONDS
 prt_ar_rc="$(PRT_BOUNDARY_CHECK_SECONDS=2 prt_ar_check "$prt_ar_dir/boundary-hold-stdout")"
 prt_ar_elapsed=$((SECONDS - prt_ar_t0))
-assert_eq "boundary check: a helper holding the probe's output does not hold the check; a prefix that does isolate is accepted" \
-  "0 true" "$prt_ar_rc $([ "$prt_ar_elapsed" -lt 8 ] && echo true || echo false)"
+# The helper sleeps 15 s in a session of its own and outlives the check on a passing run too, so its
+# sleep is not lengthened: a longer one would cost every run. The backstop is therefore 13 s, below
+# that sleep, against a check deadline of 2 s.
+assert_eq "boundary check: a helper holding the probe's output does not hold the check; a prefix that does isolate is accepted (backstop 13s, below the helper's 15s)" \
+  "0 true" "$prt_ar_rc $([ "$prt_ar_elapsed" -lt 13 ] && echo true || echo false)"
 
 # A raw privileged prefix (root of a user namespace, every capability) is refused, with the
 # availability of the namespace proven by the control: the production prefix is accepted.
@@ -9505,8 +9528,13 @@ rm -f "$PRT_TEST_RUNNER_LOG".*
 prt_ar_t0=$SECONDS
 rc="$(PRT_MODEL_TIMEOUT_FLOOR=1 PRT_BOUNDARY_CHECK_SECONDS=30 run_orchestrator advisory 0 0 0)"
 prt_ar_elapsed=$((SECONDS - prt_ar_t0))
-assert_eq "assess runner, hanging boundary preflight with 14s of budget: cut short, ends inside the budget, degraded as runner-boundary" \
-  "0 0 true true" "$rc $(prt_ar_calls) $([ "$prt_ar_elapsed" -lt 14 ] && echo true || echo false) $(prt_ar_reason runner-boundary)"
+# The preflight hangs for 100 s (the prefix above) and the check's own deadline is 30 s
+# (PRT_BOUNDARY_CHECK_SECONDS above). What this case shows is that the run budget cuts the preflight
+# shorter than that deadline, so the bound sits below the 30 s and not at the shared backstop: a call
+# whose preflight was not cut to the budget ends at 30 s or later, which the backstop would let by.
+# The budget is 14 s, so 25 s leaves the call eleven seconds over it for a loaded host.
+assert_eq "assess runner, hanging boundary preflight with 14s of budget: cut short before the check's own 30s deadline (backstop 25s), degraded as runner-boundary" \
+  "0 0 true true" "$rc $(prt_ar_calls) $([ "$prt_ar_elapsed" -lt 25 ] && echo true || echo false) $(prt_ar_reason runner-boundary)"
 PRT_TEST_MODEL_BUDGET_SECONDS=""
 
 # Misconfiguration is caught at start, like the other runner settings.
