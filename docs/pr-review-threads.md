@@ -55,7 +55,13 @@ This is the design/operations reference the code cites but didn't yet have:
   covered directly; the orchestrator script itself is covered by a handful of subprocess-level
   exit-code tests (mocked `curl`), not by exercising the full reconciliation flow end to end —
   that only happens against a real PR. CI runs it in its own `pr-review-threads-test` job, with
-  its own timeout, rather than inside `scripts-smoke-test`.
+  its own timeout, rather than inside `scripts-smoke-test`. The suite makes thousands of `jq` calls,
+  so at its start it puts the first `jq` that is not a version-manager shim first on `PATH`, through
+  a link in a temporary directory that it removes on exit. A shim looks the binary up again on every
+  call, which cost about 200 ms per call against about 3 ms on one host. The pinned `jq` is the one
+  `PATH` names first outside the shims, so a host whose shim selects a different `jq` version than
+  that one runs the suite on the other version. When `PATH` holds no such `jq`, the suite warns and
+  runs unchanged. In CI, where `jq` is a plain binary, it changes nothing.
 
 ## Token and bot identity
 
