@@ -14,6 +14,13 @@
 # Each case builds a real repository and runs the step body in it. The reachability claim is about
 # git's own answer, so a fixture that fakes that answer would prove nothing.
 #
+# The fixture models the ref layout the pinned checkout actually produces, which is the whole point
+# of the suite. At fetch-depth 0 that action fetches +refs/heads/*:refs/remotes/origin/* and
+# +refs/tags/*:refs/tags/*, and when the requested ref is refs/pull/N/head it also fetches that head
+# into refs/remotes/pull/N/head. A fixture that keeps the outside commit only under refs/pull/9/head
+# is therefore the easy case: a guard reading every remote-tracking ref passes it while the real
+# checkout would hand the fork head straight to the review.
+#
 # Usage: review-pool-revision-test.sh [REPO_ROOT]
 # Exit:  0 every case passed; 1 a case failed; 2 the step body could not be read.
 # Needs: yq v4, git, bash.
@@ -50,31 +57,46 @@ FAIL=0
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
-# build_fixture DIR WITH_REMOTE
-# Builds a repository shaped like the checkout the step runs in: two commits on a local branch, a
-# remote-tracking ref for that branch when WITH_REMOTE is yes, and one commit that no branch
-# reaches, kept under refs/pull to match where a fork pull request head actually lives.
-# It prints the inside commit, then the outside commit.
+GIT_ID=(-c user.email=t@example.invalid -c user.name=t)
+
+# sibling DIR PARENT MESSAGE
+# Writes a commit that descends from PARENT and sits on no branch, exactly as a fork pull request
+# head does. A guard that only asked "is this a commit of this object store" would admit it.
+sibling() {
+  local dir="$1" parent="$2" message="$3"
+  git -C "$dir" "${GIT_ID[@]}" commit-tree -p "$parent" -m "$message" \
+    "$(git -C "$dir" rev-parse 'HEAD^{tree}')"
+}
+
+# build_fixture DIR MODE
+# MODE=full       the ref layout a real dispatch produces: the repository's branches under
+#                 refs/remotes/origin/, its tags under refs/tags/, and the requested fork head under
+#                 refs/remotes/pull/9/head as well as refs/pull/9/head.
+# MODE=notrusted  a checkout where the fetch created no trusted ref at all, with the fork head's
+#                 tracking ref still present, so an empty trusted set cannot be papered over by the
+#                 pull namespace.
+# Prints: INSIDE OUTSIDE TAGGED FEATURE
 build_fixture() {
-  local dir="$1" with_remote="$2"
+  local dir="$1" mode="$2"
   git init -q -b main "$dir"
-  git -C "$dir" -c user.email=t@example.invalid -c user.name=t \
-    commit -q --allow-empty -m 'first'
-  git -C "$dir" -c user.email=t@example.invalid -c user.name=t \
-    commit -q --allow-empty -m 'second'
-  local inside outside
+  git -C "$dir" "${GIT_ID[@]}" commit -q --allow-empty -m 'first'
+  git -C "$dir" "${GIT_ID[@]}" commit -q --allow-empty -m 'second'
+  local inside parent outside tagged feature
   inside=$(git -C "$dir" rev-parse HEAD)
-  if [ "$with_remote" = yes ]; then
-    git -C "$dir" update-ref refs/remotes/origin/main "$inside"
-  fi
-  # The outside commit descends from the first commit, exactly as a fork pull request head does, so
-  # a guard that only tested "is this a commit of this object store" would admit it.
-  git -C "$dir" -c user.email=t@example.invalid -c user.name=t \
-    commit-tree -p "$(git -C "$dir" rev-parse HEAD~1)" \
-    -m 'outside content' "$(git -C "$dir" rev-parse 'HEAD^{tree}')" > "$dir/.outside"
-  outside=$(tr -d '\n' < "$dir/.outside")
+  parent=$(git -C "$dir" rev-parse 'HEAD^')
+  outside=$(sibling "$dir" "$parent" 'outside content, as a fork pull request head')
+  tagged=$(sibling "$dir" "$parent" 'a release this organization tagged, its branch since deleted')
+  feature=$(sibling "$dir" "$parent" 'an unmerged branch of this organization')
+  # The fork head reaches the checkout through both namespaces, and the tracking one is the ref that
+  # makes a test over every remote-tracking ref admit it.
   git -C "$dir" update-ref refs/pull/9/head "$outside"
-  printf '%s %s\n' "$inside" "$outside"
+  git -C "$dir" update-ref refs/remotes/pull/9/head "$outside"
+  if [ "$mode" = full ]; then
+    git -C "$dir" update-ref refs/remotes/origin/main "$inside"
+    git -C "$dir" update-ref refs/remotes/origin/feature "$feature"
+    git -C "$dir" update-ref refs/tags/v1 "$tagged"
+  fi
+  printf '%s %s %s %s\n' "$inside" "$outside" "$tagged" "$feature"
 }
 
 # run_step DIR HEAD_COMMIT BASE_INPUT
@@ -91,7 +113,9 @@ run_step() {
 
 # check LABEL WANT_RC WANT_TEXT DIR HEAD_COMMIT BASE_INPUT
 # Both the exit code and the message are asserted. The admit case and the refuse case both exit on a
-# code this step shares with every other failure, so the code alone names nothing.
+# code this step shares with every other failure, so the code alone names nothing. The refusal cases
+# assert which endpoint the message names, because a dispatcher that cannot tell the revision from
+# the base cannot act on the refusal.
 check() {
   local label="$1" want_rc="$2" want_text="$3"
   shift 3
@@ -107,34 +131,48 @@ check() {
   fi
 }
 
-read -r INSIDE OUTSIDE < <(build_fixture "$WORK/repo" yes)
+read -r INSIDE OUTSIDE TAGGED FEATURE < <(build_fixture "$WORK/repo" full)
+PARENT=$(git -C "$WORK/repo" rev-parse "$INSIDE^")
 
 # The ordinary dispatch: a commit of this repository, with the implicit base.
 check 'a commit of this repository is reviewed' \
   0 "reviewed revision $INSIDE" "$WORK/repo" "$INSIDE" ''
 
-# The finding's own case. The commit is in this repository's object store and under a real ref of
-# it, and no branch reaches it. Without the guard the step resolves it and the review runs.
-check 'a commit no branch reaches is refused' \
-  1 'reachable from no branch of this repository' "$WORK/repo" "$OUTSIDE" ''
+# The finding's own case, and the one the first version of this guard got wrong. The commit sits
+# under refs/remotes/pull/9/head, which is where the real checkout puts a requested fork head, so a
+# guard that reads every remote-tracking ref admits it and the review runs with the credential.
+check 'a fork pull request head is refused' \
+  1 'the reviewed revision' "$WORK/repo" "$OUTSIDE" ''
 
 # The base decides the diff the review reads, so an outside base is the same exposure by another
 # door. A guard on the revision alone passes this case while the review still reads outside content.
-check 'an outside base is refused' \
-  1 'reachable from no branch of this repository' "$WORK/repo" "$INSIDE" "$OUTSIDE"
+check 'an outside base is refused, and the message names the base' \
+  1 'the reviewed base' "$WORK/repo" "$INSIDE" "$OUTSIDE"
 
 # A base that is a commit of this repository is admitted, so the guard is not refusing every
 # explicit base.
-PARENT=$(git -C "$WORK/repo" rev-parse "$INSIDE^")
 check 'an explicit base of this repository is reviewed' \
   0 "reviewed base     $PARENT" "$WORK/repo" "$INSIDE" "$PARENT"
 
-# Fail closed. A repository with no remote-tracking branch is what a missing or partial fetch looks
-# like, and the reachability read cannot tell that from outside content. Both must refuse: a guard
-# that reads an empty branch list as "nothing to object to" is off whenever the fetch changes.
-read -r INSIDE2 _ < <(build_fixture "$WORK/norefs" no)
-check 'no fetched branch refuses rather than admits' \
-  1 'reachable from no branch of this repository' "$WORK/norefs" "$INSIDE2" ''
+# Tags are trusted on purpose. A commit this organization tagged is code this repository carries,
+# and the branch that held it may since have been deleted, so a branches-only test refuses a
+# dispatch over a retained release.
+check 'a commit only a tag of this repository reaches is reviewed' \
+  0 "reviewed revision $TAGGED" "$WORK/repo" "$TAGGED" ''
+
+# The deliberate deviation from the review comment's suggestion, pinned as a case. Reachability from
+# the default branch alone would refuse this organization's own unmerged branches, which is the case
+# this workflow is dispatched on.
+check 'an unmerged branch of this repository is reviewed' \
+  0 "reviewed revision $FEATURE" "$WORK/repo" "$FEATURE" ''
+
+# Fail closed, with its own message. A checkout whose fetch created no trusted ref is what a missing
+# or partial fetch looks like, and the reachability read cannot tell that from outside content. The
+# fork head's tracking ref is present here, so this also asserts that the pull namespace does not
+# count towards the trusted set.
+read -r INSIDE2 _ < <(build_fixture "$WORK/notrusted" notrusted)
+check 'no trusted ref refuses, and says so in its own words' \
+  1 'no branch or tag of this repository was fetched' "$WORK/notrusted" "$INSIDE2" ''
 
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

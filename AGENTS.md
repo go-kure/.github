@@ -351,9 +351,12 @@ secret and calls no model, and this one holds the backend credential. Five limit
 and a reader needs all five before dispatching it. The pool image installs no bubblewrap, so the
 review passes `--sandbox none` and the job's own container is the boundary. Because that review
 reads its checkout with the credential in its environment, the job reviews only commits this
-repository itself carries: the resolve step refuses a revision or a base that is reachable from no
-branch of this repository, which is what a fork pull request's head at `refs/pull/N/head` is, and it
-refuses the same way when no branch was fetched at all. The image bakes no
+repository itself carries: the resolve step refuses a revision or a base that is reachable from
+neither `refs/remotes/origin/` nor `refs/tags/`, the two namespaces the checkout fills from this
+repository's own branches and tags. A fork pull request's head is outside both, because the checkout
+fetches it into `refs/remotes/pull/`, so a test over every remote-tracking ref would admit it. An
+empty trusted set is refused first and separately, so a fetch that created no trusted ref cannot
+read as nothing to object to. The image bakes no
 backend credential, so the job checks the credential the chosen backend needs and refuses by name
 instead of launching a review that cannot authenticate. The runner renames no credential: it hands
 its own environment to the backend binary, so the variable that matters is the one that binary reads

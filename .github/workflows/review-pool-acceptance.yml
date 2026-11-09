@@ -26,8 +26,11 @@
 # with the credential in its environment and no sandbox around it, so the reviewed commits have to
 # be code this repository carries. The revision input is free-form and actions/checkout takes it as
 # a ref, and a fork pull request's head is a real ref of this repository, so the resolve step tests
-# reachability from this repository's own branches and refuses anything else, fetch failures
-# included.
+# both the revision and the base for reachability from refs/remotes/origin/ or refs/tags/, the two
+# namespaces this checkout fills from this repository's own branches and tags. A fork head is not
+# there: checkout fetches it into refs/remotes/pull/, which is why the test names its trusted refs
+# instead of asking git for every remote-tracking ref. An empty trusted set is refused first and
+# separately, so a fetch that created no trusted ref cannot read as nothing to object to.
 #
 # The image digest is not readable from inside the pod: a job has no Kubernetes credential, and the
 # scale set pulls the latest tag. So the identity step records two things in its place. The bundle
@@ -175,15 +178,35 @@ jobs:
           # code this repository itself carries. The revision input is free-form and actions/checkout
           # takes it as a ref, and a fork pull request's head is a real ref of this repository at
           # refs/pull/N/head, so a dispatch can name outside content without any write access here.
-          # The test below is reachability and not a name match: a fork pull request head is
-          # reachable from no branch of this repository, and every commit this repository carries is
-          # reachable from one. It covers the base as well, because the base decides the diff the
-          # review reads. An empty read is what both an unreachable commit and a missing fetch look
-          # like, so it refuses on either: no branch read means no review.
-          for commit in "$rev" "$base"; do
-            if [ -z "$(git branch --remotes --contains "$commit")" ]; then
-              echo "::error::commit ${commit} is reachable from no branch of this repository." >&2
-              echo "::error::Either it is outside content, such as a fork pull request head, or no branch was fetched. The review holds this organization's backend credential, so it reads only code this repository carries." >&2
+          #
+          # The test is reachability from a trusted ref, and the trusted set is named here rather
+          # than left to git's own idea of a remote. At fetch-depth 0 the pinned checkout always
+          # fetches +refs/heads/*:refs/remotes/origin/* and +refs/tags/*:refs/tags/*, and when the
+          # requested ref is refs/pull/N/head it ALSO fetches that head into refs/remotes/pull/N/head.
+          # So "every remote-tracking ref" includes the fork head, and a test over all of them admits
+          # the content it exists to refuse. Only refs/remotes/origin/ and refs/tags/ come from this
+          # repository's own branches and tags, and creating either needs write access here.
+          #
+          # Tags are trusted on purpose: a commit this organization tagged is code this repository
+          # carries, and a branch that once held it may since have been deleted, which a
+          # branches-only test would refuse.
+          #
+          # Both endpoints are tested, because the revision decides the tree the review reads and the
+          # base decides the diff. The empty trusted set is refused first and separately, so a fetch
+          # that created no trusted ref cannot read as "nothing to object to", and the dispatcher is
+          # told which of the two happened.
+          TRUSTED=(refs/remotes/origin/ refs/tags/)
+          if [ -z "$(git for-each-ref --format='%(refname)' "${TRUSTED[@]}")" ]; then
+            echo "::error::no branch or tag of this repository was fetched, so no commit here can be shown to be code this repository carries." >&2
+            echo "::error::The review holds this organization's backend credential. Refusing rather than reviewing unverified content." >&2
+            exit 1
+          fi
+          for pair in "revision:$rev" "base:$base"; do
+            name="${pair%%:*}"
+            commit="${pair#*:}"
+            if [ -z "$(git for-each-ref --contains "$commit" --format='%(refname)' "${TRUSTED[@]}")" ]; then
+              echo "::error::the reviewed ${name} ${commit} is reachable from no branch or tag of this repository." >&2
+              echo "::error::It is outside content, such as a fork pull request head, which checkout fetches into refs/remotes/pull/. The review holds this organization's backend credential, so it reads only code this repository carries." >&2
               exit 1
             fi
           done
