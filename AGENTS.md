@@ -340,8 +340,24 @@ so the Org Settings status means settings only. `pr-review-digest.yml` is this r
 org-wide scan for fail-closed `pr-review-threads` events (schedule + `workflow_dispatch`; see
 `docs/pr-review-threads.md` § Fail-closed alerting). `pr-review-runner-boundary-probe.yml` is a
 manual acceptance run (`workflow_dispatch` only) of the runner's process boundary on the review
-pool; see `docs/pr-review-threads.md` § Process boundary. None of the five is consumed by
+pool; see `docs/pr-review-threads.md` § Process boundary. `review-pool-acceptance.yml` is the
+second manual run on that pool (`workflow_dispatch` only). None of the six is consumed by
 kure/launcher.
+
+`review-pool-acceptance.yml` is the only workflow in the org that calls a real review backend on
+the review pool: it completes one `review-run` review of a commit range in this repository and
+records what ran. It is separate from the boundary probe on purpose, because the probe holds no
+secret and calls no model, and this one holds the backend credential. Four limits decide its shape,
+and a reader needs all four before dispatching it. The pool image installs no bubblewrap, so the
+review passes `--sandbox none` and the job's own container is the boundary. The image bakes no
+backend credential, and this organization holds one, `CLAUDE_CODE_OAUTH_TOKEN`, so the job refuses
+any backend other than `claude` by name instead of launching a review that cannot authenticate.
+The pool pods run with `hostUsers: false`, so the job records `user.max_user_namespaces` read
+inside the pod. A pod cannot read its own image digest, so the job records the deterministic record
+of `/opt/review-runner` taken by the image's own `review-bundle-verify`, plus the registry digest
+of the `latest` tag as a cross-check, and writes `unavailable` with a reason when that read fails.
+Every run uploads `review.md`, `provider.json`, `findings.json` and its own `acceptance.json` as
+one artifact, and the run fails unless the review completed and all three files exist.
 
 ### When updating a reusable workflow
 

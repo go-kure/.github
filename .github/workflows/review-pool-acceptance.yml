@@ -1,0 +1,319 @@
+# review-pool-acceptance: one hand-triggered review on the review scale set.
+#
+# This workflow is the review acceptance job for the review runner pool. One other workflow targets
+# that pool, pr-review-runner-boundary-probe.yml, and it holds no secret and calls no model by
+# design: it tests the process boundary with a stub. So no job has ever completed a real review
+# there. This one is the smallest job that does: it runs one review with the sandbox turned off, and
+# it records what ran, where it ran, and what came out.
+#
+# Three facts about the pool decide the shape of this file.
+#
+# 1. The pool pods run with hostUsers set to false, so the worker nodes need the sysctl
+#    user.max_user_namespaces above zero. The identity step below reads that value inside the pod
+#    and records it. A pod that starts at all proves the node carries it, and the recorded number
+#    makes the proof readable afterwards.
+# 2. The pool image installs no bubblewrap, so every review in it passes --sandbox none. The job's
+#    own container is the boundary. A review that tried the default sandbox would fail to launch.
+# 3. The image bakes no credential. Each job supplies its own backend credential. This organization
+#    holds one backend credential, CLAUDE_CODE_OAUTH_TOKEN, so the claude backend is the only one
+#    that can run here today. The credential step refuses any other backend by name, with the
+#    reason, instead of launching a review that cannot authenticate.
+#
+# The image digest is not readable from inside the pod: a job has no Kubernetes credential, and the
+# scale set pulls the latest tag. So the identity step records two things in its place. The bundle
+# record is the deterministic record of /opt/review-runner, taken by the image's own
+# review-bundle-verify, and its sha256 identifies the bytes this review ran. The registry digest of
+# the latest tag is read over the network as a cross-check, and when that read fails the record says
+# "unavailable" with the reason. An unknown is never recorded as a success.
+
+name: Review Pool Acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      backend:
+        description: >-
+          The review-run --backend value. claude is the only backend this organization holds a
+          credential for. Any other value stops at the credential step.
+        type: string
+        required: false
+        default: 'claude'
+      revision:
+        description: >-
+          The commit of this repository to review. Empty takes the head of the ref the dispatch ran
+          on. The job records the full object id either way.
+        type: string
+        required: false
+        default: ''
+      base:
+        description: >-
+          The base of the reviewed range. Empty takes the first parent of the revision.
+        type: string
+        required: false
+        default: ''
+      effort:
+        description: >-
+          The review-run --effort value, high or medium. Empty leaves the backend default.
+        type: string
+        required: false
+        default: ''
+
+concurrency:
+  group: review-pool-acceptance-${{ github.repository }}
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  review:
+    name: Review pool acceptance
+    runs-on: autops-kube-review
+    timeout-minutes: 45
+    permissions:
+      contents: read
+
+    env:
+      # The review runs under the job's own container, which is the boundary the image was built
+      # for. See fact 2 in the header.
+      REVIEW_SANDBOX: none
+      REVIEW_BACKEND: ${{ inputs.backend }}
+      REVIEW_EFFORT: ${{ inputs.effort }}
+      REVIEW_BASE_INPUT: ${{ inputs.base }}
+      REVIEW_IMAGE: ghcr.io/ginsys/opsmaster/actions-runner-review
+
+    steps:
+      - name: Record the pod this review runs in
+        run: |
+          set -euo pipefail
+          # The runner context is not available in job-level env, so the two directories are set
+          # here and carried to the later steps through the job environment file.
+          RECORD_DIR="$RUNNER_TEMP/acceptance"
+          OUT_DIR="$RECORD_DIR/out"
+          printf 'RECORD_DIR=%s\n' "$RECORD_DIR" >> "$GITHUB_ENV"
+          printf 'OUT_DIR=%s\n' "$OUT_DIR" >> "$GITHUB_ENV"
+          mkdir -p "$RECORD_DIR"
+          record="$RECORD_DIR/pod.txt"
+
+          # The bundle record is the identity of the bytes this review runs. It stands in for the
+          # image digest, which a pod cannot read. See the header.
+          review-bundle-verify record /opt/review-runner > "$RECORD_DIR/bundle.record"
+          bundle_sha="$(sha256sum "$RECORD_DIR/bundle.record" | cut -d' ' -f1)"
+
+          # The registry digest of the latest tag, as a cross-check only. The scale set pulls that
+          # tag on every pod start, so the two agree unless the tag moved during this job. A failed
+          # read is recorded as unavailable with its reason, never as empty or as a pass.
+          digest='unavailable: not attempted'
+          if token="$(curl -fsS --max-time 30 \
+                "https://ghcr.io/token?service=ghcr.io&scope=repository:ginsys/opsmaster/actions-runner-review:pull" \
+                | jq -er .token)"; then
+            if headers="$(curl -fsS --max-time 30 -o /dev/null -D - \
+                  -H "Authorization: Bearer $token" \
+                  -H 'Accept: application/vnd.oci.image.index.v1+json' \
+                  -H 'Accept: application/vnd.docker.distribution.manifest.list.v2+json' \
+                  -H 'Accept: application/vnd.oci.image.manifest.v1+json' \
+                  -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' \
+                  "https://ghcr.io/v2/ginsys/opsmaster/actions-runner-review/manifests/latest")"; then
+              found="$(printf '%s' "$headers" | tr -d '\r' \
+                | sed -n 's/^[Dd]ocker-[Cc]ontent-[Dd]igest: //p' | tail -1)"
+              if [ -n "$found" ]; then
+                digest="$found"
+              else
+                digest='unavailable: the manifest response carried no content digest header'
+              fi
+            else
+              digest='unavailable: the manifest read failed'
+            fi
+          else
+            digest='unavailable: the registry token read failed'
+          fi
+
+          {
+            printf 'pod_hostname=%s\n' "$(hostname)"
+            printf 'uid=%s gid=%s\n' "$(id -u)" "$(id -g)"
+            printf 'user_max_user_namespaces=%s\n' "$(cat /proc/sys/user/max_user_namespaces)"
+            printf 'bundle_record_sha256=%s\n' "$bundle_sha"
+            printf 'registry_latest_digest=%s\n' "$digest"
+            printf 'review_run_path=%s\n' "$(command -v review-run)"
+            printf 'runner_scripts_pin=%s\n' "$(sha256sum /opt/review-runner/bin/runner.sha256 | cut -d' ' -f1)"
+          } | tee "$record"
+
+          printf 'BUNDLE_RECORD_SHA256=%s\n' "$bundle_sha" >> "$GITHUB_ENV"
+          printf 'REGISTRY_LATEST_DIGEST=%s\n' "$digest" >> "$GITHUB_ENV"
+
+      - name: Check out the revision to review
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.revision }}
+          # The whole history, because the reviewed range needs the base commit.
+          fetch-depth: 0
+          # The review reads the checkout. It gets no token.
+          persist-credentials: false
+
+      - name: Resolve the reviewed range
+        run: |
+          set -euo pipefail
+          rev="$(git rev-parse --verify HEAD)"
+          if [ -n "$REVIEW_BASE_INPUT" ]; then
+            base="$(git rev-parse --verify "${REVIEW_BASE_INPUT}^{commit}")"
+          else
+            base="$(git rev-parse --verify "${rev}^")"
+          fi
+          printf 'reviewed revision %s\nreviewed base     %s\n' "$rev" "$base"
+          printf 'REVIEW_REVISION=%s\n' "$rev" >> "$GITHUB_ENV"
+          printf 'REVIEW_BASE=%s\n' "$base" >> "$GITHUB_ENV"
+
+      - name: Check the backend credential
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          case "$REVIEW_BACKEND" in
+            claude)
+              if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+                echo "::error::CLAUDE_CODE_OAUTH_TOKEN is empty. The claude backend cannot run." >&2
+                exit 1
+              fi
+              echo "the claude credential is present"
+              ;;
+            *)
+              echo "::error::backend ${REVIEW_BACKEND} has no credential in this organization." >&2
+              echo "::error::Only CLAUDE_CODE_OAUTH_TOKEN exists here, so only the claude backend runs." >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Run one review with the sandbox turned off
+        id: review
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          # review-run refuses an output directory that already holds a result.
+          rm -rf "$OUT_DIR"
+          mkdir -p "$OUT_DIR"
+
+          effort=()
+          if [ -n "$REVIEW_EFFORT" ]; then
+            effort=(--effort "$REVIEW_EFFORT")
+          fi
+
+          prompt="$(cat <<'PROMPT'
+          Review the changes in this range. Report what you checked in at least one sentence, then
+          every finding you have, each with the file and the line it is about. Report no finding you
+          cannot point at in the diff. Read files only.
+          PROMPT
+          )"
+
+          # The exit code is recorded and the job fails on it in the last step, so the record and
+          # the artifact exist whatever the review did.
+          set +e
+          review-run \
+            --backend "$REVIEW_BACKEND" \
+            --root "$GITHUB_WORKSPACE" \
+            --base "$REVIEW_BASE" \
+            --sandbox "$REVIEW_SANDBOX" \
+            --seconds 1500 \
+            "${effort[@]}" \
+            --out "$OUT_DIR" \
+            "$prompt"
+          rc=$?
+          set -e
+          printf 'review_run_rc=%s\n' "$rc"
+          printf 'rc=%s\n' "$rc" >> "$GITHUB_OUTPUT"
+
+      - name: Extract the findings
+        if: always()
+        run: |
+          set -euo pipefail
+          # The default covers the case where the first step failed before it set the variable.
+          OUT_DIR="${OUT_DIR:-$RUNNER_TEMP/acceptance/out}"
+          if [ -f "$OUT_DIR/review.md" ]; then
+            review-findings "$OUT_DIR/review.md" --out "$OUT_DIR/findings.json"
+            echo "findings.json written"
+          else
+            echo "no review.md, so no findings.json: the review did not complete"
+          fi
+
+      - name: Write the acceptance record
+        if: always()
+        env:
+          REVIEW_RUN_RC: ${{ steps.review.outputs.rc }}
+        run: |
+          set -euo pipefail
+          # The defaults cover the case where the first step failed before it set the variables.
+          RECORD_DIR="${RECORD_DIR:-$RUNNER_TEMP/acceptance}"
+          OUT_DIR="${OUT_DIR:-$RECORD_DIR/out}"
+          mkdir -p "$RECORD_DIR"
+          outcome='unknown: provider.json is missing'
+          if [ -f "$OUT_DIR/provider.json" ]; then
+            outcome="$(jq -c '{status, reason, backend, model, seconds}' "$OUT_DIR/provider.json" 2>&1 || true)"
+          fi
+
+          file_sha() {
+            if [ -f "$1" ]; then
+              sha256sum "$1" | cut -d' ' -f1
+            else
+              printf 'absent'
+            fi
+          }
+
+          jq -n \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg run_id "$GITHUB_RUN_ID" \
+            --arg backend "$REVIEW_BACKEND" \
+            --arg sandbox "$REVIEW_SANDBOX" \
+            --arg revision "${REVIEW_REVISION:-unknown}" \
+            --arg base "${REVIEW_BASE:-unknown}" \
+            --arg rc "${REVIEW_RUN_RC:-unknown}" \
+            --arg bundle "${BUNDLE_RECORD_SHA256:-unknown}" \
+            --arg digest "${REGISTRY_LATEST_DIGEST:-unknown}" \
+            --arg namespaces "$(cat /proc/sys/user/max_user_namespaces)" \
+            --arg review_md "$(file_sha "$OUT_DIR/review.md")" \
+            --arg provider_json "$(file_sha "$OUT_DIR/provider.json")" \
+            --arg findings_json "$(file_sha "$OUT_DIR/findings.json")" \
+            --arg provider "$outcome" \
+            '{repository: $repository, run_id: $run_id, backend: $backend, sandbox: $sandbox,
+              revision: $revision, base: $base, review_run_rc: $rc,
+              bundle_record_sha256: $bundle, registry_latest_digest: $digest,
+              user_max_user_namespaces: $namespaces,
+              files: {"review.md": $review_md, "provider.json": $provider_json,
+                      "findings.json": $findings_json},
+              provider: $provider}' \
+            | tee "$RECORD_DIR/acceptance.json"
+
+          {
+            echo '## Review pool acceptance'
+            echo
+            echo '```json'
+            cat "$RECORD_DIR/acceptance.json"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the record and the three result files
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: review-pool-acceptance-${{ github.run_id }}
+          path: ${{ runner.temp }}/acceptance
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Fail unless the review completed
+        if: always()
+        env:
+          REVIEW_RUN_RC: ${{ steps.review.outputs.rc }}
+        run: |
+          set -euo pipefail
+          # The default covers the case where the first step failed before it set the variable.
+          OUT_DIR="${OUT_DIR:-$RUNNER_TEMP/acceptance/out}"
+          if [ "${REVIEW_RUN_RC:-1}" != "0" ]; then
+            echo "::error::review-run exited ${REVIEW_RUN_RC:-unknown}. Read provider.json in the artifact." >&2
+            exit 1
+          fi
+          for name in review.md provider.json findings.json; do
+            if [ ! -s "$OUT_DIR/$name" ]; then
+              echo "::error::${name} is missing or empty, so the acceptance is not met." >&2
+              exit 1
+            fi
+          done
+          echo "the review completed and all three result files exist"
