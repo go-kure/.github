@@ -350,8 +350,14 @@ records what ran. It is separate from the boundary probe on purpose, because the
 secret and calls no model, and this one holds the backend credential. Four limits decide its shape,
 and a reader needs all four before dispatching it. The pool image installs no bubblewrap, so the
 review passes `--sandbox none` and the job's own container is the boundary. The image bakes no
-backend credential, and this organization holds one, `CLAUDE_CODE_OAUTH_TOKEN`, so the job refuses
-any backend other than `claude` by name instead of launching a review that cannot authenticate.
+backend credential, so the job checks the credential the chosen backend needs and refuses by name
+instead of launching a review that cannot authenticate. The runner renames no credential: it hands
+its own environment to the backend binary, so the variable that matters is the one that binary reads
+for itself. `claude` needs `CLAUDE_CODE_OAUTH_TOKEN`, `codex` needs `OPENAI_API_KEY`, and
+`opencode:<provider>/<model>` needs the named provider's key. This organization holds the first two,
+so an `opencode:anthropic/...` dispatch refuses at that step until someone provisions
+`ANTHROPIC_API_KEY`, and a provider the organization holds no key for refuses for that reason rather
+than as an unknown backend.
 The pool pods run with `hostUsers: false`, so the job records `user.max_user_namespaces` read
 inside the pod. A pod cannot read its own image digest, so the job records the deterministic record
 of `/opt/review-runner` taken by the image's own `review-bundle-verify`, plus the registry digest

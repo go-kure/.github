@@ -27,8 +27,14 @@ if [ ! -f "$WF" ]; then
   exit 2
 fi
 
-BODY=$(yq -r \
-  '.jobs.review.steps[] | select(.name == "Check the backend credential") | .run' "$WF")
+if ! BODY=$(yq -r \
+  '.jobs.review.steps[] | select(.name == "Check the backend credential") | .run' "$WF"); then
+  # A failed parse can still print a body on stdout, so the content checks below would accept it and
+  # the suite would test a fragment of a file yq could not read as a whole. The status is the only
+  # thing that distinguishes that from a clean read.
+  echo "yq failed to read $WF; the step body is not trustworthy" >&2
+  exit 2
+fi
 
 # An absent step and an empty one produce the same empty string, so refuse rather than report zero
 # failures over nothing. A suite that silently tests an empty body passes forever.
