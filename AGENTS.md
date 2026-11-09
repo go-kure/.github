@@ -347,9 +347,13 @@ kure/launcher.
 `review-pool-acceptance.yml` is the only workflow in the org that calls a real review backend on
 the review pool: it completes one `review-run` review of a commit range in this repository and
 records what ran. It is separate from the boundary probe on purpose, because the probe holds no
-secret and calls no model, and this one holds the backend credential. Four limits decide its shape,
-and a reader needs all four before dispatching it. The pool image installs no bubblewrap, so the
-review passes `--sandbox none` and the job's own container is the boundary. The image bakes no
+secret and calls no model, and this one holds the backend credential. Five limits decide its shape,
+and a reader needs all five before dispatching it. The pool image installs no bubblewrap, so the
+review passes `--sandbox none` and the job's own container is the boundary. Because that review
+reads its checkout with the credential in its environment, the job reviews only commits this
+repository itself carries: the resolve step refuses a revision or a base that is reachable from no
+branch of this repository, which is what a fork pull request's head at `refs/pull/N/head` is, and it
+refuses the same way when no branch was fetched at all. The image bakes no
 backend credential, so the job checks the credential the chosen backend needs and refuses by name
 instead of launching a review that cannot authenticate. The runner renames no credential: it hands
 its own environment to the backend binary, so the variable that matters is the one that binary reads

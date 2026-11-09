@@ -22,6 +22,13 @@
 #    credential step refuses any backend whose key is absent, by name and with the reason, instead of
 #    launching a review that cannot authenticate.
 #
+# The second of those three facts decides what this job may review. The review reads its checkout
+# with the credential in its environment and no sandbox around it, so the reviewed commits have to
+# be code this repository carries. The revision input is free-form and actions/checkout takes it as
+# a ref, and a fork pull request's head is a real ref of this repository, so the resolve step tests
+# reachability from this repository's own branches and refuses anything else, fetch failures
+# included.
+#
 # The image digest is not readable from inside the pod: a job has no Kubernetes credential, and the
 # scale set pulls the latest tag. So the identity step records two things in its place. The bundle
 # record is the deterministic record of /opt/review-runner, taken by the image's own
@@ -162,6 +169,25 @@ jobs:
           else
             base="$(git rev-parse --verify "${rev}^")"
           fi
+
+          # The reviewed content reaches a review that runs with the sandbox off and this
+          # organization's backend credential in its environment, so the reviewed commits have to be
+          # code this repository itself carries. The revision input is free-form and actions/checkout
+          # takes it as a ref, and a fork pull request's head is a real ref of this repository at
+          # refs/pull/N/head, so a dispatch can name outside content without any write access here.
+          # The test below is reachability and not a name match: a fork pull request head is
+          # reachable from no branch of this repository, and every commit this repository carries is
+          # reachable from one. It covers the base as well, because the base decides the diff the
+          # review reads. An empty read is what both an unreachable commit and a missing fetch look
+          # like, so it refuses on either: no branch read means no review.
+          for commit in "$rev" "$base"; do
+            if [ -z "$(git branch --remotes --contains "$commit")" ]; then
+              echo "::error::commit ${commit} is reachable from no branch of this repository." >&2
+              echo "::error::Either it is outside content, such as a fork pull request head, or no branch was fetched. The review holds this organization's backend credential, so it reads only code this repository carries." >&2
+              exit 1
+            fi
+          done
+
           printf 'reviewed revision %s\nreviewed base     %s\n' "$rev" "$base"
           printf 'REVIEW_REVISION=%s\n' "$rev" >> "$GITHUB_ENV"
           printf 'REVIEW_BASE=%s\n' "$base" >> "$GITHUB_ENV"
