@@ -252,20 +252,27 @@ assert_eq "no chunks: made no proxy call" "0" "$(cat "$STUB_DIR/calls" 2>/dev/nu
 # chunk reaches that step and then loses it. A chunk whose findings were lost must not bump
 # chunks_ok: with one chunk, that leaves nothing usable and the adapter exits 1 (no signal),
 # instead of printing an empty review as if the model had found nothing.
-REAL_JQ="$(command -v jq)" || { echo "jq not found" >&2; exit 2; }
+# The pass-through hands the call back to the `jq` the run would have used, by restoring the
+# PATH from before the shim directory was prepended. It must not resolve `jq` to an absolute
+# path and exec that: where `jq` on PATH is a version manager's shim, the shim's own fallback
+# is a PATH lookup, which finds this wrapper again and loops. The manager then refuses with a
+# recursion error, every case of this block dies at the first call, and the control below is
+# what says so.
+command -v jq >/dev/null || { echo "jq not found" >&2; exit 2; }
+ORIG_PATH="$PATH"
 mkdir -p "$WORK/shimbin"
 cat > "$WORK/shimbin/jq" <<'SHIM'
 #!/usr/bin/env bash
 for a in "$@"; do
   case "$a" in *"$JQ_FAIL_MATCH"*) exit 5 ;; esac
 done
-exec "$REAL_JQ" "$@"
+exec env PATH="$JQ_PASSTHROUGH_PATH" jq "$@"
 SHIM
 chmod +x "$WORK/shimbin/jq"
 
 reset_stub
 printf '%s' "$REVIEW_JSON" > "$STUB_DIR/reply-1"
-merge_fault="$(PATH="$WORK/shimbin:$PATH" REAL_JQ="$REAL_JQ" JQ_FAIL_MATCH='expected exactly two JSON arrays' run_adapter)"
+merge_fault="$(PATH="$WORK/shimbin:$ORIG_PATH" JQ_PASSTHROUGH_PATH="$ORIG_PATH" JQ_FAIL_MATCH='expected exactly two JSON arrays' run_adapter)"
 rc=$?
 assert_eq "merge fault: exit 1 (the chunk is not counted ok)" "1" "$rc"
 assert_eq "merge fault: prints no findings document" "" "$merge_fault"
@@ -274,7 +281,7 @@ assert_eq "merge fault: the log names the fault" "true" \
 
 reset_stub
 printf '%s' "$REVIEW_JSON" > "$STUB_DIR/reply-1"
-norm_fault="$(PATH="$WORK/shimbin:$PATH" REAL_JQ="$REAL_JQ" JQ_FAIL_MATCH='expected an array and one object' run_adapter)"
+norm_fault="$(PATH="$WORK/shimbin:$ORIG_PATH" JQ_PASSTHROUGH_PATH="$ORIG_PATH" JQ_FAIL_MATCH='expected an array and one object' run_adapter)"
 rc=$?
 assert_eq "normalize fault: exit 1 (the chunk is not counted ok)" "1" "$rc"
 assert_eq "normalize fault: prints no findings document" "" "$norm_fault"
@@ -284,7 +291,7 @@ assert_eq "normalize fault: reported as a local fault (status 3), not an unusabl
 # The same call without the shim still succeeds, so the faults above are the shim's doing.
 reset_stub
 printf '%s' "$REVIEW_JSON" > "$STUB_DIR/reply-1"
-control="$(PATH="$WORK/shimbin:$PATH" REAL_JQ="$REAL_JQ" JQ_FAIL_MATCH='no-such-program-text' run_adapter)"
+control="$(PATH="$WORK/shimbin:$ORIG_PATH" JQ_PASSTHROUGH_PATH="$ORIG_PATH" JQ_FAIL_MATCH='no-such-program-text' run_adapter)"
 rc=$?
 assert_eq "fault control: a pass-through shim leaves the run intact" "0 1" "$rc $(jq '.findings | length' <<<"$control")"
 
