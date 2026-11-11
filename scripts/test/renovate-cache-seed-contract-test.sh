@@ -23,6 +23,17 @@ SEED="$ROOT/.github/workflows/renovate-cache-seed.yml"
 failures=0
 pass_count=0
 
+# cache_lines FILE — the key: and path: lines of every actions/cache step, trimmed.
+# A step starts at a "- name:" line and counts as a cache step once its uses: line
+# names actions/cache.
+cache_lines() {
+  awk '
+    /^ *- name:/ { in_cache = 0 }
+    /^ *uses: actions\/cache\// { in_cache = 1 }
+    in_cache && /^ *(key|path): / { sub(/^ */, ""); print }
+  ' "$1"
+}
+
 # contract CI_FILE SEED_FILE — print one FAIL line per broken fact, return 1 if any.
 contract() {
   local ci="$1" seed="$2" rc=0 lines f
@@ -32,24 +43,25 @@ contract() {
       return 1
     fi
   done
-  # Both files must carry a key and a path, and the set of distinct lines across
-  # the two files must be one: ci.yml restores and saves, the seed does the same.
+  # Every actions/cache step (restore and save) in both files carries a key and a
+  # path, read whatever their value is. All of them together must hold exactly one
+  # distinct key and one distinct path.
   for f in "$ci" "$seed"; do
-    if ! grep -qE '^ +key: renovate-lane-test-' "$f"; then
-      echo "FAIL: no renovate-lane-test cache key in $f"
+    if ! cache_lines "$f" | grep -q '^key: '; then
+      echo "FAIL: no cache key in $f"
       rc=1
     fi
-    if ! grep -qE '^ +path: \.renovate-lane-test$' "$f"; then
-      echo "FAIL: no cache path .renovate-lane-test in $f"
+    if ! cache_lines "$f" | grep -q '^path: '; then
+      echo "FAIL: no cache path in $f"
       rc=1
     fi
   done
-  lines="$(cat "$ci" "$seed" | grep -E '^ +key: renovate-lane-test-' | sed 's/^ *//' | sort -u | wc -l)"
+  lines="$(for f in "$ci" "$seed"; do cache_lines "$f"; done | grep '^key: ' | sort -u | wc -l)"
   if [ "$lines" -gt 1 ]; then
     echo "FAIL: the cache key differs between ci.yml and the seed workflow ($lines distinct keys)"
     rc=1
   fi
-  lines="$(cat "$ci" "$seed" | grep -E '^ +path: \.renovate-lane-test' | sed 's/^ *//' | sort -u | wc -l)"
+  lines="$(for f in "$ci" "$seed"; do cache_lines "$f"; done | grep '^path: ' | sort -u | wc -l)"
   if [ "$lines" -gt 1 ]; then
     echo "FAIL: the cache path differs between ci.yml and the seed workflow"
     rc=1
@@ -102,7 +114,18 @@ sed 's/node24-/node22-/' "$SEED" > "$tmp/seed-key"
 expect_fail "a seed key that differs" "cache key differs" "$CI" "$tmp/seed-key"
 
 sed 's#path: \.renovate-lane-test$#path: .renovate-seed#' "$SEED" > "$tmp/seed-path"
-expect_fail "a seed path that differs" "no cache path" "$CI" "$tmp/seed-path"
+expect_fail "a seed path that differs" "cache path differs" "$CI" "$tmp/seed-path"
+
+# Only the save step changes: the restore step still agrees, which a check that
+# selects entries by their expected value would miss.
+sed '/actions\/cache\/save@/,$ s/key: renovate-lane-test-/key: renovate-seed-/' "$SEED" > "$tmp/seed-savekey"
+expect_fail "a seed save key that differs" "cache key differs" "$CI" "$tmp/seed-savekey"
+
+sed '/actions\/cache\/save@/,$ s#path: \.renovate-lane-test$#path: .renovate-seed#' "$SEED" > "$tmp/seed-savepath"
+expect_fail "a seed save path that differs" "cache path differs" "$CI" "$tmp/seed-savepath"
+
+sed '/actions\/cache\/save@/,$ s/key: renovate-lane-test-/key: renovate-seed-/' "$CI" > "$tmp/ci-savekey"
+expect_fail "a ci.yml save key that differs" "cache key differs" "$tmp/ci-savekey" "$SEED"
 
 grep -v "if: github.ref == 'refs/heads/main'" "$SEED" > "$tmp/seed-noguard"
 expect_fail "a seed job with no main guard" "no refs/heads/main guard" "$CI" "$tmp/seed-noguard"
