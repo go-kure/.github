@@ -26,8 +26,9 @@ permissions:
 jobs:
   seed:
     name: seed
-    # A cache is saved under the ref that ran the job. A manual run on another
-    # branch or tag would save one that no other pull request can read.
+    # A cache is saved under the ref that ran the job. This guard keeps the shared
+    # cache on `main`, which every pull request can read, so a manual run on
+    # another branch or tag does not seed it.
     if: github.ref == 'refs/heads/main'
     runs-on: autops-kube-kure
     timeout-minutes: 10
