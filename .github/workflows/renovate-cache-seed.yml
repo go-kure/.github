@@ -31,7 +31,9 @@ jobs:
     # another branch or tag does not seed it.
     if: github.ref == 'refs/heads/main'
     runs-on: autops-kube-kure
-    timeout-minutes: 10
+    # 15 minutes, as in the `test` job of ci.yml: the install can use up to 480 s,
+    # and the save of the installed tree must still run after it.
+    timeout-minutes: 15
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
