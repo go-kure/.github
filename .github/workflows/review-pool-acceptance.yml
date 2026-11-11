@@ -518,6 +518,29 @@ jobs:
           if [ -f "$OUT_DIR/provider.json" ]; then
             piped="$(jq -r '.identity.input_sha256 // "absent"' "$OUT_DIR/provider.json")"
             canonical="$(jq -r '.identity.material_sha256 // "absent"' "$OUT_DIR/provider.json")"
+            # A digest the record does not carry is not a match. Both reads above fall back to the
+            # same literal, so a record holding neither digest compared "absent" with "absent",
+            # passed, and printed that the material matched: the one thing this check exists to
+            # disprove. This run always passes --base, and review-run builds its identity block
+            # before it constructs the record, so no writer on this path produces that record: the
+            # guard is against a record malformed by any route, because a comparison with nothing in
+            # it answers falsely whatever wrote it. Name the missing field, since a reader who sees
+            # only a mismatch acts on two digests that disagree instead of one that is absent.
+            missing=
+            if [ "$piped" = absent ]; then
+              missing="no stdin input_sha256"
+            fi
+            if [ "$canonical" = absent ]; then
+              if [ -n "$missing" ]; then
+                missing="$missing and no canonical material_sha256"
+              else
+                missing="no canonical material_sha256"
+              fi
+            fi
+            if [ -n "$missing" ]; then
+              echo "::error::the record names $missing, so the reviewed material cannot be checked against the recorded range." >&2
+              exit 1
+            fi
             if [ "$piped" != "$canonical" ]; then
               echo "::error::the reviewed material is not the recorded range." >&2
               echo "::error::stdin input_sha256 $piped, canonical material_sha256 $canonical" >&2
