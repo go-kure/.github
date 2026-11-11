@@ -330,7 +330,7 @@ secrets: inherit
 `pr-review-runner-boundary-probe.yml` are **not** reusable —
 `ci.yml` is this repo's own self-CI (`pull_request` + `workflow_dispatch`),
 `renovate-cache-seed.yml` saves, on the default branch, the Renovate install cache that the `test`
-job of `ci.yml` restores (push of the pin or of the workflow, weekly schedule and
+job of `ci.yml` restores (push of the pin or of the workflow, daily schedule and
 `workflow_dispatch`; see `docs/standards.md`), `settings.yml` is this
 repo's own org-settings audit/apply (push to `governance`/`standards`, daily schedule and
 `workflow_dispatch`; see above), and `pr-ci-health.yml` is an unrelated org-wide open-PR CI-health
