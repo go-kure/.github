@@ -101,19 +101,21 @@ jobs:
       # between 2026-11-03 and 2026-11-11 took 44 to 236 s (median 76 s) for this
       # uncached install. A try that ran out its limit is a slow install and is
       # not retried into a second full wait. A try that failed fast is retried with
-      # what is left of the budget. A failed try never leaves a partial tree.
+      # what is left of the budget, less the 10 s that `timeout -k` allows before
+      # a kill, so the step never passes 480 s. A failed try never leaves a
+      # partial tree.
       - name: Install renovate
         if: steps.renovate-cache.outputs.cache-hit != 'true'
         timeout-minutes: 9
         run: |
           budget=480
           for attempt in 1 2; do
-            left=$((budget - SECONDS))
+            rm -rf .renovate-lane-test
+            left=$((budget - SECONDS - 10))
             if [ "$left" -lt 60 ]; then
               break
             fi
             bound=$((left < 420 ? left : 420))
-            rm -rf .renovate-lane-test
             if timeout -k 10 "$bound" npm install --no-save --prefix .renovate-lane-test "renovate@${RENOVATE_VERSION}"; then
               echo "renovate install took ${SECONDS} s in total (try ${attempt})"
               exit 0
