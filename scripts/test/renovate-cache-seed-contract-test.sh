@@ -4,15 +4,19 @@
 # .github/workflows/renovate-cache-seed.yml saves the Renovate install cache on
 # main so the first run of a pull request can restore it in ci.yml. The change
 # is useless if the two keys or paths differ, and every other test stays green
-# when they do. This test asserts three facts about the seed workflow:
-#   1. its cache key and path equal the ones ci.yml restores,
-#   2. its job runs only on refs/heads/main,
-#   3. its job has a timeout.
+# when they do. This test asserts these facts about the two workflows:
+#   1. the cache key and path of the seed equal the ones ci.yml restores,
+#   2. the seed job runs only on refs/heads/main,
+#   3. the seed job has a timeout,
+#   4. ci.yml never saves the cache (only the seed writes the shared cache),
+#   5. the key of both files names the cache period, the 14-day number that
+#      makes the key change before the cache server deletes an old object.
 # Each assertion also runs against a mutated copy that must fail, so a check
 # that agrees with everything is caught.
 #
 # Usage: renovate-cache-seed-contract-test.sh [REPO_ROOT]
 
+# shellcheck disable=SC2016  # the single-quoted ${{ }} strings are GitHub expressions, not shell
 set -uo pipefail  # not -e: report every assertion, not just the first failure
 
 ROOT="${1:-.}"
@@ -64,6 +68,16 @@ contract() {
   lines="$(for f in "$ci" "$seed"; do cache_lines "$f"; done | grep '^path: ' | sort -u | wc -l)"
   if [ "$lines" -gt 1 ]; then
     echo "FAIL: the cache path differs between ci.yml and the seed workflow"
+    rc=1
+  fi
+  for f in "$ci" "$seed"; do
+    if cache_lines "$f" | grep '^key: ' | grep -vqF -- '-p${{ steps.cache-period.outputs.n }}'; then
+      echo "FAIL: a cache key in $f does not end in the cache period"
+      rc=1
+    fi
+  done
+  if grep -qE '^ *uses: actions/cache(/save)?@' "$ci"; then
+    echo "FAIL: ci.yml saves the cache; only the seed workflow writes it"
     rc=1
   fi
   if ! grep -qE "^    if: github\.ref == 'refs/heads/main'\$" "$seed"; then
@@ -124,8 +138,27 @@ expect_fail "a seed save key that differs" "cache key differs" "$CI" "$tmp/seed-
 sed '/actions\/cache\/save@/,$ s#path: \.renovate-lane-test$#path: .renovate-seed#' "$SEED" > "$tmp/seed-savepath"
 expect_fail "a seed save path that differs" "cache path differs" "$CI" "$tmp/seed-savepath"
 
-sed '/actions\/cache\/save@/,$ s/key: renovate-lane-test-/key: renovate-seed-/' "$CI" > "$tmp/ci-savekey"
-expect_fail "a ci.yml save key that differs" "cache key differs" "$tmp/ci-savekey" "$SEED"
+# A save step in ci.yml, with the same key and path, still agrees on both: only
+# the fourth fact catches it.
+{
+  cat "$CI"
+  printf '%s\n' \
+    '      - name: Save renovate install' \
+    '        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0' \
+    '        with:' \
+    '          path: .renovate-lane-test' \
+    '          key: renovate-lane-test-${{ runner.os }}-${{ runner.arch }}-node24-${{ steps.renovate-pin.outputs.version }}-p${{ steps.cache-period.outputs.n }}'
+} > "$tmp/ci-save"
+expect_fail "a ci.yml that saves the cache" "ci.yml saves the cache" "$tmp/ci-save" "$SEED"
+
+# Both files lose the period in every key: they still agree with each other.
+sed 's/-p\${{ steps\.cache-period\.outputs\.n }}$//' "$CI" > "$tmp/ci-noperiod"
+sed 's/-p\${{ steps\.cache-period\.outputs\.n }}$//' "$SEED" > "$tmp/seed-noperiod"
+expect_fail "keys that name no cache period" "does not end in the cache period" "$tmp/ci-noperiod" "$tmp/seed-noperiod"
+
+# Only the seed save key loses the period: the restore key still has it.
+sed '/actions\/cache\/save@/,$ s/-p\${{ steps\.cache-period\.outputs\.n }}$//' "$SEED" > "$tmp/seed-saveperiod"
+expect_fail "a seed save key with no cache period" "does not end in the cache period" "$CI" "$tmp/seed-saveperiod"
 
 grep -v "if: github.ref == 'refs/heads/main'" "$SEED" > "$tmp/seed-noguard"
 expect_fail "a seed job with no main guard" "no refs/heads/main guard" "$CI" "$tmp/seed-noguard"

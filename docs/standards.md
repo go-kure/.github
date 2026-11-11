@@ -230,24 +230,31 @@ and the `test` CI job. Nothing bumps this pin automatically; raise it deliberate
 newer Renovate major, in step with `CI_RENOVATE_IMAGE` on the workspace side so the version this
 test resolves against does not drift from what actually runs the config.
 
-The `test` CI job caches the installed tree (`.renovate-lane-test`), keyed on runner OS and
-architecture, the Node major and this pin, so a bump of the pin is a cache miss. On a miss the install
-runs inside a 480-second budget: a try is limited to 420 seconds, a try that ran out its limit is not
-retried, and a try that failed fast is retried once with what is left. The job timeout is 15 minutes,
-so a worst-case install still leaves time for checkout, the cache save and the validators. The tree is
-saved right after a good install. There is no lockfile, so a cold install resolves transitive dependencies at install
-time. A pull request run saves its cache under the pull request's own merge reference, so only later
-runs of that pull request read it; it can also read a cache saved on the default branch or on its
-base branch. The `ci.yml` workflow has no `push` trigger, so the separate `renovate-cache-seed.yml`
-workflow saves the same cache on the default branch: on a push that changes the pin or that
-workflow, daily, and on a manual run; the job runs only on `main`, so a manual run on another ref
-does nothing. The daily run also keeps the cache from being evicted after 7 days without a read.
-Until that workflow has saved a matching cache, or after an eviction,
-the first run of a pull request installs cold. A red `seed` check on `main` means only that the seed
-install failed; it blocks nothing. `scripts/test/renovate-cache-seed-contract-test.sh` asserts that
-the seed workflow uses the same cache key and path as `ci.yml`, runs only on `main`, and has a job
-timeout. The seed job timeout is 15 minutes, the same as the `test` job, so a worst-case install still
-leaves time for the save.
+The `test` CI job restores the installed tree (`.renovate-lane-test`) from the cache. The key names
+the runner OS and architecture, the Node major, this pin and a cache period, so a bump of the pin is a
+cache miss. On a miss the install runs inside a 480-second budget: a try is limited to 420 seconds, a
+try that ran out its limit is not retried, and a try that failed fast is retried once with what is
+left. The job timeout is 15 minutes, so a worst-case install still leaves time for checkout and the
+validators. There is no lockfile, so a cold install resolves transitive dependencies at install time.
+
+The `test` job never saves the cache. A pull request run can read a cache saved on the default branch
+but saves only under its own merge reference, which no other run can read, so the separate
+`renovate-cache-seed.yml` workflow saves the cache on the default branch. It runs on a push that
+changes the pin or that workflow, daily, and on a manual run. The job runs only on `main`, so a manual
+run on another ref does nothing. Its timeout is 15 minutes, the same as the `test` job, so a worst-case
+install still leaves time for the save. A cache that nothing reads for 7 days is evicted, and the daily
+run reads it. A run that starts before the seed has saved the cache of a new period, or after an
+eviction, installs cold.
+
+The cache period is the number of whole 14-day spans since the Unix epoch, read with `date` in both
+workflows. The shared cache server deletes an object 30 days after it was written, and a read does
+not extend that. The daily seed run only reads the cache once it exists, so without a changing key the
+object could be deleted while the cache server still lists the key, and a restore would fail. A new key
+every 14 days forces a new write long before that. A red `seed` check on `main` means only that the
+seed install failed; it blocks nothing. `scripts/test/renovate-cache-seed-contract-test.sh` asserts
+that the seed workflow and `ci.yml` use the same cache key and path, that both keys end in the cache
+period, that `ci.yml` never saves the cache, and that the seed job runs only on `main` and has a
+timeout.
 
 This preset and the workspace-default preset that GitLab repos consume are **asserted
 equivalent** by an automated parity check on the workspace side, which runs on every pipeline

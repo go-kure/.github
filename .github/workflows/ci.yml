@@ -72,8 +72,8 @@ jobs:
   test:
     name: test
     runs-on: autops-kube-kure
-    # 15 minutes: the install below may use up to 480 s, and checkout, the cache
-    # save and the validators need a few minutes more after and before it.
+    # 15 minutes: the install below may use up to 480 s, and checkout and the
+    # validators need a few minutes more after and before it.
     timeout-minutes: 15
     needs: lint
     steps:
@@ -89,17 +89,25 @@ jobs:
           RENOVATE_VERSION="$(cat scripts/test/renovate-version)"
           echo "RENOVATE_VERSION=${RENOVATE_VERSION}" >> "$GITHUB_ENV"
           echo "version=${RENOVATE_VERSION}" >> "$GITHUB_OUTPUT"
+      # The cache period is a 14-day number. The cache server deletes an object 30
+      # days after it was written, and a read does not extend that, so the key
+      # changes every 14 days to force a new write in time. The seed workflow
+      # reads the same number.
+      - name: Read cache period
+        id: cache-period
+        run: echo "n=$(( $(date -u +%s) / 86400 / 14 ))" >> "$GITHUB_OUTPUT"
       # The installed tree is cached, not npm's download cache: a hit then needs no
       # registry call at all. The key names the pin, so a bump of
       # scripts/test/renovate-version is a miss. There is no lockfile to hash.
-      # renovate-cache-seed.yml saves this same path and key on the default branch,
-      # which a pull request's first run can read; keep the two keys identical.
+      # This job only restores. renovate-cache-seed.yml saves this same path and key
+      # on the default branch, which a pull request's run can read; keep the two keys
+      # identical. A run before the seed has saved a new period's key installs cold.
       - name: Restore renovate install
         id: renovate-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .renovate-lane-test
-          key: renovate-lane-test-${{ runner.os }}-${{ runner.arch }}-node24-${{ steps.renovate-pin.outputs.version }}
+          key: renovate-lane-test-${{ runner.os }}-${{ runner.arch }}-node24-${{ steps.renovate-pin.outputs.version }}-p${{ steps.cache-period.outputs.n }}
       # On a miss: at most two tries inside one 480 s budget, so the step ends
       # well before the job's 15 minutes. A try is limited to 420 s: 25 green runs
       # between 2026-11-03 and 2026-11-11 took 44 to 236 s (median 76 s) for this
@@ -134,14 +142,6 @@ jobs:
           done
           echo "::error::renovate install did not finish inside its ${budget} s budget"
           exit 1
-      # Saved straight after the install, so a red step later in the job does not
-      # lose a good install.
-      - name: Save renovate install
-        if: steps.renovate-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: .renovate-lane-test
-          key: renovate-lane-test-${{ runner.os }}-${{ runner.arch }}-node24-${{ steps.renovate-pin.outputs.version }}
       - name: Validate renovate/shared.json against renovate's own schema
         run: npx --prefix .renovate-lane-test renovate-config-validator --no-global renovate/shared.json
       - name: renovate-lane-policy-test.mjs — every dependency-update path resolves to exactly one lane
