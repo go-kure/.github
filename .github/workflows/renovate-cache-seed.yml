@@ -1,0 +1,84 @@
+name: Renovate cache seed
+
+# Saves the installed Renovate tree that the `test` job of ci.yml restores, on the
+# default branch, so the first run of a new pull request finds it: a pull request
+# run can read the default branch's caches but saves only under its own merge
+# reference (go-kure/.github#363). The path and the key must match the cache steps
+# of the `test` job in ci.yml. A cache that nothing reads for 7 days is evicted, so
+# the weekly run keeps it alive.
+on:
+  push:
+    branches: [main]
+    paths:
+      - scripts/test/renovate-version
+      - .github/workflows/renovate-cache-seed.yml
+  schedule:
+    - cron: '17 5 * * 1'  # Mondays 05:17 UTC
+  workflow_dispatch:
+
+concurrency:
+  group: renovate-cache-seed
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  seed:
+    name: seed
+    runs-on: autops-kube-kure
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '24'
+      - name: Read renovate pin
+        id: renovate-pin
+        run: |
+          RENOVATE_VERSION="$(cat scripts/test/renovate-version)"
+          echo "RENOVATE_VERSION=${RENOVATE_VERSION}" >> "$GITHUB_ENV"
+          echo "version=${RENOVATE_VERSION}" >> "$GITHUB_OUTPUT"
+      # A hit is a full restore on purpose: reading the cache is what keeps it from
+      # being evicted.
+      - name: Restore renovate install
+        id: renovate-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .renovate-lane-test
+          key: renovate-lane-test-${{ runner.os }}-${{ runner.arch }}-node24-${{ steps.renovate-pin.outputs.version }}
+      # The same install step as the `test` job of ci.yml, bounds included.
+      - name: Install renovate
+        if: steps.renovate-cache.outputs.cache-hit != 'true'
+        timeout-minutes: 9
+        run: |
+          budget=480
+          for attempt in 1 2; do
+            rm -rf .renovate-lane-test
+            left=$((budget - SECONDS - 10))
+            if [ "$left" -lt 60 ]; then
+              break
+            fi
+            bound=$((left < 420 ? left : 420))
+            if timeout -k 10 "$bound" npm install --no-save --prefix .renovate-lane-test "renovate@${RENOVATE_VERSION}"; then
+              echo "renovate install took ${SECONDS} s in total (try ${attempt})"
+              exit 0
+            else
+              rc=$?
+            fi
+            if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+              echo "::warning::renovate install try ${attempt} TIMED OUT after ${bound} s: npm was still running, so the link was slow"
+              break
+            fi
+            echo "::warning::renovate install try ${attempt} FAILED with npm exit status ${rc} after ${SECONDS} s"
+          done
+          echo "::error::renovate install did not finish inside its ${budget} s budget"
+          exit 1
+      - name: Save renovate install
+        if: steps.renovate-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .renovate-lane-test
+          key: renovate-lane-test-${{ runner.os }}-${{ runner.arch }}-node24-${{ steps.renovate-pin.outputs.version }}

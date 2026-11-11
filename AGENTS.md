@@ -326,9 +326,12 @@ uses: go-kure/.github/.github/workflows/<name>.yml@main
 secrets: inherit
 ```
 
-`ci.yml`, `settings.yml`, `pr-ci-health.yml`, `pr-review-digest.yml` and
+`ci.yml`, `renovate-cache-seed.yml`, `settings.yml`, `pr-ci-health.yml`, `pr-review-digest.yml` and
 `pr-review-runner-boundary-probe.yml` are **not** reusable —
-`ci.yml` is this repo's own self-CI (`pull_request` + `workflow_dispatch`), `settings.yml` is this
+`ci.yml` is this repo's own self-CI (`pull_request` + `workflow_dispatch`),
+`renovate-cache-seed.yml` saves, on the default branch, the Renovate install cache that the `test`
+job of `ci.yml` restores (push of the pin or of the workflow, weekly schedule and
+`workflow_dispatch`; see `docs/standards.md`), `settings.yml` is this
 repo's own org-settings audit/apply (push to `governance`/`standards`, daily schedule and
 `workflow_dispatch`; see above), and `pr-ci-health.yml` is an unrelated org-wide open-PR CI-health
 check (daily schedule and `workflow_dispatch`; see `docs/standards.md` § "PR CI Health"). The last
