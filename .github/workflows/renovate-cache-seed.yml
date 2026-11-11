@@ -3,9 +3,11 @@ name: Renovate cache seed
 # Saves the installed Renovate tree that the `test` job of ci.yml restores, on the
 # default branch, so the first run of a new pull request finds it: a pull request
 # run can read the default branch's caches but saves only under its own merge
-# reference (go-kure/.github#363). The path and the key must match the cache steps
-# of the `test` job in ci.yml. A cache that nothing reads for 7 days is evicted, so
-# a daily run keeps it alive with a wide margin: a schedule can start late.
+# reference (go-kure/.github#363). The path and the key must match the cache step
+# of the `test` job in ci.yml, which only restores. A cache that nothing reads for
+# 7 days is evicted, so a daily run keeps it alive with a wide margin: a schedule
+# can start late. The key changes every 14 days (see the cache period step) so a
+# new object is written before the cache server deletes an old one.
 on:
   push:
     branches: [main]
@@ -47,6 +49,12 @@ jobs:
           RENOVATE_VERSION="$(cat scripts/test/renovate-version)"
           echo "RENOVATE_VERSION=${RENOVATE_VERSION}" >> "$GITHUB_ENV"
           echo "version=${RENOVATE_VERSION}" >> "$GITHUB_OUTPUT"
+      # The cache period is a 14-day number, the same step as in ci.yml. The cache
+      # server deletes an object 30 days after it was written and a read does not
+      # extend that, so a new key every 14 days forces a new write in time.
+      - name: Read cache period
+        id: cache-period
+        run: echo "n=$(( $(date -u +%s) / 86400 / 14 ))" >> "$GITHUB_OUTPUT"
       # A hit is a full restore on purpose: reading the cache is what keeps it from
       # being evicted.
       - name: Restore renovate install
@@ -54,7 +62,7 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .renovate-lane-test
-          key: renovate-lane-test-${{ runner.os }}-${{ runner.arch }}-node24-${{ steps.renovate-pin.outputs.version }}
+          key: renovate-lane-test-${{ runner.os }}-${{ runner.arch }}-node24-${{ steps.renovate-pin.outputs.version }}-p${{ steps.cache-period.outputs.n }}
       # The same install step as the `test` job of ci.yml, bounds included.
       - name: Install renovate
         if: steps.renovate-cache.outputs.cache-hit != 'true'
@@ -87,4 +95,4 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .renovate-lane-test
-          key: renovate-lane-test-${{ runner.os }}-${{ runner.arch }}-node24-${{ steps.renovate-pin.outputs.version }}
+          key: renovate-lane-test-${{ runner.os }}-${{ runner.arch }}-node24-${{ steps.renovate-pin.outputs.version }}-p${{ steps.cache-period.outputs.n }}
