@@ -126,11 +126,27 @@ check 'bare opencode reaches the catch-all' \
 # environment that the chosen backend does not need is reachable by anything that content can make
 # the backend do, and it buys nothing: no arm of the step body reads it.
 #
-# This is a static read of the workflow text, not an evaluation. GitHub evaluates the expression,
-# and nothing here can run that evaluator, so these cases test that each secret is gated on the
-# backend at all and that the gate names the backends that credential's own arm serves. A gate whose
-# expression is syntactically valid and semantically wrong passes here and fails in CI on the
-# credential check above, which is the fail-closed direction.
+# This is a static read of the workflow text, not an evaluation. GitHub evaluates the expression and
+# nothing here can run that evaluator, so each case compares the expression against the exact text
+# the review of this change accepted.
+#
+# Exact text, and not a search for the backend name, because a condition can name the right backend
+# and still be wrong in the one direction that matters. `inputs.backend == 'claude' || inputs.backend
+# == 'codex'` mentions `inputs.backend`, contains `'claude'`, and hands the Claude token to a Codex
+# review. A substring test passes it. That was the first form of these cases and a reviewer broke
+# them exactly that way, so the assertion is equality: the condition, its secret reference and its
+# empty fallback, whole.
+#
+# The cost is that an intentional change to a condition fails here until the expected text is
+# updated in the same commit. That is the intended cost. These three expressions decide which
+# organization credential reaches a process that reads repository content with the sandbox off, so a
+# change to one of them is a change a reviewer should have to see.
+#
+# What equality still does not give: it cannot tell whether the expression means what it says. Two
+# things cover that gap and neither is here. The credential check's own arms, tested above, refuse an
+# empty value, so a condition that withholds a credential the backend needs fails loudly in CI. And
+# Actions comparisons ignore case while the shell `case` does not, so a dispatch naming `CLAUDE`
+# passes the gate and is then refused by the step body before any review runs.
 
 # The step name goes through the environment rather than into the expression. This yq is not jq and
 # takes no --arg, and interpolating the name into the expression would make a name holding a quote
@@ -141,13 +157,23 @@ env_of_step() {
     "$WF"
 }
 
-# check_gate STEP SECRET WANT_TEXT
-# Asserts the secret's expression in that step's env block mentions the backend input and the
-# backends it serves. The read is refused rather than reported as a pass when the block is unreadable
-# or the key is absent: an absent key and an ungated key are different defects, and a missing key
-# here would silently satisfy a "does not hold the secret" test while breaking the backend.
+# The expression each secret must carry, in both steps. One backend set per credential, matching the
+# arm of the step body that reads it: claude for the OAuth token, codex and the openai opencode
+# provider for the OpenAI key, the anthropic opencode provider for the Anthropic key.
+declare -A WANT=(
+  [CLAUDE_CODE_OAUTH_TOKEN]="\${{ inputs.backend == 'claude' && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}"
+  [OPENAI_API_KEY]="\${{ (inputs.backend == 'codex' || startsWith(inputs.backend, 'opencode:openai/')) && secrets.OPENAI_API_KEY || '' }}"
+  [ANTHROPIC_API_KEY]="\${{ startsWith(inputs.backend, 'opencode:anthropic/') && secrets.ANTHROPIC_API_KEY || '' }}"
+)
+
+# check_gate STEP SECRET
+# Compares that secret's expression in that step's env block against the expected text, whole.
+# An unreadable block, an absent key and a wrong expression are three different defects and are
+# reported as three different messages: a missing key would otherwise satisfy any test phrased as
+# "does not hold the credential" while breaking the backend that needs it.
 check_gate() {
-  local step="$1" secret="$2" want="$3" block line
+  local step="$1" secret="$2" block line want got
+  want="${WANT[$secret]}"
   if ! block=$(env_of_step "$step"); then
     FAIL=$((FAIL + 1))
     printf 'FAIL  %s / %s: yq could not read the env block\n' "$step" "$secret"
@@ -159,19 +185,25 @@ check_gate() {
     printf 'FAIL  %s / %s: the env block names no such key\n' "$step" "$secret"
     return
   fi
-  if printf '%s' "$line" | grep -qF -- 'inputs.backend' &&
-     printf '%s' "$line" | grep -qF -- "$want"; then
+  got="${line#"${secret}="}"
+  if [ "$got" = "$want" ]; then
     PASS=$((PASS + 1))
-    printf 'PASS  %s / %s is gated on the backend\n' "$step" "$secret"
+    printf 'PASS  %s / %s carries the reviewed expression\n' "$step" "$secret"
   else
     FAIL=$((FAIL + 1))
-    printf 'FAIL  %s / %s is not gated on %s: %s\n' "$step" "$secret" "$want" "$line"
+    printf 'FAIL  %s / %s expression differs\n      want: %s\n      got:  %s\n' \
+      "$step" "$secret" "$want" "$got"
   fi
 }
 
-# The control. Without it every case above passes on a workflow whose step name changed, because an
+# The control. Without it every case below passes on a workflow whose step name changed, because an
 # absent step yields an empty block and every assertion then reports its own absence as a failure
 # that reads like a gate defect rather than a rename.
+#
+# It is not a universal control, and the limit is worth stating because the `|| true` hides a yq
+# failure that still printed something. A read that fails with output reaches the cases below, which
+# then fail on the comparison rather than here. That is a worse message for the same defect, not a
+# missed defect.
 for STEP in 'Check the backend credential' 'Run one review with the sandbox turned off'; do
   if [ -z "$(env_of_step "$STEP" || true)" ]; then
     echo "read no env block for the step '$STEP'; the gate cases below are not trustworthy" >&2
@@ -179,20 +211,24 @@ for STEP in 'Check the backend credential' 'Run one review with the sandbox turn
   fi
 done
 
-# claude is the only backend whose own arm reads the claude token.
-check_gate 'Run one review with the sandbox turned off' CLAUDE_CODE_OAUTH_TOKEN "'claude'"
-check_gate 'Check the backend credential' CLAUDE_CODE_OAUTH_TOKEN "'claude'"
+for STEP in 'Run one review with the sandbox turned off' 'Check the backend credential'; do
+  check_gate "$STEP" CLAUDE_CODE_OAUTH_TOKEN
+  check_gate "$STEP" OPENAI_API_KEY
+  check_gate "$STEP" ANTHROPIC_API_KEY
+done
 
-# Two arms read the openai key: the codex backend, and an opencode backend naming the openai
-# provider. A gate naming only one of them breaks the other, and the credential check is what
-# catches it.
-check_gate 'Run one review with the sandbox turned off' OPENAI_API_KEY "'codex'"
-check_gate 'Run one review with the sandbox turned off' OPENAI_API_KEY 'opencode:openai/'
-check_gate 'Check the backend credential' OPENAI_API_KEY "'codex'"
-check_gate 'Check the backend credential' OPENAI_API_KEY 'opencode:openai/'
-
-check_gate 'Run one review with the sandbox turned off' ANTHROPIC_API_KEY 'opencode:anthropic/'
-check_gate 'Check the backend credential' ANTHROPIC_API_KEY 'opencode:anthropic/'
+# The two steps declare the same three credentials, and only those three. A fourth key in either
+# block is a credential the gate above says nothing about, and the equality cases cannot see it.
+for STEP in 'Run one review with the sandbox turned off' 'Check the backend credential'; do
+  keys=$(env_of_step "$STEP" | sed 's/=.*//' | sort | tr '\n' ' ')
+  if [ "$keys" = 'ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN OPENAI_API_KEY ' ]; then
+    PASS=$((PASS + 1))
+    printf 'PASS  %s declares those three credentials and no others\n' "$STEP"
+  else
+    FAIL=$((FAIL + 1))
+    printf 'FAIL  %s declares a different credential set: %s\n' "$STEP" "$keys"
+  fi
+done
 
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
