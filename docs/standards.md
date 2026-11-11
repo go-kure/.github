@@ -227,8 +227,9 @@ test resolves against does not drift from what actually runs the config.
 The `test` CI job caches the installed tree (`.renovate-lane-test`), keyed on runner OS and
 architecture, the Node major and this pin, so a bump of the pin is a cache miss. On a miss the install
 runs inside a 480-second budget: a try is limited to 420 seconds, a try that ran out its limit is not
-retried, and a try that failed fast is retried once with what is left. The tree is saved right after a
-good install. There is no lockfile, so a cold install resolves transitive dependencies at install
+retried, and a try that failed fast is retried once with what is left. The job timeout is 15 minutes,
+so a worst-case install still leaves time for checkout, the cache save and the validators. The tree is
+saved right after a good install. There is no lockfile, so a cold install resolves transitive dependencies at install
 time. A pull request run saves its cache under the pull request's own merge reference, so only later
 runs of that pull request read it; it can also read a cache saved on the default branch or on its
 base branch. The `ci.yml` workflow has no `push` trigger, so the separate `renovate-cache-seed.yml`
