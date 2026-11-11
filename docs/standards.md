@@ -236,7 +236,10 @@ workflow saves the same cache on the default branch: on a push that changes the 
 workflow, daily, and on a manual run; the job runs only on `main`, so a manual run on another ref
 does nothing. The daily run also keeps the cache from being evicted after 7 days without a read.
 Until that workflow has saved a matching cache, or after an eviction,
-the first run of a pull request installs cold.
+the first run of a pull request installs cold. A red `seed` check on `main` means only that the seed
+install failed; it blocks nothing. `scripts/test/renovate-cache-seed-contract-test.sh` asserts that
+the seed workflow uses the same cache key and path as `ci.yml`, runs only on `main`, and has a job
+timeout.
 
 This preset and the workspace-default preset that GitLab repos consume are **asserted
 equivalent** by an automated parity check on the workspace side, which runs on every pipeline
