@@ -115,5 +115,84 @@ check 'an unknown backend is refused' \
 check 'bare opencode reaches the catch-all' \
   1 'has no credential in this organization' opencode "$K" "$K" "$K"
 
+# --- Which credentials each step is given at all -------------------------------------------------
+#
+# The cases above test the step body, which decides whether the credential it needs is present. They
+# say nothing about which credentials the step is handed, and that is a separate property of the
+# workflow: a step's `env:` block is what puts a secret into the process environment.
+#
+# It matters because the review step runs with the sandbox off and the runner hands its whole
+# environment to the backend binary, which reads repository content. A credential in that
+# environment that the chosen backend does not need is reachable by anything that content can make
+# the backend do, and it buys nothing: no arm of the step body reads it.
+#
+# This is a static read of the workflow text, not an evaluation. GitHub evaluates the expression,
+# and nothing here can run that evaluator, so these cases test that each secret is gated on the
+# backend at all and that the gate names the backends that credential's own arm serves. A gate whose
+# expression is syntactically valid and semantically wrong passes here and fails in CI on the
+# credential check above, which is the fail-closed direction.
+
+# The step name goes through the environment rather than into the expression. This yq is not jq and
+# takes no --arg, and interpolating the name into the expression would make a name holding a quote
+# change the query rather than fail it.
+env_of_step() {
+  STEP_NAME="$1" yq -r \
+    '.jobs.review.steps[] | select(.name == strenv(STEP_NAME)) | .env | to_entries | .[] | .key + "=" + .value' \
+    "$WF"
+}
+
+# check_gate STEP SECRET WANT_TEXT
+# Asserts the secret's expression in that step's env block mentions the backend input and the
+# backends it serves. The read is refused rather than reported as a pass when the block is unreadable
+# or the key is absent: an absent key and an ungated key are different defects, and a missing key
+# here would silently satisfy a "does not hold the secret" test while breaking the backend.
+check_gate() {
+  local step="$1" secret="$2" want="$3" block line
+  if ! block=$(env_of_step "$step"); then
+    FAIL=$((FAIL + 1))
+    printf 'FAIL  %s / %s: yq could not read the env block\n' "$step" "$secret"
+    return
+  fi
+  line=$(printf '%s\n' "$block" | grep "^${secret}=" || true)
+  if [ -z "$line" ]; then
+    FAIL=$((FAIL + 1))
+    printf 'FAIL  %s / %s: the env block names no such key\n' "$step" "$secret"
+    return
+  fi
+  if printf '%s' "$line" | grep -qF -- 'inputs.backend' &&
+     printf '%s' "$line" | grep -qF -- "$want"; then
+    PASS=$((PASS + 1))
+    printf 'PASS  %s / %s is gated on the backend\n' "$step" "$secret"
+  else
+    FAIL=$((FAIL + 1))
+    printf 'FAIL  %s / %s is not gated on %s: %s\n' "$step" "$secret" "$want" "$line"
+  fi
+}
+
+# The control. Without it every case above passes on a workflow whose step name changed, because an
+# absent step yields an empty block and every assertion then reports its own absence as a failure
+# that reads like a gate defect rather than a rename.
+for STEP in 'Check the backend credential' 'Run one review with the sandbox turned off'; do
+  if [ -z "$(env_of_step "$STEP" || true)" ]; then
+    echo "read no env block for the step '$STEP'; the gate cases below are not trustworthy" >&2
+    exit 2
+  fi
+done
+
+# claude is the only backend whose own arm reads the claude token.
+check_gate 'Run one review with the sandbox turned off' CLAUDE_CODE_OAUTH_TOKEN "'claude'"
+check_gate 'Check the backend credential' CLAUDE_CODE_OAUTH_TOKEN "'claude'"
+
+# Two arms read the openai key: the codex backend, and an opencode backend naming the openai
+# provider. A gate naming only one of them breaks the other, and the credential check is what
+# catches it.
+check_gate 'Run one review with the sandbox turned off' OPENAI_API_KEY "'codex'"
+check_gate 'Run one review with the sandbox turned off' OPENAI_API_KEY 'opencode:openai/'
+check_gate 'Check the backend credential' OPENAI_API_KEY "'codex'"
+check_gate 'Check the backend credential' OPENAI_API_KEY 'opencode:openai/'
+
+check_gate 'Run one review with the sandbox turned off' ANTHROPIC_API_KEY 'opencode:anthropic/'
+check_gate 'Check the backend credential' ANTHROPIC_API_KEY 'opencode:anthropic/'
+
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

@@ -216,10 +216,20 @@ jobs:
           printf 'REVIEW_BASE=%s\n' "$base" >> "$GITHUB_ENV"
 
       - name: Check the backend credential
+        # Each secret reaches this step only for the backends whose own arm below reads it. The
+        # review step is gated the same way and for the real reason; this step is gated to match, so
+        # a gate that names the wrong backend fails here, on a named credential, instead of in the
+        # review. That is also what makes the gate testable: every arm below already refuses an
+        # empty value, so a gate that withholds a credential the backend needs is a red case and
+        # not a silent downgrade.
+        #
+        # The condition reads inputs.backend and not REVIEW_BACKEND, because a step's env block is
+        # evaluated before the step runs and cannot see a value another step wrote to GITHUB_ENV.
+        # The two hold the same value: REVIEW_BACKEND is inputs.backend, set once at the job.
         env:
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ inputs.backend == 'claude' && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
+          OPENAI_API_KEY: ${{ (inputs.backend == 'codex' || startsWith(inputs.backend, 'opencode:openai/')) && secrets.OPENAI_API_KEY || '' }}
+          ANTHROPIC_API_KEY: ${{ startsWith(inputs.backend, 'opencode:anthropic/') && secrets.ANTHROPIC_API_KEY || '' }}
         run: |
           set -euo pipefail
           # The runner renames no credential: it passes its own environment to the backend binary,
@@ -266,10 +276,22 @@ jobs:
 
       - name: Run one review with the sandbox turned off
         id: review
+        # This step is why the gate exists. The review runs with the sandbox off, and the runner
+        # hands its whole environment to the backend binary, which reads the content of the reviewed
+        # range. A credential in that environment that the chosen backend does not use is reachable
+        # by anything that content can persuade the backend to do, and it buys nothing, because no
+        # arm of the step above reads it for this backend either.
+        #
+        # The reachability guard earlier in this job narrows what content can get here to code this
+        # repository carries. It does not close this: an organization member's unmerged branch is
+        # trusted content by that test and is reviewed with the credential present.
+        #
+        # Keep these three conditions identical to the ones on the credential step. They are two
+        # copies on purpose, since a step env block cannot be shared, and the suite asserts both.
         env:
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ inputs.backend == 'claude' && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
+          OPENAI_API_KEY: ${{ (inputs.backend == 'codex' || startsWith(inputs.backend, 'opencode:openai/')) && secrets.OPENAI_API_KEY || '' }}
+          ANTHROPIC_API_KEY: ${{ startsWith(inputs.backend, 'opencode:anthropic/') && secrets.ANTHROPIC_API_KEY || '' }}
         run: |
           set -euo pipefail
           # review-run refuses an output directory that already holds a result.
