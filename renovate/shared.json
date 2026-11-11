@@ -152,6 +152,12 @@
       "labels": ["dependencies", "unattended"]
     },
     {
+      "description": "Node from the mise datasource is published before its Docker Hub image, so a bump can name a node:<version>-alpine tag that does not exist yet and the job that pulls it fails with ImagePullBackOff (node 24.22.3 was proposed while the newest image was 24.22.2). Hold the bump for three days so the image exists first. The mise manager only: the dockerfile manager reads the image tags themselves and cannot get ahead of them. It sets no automerge and no group, so it sits ahead of the final rule, which must stay last.",
+      "matchManagers": ["mise"],
+      "matchPackageNames": ["node"],
+      "minimumReleaseAge": "3 days"
+    },
+    {
       "description": "Automerge: gomod patch/digest, excl. go and the first-party group — matches only the go-patch group above (never go-minor, since that group never contains a patch/digest member). Must be the array's last rule in THIS preset — nothing after it can re-enable automerge for a group meant to stay manual. A downstream consumer that adds its own first-party matchers must exclude them here too, by appending a rule that sets automerge false for them (later rules overwrite earlier scalars).",
       "matchManagers": ["gomod"],
       "matchUpdateTypes": ["patch", "digest"],
