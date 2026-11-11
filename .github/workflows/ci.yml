@@ -81,11 +81,45 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
-      - name: Install renovate
+      - name: Read renovate pin
+        id: renovate-pin
         run: |
           RENOVATE_VERSION="$(cat scripts/test/renovate-version)"
           echo "RENOVATE_VERSION=${RENOVATE_VERSION}" >> "$GITHUB_ENV"
-          npm install --no-save --prefix .renovate-lane-test "renovate@${RENOVATE_VERSION}"
+          echo "version=${RENOVATE_VERSION}" >> "$GITHUB_OUTPUT"
+      # The installed tree is cached, not npm's download cache: a hit then needs no
+      # registry call at all. The key names the pin, so a bump of
+      # scripts/test/renovate-version is a miss. There is no lockfile to hash.
+      - name: Restore renovate install
+        id: renovate-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .renovate-lane-test
+          key: renovate-lane-test-${{ runner.os }}-${{ runner.arch }}-node24-${{ steps.renovate-pin.outputs.version }}
+      # On a miss: two tries of at most 240 s each, so a stalled download costs
+      # 8 minutes at worst, inside the job's 10. A failed try never leaves a
+      # partial tree for the next one.
+      - name: Install renovate
+        if: steps.renovate-cache.outputs.cache-hit != 'true'
+        timeout-minutes: 9
+        run: |
+          for attempt in 1 2; do
+            rm -rf .renovate-lane-test
+            if timeout 240 npm install --no-save --prefix .renovate-lane-test "renovate@${RENOVATE_VERSION}"; then
+              exit 0
+            fi
+            echo "::warning::renovate install try ${attempt} failed or ran past 240 s"
+          done
+          echo "::error::renovate install failed on both tries"
+          exit 1
+      # Saved straight after the install, so a red step later in the job does not
+      # lose a good install.
+      - name: Save renovate install
+        if: steps.renovate-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .renovate-lane-test
+          key: renovate-lane-test-${{ runner.os }}-${{ runner.arch }}-node24-${{ steps.renovate-pin.outputs.version }}
       - name: Validate renovate/shared.json against renovate's own schema
         run: npx --prefix .renovate-lane-test renovate-config-validator --no-global renovate/shared.json
       - name: renovate-lane-policy-test.mjs — every dependency-update path resolves to exactly one lane

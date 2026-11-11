@@ -224,6 +224,12 @@ and the `test` CI job. Nothing bumps this pin automatically; raise it deliberate
 newer Renovate major, in step with `CI_RENOVATE_IMAGE` on the workspace side so the version this
 test resolves against does not drift from what actually runs the config.
 
+The `test` CI job caches the installed tree (`.renovate-lane-test`), keyed on runner OS and
+architecture, the Node major and this pin, so a bump of the pin is a cache miss. On a miss the install
+runs up to twice, each try limited to 240 seconds, and the tree is saved right after a good install.
+There is no lockfile, so a cold install resolves transitive dependencies at install time. A cache is
+readable only by the branch that saved it and the default branch.
+
 This preset and the workspace-default preset that GitLab repos consume are **asserted
 equivalent** by an automated parity check on the workspace side, which runs on every pipeline
 there and goes red on drift. Equivalence is asserted after normalizing the differences the two
