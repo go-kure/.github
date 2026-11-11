@@ -206,16 +206,23 @@ const MATRIX = [
   { name: "mise toolchain patch", ruleIndices: [0, 14], input: { manager: "mise", updateType: "patch", depName: "yq" }, expect: "unattended" },
   { name: "mise toolchain digest", ruleIndices: [0, 14], input: { manager: "mise", updateType: "digest", depName: "hugo" }, expect: "unattended" },
   { name: "mise toolchain major (excluded from the automerge group)", ruleIndices: [11], input: { manager: "mise", updateType: "major", depName: "hugo" }, expect: "needs-human" },
+  // expectMinimumReleaseAge: node from the mise datasource is published before its Docker Hub
+  // image, so rule 15 holds a node bump for three days. A mise tool other than node, and node
+  // under another manager, must not pick it up (strict comparison, key-presence opt-in).
+  { name: "node via mise patch (held three days, still automerges)", ruleIndices: [0, 14, 15], input: { manager: "mise", updateType: "patch", depName: "node" }, expect: "unattended", expectMinimumReleaseAge: "3 days" },
+  { name: "node via mise minor (held three days)", ruleIndices: [0, 14, 15], input: { manager: "mise", updateType: "minor", depName: "node" }, expect: "unattended", expectMinimumReleaseAge: "3 days" },
+  { name: "other mise tool (no release-age hold)", ruleIndices: [0, 14], input: { manager: "mise", updateType: "patch", depName: "yq" }, expect: "unattended", expectMinimumReleaseAge: undefined },
+  { name: "node dockerfile tag (no release-age hold, reads the image tags themselves)", ruleIndices: [], input: { manager: "dockerfile", updateType: "patch", depName: "node" }, expect: "needs-human", expectMinimumReleaseAge: undefined },
   // expectSeparateMinorPatch: the two Go rules split a previous-minor patch from the next-minor
   // move, so a repo one minor behind still sees its patches (renovate/shared.json, rule 9).
   { name: "go itself via mise (dashboard-gated, never automerged)", ruleIndices: [9], input: { manager: "mise", updateType: "minor", depName: "go" }, expect: "needs-human", expectSeparateMinorPatch: true },
   { name: "go itself via gomod (dashboard-gated, never automerged)", ruleIndices: [9], input: { manager: "gomod", updateType: "patch", depName: "go", packageName: "go" }, expect: "needs-human", expectSeparateMinorPatch: true },
   { name: "golang dockerfile tag (dashboard-gated, never automerged)", ruleIndices: [10], input: { manager: "dockerfile", updateType: "minor", depName: "golang", packageName: "golang" }, expect: "needs-human", expectSeparateMinorPatch: true },
   { name: "gomod minor, kubernetes (no automerge rule matches minor)", ruleIndices: [1, 3], input: { manager: "gomod", updateType: "minor", depName: "k8s.io/api", packageName: "k8s.io/api" }, expect: "needs-human" },
-  { name: "gomod patch, kubernetes (automerges)", ruleIndices: [2, 3, 15], input: { manager: "gomod", updateType: "patch", depName: "k8s.io/api", packageName: "k8s.io/api" }, expect: "unattended" },
-  { name: "gomod digest, sigs.k8s.io (automerges)", ruleIndices: [2, 4, 15], input: { manager: "gomod", updateType: "digest", depName: "sigs.k8s.io/controller-runtime", packageName: "sigs.k8s.io/controller-runtime" }, expect: "unattended" },
-  { name: "gomod patch, fluxcd (automerges)", ruleIndices: [2, 5, 15], input: { manager: "gomod", updateType: "patch", depName: "github.com/fluxcd/pkg/oci", packageName: "github.com/fluxcd/pkg/oci" }, expect: "unattended" },
-  { name: "gomod patch, cloudnative-pg (automerges)", ruleIndices: [2, 6, 15], input: { manager: "gomod", updateType: "patch", depName: "github.com/cloudnative-pg/machinery", packageName: "github.com/cloudnative-pg/machinery" }, expect: "unattended" },
+  { name: "gomod patch, kubernetes (automerges)", ruleIndices: [2, 3, 16], input: { manager: "gomod", updateType: "patch", depName: "k8s.io/api", packageName: "k8s.io/api" }, expect: "unattended" },
+  { name: "gomod digest, sigs.k8s.io (automerges)", ruleIndices: [2, 4, 16], input: { manager: "gomod", updateType: "digest", depName: "sigs.k8s.io/controller-runtime", packageName: "sigs.k8s.io/controller-runtime" }, expect: "unattended" },
+  { name: "gomod patch, fluxcd (automerges)", ruleIndices: [2, 5, 16], input: { manager: "gomod", updateType: "patch", depName: "github.com/fluxcd/pkg/oci", packageName: "github.com/fluxcd/pkg/oci" }, expect: "unattended" },
+  { name: "gomod patch, cloudnative-pg (automerges)", ruleIndices: [2, 6, 16], input: { manager: "gomod", updateType: "patch", depName: "github.com/cloudnative-pg/machinery", packageName: "github.com/cloudnative-pg/machinery" }, expect: "unattended" },
   // Deliberately does NOT declare 15 here: rule 15's own matchPackageNames excludes
   // github.com/go-kure/**, so it never matches this case — that exclusion is the point being
   // proven (needs-human survives despite sitting right next to the automerge rule). Rule 15's
@@ -276,7 +283,7 @@ const MATRIX = [
   // A directory whose name merely contains "testdata" is not a testdata tree: both the rule's
   // globs and the ignorePaths entry are segment-anchored, and filterIgnoredFiles' substring
   // fallback (`file.includes(ignorePath)`) never matches a literal glob against a real path.
-  { name: "gomod dep in a directory merely named like testdata (neither disabled nor dropped)", ruleIndices: [2, 15], input: { manager: "gomod", updateType: "patch", depName: "github.com/some/other", packageName: "github.com/some/other", packageFile: "pkg/testdata_helper/go.mod" }, expect: "unattended", expectEnabled: undefined, expectExtracted: true },
+  { name: "gomod dep in a directory merely named like testdata (neither disabled nor dropped)", ruleIndices: [2, 16], input: { manager: "gomod", updateType: "patch", depName: "github.com/some/other", packageName: "github.com/some/other", packageFile: "pkg/testdata_helper/go.mod" }, expect: "unattended", expectEnabled: undefined, expectExtracted: true },
   // nuget is the one manager :ignoreModulesAndTests overrides (nuget.ignorePaths, which keeps
   // test/ and tests/ in scope), and getManagerConfig merges that override OVER the top-level
   // list, so the top-level **/testdata/** never reaches nuget on its own — the preset restates
@@ -295,7 +302,7 @@ const MATRIX = [
 // major/toolchain-gate path proves the CVE bypasses that gate, not just
 // that a lane survived.
 const VULN_MATRIX = [
-  { name: "vulnerability alert on an automerging gomod patch (lane survives, still automerges)", ruleIndices: [2, 3, 15], input: { manager: "gomod", datasource: "go", updateType: "patch", depName: "k8s.io/api", packageName: "k8s.io/api" }, expect: "unattended", expectAutomerge: true },
+  { name: "vulnerability alert on an automerging gomod patch (lane survives, still automerges)", ruleIndices: [2, 3, 16], input: { manager: "gomod", datasource: "go", updateType: "patch", depName: "k8s.io/api", packageName: "k8s.io/api" }, expect: "unattended", expectAutomerge: true },
   { name: "vulnerability alert on a dashboard-gated major (gate bypassed, lane still needs-human)", ruleIndices: [11], input: { manager: "gomod", datasource: "go", updateType: "major", depName: "github.com/some/other", packageName: "github.com/some/other" }, expect: "needs-human", expectDashboardApproval: false },
   // Rule 12's enabled:false does NOT survive the synthetic rule: force.enabled:true clears the
   // skipReason rule 12 set and overwrites enabled (verified on 44.14.10, 44.42.0 and 44.65.3,
@@ -303,7 +310,7 @@ const VULN_MATRIX = [
   // the reason ignorePaths carries the guarantee stays a tested fact rather than a comment — if
   // this ever fails, renovate changed force precedence and the rule-12 description is stale.
   // `expectExtracted: false` is the guarantee itself: the file never reaches package rules.
-  { name: "vulnerability alert on a gomod dep inside a testdata tree (force re-enables rule 12; extraction is what keeps it out)", ruleIndices: [2, 12, 15], input: { manager: "gomod", datasource: "go", updateType: "patch", depName: "github.com/some/vulnerable", packageName: "github.com/some/vulnerable", packageFile: "pkg/foo/testdata/mod/go.mod" }, expect: "unattended", expectEnabled: true, expectExtracted: false },
+  { name: "vulnerability alert on a gomod dep inside a testdata tree (force re-enables rule 12; extraction is what keeps it out)", ruleIndices: [2, 12, 16], input: { manager: "gomod", datasource: "go", updateType: "patch", depName: "github.com/some/vulnerable", packageName: "github.com/some/vulnerable", packageFile: "pkg/foo/testdata/mod/go.mod" }, expect: "unattended", expectEnabled: true, expectExtracted: false },
 ];
 
 // Consumer-effective cases (go-kure/.github#217, go-kure/kure#813): the checks above resolve the
@@ -417,6 +424,12 @@ for (const c of MATRIX) {
   // an earlier or later rule's value) fails loudly instead of merely losing test coverage.
   if ("expectGroupName" in c && result.groupName !== c.expectGroupName) {
     console.error(`FAIL [outcome] ${c.name}: expected groupName=${JSON.stringify(c.expectGroupName)}, got ${JSON.stringify(result.groupName)}`);
+    failures++;
+  }
+  // Strict and key-presence opt-in, like expectEnabled: a case that expects no hold pins the
+  // value to undefined, because the preset sets no top-level minimumReleaseAge.
+  if ("expectMinimumReleaseAge" in c && result.minimumReleaseAge !== c.expectMinimumReleaseAge) {
+    console.error(`FAIL [outcome] ${c.name}: expected minimumReleaseAge=${JSON.stringify(c.expectMinimumReleaseAge)}, got ${JSON.stringify(result.minimumReleaseAge)}`);
     failures++;
   }
   // The lane label alone doesn't prove the behavior it names: a rule could keep the

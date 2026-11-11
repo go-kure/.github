@@ -86,6 +86,12 @@ What it encodes:
   (`separateMinorPatch`), so a repo still on the previous minor keeps seeing its
   patches. The ceiling is raised deliberately, together with the repos' move to the
   next Go minor, never by a bot.
+- **Node bumps wait three days** (`minimumReleaseAge: "3 days"`, mise manager, `node`
+  only). The mise datasource publishes a Node release before its Docker Hub image
+  exists, so an immediate bump can name a `node:<version>` image tag that cannot be
+  pulled yet and fails the job that uses it with `ImagePullBackOff`. The hold lets the
+  image appear first. It sets no automerge and no group, so the automerge rules still
+  decide the lane.
 - **Automerge** for mise minor/patch/digest, gomod patch/digest, and the trusted
   GitHub Actions lane described below — never for `github.com/go-kure/**` gomod
   deps, since cross-repo bumps carry release-ordering constraints (launcher must
