@@ -5,7 +5,7 @@ name: Renovate cache seed
 # run can read the default branch's caches but saves only under its own merge
 # reference (go-kure/.github#363). The path and the key must match the cache steps
 # of the `test` job in ci.yml. A cache that nothing reads for 7 days is evicted, so
-# the weekly run keeps it alive.
+# a daily run keeps it alive with a wide margin: a schedule can start late.
 on:
   push:
     branches: [main]
@@ -13,7 +13,7 @@ on:
       - scripts/test/renovate-version
       - .github/workflows/renovate-cache-seed.yml
   schedule:
-    - cron: '17 5 * * 1'  # Mondays 05:17 UTC
+    - cron: '17 5 * * *'  # Daily 05:17 UTC
   workflow_dispatch:
 
 concurrency:
@@ -26,6 +26,9 @@ permissions:
 jobs:
   seed:
     name: seed
+    # A cache is saved under the ref that ran the job. A manual run on another
+    # branch or tag would save one that no other pull request can read.
+    if: github.ref == 'refs/heads/main'
     runs-on: autops-kube-kure
     timeout-minutes: 10
     steps:

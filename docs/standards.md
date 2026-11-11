@@ -233,8 +233,9 @@ time. A pull request run saves its cache under the pull request's own merge refe
 runs of that pull request read it; it can also read a cache saved on the default branch or on its
 base branch. The `ci.yml` workflow has no `push` trigger, so the separate `renovate-cache-seed.yml`
 workflow saves the same cache on the default branch: on a push that changes the pin or that
-workflow, every Monday, and on a manual run. The weekly run also keeps the cache from being evicted
-after 7 days without a read. Until that workflow has saved a matching cache, or after an eviction,
+workflow, daily, and on a manual run; the job runs only on `main`, so a manual run on another ref
+does nothing. The daily run also keeps the cache from being evicted after 7 days without a read.
+Until that workflow has saved a matching cache, or after an eviction,
 the first run of a pull request installs cold.
 
 This preset and the workspace-default preset that GitLab repos consume are **asserted
