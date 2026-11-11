@@ -383,9 +383,14 @@ jobs:
           # value is malformed while no field at all is fine. This prompt therefore asks for 0 and
           # never for an empty value. The parser maps 0 to no line, which is what a file-level
           # finding means. Check any new optional field against the parser the same way, and check
-          # the prose rules too: the parser refuses any line outside a block header that carries
-          # the word FINDING followed by a colon or a dash, which a clean review's own opening
-          # sentence can trip.
+          # the prose rules too. The pattern at review-findings:28 is two alternatives, and both
+          # were under-approximated by four successive wordings of the prompt's rule: it permits
+          # whitespace between the word and its separator, and it also matches a bracketed prefix
+          # followed by the word with no separator at all. The prompt therefore no longer tries to
+          # name the refused shapes. It forbids the word outside a block header outright, which is
+          # wider than the parser's test and cannot be under-approximated, since both alternatives
+          # require the word to be present. Keep it that way: a narrower rule here has been wrong
+          # four times, each time costing a round and reporting a correct review as unparseable.
           #
           # What such a refusal costs is worth stating exactly, because the obvious reading is
           # wrong. The backend is not reclassified. Its own outcome is copied from provider.json
@@ -444,30 +449,34 @@ jobs:
 
           Report in at least one sentence what you checked, including when you find nothing.
 
-          This is a complete body with one finding, and the form is exactly this:
+          This is a complete body with one defect, and the form is exactly this:
 
           $example_one
 
-          This is a complete body with no findings:
+          This is a complete body with no defects:
 
           $example_clean
 
           That content is illustrative and names a file this change does not touch. Report what
-          you actually find, and never the example's finding.
+          you actually find, and never the example's defect.
 
           Use [blocking] for a defect, [wording] for a wording or documentation point and
           [citation] for a reference that does not hold. The file, issue and fix lines are
           required. The line and category lines are optional. A category must be one of nil-deref,
           unchecked-err, race, sql-injection, resource-leak, logic-error, standards-violation or
-          other, and a file-level finding uses 0 for its line. Report no finding you cannot point
+          other, and a file-level defect uses 0 for its line. Report no defect you cannot point
           at in the diff. Read files only.
 
           Four rules about what must not appear, which no example can show you.
 
-          Never write the word finding immediately followed by a colon, a hyphen or a dash on any
-          line that is not a block header. Such a line is read as a malformed header and the whole
-          body is refused. This catches a clean review's own opening sentence most often, and it
-          catches the compound that hyphenates the word to "free".
+          Never write the word FINDING anywhere except in a block header, in the position the form
+          above puts it. Write "defect" instead, everywhere else, including in your opening
+          sentence. A line outside a block header carrying that word is read as a malformed header
+          and the whole body is then refused. This rule is deliberately wider than the parser's own
+          test: four earlier versions of it tried to name the exact shapes that trip the parser,
+          each named some and missed others, and a reviewer that obeyed any of them could still
+          have its correct review refused. Avoiding the word entirely cannot be got wrong, because
+          every shape the parser refuses here contains it.
 
           Wrap a long value only under issue or fix. A wrapped line under file, line or category
           is refused.
