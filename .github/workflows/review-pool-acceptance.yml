@@ -229,11 +229,14 @@ jobs:
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ inputs.backend == 'claude' && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
           OPENAI_API_KEY: ${{ (inputs.backend == 'codex' || startsWith(inputs.backend, 'opencode:openai/')) && secrets.OPENAI_API_KEY || '' }}
+          CODEX_API_KEY: ${{ inputs.backend == 'codex' && secrets.OPENAI_API_KEY || '' }}
           ANTHROPIC_API_KEY: ${{ startsWith(inputs.backend, 'opencode:anthropic/') && secrets.ANTHROPIC_API_KEY || '' }}
         run: |
           set -euo pipefail
           # The runner renames no credential: it passes its own environment to the backend binary,
-          # so the variable each arm checks is the one that binary reads for itself.
+          # so the variable each arm checks is one that binary reads for itself. Where a backend
+          # reads more than one name, every name it reads is checked, because a credential present
+          # under the wrong name is the same failure as no credential at all.
           case "$REVIEW_BACKEND" in
             claude)
               if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
@@ -243,11 +246,21 @@ jobs:
               echo "the claude credential is present"
               ;;
             codex)
+              # codex reads two names for one credential, so both are checked and both carry the
+              # same organization OpenAI key. Its noninteractive authentication reads
+              # CODEX_API_KEY, and its openai provider configuration reads OPENAI_API_KEY; the
+              # binary at the pinned version carries both names. Setting both reaches no secret
+              # that one of them alone does not, since the value is the same key either way, and
+              # it leaves no path where the backend this job exists to accept cannot authenticate.
+              if [ -z "${CODEX_API_KEY:-}" ]; then
+                echo "::error::CODEX_API_KEY is empty. The codex backend cannot authenticate." >&2
+                exit 1
+              fi
               if [ -z "${OPENAI_API_KEY:-}" ]; then
                 echo "::error::OPENAI_API_KEY is empty. The codex backend cannot run." >&2
                 exit 1
               fi
-              echo "the codex credential is present"
+              echo "the codex credential is present under both names"
               ;;
             opencode:openai/*)
               if [ -z "${OPENAI_API_KEY:-}" ]; then
@@ -291,6 +304,7 @@ jobs:
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ inputs.backend == 'claude' && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
           OPENAI_API_KEY: ${{ (inputs.backend == 'codex' || startsWith(inputs.backend, 'opencode:openai/')) && secrets.OPENAI_API_KEY || '' }}
+          CODEX_API_KEY: ${{ inputs.backend == 'codex' && secrets.OPENAI_API_KEY || '' }}
           ANTHROPIC_API_KEY: ${{ startsWith(inputs.backend, 'opencode:anthropic/') && secrets.ANTHROPIC_API_KEY || '' }}
         run: |
           set -euo pipefail
@@ -303,10 +317,88 @@ jobs:
             effort=(--effort "$REVIEW_EFFORT")
           fi
 
-          prompt="$(cat <<'PROMPT'
-          Review the changes in this range. Report what you checked in at least one sentence, then
-          every finding you have, each with the file and the line it is about. Report no finding you
-          cannot point at in the diff. Read files only.
+          # review-run reads the material from stdin and hands it to the backend as a regular
+          # file; --base only records provenance. With nothing on stdin the reviewer would see no
+          # diff at all and would be guessing at a range the record names.
+          #
+          # These options are review-run's own MATERIAL_DIFF list, copied. A copy can drift from
+          # the runner's definition, so nothing here relies on the copy being right: the runner
+          # records input_sha256 for the bytes it read on stdin and material_sha256 for its own
+          # canonical diff of the same range, and the step below fails when the two disagree. A
+          # drift is then a failed acceptance run naming both digests, not a silent formatting
+          # difference between what the reviewer read and what the record claims.
+          # The list is not fixed. The runner uses --no-renames normally and -M100% instead when
+          # the range binds exact renames, which it reads as: every blob that is both deleted and
+          # added is deleted once, added once, and is not the empty blob. That single token decides
+          # the bytes, so a range holding one exact rename gets a different canonical diff, and a
+          # generator that always passes --no-renames would review the right range in the wrong
+          # shape. The condition is reproduced here from the raw diff, and the reproduction is the
+          # part to distrust: a path holding a newline desynchronises the header and path records
+          # below, which is why the runner reads them NUL-separated and this cannot. That is
+          # tolerable only because of the digest check: a wrong verdict here picks the wrong option
+          # list, the two digests disagree, and the run fails naming both. It never reviews the
+          # wrong bytes quietly.
+          head_oid="$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)"
+          empty_blob="$(git -C "$GITHUB_WORKSPACE" hash-object -t blob /dev/null)"
+          rename_option=--no-renames
+          if git -C "$GITHUB_WORKSPACE" diff --raw -z --no-renames --no-ext-diff \
+               --no-textconv --no-abbrev --ignore-submodules=none -O/dev/null \
+               "$REVIEW_BASE" "$head_oid" \
+             | tr '\0' '\n' \
+             | awk -v empty="$empty_blob" '
+                 NR % 2 == 1 && $1 ~ /^:/ {
+                   if ($5 == "D") { deleted[$3]++ }
+                   else if ($5 == "A") { added[$4]++ }
+                 }
+                 END {
+                   shared = 0
+                   for (blob in deleted) {
+                     if (!(blob in added)) { continue }
+                     if (blob == empty) { exit 1 }
+                     if (deleted[blob] != 1 || added[blob] != 1) { exit 1 }
+                     shared++
+                   }
+                   exit shared > 0 ? 0 : 1
+                 }'; then
+            rename_option=-M100%
+          fi
+          echo "the canonical diff binds renames with $rename_option"
+          git -C "$GITHUB_WORKSPACE" \
+            -c core.quotePath=false -c diff.suppressBlankEmpty=false \
+            diff --no-color --no-ext-diff --no-textconv \
+            "$rename_option" --full-index --binary --src-prefix=a/ --dst-prefix=b/ \
+            --unified=3 --inter-hunk-context=0 --diff-algorithm=myers --indent-heuristic \
+            --no-relative --submodule=short --ignore-submodules=none -O/dev/null \
+            "$REVIEW_BASE" "$head_oid" > "$RUNNER_TEMP/material.diff"
+
+          # The prompt names both endpoints, because the reviewer cannot see the record, and it
+          # names review-findings' grammar, because the next step parses this body with it and
+          # fails closed on a body that does not carry it. A prose review with no completion line
+          # is refused as REVIEW_FINDINGS_INCOMPLETE, so an ordinary clean review would fail the
+          # acceptance run for a reason that has nothing to do with the pool.
+          prompt="$(cat <<PROMPT
+          Review the diff supplied on standard input. It is the change from $REVIEW_BASE to
+          $head_oid in this repository, and the files are on disk at that second revision.
+
+          Report in at least one sentence what you checked, including when you find nothing.
+
+          Then report each finding as its own block, in exactly this form:
+
+          [blocking] FINDING — <one line naming what goes wrong>
+          file: <path from the repository root>
+          line: <line number, or leave the value empty for a file-level finding>
+          category: <nil-deref, unchecked-err, race, sql-injection, resource-leak, logic-error, standards-violation or other>
+          issue: <what is wrong and the input or condition that triggers it>
+          fix: <what to change>
+
+          Use [blocking] for a defect, [wording] for a wording or documentation point and
+          [citation] for a reference that does not hold. The file, issue and fix lines are
+          required. Report no finding you cannot point at in the diff. Read files only.
+
+          End the body with one completion line, as the last line, and write no other line like
+          it, where the count is the number of blocks above:
+
+          REVIEW_COMPLETE: findings=<count>
           PROMPT
           )"
 
@@ -321,7 +413,7 @@ jobs:
             --seconds 1500 \
             "${effort[@]}" \
             --out "$OUT_DIR" \
-            "$prompt"
+            "$prompt" < "$RUNNER_TEMP/material.diff"
           rc=$?
           set -e
           printf 'review_run_rc=%s\n' "$rc"
@@ -333,6 +425,22 @@ jobs:
           set -euo pipefail
           # The default covers the case where the first step failed before it set the variable.
           OUT_DIR="${OUT_DIR:-$RUNNER_TEMP/acceptance/out}"
+          # The material the reviewer read must be the range the record names. review-run hashes
+          # the stdin bytes as input_sha256 and its own canonical diff of base..head as
+          # material_sha256, so a disagreement means the diff options the review step copied have
+          # drifted from the runner's own list. That is a failed acceptance run and not a note,
+          # because every finding in the body would then be about bytes the record misdescribes.
+          if [ -f "$OUT_DIR/provider.json" ]; then
+            piped="$(jq -r '.identity.input_sha256 // "absent"' "$OUT_DIR/provider.json")"
+            canonical="$(jq -r '.identity.material_sha256 // "absent"' "$OUT_DIR/provider.json")"
+            if [ "$piped" != "$canonical" ]; then
+              echo "::error::the reviewed material is not the recorded range." >&2
+              echo "::error::stdin input_sha256 $piped, canonical material_sha256 $canonical" >&2
+              exit 1
+            fi
+            echo "the reviewed material matches the recorded range: $canonical"
+          fi
+
           if [ -f "$OUT_DIR/review.md" ]; then
             review-findings "$OUT_DIR/review.md" --out "$OUT_DIR/findings.json"
             echo "findings.json written"
@@ -352,7 +460,10 @@ jobs:
           mkdir -p "$RECORD_DIR"
           outcome='unknown: provider.json is missing'
           if [ -f "$OUT_DIR/provider.json" ]; then
-            outcome="$(jq -c '{status, reason, backend, model, seconds}' "$OUT_DIR/provider.json" 2>&1 || true)"
+            # review-run writes `outcome`, never `status`. Selecting `status` emitted
+            # "status":null for every valid record and dropped the completed, incomplete, quota
+            # and launch-failed classification this record exists to carry.
+            outcome="$(jq -c '{outcome, reason, backend, model, seconds}' "$OUT_DIR/provider.json" 2>&1 || true)"
           fi
 
           file_sha() {
