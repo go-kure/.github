@@ -393,37 +393,88 @@ jobs:
           # findings.json existence check below, whose message names the missing file. So a
           # backend that reviewed correctly fails the run, and the error points at a symptom two
           # steps from the cause.
+          # The prompt shows the reviewer two literal example bodies rather than describing the
+          # grammar, and this step checks both against the installed parser before it dispatches.
+          # A description drifts from the parser silently, which it has now done three times on
+          # this changeset. An example the parser accepted seconds earlier cannot. If the parser's
+          # grammar moves, the check below fails this step with the parser's own message, so the
+          # drift is loud and local instead of arriving later as a correct review refused.
+          #
+          # Two bodies, because they reach different paths: the clean one has no block at all and
+          # still needs its completion line, and the one-finding one exercises the block. The
+          # example's content is deliberately about a file this workflow does not touch, so a body
+          # that echoes it is visible as an echo to anyone reading the record.
+          example_clean="$(cat <<'EXAMPLE'
+          I read the credential gating for every backend and both shellcheck file lists, and I report no defects.
+
+          REVIEW_COMPLETE: findings=0
+          EXAMPLE
+          )"
+          example_one="$(cat <<'EXAMPLE'
+          I read the pool runner and its two callers, and I report one defect.
+
+          [blocking] FINDING — The runner reaches the provider without its key
+          file: internal/pool/runner.go
+          line: 184
+          category: logic-error
+          issue: The third branch exports no key, so a run with that backend starts and then fails
+            inside the provider rather than refusing at the gate, which reports a reviewing fault
+            as a provider one.
+          fix: Refuse at the gate when the key is absent, as the first branch does.
+
+          REVIEW_COMPLETE: findings=1
+          EXAMPLE
+          )"
+          # No --out: the check wants the exit code, not the parse, and --out opens its file with
+          # mode x, so naming one would refuse on a second call in the same temp directory.
+          check_example() {
+            printf '%s\n' "$2" > "$RUNNER_TEMP/example-$1.md"
+            if ! review-findings "$RUNNER_TEMP/example-$1.md" > /dev/null; then
+              echo "::error::the prompt's $1 example is not a body review-findings accepts, so the" >&2
+              echo "::error::prompt and the parser have drifted. Repair the example above." >&2
+              exit 1
+            fi
+          }
+          check_example clean "$example_clean"
+          check_example one-finding "$example_one"
+
           prompt="$(cat <<PROMPT
           Review the diff supplied on standard input. It is the change from $REVIEW_BASE to
           $head_oid in this repository, and the files are on disk at that second revision.
 
           Report in at least one sentence what you checked, including when you find nothing.
 
-          Then report each finding as its own block, in exactly this form:
+          This is a complete body with one finding, and the form is exactly this:
 
-          [blocking] FINDING — <one line naming what goes wrong>
-          file: <path from the repository root>
-          line: <line number, or 0 for a file-level finding>
-          category: <nil-deref, unchecked-err, race, sql-injection, resource-leak, logic-error, standards-violation or other>
-          issue: <what is wrong and the input or condition that triggers it>
-          fix: <what to change>
+          $example_one
+
+          This is a complete body with no findings:
+
+          $example_clean
+
+          That content is illustrative and names a file this change does not touch. Report what
+          you actually find, and never the example's finding.
 
           Use [blocking] for a defect, [wording] for a wording or documentation point and
           [citation] for a reference that does not hold. The file, issue and fix lines are
-          required. Report no finding you cannot point at in the diff. Read files only.
+          required. The line and category lines are optional. A category must be one of nil-deref,
+          unchecked-err, race, sql-injection, resource-leak, logic-error, standards-violation or
+          other, and a file-level finding uses 0 for its line. Report no finding you cannot point
+          at in the diff. Read files only.
 
-          One syntax rule, which applies to every line that is not a block header: never write the
-          word finding immediately followed by a colon, a hyphen or a dash. Any such line is read
-          as a malformed block header and the whole body is refused. This catches a clean review's
-          own opening sentence most often. It also catches a continuation line of an issue or a
-          fix, and the compound that hyphenates the word to "free". Write "no defects" or "one
-          defect" instead. The word itself is safe wherever none of those three characters follows
-          it, so naming a finding inside an ordinary sentence is fine.
+          Four rules about what must not appear, which no example can show you.
 
-          End the body with one completion line, as the last line, and write no other line like
-          it, where the count is the number of blocks above:
+          Never write the word finding immediately followed by a colon, a hyphen or a dash on any
+          line that is not a block header. Such a line is read as a malformed header and the whole
+          body is refused. This catches a clean review's own opening sentence most often, and it
+          catches the compound that hyphenates the word to "free".
 
-          REVIEW_COMPLETE: findings=<count>
+          Wrap a long value only under issue or fix. A wrapped line under file, line or category
+          is refused.
+
+          Leave no blank line inside a block, because a blank line ends it.
+
+          Write the completion line once, as the last line, and write no other line like it.
           PROMPT
           )"
 
