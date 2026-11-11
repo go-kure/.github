@@ -223,9 +223,9 @@ const MATRIX = [
   { name: "gomod digest, sigs.k8s.io (automerges)", ruleIndices: [2, 4, 16], input: { manager: "gomod", updateType: "digest", depName: "sigs.k8s.io/controller-runtime", packageName: "sigs.k8s.io/controller-runtime" }, expect: "unattended" },
   { name: "gomod patch, fluxcd (automerges)", ruleIndices: [2, 5, 16], input: { manager: "gomod", updateType: "patch", depName: "github.com/fluxcd/pkg/oci", packageName: "github.com/fluxcd/pkg/oci" }, expect: "unattended" },
   { name: "gomod patch, cloudnative-pg (automerges)", ruleIndices: [2, 6, 16], input: { manager: "gomod", updateType: "patch", depName: "github.com/cloudnative-pg/machinery", packageName: "github.com/cloudnative-pg/machinery" }, expect: "unattended" },
-  // Deliberately does NOT declare 15 here: rule 15's own matchPackageNames excludes
+  // Deliberately does NOT declare 16 here: rule 16's own matchPackageNames excludes
   // github.com/go-kure/**, so it never matches this case — that exclusion is the point being
-  // proven (needs-human survives despite sitting right next to the automerge rule). Rule 15's
+  // proven (needs-human survives despite sitting right next to the automerge rule). Rule 16's
   // coverage comes from the four automerge cases above that it actually matches.
   { name: "gomod patch, first-party go-kure (never automerged)", ruleIndices: [2, 7], input: { manager: "gomod", updateType: "patch", depName: "github.com/go-kure/kure", packageName: "github.com/go-kure/kure" }, expect: "needs-human" },
   { name: "gomod major, any dep (dashboard-gated, never automerged)", ruleIndices: [11], input: { manager: "gomod", updateType: "major", depName: "github.com/some/other", packageName: "github.com/some/other" }, expect: "needs-human", expectDashboardApproval: true },
