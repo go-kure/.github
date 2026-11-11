@@ -219,14 +219,24 @@ done
 
 # The two steps declare the same three credentials, and only those three. A fourth key in either
 # block is a credential the gate above says nothing about, and the equality cases cannot see it.
+#
+# The comparison is against a sorted JSON array, not a string of names joined by a separator. Any
+# separator is a character a key name may itself contain, so a joined string loses the boundaries it
+# was built to carry: the first form of this case joined on a space, and a block holding a key
+# literally named `ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN` beside `OPENAI_API_KEY` produced the
+# expected string and passed. A JSON array quotes each element, so a name holding a space, a name
+# holding a quote and a blank record are all visible in both the comparison and the message.
+WANT_KEYS='["ANTHROPIC_API_KEY","CLAUDE_CODE_OAUTH_TOKEN","OPENAI_API_KEY"]'
 for STEP in 'Run one review with the sandbox turned off' 'Check the backend credential'; do
-  keys=$(env_of_step "$STEP" | sed 's/=.*//' | sort | tr '\n' ' ')
-  if [ "$keys" = 'ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN OPENAI_API_KEY ' ]; then
+  keys=$(STEP_NAME="$STEP" yq -o=json -I=0 \
+    '.jobs.review.steps[] | select(.name == strenv(STEP_NAME)) | .env | keys | sort' "$WF")
+  if [ "$keys" = "$WANT_KEYS" ]; then
     PASS=$((PASS + 1))
     printf 'PASS  %s declares those three credentials and no others\n' "$STEP"
   else
     FAIL=$((FAIL + 1))
-    printf 'FAIL  %s declares a different credential set: %s\n' "$STEP" "$keys"
+    printf 'FAIL  %s declares a different credential set\n      want: %s\n      got:  %s\n' \
+      "$STEP" "$WANT_KEYS" "$keys"
   fi
 done
 
