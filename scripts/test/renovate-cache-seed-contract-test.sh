@@ -28,12 +28,12 @@ failures=0
 pass_count=0
 
 # cache_lines FILE — the key: and path: lines of every actions/cache step, trimmed.
-# A step starts at a "- name:" line and counts as a cache step once its uses: line
-# names actions/cache.
+# A step starts at any list item line ("- name:" or "- uses:") and counts as a
+# cache step once its uses: line names actions/cache.
 cache_lines() {
   awk '
-    /^ *- name:/ { in_cache = 0 }
-    /^ *uses: actions\/cache\// { in_cache = 1 }
+    /^ *- / { in_cache = 0 }
+    /^ *(- +)?uses: actions\/cache\// { in_cache = 1 }
     in_cache && /^ *(key|path): / { sub(/^ */, ""); print }
   ' "$1"
 }
@@ -76,7 +76,7 @@ contract() {
       rc=1
     fi
   done
-  if grep -qE '^ *uses: actions/cache(/save)?@' "$ci"; then
+  if grep -qE '^ *(- +)?uses: actions/cache(/save)?@' "$ci"; then
     echo "FAIL: ci.yml saves the cache; only the seed workflow writes it"
     rc=1
   fi
@@ -150,6 +150,30 @@ expect_fail "a seed save path that differs" "cache path differs" "$CI" "$tmp/see
     '          key: renovate-lane-test-${{ runner.os }}-${{ runner.arch }}-node24-${{ steps.renovate-pin.outputs.version }}-p${{ steps.cache-period.outputs.n }}'
 } > "$tmp/ci-save"
 expect_fail "a ci.yml that saves the cache" "ci.yml saves the cache" "$tmp/ci-save" "$SEED"
+
+# The same save step written as a list item that starts with "- uses:", with no
+# "- name:" line: the fourth fact must still see it.
+{
+  cat "$CI"
+  printf '%s\n' \
+    '      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0' \
+    '        with:' \
+    '          path: .renovate-lane-test' \
+    '          key: renovate-lane-test-${{ runner.os }}-${{ runner.arch }}-node24-${{ steps.renovate-pin.outputs.version }}-p${{ steps.cache-period.outputs.n }}'
+} > "$tmp/ci-save-dash"
+expect_fail "a ci.yml that saves in the - uses: form" "ci.yml saves the cache" "$tmp/ci-save-dash" "$SEED"
+
+# That step with a different key must also reach the key check, which reads every
+# cache step whatever the form of its first line.
+{
+  cat "$SEED"
+  printf '%s\n' \
+    '      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0' \
+    '        with:' \
+    '          path: .renovate-lane-test' \
+    '          key: renovate-seed-other-p${{ steps.cache-period.outputs.n }}'
+} > "$tmp/seed-dash-key"
+expect_fail "a seed cache step in the - uses: form with another key" "cache key differs" "$CI" "$tmp/seed-dash-key"
 
 # Both files lose the period in every key: they still agree with each other.
 sed 's/-p\${{ steps\.cache-period\.outputs\.n }}$//' "$CI" > "$tmp/ci-noperiod"
