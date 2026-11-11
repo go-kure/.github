@@ -382,9 +382,17 @@ jobs:
           # field to 0, but matches the value against \d+ when the field is present, so an empty
           # value is malformed while no field at all is fine. This prompt therefore asks for 0 and
           # never for an empty value. The parser maps 0 to no line, which is what a file-level
-          # finding means. Check any new optional field against the parser the same way, because
-          # the failure is a compliant review rejected as REVIEW_FINDINGS_MALFORMED -- the pool
-          # reads it as a backend that cannot review, which inverts what this run is for.
+          # finding means. Check any new optional field against the parser the same way, and check
+          # the prose rules too: the parser refuses any line outside a block header that carries
+          # the word FINDING followed by a colon or a dash, which a clean review's own opening
+          # sentence can trip.
+          #
+          # What such a refusal costs is worth stating exactly, because the obvious reading is
+          # wrong. The backend is not reclassified. Its own outcome is copied from provider.json
+          # unchanged, so the record still says it completed. What fails is the acceptance, at the
+          # findings.json existence check below, whose message names the missing file. So a
+          # backend that reviewed correctly fails the run, and the error points at a symptom two
+          # steps from the cause.
           prompt="$(cat <<PROMPT
           Review the diff supplied on standard input. It is the change from $REVIEW_BASE to
           $head_oid in this repository, and the files are on disk at that second revision.
@@ -403,6 +411,14 @@ jobs:
           Use [blocking] for a defect, [wording] for a wording or documentation point and
           [citation] for a reference that does not hold. The file, issue and fix lines are
           required. Report no finding you cannot point at in the diff. Read files only.
+
+          One syntax rule, which applies to every line that is not a block header: never write the
+          word finding immediately followed by a colon, a hyphen or a dash. Any such line is read
+          as a malformed block header and the whole body is refused. This catches a clean review's
+          own opening sentence most often. It also catches a continuation line of an issue or a
+          fix, and the compound that hyphenates the word to "free". Write "no defects" or "one
+          defect" instead. The word itself is safe wherever none of those three characters follows
+          it, so naming a finding inside an ordinary sentence is fine.
 
           End the body with one completion line, as the last line, and write no other line like
           it, where the count is the number of blocks above:
