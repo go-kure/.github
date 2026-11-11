@@ -230,9 +230,12 @@ runs inside a 480-second budget: a try is limited to 420 seconds, a try that ran
 retried, and a try that failed fast is retried once with what is left. The tree is saved right after a
 good install. There is no lockfile, so a cold install resolves transitive dependencies at install
 time. A pull request run saves its cache under the pull request's own merge reference, so only later
-runs of that pull request read it; it can also read a cache saved on the default branch. The workflow
-has no `push` trigger, so a cache is saved on the default branch only by a manual run there. Unless
-such a run saved a matching cache, the first run of every other pull request installs cold.
+runs of that pull request read it; it can also read a cache saved on the default branch or on its
+base branch. The `ci.yml` workflow has no `push` trigger, so the separate `renovate-cache-seed.yml`
+workflow saves the same cache on the default branch: on a push that changes the pin or that
+workflow, every Monday, and on a manual run. The weekly run also keeps the cache from being evicted
+after 7 days without a read. Until that workflow has saved a matching cache, or after an eviction,
+the first run of a pull request installs cold.
 
 This preset and the workspace-default preset that GitLab repos consume are **asserted
 equivalent** by an automated parity check on the workspace side, which runs on every pipeline

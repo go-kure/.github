@@ -90,6 +90,8 @@ jobs:
       # The installed tree is cached, not npm's download cache: a hit then needs no
       # registry call at all. The key names the pin, so a bump of
       # scripts/test/renovate-version is a miss. There is no lockfile to hash.
+      # renovate-cache-seed.yml saves this same path and key on the default branch,
+      # which a pull request's first run can read; keep the two keys identical.
       - name: Restore renovate install
         id: renovate-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
