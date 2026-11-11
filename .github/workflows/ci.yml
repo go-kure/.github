@@ -96,21 +96,37 @@ jobs:
         with:
           path: .renovate-lane-test
           key: renovate-lane-test-${{ runner.os }}-${{ runner.arch }}-node24-${{ steps.renovate-pin.outputs.version }}
-      # On a miss: two tries of at most 240 s each, so a stalled download costs
-      # 8 minutes at worst, inside the job's 10. A failed try never leaves a
-      # partial tree for the next one.
+      # On a miss: at most two tries inside one 480 s budget, so the step ends
+      # before the job's 10 minutes. A try is limited to 420 s: 25 green runs
+      # between 2026-11-03 and 2026-11-11 took 44 to 236 s (median 76 s) for this
+      # uncached install. A try that ran out its limit is a slow install and is
+      # not retried into a second full wait. A try that failed fast is retried with
+      # what is left of the budget. A failed try never leaves a partial tree.
       - name: Install renovate
         if: steps.renovate-cache.outputs.cache-hit != 'true'
         timeout-minutes: 9
         run: |
+          budget=480
           for attempt in 1 2; do
-            rm -rf .renovate-lane-test
-            if timeout 240 npm install --no-save --prefix .renovate-lane-test "renovate@${RENOVATE_VERSION}"; then
-              exit 0
+            left=$((budget - SECONDS))
+            if [ "$left" -lt 60 ]; then
+              break
             fi
-            echo "::warning::renovate install try ${attempt} failed or ran past 240 s"
+            bound=$((left < 420 ? left : 420))
+            rm -rf .renovate-lane-test
+            if timeout -k 10 "$bound" npm install --no-save --prefix .renovate-lane-test "renovate@${RENOVATE_VERSION}"; then
+              echo "renovate install took ${SECONDS} s in total (try ${attempt})"
+              exit 0
+            else
+              rc=$?
+            fi
+            if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+              echo "::warning::renovate install try ${attempt} TIMED OUT after ${bound} s: npm was still running, so the link was slow"
+              break
+            fi
+            echo "::warning::renovate install try ${attempt} FAILED with npm exit status ${rc} after ${SECONDS} s"
           done
-          echo "::error::renovate install failed on both tries"
+          echo "::error::renovate install did not finish inside its ${budget} s budget"
           exit 1
       # Saved straight after the install, so a red step later in the job does not
       # lose a good install.
