@@ -72,7 +72,9 @@ jobs:
   test:
     name: test
     runs-on: autops-kube-kure
-    timeout-minutes: 10
+    # 15 minutes: the install below may use up to 480 s, and checkout, the cache
+    # save and the validators need a few minutes more after and before it.
+    timeout-minutes: 15
     needs: lint
     steps:
       - name: Checkout code
@@ -99,7 +101,7 @@ jobs:
           path: .renovate-lane-test
           key: renovate-lane-test-${{ runner.os }}-${{ runner.arch }}-node24-${{ steps.renovate-pin.outputs.version }}
       # On a miss: at most two tries inside one 480 s budget, so the step ends
-      # before the job's 10 minutes. A try is limited to 420 s: 25 green runs
+      # well before the job's 15 minutes. A try is limited to 420 s: 25 green runs
       # between 2026-11-03 and 2026-11-11 took 44 to 236 s (median 76 s) for this
       # uncached install. A try that ran out its limit is a slow install and is
       # not retried into a second full wait. A try that failed fast is retried with
