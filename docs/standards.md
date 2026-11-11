@@ -246,7 +246,8 @@ Until that workflow has saved a matching cache, or after an eviction,
 the first run of a pull request installs cold. A red `seed` check on `main` means only that the seed
 install failed; it blocks nothing. `scripts/test/renovate-cache-seed-contract-test.sh` asserts that
 the seed workflow uses the same cache key and path as `ci.yml`, runs only on `main`, and has a job
-timeout.
+timeout. The seed job timeout is 15 minutes, the same as the `test` job, so a worst-case install still
+leaves time for the save.
 
 This preset and the workspace-default preset that GitLab repos consume are **asserted
 equivalent** by an automated parity check on the workspace side, which runs on every pipeline
