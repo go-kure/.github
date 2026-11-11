@@ -12,7 +12,15 @@ node = "24"
 
 [tasks.lint]
 description = "Lint all workflow YAML"
-run = "actionlint"
+# -shellcheck= disables actionlint's shellcheck integration, so this task does what ci.yml's lint
+# job does: actionlint alone. CI installs only the actionlint binary, so shellcheck is never on its
+# PATH and actionlint silently skips the integration there. Locally mise puts the pinned shellcheck
+# on PATH for every task, so actionlint found it and reported on scripts embedded in `run:` blocks,
+# which are not this repo's shellcheck surface -- that is lint:shell, an explicit file list
+# check-mise-ci-parity.sh holds against ci.yml. The result was a task that passed or failed by
+# environment rather than by content: green in CI, green in a shell exporting SHELLCHECK_OPTS with
+# SC2086 excluded, and red in a clean container with the same commit and the same tool versions.
+run = "actionlint -shellcheck="
 
 [tasks."lint:shell"]
 description = "shellcheck the scripts this repo ships"
