@@ -315,7 +315,8 @@ overrides the workflow's own default) is one of three values. An unrecognized va
   A false positive with no thread (`SUPPRESS`) never gates. In `enforce` mode the advisory
   comment lists each one in a collapsed "Suppressed as false positives" section, with the whole
   issue and the assessor's whole reasoning, so the call can be checked and survives past the run's
-  retention (go-kure/.github#296). The job summary lists each one too, with its line and the
+  retention (go-kure/.github#296). The cells are HTML-encoded, so reasoning text cannot hide
+  itself or close the section early. The job summary lists each one too, with its line and the
   first line of its issue and of the assessor's reasoning (go-kure/.github#183). `advisory` mode
   is not covered: see "What it does not solve" under "Skipping assessment".
   Threads whose decision outcome remains gating — or, for a thread absent from this run's
@@ -1544,14 +1545,16 @@ and point here instead of restating them.
   render, so nothing over the limit is posted.
 - **Order.** Merge-gating withheld rows come first across the parts, then the other overflow and
   withheld rows by severity, then the suppressed rows by severity (go-kure/.github#296). Size never
-  reorders rows, and a suppressed row never pushes an overflow or withheld row into a later part.
-  Each part that holds suppressed rows carries its own collapsed section.
+  reorders rows, and a suppressed row never pushes an overflow or withheld row into a later part:
+  the section's fixed cost is charged to the first suppressed row of the part that holds it, so the
+  budget of every other row is the same with or without suppressed findings. Each part that holds
+  suppressed rows carries its own collapsed section.
 - **What part 1 says.** In a split, part 1 says how many parts there are and which hold the
   merge-gating rows, and a later part points back to part 1. A comment that is not split has no
   merge-gating note. Part 1 (or the only part) says so when a finding had to be shortened.
 - **A single finding larger than any part** is shortened, never dropped, and the shortened text ends
-  with a marker that says how much was omitted. For a suppressed row the cut text is the
-  assessor's reasoning. The omitted text is not in any posted part, so the run
+  with a marker that says how much was omitted. For a suppressed row the reasoning is cut
+  first, and the issue only when the row still does not fit without any reasoning. The omitted text is not in any posted part, so the run
   is also marked `REVIEW_INCOMPLETE`.
 - **Posting.** Parts are posted in order, each after a freshness check. A part whose post fails marks
   the run incomplete and the reason names the part, for example

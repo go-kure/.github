@@ -270,7 +270,8 @@ _PRT_OVERFLOW_JQ_DEFS='
     end;
   def overflow_row: "| \(.severity|esc) | \(.category|esc) | \(.file|esc) | \((.line // "n/a")|esc) | \(.issue|esc) |";
   def quarantine_row: "| \(.severity|esc) | \(.category|esc) | \(.file|esc) | \((.line // "n/a")|esc) | \(.issue|esc) | \(.fix|esc) | \(collision_cell) | \(if .gating == true then "yes (existing thread)" else "no" end) |";
-  def suppressed_row: "| \(.severity|esc) | \(.category|esc) | \(.file|esc) | \((.line // "n/a")|esc) | \(.issue|esc) | \((.reasoning // "")|esc) |";
+  def esc_html: tostring | gsub("\r\n"; " ") | gsub("[\n\r]"; " ") | gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;") | gsub("\\|"; "\\|");
+  def suppressed_row: "| \(.severity|esc_html) | \(.category|esc_html) | \(.file|esc_html) | \((.line // "n/a")|esc_html) | \(.issue|esc_html) | \((.reasoning // "")|esc_html) |";
   def u16len: explode | map(if . > 65535 then 2 else 1 end) | add // 0;
   def sevrank: ({"critical":0,"high":1,"medium":2}[(.severity | tostring | ascii_downcase)]) // 99;
 '
@@ -328,10 +329,8 @@ prt_render_overflow_parts() {
   local overhead reserve budget plan total truncated n i part_f part_q part_s body line gating_last count_f count_q count_s
   local dummy_f='[{"severity":"","category":"","file":"","issue":""}]'
   local dummy_q='[{"severity":"","category":"","file":"","issue":"","fix":"","gating":true}]'
-  # The suppressed section's fixed cost counts only when there are suppressed rows, so a run with
-  # none keeps exactly the budget it had before go-kure/.github#296.
-  local dummy_s='[]'
-  [ "$suppressed" = '[]' ] || dummy_s='[{"severity":"","category":"","file":"","issue":"","reasoning":""}]'
+  local dummy_s='[{"severity":"","category":"","file":"","issue":"","reasoning":""}]'
+  local sup_overhead base_overhead
   [ -d "$outdir" ] || return 1
   body="$(prt_render_overflow_comment "$findings" "$quarantined" "$suppressed")" || return 1
   # A body GitHub accepts whole stays one comment: the 60,000 cap applies to the
@@ -348,18 +347,26 @@ prt_render_overflow_parts() {
   fi
   # Fixed cost of one part: both sections, the longest footer, and room for the
   # longest part line (measured, with five-digit counts) and the blank line after it.
-  overhead="$(prt_render_overflow_comment "$dummy_f" "$dummy_q" "$dummy_s" | jq -Rs "${_PRT_OVERFLOW_JQ_DEFS}"' u16len' 2>/dev/null)" || return 1
+  # The suppressed section is charged where it is placed, to the first suppressed row of a part
+  # (sup_overhead), so the budget of an overflow or withheld row is the same with or without
+  # suppressed findings.
+  overhead="$(prt_render_overflow_comment "$dummy_f" "$dummy_q" | jq -Rs "${_PRT_OVERFLOW_JQ_DEFS}"' u16len' 2>/dev/null)" || return 1
+  base_overhead="$(prt_render_overflow_comment '[]' '[]' | jq -Rs "${_PRT_OVERFLOW_JQ_DEFS}"' u16len' 2>/dev/null)" || return 1
+  sup_overhead="$(prt_render_overflow_comment '[]' '[]' "$dummy_s" | jq -Rs "${_PRT_OVERFLOW_JQ_DEFS}"' u16len' 2>/dev/null)" || return 1
+  sup_overhead=$(( sup_overhead - base_overhead ))
+  [ "$sup_overhead" -ge 0 ] || return 1
   reserve="$(prt_overflow_part_line 1 99999 99999 99999 | jq -Rs "${_PRT_OVERFLOW_JQ_DEFS}"' u16len' 2>/dev/null)" || return 1
   budget=$(( PRT_OVERFLOW_PART_MAX - overhead - reserve - 2 ))
   [ "$budget" -gt 1000 ] || return 1
   # One jq pass plans the split on stdin: line 1 is "parts truncated", then one
   # JSON object per part {f: [...], q: [...], s: [...]}.
-  plan="$(printf '%s\n%s\n%s\n' "$findings" "$quarantined" "$suppressed" | jq -sr --argjson budget "$budget" "${_PRT_OVERFLOW_JQ_DEFS}"'
+  plan="$(printf '%s\n%s\n%s\n' "$findings" "$quarantined" "$suppressed" | jq -sr --argjson budget "$budget" --argjson sup "$sup_overhead" "${_PRT_OVERFLOW_JQ_DEFS}"'
     # Shorten one oversized item until its row fits the budget. $row names the row filter.
     def shorten($kind):
       . as $item
       | ($item.issue | tostring) as $oi
       | (if $kind == "s" then ($item.reasoning // "") else ($item.fix // "") end | tostring) as $of
+      | (if $kind == "s" then $budget - $sup else $budget end) as $lim
       | def row: if $kind == "q" then quarantine_row elif $kind == "s" then suppressed_row else overflow_row end;
         # The short fields are bounded too (200 characters), so a row whose
         # file, category, severity or line is itself enormous still fits.
@@ -368,11 +375,14 @@ prt_render_overflow_parts() {
           $item
           | .severity = (.severity | cap200) | .category = (.category | cap200) | .file = (.file | cap200)
           | .line = (if .line == null then null else (.line | cap200) end)
-          | .issue = (if ($oi | length) > $keep then $oi[0:$keep] + " [truncated: \(($oi | length) - $keep) of \($oi | length) characters omitted]" else $oi end)
-          | ( if ($of | length) > $keep then $of[0:$keep] + " [truncated: \(($of | length) - $keep) of \($of | length) characters omitted]" else $of end ) as $cf
+          | (if $kind == "s" then ([($oi | length), $keep] | min) else $keep end) as $ik
+          | (if $kind == "s" then ([($of | length), ([$keep - ($oi | length), 0] | max)] | min) else $keep end) as $fk
+          | .issue = (if ($oi | length) > $ik then $oi[0:$ik] + " [truncated: \(($oi | length) - $ik) of \($oi | length) characters omitted]" else $oi end)
+          | ( if ($of | length) > $fk then $of[0:$fk] + " [truncated: \(($of | length) - $fk) of \($of | length) characters omitted]" else $of end ) as $cf
           | if $kind == "q" then .fix = $cf elif $kind == "s" then .reasoning = $cf else . end;
-        def fit($keep): cutdown($keep) as $c | if ($c | row | u16len) <= $budget or $keep == 0 then $c else fit(($keep * 0.9 | floor)) end;
-        fit([($oi | length), ($of | length), $budget] | max);
+        def fit($keep): cutdown($keep) as $c | if ($c | row | u16len) <= $lim or $keep == 0 then $c else fit(($keep * 0.9 | floor)) end;
+        # A suppressed row cuts its reasoning first and its issue only when the row still does not fit.
+        fit(if $kind == "s" then ($oi | length) + ($of | length) else [($oi | length), ($of | length), $budget] | max end);
     .[0] as $f | .[1] as $q | .[2] as $s
     | ( [ $q | to_entries[] | {kind: "q", item: .value, gating: (.value.gating == true), rank: (.value | sevrank), pos: .key} ]
       + [ $f | to_entries[] | {kind: "o", item: .value, gating: false, rank: (.value | sevrank), pos: .key} ] ) as $all
@@ -381,16 +391,18 @@ prt_render_overflow_parts() {
         + ( $sall | sort_by([.rank, .pos]) ) ) as $ordered
     | ( $ordered | map(
           (if .kind == "q" then (.item | quarantine_row | u16len) elif .kind == "s" then (.item | suppressed_row | u16len) else (.item | overflow_row | u16len) end) as $cost
-          | if $cost > $budget
-            then . as $e | .item = ($e.item | shorten($e.kind)) | .cut = true | .cost = $budget
+          | if $cost + (if .kind == "s" then $sup else 0 end) > $budget
+            then . as $e | .item = ($e.item | shorten($e.kind)) | .cut = true | .cost = (if .kind == "s" then $budget - $sup else $budget end)
             else .cost = $cost + 1 | .cut = false end
         ) ) as $sized
     | ( reduce $sized[] as $e ({parts: [], cur: {f: [], q: [], s: [], used: 0}};
-          if (.cur.used + $e.cost) > $budget and (.cur.f + .cur.q + .cur.s | length) > 0
+          def extra: if $e.kind == "s" and (.cur.s | length) == 0 then $sup else 0 end;
+          if (.cur.used + $e.cost + extra) > $budget and (.cur.f + .cur.q + .cur.s | length) > 0
           then .parts += [.cur] | .cur = {f: [], q: [], s: [], used: 0}
           else . end
+          | extra as $x
           | if $e.kind == "q" then .cur.q += [$e.item] elif $e.kind == "s" then .cur.s += [$e.item] else .cur.f += [$e.item] end
-          | .cur.used += $e.cost
+          | .cur.used += $e.cost + $x
         ) | .parts + [.cur] | map({f, q, s, g: ([.q[] | select(.gating == true)] | length)}) ) as $parts
     | "\($parts | length) \([$sized[] | select(.cut)] | length)",
       ($parts[] | tojson)

@@ -2717,6 +2717,44 @@ assert_eq "prt_render_overflow_parts: a suppressed row over the part cap is shor
   "1 1" "$(prt_render_overflow_parts '[]' '[]' "$prt_parts_dir" "$prt_parts_sbig")"
 assert_eq "prt_render_overflow_parts: the shortened reasoning ends with a truncated marker" \
   "true" "$(sup_has "$(cat "$prt_parts_dir/part-1.md")" '[truncated:')"
+# The suppressed section is charged to the part that holds it, never to every part: adding one tiny
+# suppressed row must not move an overflow row into a later part (review of go-kure/.github#296, P2).
+prt_parts_o3="$(jq -n '[{n:28700,m:"OVFA"},{n:28700,m:"OVFB"},{n:12000,m:"OVFC"}] | map({fp:.m, file:"o.go", line:1, severity:"high", category:.m, issue:(.m + " " + ("z" * .n)), verdict:"VALID"})')"
+prt_parts_tiny_s='[{"severity":"low","category":"c","file":"s.go","line":1,"issue":"i","reasoning":"r"}]'
+prt_parts_clear
+find "$prt_parts_dir" -name 'part-*.suppressed' -delete
+prt_render_overflow_parts "$prt_parts_o3" '[]' "$prt_parts_dir" > /dev/null
+prt_parts_o3_plain="$(for n in 1 2; do grep -cE 'OVF[ABC] z' "$prt_parts_dir/part-$n.md"; done | paste -sd' ')"
+prt_parts_clear
+find "$prt_parts_dir" -name 'part-*.suppressed' -delete
+prt_render_overflow_parts "$prt_parts_o3" '[]' "$prt_parts_dir" "$prt_parts_tiny_s" > /dev/null
+assert_eq "prt_render_overflow_parts: one tiny suppressed row leaves every overflow row in the part it was in without it" \
+  "$prt_parts_o3_plain" "$(for n in 1 2; do grep -cE 'OVF[ABC] z' "$prt_parts_dir/part-$n.md"; done | paste -sd' ')"
+# Reasoning text is HTML-encoded, so it cannot hide itself or leave the collapsed section.
+sup_html='[{"severity":"High","category":"other","file":"s.go","line":1,"issue":"i","reasoning":"before <!-- hidden justification --> after </td></tr></tbody></table></details><p>REASON OUTSIDE</p>"}]'
+sup_html_out="$(prt_render_overflow_comment '[]' '[]' "$sup_html")"
+assert_eq "prt_render_overflow_comment: an HTML comment in the reasoning is encoded, not left to hide the text" \
+  "false true" "$(sup_has "$sup_html_out" '<!-- hidden') $(sup_has "$sup_html_out" '&lt;!-- hidden justification --&gt;')"
+assert_eq "prt_render_overflow_comment: a closing details tag in the reasoning cannot close the section early" \
+  "1 1" "$(grep -c '</details>' <<< "$sup_html_out") $(grep -c '<details>' <<< "$sup_html_out")"
+assert_eq "prt_render_overflow_comment: the raw paragraph tag from the reasoning is not in the body" \
+  "false" "$(sup_has "$sup_html_out" '<p>REASON OUTSIDE')"
+# A suppressed row too large for a part loses its reasoning first and keeps its whole issue when that fits.
+prt_parts_sissue="$(jq -n '[{fp:"si", file:"s.go", line:1, severity:"low", category:"c", issue:("i" * 30000), reasoning:("RSN " + ("r" * 40000)), verdict:"FALSE_POSITIVE"}]')"
+prt_parts_clear
+find "$prt_parts_dir" -name 'part-*.suppressed' -delete
+assert_eq "prt_render_overflow_parts: a 30000-character issue with a 40000-character reasoning is 1 part, 1 shortened" \
+  "1 1" "$(prt_render_overflow_parts '[]' '[]' "$prt_parts_dir" "$prt_parts_sissue")"
+assert_eq "prt_render_overflow_parts: the whole issue is kept and only the reasoning carries the truncated marker" \
+  "true true" "$(grep -q 'i\{30000\}' "$prt_parts_dir/part-1.md" && echo true || echo false) $(sup_has "$(grep 'RSN' "$prt_parts_dir/part-1.md")" '[truncated:')"
+assert_eq "prt_render_overflow_parts: that part is under the real limit" \
+  "true" "$([ "$(prt_parts_max_u16)" -le "$PRT_COMMENT_LIMIT" ] && echo true || echo false)"
+# An issue alone over the part is still shortened, after the reasoning is gone, never refused.
+prt_parts_sissue2="$(jq -n '[{fp:"si2", file:"s.go", line:1, severity:"low", category:"c", issue:("j" * 70000), reasoning:"r", verdict:"FALSE_POSITIVE"}]')"
+prt_parts_clear
+find "$prt_parts_dir" -name 'part-*.suppressed' -delete
+assert_eq "prt_render_overflow_parts: a 70000-character suppressed issue is shortened and counted, not refused" \
+  "1 1" "$(prt_render_overflow_parts '[]' '[]' "$prt_parts_dir" "$prt_parts_sissue2")"
 # A suppressed count that cannot be read fails the render, never reads as zero.
 jq() {
   if [ "${1:-}" = length ] && [ -n "${prt_sup_fail:-}" ]; then
