@@ -341,7 +341,7 @@ jobs:
               ;;
             opencode:*)
               echo "::error::backend ${REVIEW_BACKEND} names a provider with no credential here." >&2
-              echo "::error::This organization holds keys for openai and anthropic only." >&2
+              echo "::error::This workflow has a credential arm for the providers openai and anthropic only." >&2
               exit 1
               ;;
             *)

@@ -52,7 +52,7 @@ jobs:
           YQ_VERSION: ${{ steps.yq-version.outputs.version }}
         run: |
           sudo curl -fsSL -o /usr/local/bin/yq \
-            https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64
+            "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64"
           sudo chmod +x /usr/local/bin/yq
 
       - name: Run settings
@@ -75,6 +75,9 @@ jobs:
             push) FLAGS="$FLAGS --report-only" ;;
             schedule) FLAGS="$FLAGS --warn-label-drift" ;;
           esac
+          # $FLAGS is unquoted on purpose in the three calls below: it holds several options and the
+          # shell must split it into separate arguments. Quoting it would pass one argument.
+          # shellcheck disable=SC2086
           if [ "$INPUT_REPO" = "org" ]; then
             # Manual dispatch only (repo: org input) — push/schedule always
             # resolve INPUT_REPO to 'all' above and never reach this branch.
@@ -135,4 +138,4 @@ jobs:
             fi
             echo ""
             echo "_Generated: $(date -u '+%Y-%m-%d %H:%M UTC')_"
-          } >> $GITHUB_STEP_SUMMARY
+          } >> "$GITHUB_STEP_SUMMARY"
