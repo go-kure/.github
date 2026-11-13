@@ -27,18 +27,23 @@ pass_count=0
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
+# The keys that the CI test jobs of kure and launcher save under, as one line each.
+KEY_NAME='${{ runner.os }}-${{ runner.arch }}-go-${{ steps.go-version.outputs.version }}-gocache-test-race-cover-'
+KEY_DEPS="${KEY_NAME}deps-\${{ hashFiles('go.mod', 'go.sum') }}-"
+KEY_EXACT="${KEY_DEPS}src-\${{ hashFiles('**/*.go', 'go.mod', 'go.sum', 'Makefile', '**/testdata/**') }}"
+
 # test_job FILE — the lines of the "test:" job: from "  test:" up to the next job at the same indent.
 test_job() {
   awk '
     /^  test:$/ { in_job = 1; print; next }
-    in_job && /^  [A-Za-z_-]+:$/ { exit }
+    in_job && /^  [A-Za-z0-9_-]+:$/ { exit }
     in_job { print }
   ' "$1"
 }
 
 # contract FILE — print one FAIL line per broken fact, return 1 if any.
 contract() {
-  local f="$1" rc=0 job
+  local f="$1" rc=0 job trimmed
   if [ ! -s "$f" ]; then
     echo "FAIL: $f is missing or empty"
     return 1
@@ -64,15 +69,17 @@ contract() {
     echo "FAIL: the test job does not restore ~/.cache/go-build"
     rc=1
   fi
-  if ! grep -qE '^ +key: .*-gocache-test-race-cover-deps-.*-src-' <<<"$job"; then
-    echo "FAIL: the restore key does not name the gocache-test-race-cover cache with its dependency and source hashes"
+  # shellcheck disable=SC2001  # the substitution must run on every line, which ${var//} cannot do
+  trimmed="$(sed 's/^ *//' <<<"$job")"
+  if ! grep -Fxq "key: ${KEY_EXACT}" <<<"$trimmed"; then
+    echo "FAIL: the restore key is not the key the CI test jobs save (OS, architecture, Go version, dependency hash and source hash)"
     rc=1
   fi
-  if ! grep -qE 'go-\$\{\{ steps\.go-version\.outputs\.version \}\}-gocache-test-race-cover-deps-.*-$' <<<"$job"; then
+  if ! grep -Fxq "${KEY_DEPS}" <<<"$trimmed"; then
     echo "FAIL: no restore key ends at the dependency hash"
     rc=1
   fi
-  if ! grep -qE 'go-\$\{\{ steps\.go-version\.outputs\.version \}\}-gocache-test-race-cover-$' <<<"$job"; then
+  if ! grep -Fxq "${KEY_NAME}" <<<"$trimmed"; then
     echo "FAIL: no restore key ends at the cache name"
     rc=1
   fi
@@ -129,7 +136,7 @@ expect_fail "a restore of another path" "does not restore ~/.cache/go-build" "$t
 
 # The key names another cache.
 sed 's#gocache-test-race-cover#gocache-validate#g' "$WF" > "$tmp/other-name"
-expect_fail "a key that names another cache" "does not name the gocache-test-race-cover cache" "$tmp/other-name"
+expect_fail "a key that names another cache" "restore key is not the key the CI test jobs save" "$tmp/other-name"
 
 # The dependency tier of the restore keys goes.
 awk '/-gocache-test-race-cover-deps-.*-$/ && !/key:/ { next } { print }' "$WF" > "$tmp/no-deps-tier"
@@ -151,6 +158,30 @@ awk '
   { print }
 ' "$WF" > "$tmp/with-save"
 expect_fail "a save step in the test job" "the test job saves a cache" "$tmp/with-save"
+
+# The OS part of every key is wrong.
+sed 's#\${{ runner.os }}#WrongOS#g' "$WF" > "$tmp/wrong-os"
+expect_fail "a key with the wrong OS" "restore key is not the key the CI test jobs save" "$tmp/wrong-os"
+
+# A hash expression matches no file.
+sed "s#hashFiles('go.mod', 'go.sum')#hashFiles('nonexistent')#g" "$WF" > "$tmp/wrong-hash"
+expect_fail "a key with a dependency hash of nothing" "restore key is not the key the CI test jobs save" "$tmp/wrong-hash"
+
+# The source hash covers other files.
+sed "s#hashFiles('\*\*/\*.go', #hashFiles(#" "$WF" > "$tmp/wrong-src"
+expect_fail "a key with a source hash that skips Go files" "restore key is not the key the CI test jobs save" "$tmp/wrong-src"
+
+# The restore moves into a later job whose name holds a digit.
+awk '
+  /- name: Restore Go build cache/ && !done {
+    print "  extra2:"
+    print "    runs-on: ubuntu-latest"
+    print "    steps:"
+    done = 1
+  }
+  { print }
+' "$WF" > "$tmp/other-job"
+expect_fail "a restore that sits in another job" "no actions/cache/restore step" "$tmp/other-job"
 
 : > "$tmp/empty"
 expect_fail "an empty workflow file" "missing or empty" "$tmp/empty"
