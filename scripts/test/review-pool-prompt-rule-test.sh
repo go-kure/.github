@@ -184,6 +184,14 @@ evaluate() {
 PASS=0
 FAIL=0
 
+# output_has TEXT OUTPUT
+# True when OUTPUT contains TEXT. OUTPUT goes in as a here-string and not through a pipe. Under
+# `set -o pipefail` a `printf | grep -q` fails when grep finds the text and exits before printf
+# finishes writing: printf gets SIGPIPE, the pipeline reports 141, and a case whose output holds the
+# wanted text is scored a failure. It was seen once in CI, on a case whose output was short enough
+# that the loss of the race looked impossible. The here-string has no writer to lose it.
+output_has() { grep -qF -- "$1" <<< "$2"; }
+
 # check LABEL WANT_RC WANT_TEXT WORKFLOW
 # Both the exit code and a text of the verdict are asserted, so a case cannot pass for the wrong
 # reason: a violation and an unreadable prompt are different exit codes with different messages.
@@ -197,7 +205,7 @@ check() {
   fi
   out=$(evaluate "$wf" 2>&1)
   rc=$?
-  if [ "$rc" -eq "$want_rc" ] && printf '%s' "$out" | grep -qF -- "$want_text"; then
+  if [ "$rc" -eq "$want_rc" ] && output_has "$want_text" "$out"; then
     PASS=$((PASS + 1))
     printf 'PASS  %s\n' "$label"
   else
@@ -419,12 +427,38 @@ if [ -n "$broken_wf" ] && cp "$broken_wf" "$broken_root/.github/workflows/review
 else
   broken_rc=built-no
 fi
-if [ "$broken_rc" = 2 ] && printf '%s' "$broken_out" | grep -qF 'the prompt could not be rendered'; then
+if [ "$broken_rc" = 2 ] && output_has 'the prompt could not be rendered' "$broken_out"; then
   PASS=$((PASS + 1))
   printf 'PASS  an unreadable live prompt makes this script exit 2\n'
 else
   FAIL=$((FAIL + 1))
   printf 'FAIL  an unreadable live prompt makes this script exit %s, want 2 with its own message: %s\n' "$broken_rc" "$broken_out"
+fi
+
+# The text match must not depend on how much the producer writes. The wanted text is the first line
+# and 300000 more bytes follow, far over the pipe buffer, so grep -q exits long before the writer
+# is done. The first case is the control: the pipe form fails on this input here, which is why
+# output_has exists. If the control passes, the second case proves nothing about the pipe.
+sigpipe_big="the wanted text"$'\n'"$(head -c 300000 /dev/zero | tr '\0' x)"
+sigpipe_old=0
+( set -o pipefail; printf '%s' "$sigpipe_big" | grep -qF -- 'the wanted text' ) || sigpipe_old=$?
+if [ "$sigpipe_old" -ne 0 ]; then
+  PASS=$((PASS + 1))
+  printf 'PASS  control: the pipe form reports a miss on an output over the pipe buffer (status %s)\n' "$sigpipe_old"
+else
+  FAIL=$((FAIL + 1))
+  printf 'FAIL  control: the pipe form found the text on an output over the pipe buffer, so the case below is not a test of the pipe\n'
+fi
+sigpipe_misses=0
+for _ in 1 2 3 4 5; do
+  output_has 'the wanted text' "$sigpipe_big" || sigpipe_misses=$((sigpipe_misses + 1))
+done
+if [ "$sigpipe_misses" -eq 0 ]; then
+  PASS=$((PASS + 1))
+  printf 'PASS  output_has finds the text on an output over the pipe buffer, five times in a row\n'
+else
+  FAIL=$((FAIL + 1))
+  printf 'FAIL  output_has missed the text on an output over the pipe buffer %s of 5 times\n' "$sigpipe_misses"
 fi
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
