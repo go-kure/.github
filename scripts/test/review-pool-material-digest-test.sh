@@ -27,7 +27,8 @@
 #
 # Usage: review-pool-material-digest-test.sh [REPO_ROOT]
 # Exit:  0 every case passed; 1 a case failed; 2 the step body could not be read.
-# Needs: yq v4, jq, bash.
+# Needs: yq v4, bash, and a real jq binary (not a version manager's shim): on a system directory,
+#        on PATH, or named by `mise which jq`.
 
 set -uo pipefail
 
@@ -75,13 +76,66 @@ FAIL=0
 # candidate may be. The search covers PATH as well as the usual system directories, so a host whose
 # jq lives elsewhere is not refused while holding every prerequisite. Where none runs the suite
 # refuses, because an exit 2 says it did not run, which a row of failures would hide.
-JQ=
-while IFS= read -r cand; do
-  if [ -x "$cand" ] && env -i PATH="$(dirname "$cand")" "$cand" --version >/dev/null 2>&1; then
-    JQ="$cand"
-    break
+JQ_SYSTEM_DIRS="${JQ_SYSTEM_DIRS:-/usr/bin /bin /usr/local/bin}"
+# resolve_jq prints the first real jq that starts in a bare environment, or fails. A real jq is a
+# binary: a path under a version manager's shims directory is refused even when it starts, because
+# what it runs depends on the environment the sandbox removes. Candidates, in order: the system
+# directories, every jq on PATH (`type -ap`; bash's `command` has no -a), then `mise which jq`, which
+# names the binary behind a shim that is on PATH.
+resolve_jq() {
+  local cand dir
+  while IFS= read -r cand; do
+    [ -x "$cand" ] || continue
+    case "$cand" in */shims/*) continue ;; esac
+    if env -i PATH="$(dirname "$cand")" "$cand" --version >/dev/null 2>&1; then
+      printf '%s\n' "$cand"
+      return 0
+    fi
+  done < <(
+    for dir in $JQ_SYSTEM_DIRS; do printf '%s/jq\n' "$dir"; done
+    type -ap jq 2>/dev/null
+    if command -v mise >/dev/null 2>&1; then mise which jq 2>/dev/null; fi
+  )
+  return 1
+}
+
+# resolve_jq self-test. Each case runs in a subshell whose PATH holds only fixture directories, so
+# the host's own jq cannot decide the answer. The stub "jq" prints a line and needs nothing; the shim
+# fails unless a version manager's variable is set, as a real shim does.
+R="$(mktemp -d)"
+trap 'rm -rf "$R"' EXIT
+mkdir -p "$R/tools" "$R/real" "$R/mise/shims" "$R/okshim/shims" "$R/misebin"
+ln -s "$(command -v env)" "$R/tools/env"
+ln -s "$(command -v dirname)" "$R/tools/dirname"
+printf '#!/bin/sh\necho jq-stub\n' > "$R/real/jq"
+# shellcheck disable=SC2016  # stub script text, expanded when the stub runs
+printf '#!/bin/sh\n[ -n "${MISE_SHIM_ENV:-}" ] || exit 1\necho jq-stub\n' > "$R/mise/shims/jq"
+printf '#!/bin/sh\necho jq-stub\n' > "$R/okshim/shims/jq"
+# shellcheck disable=SC2016  # stub script text, expanded when the stub runs
+printf '#!/bin/sh\n[ "$1" = which ] && echo "$FAKE_WHICH"\n' > "$R/misebin/mise"
+chmod +x "$R/real/jq" "$R/mise/shims/jq" "$R/okshim/shims/jq" "$R/misebin/mise"
+
+# resolve_case LABEL WANT PATH_DIRS [FAKE_WHICH]
+# WANT is the path resolve_jq must print, or NONE when it must find nothing.
+resolve_case() {
+  local label="$1" want="$2" path_dirs="$3" fake_which="${4:-}" got
+  got=$(PATH="$path_dirs" JQ_SYSTEM_DIRS="$R/none" FAKE_WHICH="$fake_which" resolve_jq) || got=NONE
+  if [ "$got" = "$want" ]; then
+    PASS=$((PASS + 1))
+    printf 'PASS  resolve_jq: %s\n' "$label"
+  else
+    FAIL=$((FAIL + 1))
+    printf 'FAIL  resolve_jq: %s: got %s want %s\n' "$label" "$got" "$want"
   fi
-done < <(printf '%s\n' /usr/bin/jq /bin/jq /usr/local/bin/jq; command -v -a jq 2>/dev/null)
+}
+
+resolve_case 'a real jq on PATH is chosen (control)' "$R/real/jq" "$R/real:$R/tools"
+resolve_case 'a shim alone finds nothing' NONE "$R/mise/shims:$R/tools"
+resolve_case 'a shim on PATH falls back to mise which' "$R/real/jq" "$R/mise/shims:$R/misebin:$R/tools" "$R/real/jq"
+resolve_case 'a shim that starts anyway is still refused' NONE "$R/okshim/shims:$R/tools"
+resolve_case 'mise which naming a shim is refused' NONE "$R/misebin:$R/tools" "$R/mise/shims/jq"
+
+JQ="$(resolve_jq)"
 if [ -z "$JQ" ]; then
   echo "found no jq that runs without a version manager's environment; the digest step cannot be tested" >&2
   exit 2
