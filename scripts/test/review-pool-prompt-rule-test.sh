@@ -49,6 +49,11 @@ STEP_FILTER='.jobs.review.steps[] | select((.run // "") | contains("<<PROMPT"))'
 # edit it then stop with exit 2, so a reworded rule needs this line updated with it.
 RULE_LINE='Never write the word FINDING anywhere except in a block header, in the position the form'
 
+# The only variables the prompt prose may expand besides the two example lines, by name. Their values
+# are a revision and an object id, read at run time and not by this suite. A new variable in the
+# prompt makes the reader refuse with exit 2, and the fix is to list it here after reading its value.
+PROMPT_VARS='REVIEW_BASE head_oid'
+
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
@@ -56,6 +61,23 @@ trap 'rm -rf "$WORK"' EXIT
 # Prints the reviewer-facing prompt, one line per line, each prefixed "E:" when it comes from an
 # example body and "P:" when it is the prompt's own prose. The prefix is what lets the check tell a
 # header inside an example from a header-shaped line in the prose. Exit 2 when anything is missing.
+#
+# The reader must see the prompt as bash builds it. The decision for each shape it can receive:
+#   - closer missing, renamed, indented or followed by a space: reject (exit 2). Bash needs the
+#     delimiter alone on its line, so no prompt is built.
+#   - a delimiter line in the middle of the prose: reject. The closer must be followed by the line
+#     )" that ends the step's substitution, so an early closer is not taken for the last one.
+#   - backslash-newline in the prompt: join. Bash joins the two lines, and an even run of
+#     backslashes is an escaped backslash, so only an odd run joins.
+#   - an expansion other than the two example lines and the names in PROMPT_VARS ($name form only):
+#     reject. Its text is unknown here, and the braces form counts as unknown.
+#   - the delimiter word in a comment-shaped or quoted line: accept as prose, as bash does.
+#   - a quoted or dash opener (<<'PROMPT', <<-PROMPT): reject. It is not the unquoted heredoc, so no
+#     step matches the filter and the suite is aimed wrong.
+#   - CRLF line endings: accept. yq reads CRLF as LF, so the shape does not reach this reader, and a
+#     case holds that fact.
+#   - the example bodies are quoted heredocs: no joins and no expansions, read as written. Their
+#     closer follows the same rule as the prompt's.
 render() {
   local wf="$1" count body
   if ! count=$(yq -r "[$STEP_FILTER] | length" "$wf"); then
@@ -72,20 +94,45 @@ render() {
   fi
   # The example bodies are quoted heredocs, so they are verbatim. The prompt heredoc is not quoted,
   # and its two example lines stand for the bodies; every other line is printed as it is written.
-  printf '%s\n' "$body" | LC_ALL=C awk '
-    /^example_clean="\$\(cat <<'"'"'EXAMPLE'"'"'$/ { mode = "clean"; next }
-    /^example_one="\$\(cat <<'"'"'EXAMPLE'"'"'$/   { mode = "one"; next }
-    /^prompt="\$\(cat <<PROMPT$/                    { mode = "prompt"; seen = 1; next }
-    /^EXAMPLE$/ && (mode == "clean" || mode == "one") { mode = ""; next }
-    /^PROMPT$/ && mode == "prompt"                  { mode = ""; next }
+  printf '%s\n' "$body" | LC_ALL=C awk -v vars="$PROMPT_VARS" '
+    function bad_input(msg) { print msg > "/dev/stderr"; bad = 1 }
+    # One prose line of the prompt, after any backslash-newline join. A line that is exactly an example
+    # variable stands for that body. Any other $ or backtick must be a listed variable followed by a
+    # non-name character: anything else would put text in the prompt that this reader never saw.
+    function emit(line,    t, i, n, v) {
+      if (line == "$example_one")   { for (i = 1; i <= no; i++) print "E:" one[i]; ne += no; return }
+      if (line == "$example_clean") { for (i = 1; i <= nc; i++) print "E:" clean[i]; ne += nc; return }
+      t = line
+      n = split(vars, v, " ")
+      for (i = 1; i <= n; i++) gsub("[$]" v[i] "([^A-Za-z0-9_]|$)", " ", t)
+      if (t ~ /[$`]/) bad_input("unsupported expansion in the prompt: " line)
+      print "P:" line; np++
+    }
+    expect != "" {
+      if ($0 != ")\"") bad_input("the " expect " closing delimiter is not followed by )\" on the next line, so it is not the closer the step ends on")
+      expect = ""; next
+    }
+    mode == "" && /^example_clean="\$\(cat <<'"'"'EXAMPLE'"'"'$/ { mode = "clean"; next }
+    mode == "" && /^example_one="\$\(cat <<'"'"'EXAMPLE'"'"'$/   { mode = "one"; next }
+    mode == "" && /^prompt="\$\(cat <<PROMPT$/                    { mode = "prompt"; seen = 1; next }
+    /^EXAMPLE$/ && (mode == "clean" || mode == "one") { mode = ""; expect = "EXAMPLE"; next }
+    /^PROMPT$/ && mode == "prompt" {
+      if (pending != "") { emit(pending); pending = "" }
+      mode = ""; expect = "PROMPT"; next
+    }
     mode == "clean" { clean[++nc] = $0; next }
     mode == "one"   { one[++no] = $0; next }
     mode == "prompt" {
-      if ($0 == "$example_one")        { for (i = 1; i <= no; i++) print "E:" one[i]; ne += no }
-      else if ($0 == "$example_clean") { for (i = 1; i <= nc; i++) print "E:" clean[i]; ne += nc }
-      else                             { print "P:" $0; np++ }
+      cur = pending $0; pending = ""
+      if (match(cur, /\\+$/) && RLENGTH % 2 == 1) { pending = substr(cur, 1, length(cur) - 1); next }
+      emit(cur)
     }
-    END { if (!seen || nc == 0 || no == 0 || ne == 0 || np == 0) exit 2 }
+    END {
+      if (mode == "prompt") bad_input("the PROMPT heredoc is not closed")
+      else if (mode != "")  bad_input("the EXAMPLE heredoc is not closed")
+      if (expect != "")     bad_input("the " expect " closing delimiter is the last line, with no )\" after it")
+      if (bad || !seen || nc == 0 || no == 0 || ne == 0 || np == 0) exit 2
+    }
   '
 }
 
@@ -239,6 +286,78 @@ check 'a header-shaped line in the prose, outside the examples, is refused' \
 check 'the word in the sentence of the clean example is refused' \
   1 'stray: E: I read the credential gating' \
   "$(mutate example-sentence 's/and I report no defects\.$/and I report no finding./')"
+
+# The reader must read the prompt as bash does. One case per shape the region can receive; the
+# decision for each shape (join, reject or accept) is written above the reader in render().
+# shellcheck disable=SC1003  # literal backslashes for a sed replacement, not an escaped quote
+ONE_BS='\\'
+# shellcheck disable=SC1003  # as above: two literal backslashes in the replacement
+TWO_BS='\\\\'
+
+# Missing closer: bash cannot build the prompt, so the text is not a prompt this suite can vouch for.
+check 'a PROMPT closer that is renamed is refused as unreadable' \
+  2 'the PROMPT heredoc is not closed' \
+  "$(mutate closer-renamed "s/^\( *\)PROMPT\$/\1PROMPT_RENAMED/")"
+
+check 'a PROMPT closer with leading space is refused as unreadable' \
+  2 'the PROMPT heredoc is not closed' \
+  "$(mutate closer-indented "s/^\( *\)PROMPT\$/\1  PROMPT/")"
+
+check 'a PROMPT closer with trailing space is refused as unreadable' \
+  2 'the PROMPT heredoc is not closed' \
+  "$(mutate closer-trailing "s/^\( *\)PROMPT\$/&   /")"
+
+# A line that is exactly the delimiter in the middle ends the heredoc early, in bash and here.
+check 'a PROMPT line in the middle of the prose is refused as unreadable' \
+  2 'is not followed by' \
+  "$(mutate closer-premature "s/^\( *\)${LEAD}\$/&\n\1PROMPT/")"
+
+check 'an example closer that is renamed is refused as unreadable' \
+  2 'the EXAMPLE heredoc is not closed' \
+  "$(mutate example-closer-renamed "/^ *example_one=/,/^ *EXAMPLE\$/ s/^\( *\)EXAMPLE\$/\1EXAMPLE_RENAMED/")"
+
+# Backslash-newline: the unquoted heredoc joins the two lines, so the word can be split across them.
+check 'a backslash-newline that splits the word across two lines is joined and refused' \
+  1 'stray: P: Report each finding as its own block.' \
+  "$(mutate continuation-split "s/^\( *\)${LEAD}\$/&\n\1Report each find${ONE_BS}\n\1ing as its own block./")"
+
+# Two backslashes are one escaped backslash, and the newline then stays: no join, nothing to refuse.
+check 'an escaped backslash before the newline is not a continuation and joins nothing' \
+  0 'stray=0' \
+  "$(mutate continuation-escaped "s/^\( *\)${LEAD}\$/&\n\1Report each find${TWO_BS}\n\1ing as its own block./")"
+
+# An expansion the reader does not model puts text in the prompt that it never saw.
+check 'an example variable inside a prose line is refused as unreadable' \
+  2 'unsupported expansion in the prompt' \
+  "$(mutate expansion-example-inline "s/^\( *\)${LEAD}\$/&\n\1See \$example_clean here./")"
+
+check 'a command substitution in the prose is refused as unreadable' \
+  2 'unsupported expansion in the prompt' \
+  "$(mutate expansion-command "s/^\( *\)${LEAD}\$/&\n\1Report \$(printf fin%s ding) now./")"
+
+check 'a backtick command in the prose is refused as unreadable' \
+  2 'unsupported expansion in the prompt' \
+  "$(mutate expansion-backtick "s/^\( *\)${LEAD}\$/&\n\1Report \`printf finding\` now./")"
+
+check 'a variable the suite does not list is refused as unreadable' \
+  2 'unsupported expansion in the prompt' \
+  "$(mutate expansion-unlisted "s/^\( *\)${LEAD}\$/&\n\1Report \$OTHER_VAR now./")"
+
+# The delimiter word on a line of its own shape is prose, in bash too: nothing to refuse.
+check 'the delimiter word inside a comment-shaped or quoted line is prose and passes' \
+  0 'stray=0' \
+  "$(mutate delimiter-as-prose "s/^\( *\)${LEAD}\$/&\n\1# PROMPT\n\1\"PROMPT\"/")"
+
+# A quoted opener is a different heredoc (no expansion): the suite is aimed at the unquoted one only.
+check 'a quoted PROMPT opener is refused as unreadable' \
+  2 'found 0 steps' \
+  "$(mutate opener-quoted "s/<<PROMPT\$/<<'PROMPT'/")"
+
+# yq reads CRLF text as LF, so the shape cannot reach the reader. If a later yq keeps the CR, the
+# delimiter lines stop matching and this case turns red.
+check 'a workflow with CRLF line endings reads as the same prompt' \
+  0 'stray=0' \
+  "$(mutate crlf 's/$/\r/')"
 
 # The controls on the reader: an unreadable prompt is refused, never passed as clean.
 # shellcheck disable=SC2016  # the $( in the sed script is the workflow's own text, not an expansion
