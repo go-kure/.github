@@ -75,7 +75,8 @@ contract() {
   fi
   for f in "$ci" "$seed"; do
     cache="$(cache_lines "$f" | grep '^key: ' || true)"
-    if grep -vqF -- '-p${{ steps.cache-period.outputs.n }}' <<<"$cache"; then
+    # An empty key list feeds grep one empty line, which would read as a key with no period.
+    if [ -n "$cache" ] && grep -vqF -- '-p${{ steps.cache-period.outputs.n }}' <<<"$cache"; then
       echo "FAIL: a cache key in $f does not end in the cache period"
       rc=1
     fi
@@ -199,6 +200,18 @@ expect_fail "a seed job with no timeout" "no timeout-minutes" "$CI" "$tmp/seed-n
 
 : > "$tmp/empty"
 expect_fail "an empty seed file" "missing or empty" "$CI" "$tmp/empty"
+
+# A seed with no cache key reports the missing key and nothing about the cache period.
+grep -v -E '^ *key: ' "$SEED" > "$tmp/seed-nokey"
+expect_fail "a seed file with no cache key" "no cache key in" "$CI" "$tmp/seed-nokey"
+nokey_out="$(contract "$CI" "$tmp/seed-nokey")"
+if grep -qF "cache period" <<<"$nokey_out"; then
+  echo "FAIL: a seed file with no cache key also reports a missing cache period:"
+  echo "$nokey_out"
+  failures=$((failures + 1))
+else
+  pass_count=$((pass_count + 1))
+fi
 
 # Control for the here-string matches in contract: a seed with thousands of identical cache
 # steps makes cache_lines write far more than a pipe holds. The pipe form must fail on it
