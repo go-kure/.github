@@ -129,9 +129,10 @@ already_installed() {
 pinned_version() {
     local mise="$1" lines version
     [ -f "$mise" ] || die "no $mise: the version is read from GIT_CLIFF_VERSION in the mise.toml two directories above this script (or pass <version>)"
-    # The range runs from the [env] header to the next table header, so the same
-    # key in another table, or above every table, is not read.
-    lines="$(sed -n '/^\[env\][[:space:]]*$/,/^\[/ s/^GIT_CLIFF_VERSION = "\(.*\)"[[:space:]]*$/\1/p' "$mise")"
+    # The range runs from the [env] header to the next table header (TOML allows
+    # whitespace before one), so the same key in another table, or above every
+    # table, is not read.
+    lines="$(sed -n '/^\[env\][[:space:]]*$/,/^[[:space:]]*\[/ s/^GIT_CLIFF_VERSION = "\(.*\)"[[:space:]]*$/\1/p' "$mise")"
     [ -n "$lines" ] || die "no GIT_CLIFF_VERSION = \"X.Y.Z\" line under [env] in $mise"
     [ "$(printf '%s\n' "$lines" | wc -l)" -eq 1 ] || die "more than one GIT_CLIFF_VERSION line under [env] in $mise"
     version="$lines"

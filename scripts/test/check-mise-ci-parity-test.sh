@@ -298,7 +298,11 @@ for lit in 'CLIFF_VERSION: "9.9.9"' "CLIFF_VERSION: '9.9.9'" 'CLIFF_VERSION: 9.9
 done
 # A literal set mid-line overrides the shared pin as surely as one at the start of a line.
 # shellcheck disable=SC2016  # literal workflow text, not an expansion
-for lit in 'export CLIFF_VERSION="9.9.9"' 'CLIFF_VERSION="9.9.9"; bash x.sh "$CLIFF_VERSION"' 'env CLIFF_VERSION=9.9.9 bash x.sh' 'echo go && CLIFF_VERSION=9.9.9'; do
+#
+# A `#` is not a comment marker the check can trust: in `echo "release # notes"; CLIFF_VERSION=...`
+# it sits inside quotes, and stripping from it would hide the assignment. Only a line that
+# starts with `#` is a comment, so a trailing `# CLIFF_VERSION=...` fails closed.
+for lit in 'export CLIFF_VERSION="9.9.9"' 'CLIFF_VERSION="9.9.9"; bash x.sh "$CLIFF_VERSION"' 'env CLIFF_VERSION=9.9.9 bash x.sh' 'echo go && CLIFF_VERSION=9.9.9' 'echo "release # notes"; CLIFF_VERSION="9.9.9"' 'echo go # CLIFF_VERSION=9.9.9'; do
   run_raw "a mid-line shell literal [$lit] in ci.yml fails" 1 \
     "FAIL: git-cliff: .github/workflows/ci.yml names a version literal" "$MISE_STD" \
     "$(ci_with "$CI_LINT_STEP" "$CI_A_STEP" "$CI_B_STEP" '      - run: |' "          $lit")"
@@ -313,7 +317,7 @@ for lit in '"CLIFF_VERSION": "9.9.9"' "'CLIFF_VERSION': '9.9.9'" 'env: {CLIFF_VE
     "$(ci_with "$CI_LINT_STEP" "$CI_A_STEP" "$CI_B_STEP" '      - name: x' "        $lit" '        run: echo go')"
 done
 # Controls: text that is not an assignment never fails the check.
-for text in '# CLIFF_VERSION: 9.9.9' '# export CLIFF_VERSION="9.9.9"' 'echo "CLIFF_VERSION=9.9.9"' 'echo go # CLIFF_VERSION=9.9.9'; do
+for text in '# CLIFF_VERSION: 9.9.9' '# export CLIFF_VERSION="9.9.9"' 'echo "CLIFF_VERSION=9.9.9"'; do
   run_raw "not an assignment [$text] in a run body passes" 0 "git-cliff pin 1.2.3" "$MISE_STD" \
     "$(ci_with "$CI_LINT_STEP" "$CI_A_STEP" "$CI_B_STEP" '      - run: |' "          $text")"
 done
@@ -333,7 +337,7 @@ run_raw "a step-output expression assigned to the variable in ci.yml fails" 1 \
 
 # The same forms in the two release workflows, one form per case.
 # shellcheck disable=SC2016  # literal workflow text, not an expansion
-for lit in 'export CLIFF_VERSION="9.9.9"' 'export GIT_CLIFF_VERSION=9.9.9' 'env CLIFF_VERSION=9.9.9 bash x.sh' 'echo go && CLIFF_VERSION=9.9.9' 'CLIFF_VERSION="${X}"'; do
+for lit in 'export CLIFF_VERSION="9.9.9"' 'export GIT_CLIFF_VERSION=9.9.9' 'env CLIFF_VERSION=9.9.9 bash x.sh' 'echo go && CLIFF_VERSION=9.9.9' 'CLIFF_VERSION="${X}"' 'echo "release # notes"; CLIFF_VERSION="9.9.9"' 'echo go # CLIFF_VERSION=9.9.9'; do
   FX_REL_LINE="$lit" run_case "a shell form [$lit] in release.yml fails" 1 \
     "FAIL: git-cliff: .github/workflows/release.yml names a version literal" "$CHECKER" "$L" "$T" "$L" "$T"
   FX_PUB_LINE="$lit" run_case "a shell form [$lit] in release-publish.yml fails" 1 \
@@ -348,7 +352,7 @@ for yml in '"CLIFF_VERSION": "9.9.9"' 'GIT_CLIFF_VERSION: 9.9.9' 'env: {CLIFF_VE
     "FAIL: git-cliff: .github/workflows/release-publish.yml names a version literal" "$CHECKER" "$L" "$T" "$L" "$T"
 done
 # Controls: text that is not an assignment never fails a release workflow.
-for text in '# CLIFF_VERSION="9.9.9"' 'echo "CLIFF_VERSION=9.9.9"' 'echo go # CLIFF_VERSION=9.9.9'; do
+for text in '# CLIFF_VERSION="9.9.9"' 'echo "CLIFF_VERSION=9.9.9"'; do
   FX_REL_LINE="$text" FX_PUB_LINE="$text" run_case "not an assignment [$text] in the release workflows passes" 0 \
     "git-cliff pin 1.2.3" "$CHECKER" "$L" "$T" "$L" "$T"
 done
