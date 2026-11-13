@@ -675,7 +675,14 @@ full-run cases, and the acceptance workflow sets it for both suites.
 The workflow targets the review pool (`autops-kube-review`), whose nodes allow the user namespaces
 the boundary needs. A result therefore applies to that pool only. The review job itself still runs
 on `autops-kube-kure`, so the runner backend stays unaccepted there until that job moves to a pool
-where this probe passes. The workflow runs the probe step after a failed suite
+where this probe passes. The workflow's first step records which image the pod runs, with the same
+fields and fallback text as the identity step of `review-pool-acceptance.yml`: the sha256 of the
+bundle record of `/opt/review-runner`, the registry digest of the `latest` tag (a cross-check that
+reads `unavailable: <reason>` when it fails), the uid and the pod hostname. The step fails when
+`review-bundle-verify` is absent, because a pod that is not the review image says nothing about it.
+The record covers the review image family and the bundle bytes only. It does not cover the base
+layer where the boundary runs, and the image digest needs a credential the pod does not have, so a
+recorded sha is never proof that the boundary holds. The workflow runs the probe step after a failed suite
 step too (a failed suite step still fails the job), so a lane that cannot build the boundary still
 reports why. A step right after the checkout reads the workspace `.git/config` and fails if it holds
 an `extraheader` or `includeIf` entry, so `persist-credentials: false` is shown and not assumed. Its
