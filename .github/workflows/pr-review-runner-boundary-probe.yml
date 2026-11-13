@@ -19,6 +19,61 @@ jobs:
     runs-on: autops-kube-review
     timeout-minutes: 15
     steps:
+      # Which image this pod runs, as far as the pod can say. Same measurement as the identity step
+      # of review-pool-acceptance.yml, same fields and same fallback text. Limit: the bundle record
+      # covers /opt/review-runner only. It shows the review image family and the bundle bytes, not
+      # the base layer where the boundary runs, and the image digest needs a credential this pod does
+      # not have. A recorded sha is therefore not proof that the boundary holds.
+      - name: Record the image this probe runs in
+        run: |
+          set -euo pipefail
+          command -v review-bundle-verify >/dev/null || {
+            echo "FAIL: review-bundle-verify is absent, so this pod is not the review image and the probe says nothing about it"
+            exit 1
+          }
+          record_dir="$(mktemp -d)"
+          review-bundle-verify record /opt/review-runner > "$record_dir/bundle.record"
+          bundle_sha="$(sha256sum "$record_dir/bundle.record" | cut -d' ' -f1)"
+
+          # The registry digest of the latest tag, as a cross-check only. The scale set pulls that
+          # tag on every pod start, so the two agree unless the tag moved during this job. A failed
+          # read is recorded as unavailable with its reason, never as empty or as a pass.
+          digest='unavailable: not attempted'
+          if token="$(curl -fsS --max-time 30 \
+                "https://ghcr.io/token?service=ghcr.io&scope=repository:ginsys/opsmaster/actions-runner-review:pull" \
+                | jq -er .token)"; then
+            if headers="$(curl -fsS --max-time 30 -o /dev/null -D - \
+                  -H "Authorization: Bearer $token" \
+                  -H 'Accept: application/vnd.oci.image.index.v1+json' \
+                  -H 'Accept: application/vnd.docker.distribution.manifest.list.v2+json' \
+                  -H 'Accept: application/vnd.oci.image.manifest.v1+json' \
+                  -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' \
+                  "https://ghcr.io/v2/ginsys/opsmaster/actions-runner-review/manifests/latest")"; then
+              found="$(printf '%s' "$headers" | tr -d '\r' \
+                | sed -n 's/^[Dd]ocker-[Cc]ontent-[Dd]igest: //p' | tail -1)"
+              if [ -n "$found" ]; then
+                digest="$found"
+              else
+                digest='unavailable: the manifest response carried no content digest header'
+              fi
+            else
+              digest='unavailable: the manifest read failed'
+            fi
+          else
+            digest='unavailable: the registry token read failed'
+          fi
+
+          {
+            printf 'pod_hostname=%s\n' "$(hostname)"
+            printf 'uid=%s gid=%s\n' "$(id -u)" "$(id -g)"
+            printf 'user_max_user_namespaces=%s\n' "$(cat /proc/sys/user/max_user_namespaces)"
+            printf 'bundle_record_sha256=%s\n' "$bundle_sha"
+            printf 'registry_latest_digest=%s\n' "$digest"
+            printf 'review_run_path=%s\n' "$(command -v review-run)"
+            printf 'runner_scripts_pin=%s\n' "$(sha256sum /opt/review-runner/bin/runner.sha256 | cut -d' ' -f1)"
+            printf 'identity_scope=bundle only (/opt/review-runner); not the base layer, not the image digest\n'
+          }
+
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
