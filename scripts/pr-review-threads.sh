@@ -2289,6 +2289,7 @@ quarantined_len=0
 # parts post, the supersede below credits those rows and no others.
 overflow_posted_len=0
 quarantined_posted_len=0
+suppressed_posted_len=0
 if [ "$PRT_MODE" = enforce ] &&
    { ! overflow_len="$(jq 'length' <<< "$OVERFLOW" 2>/dev/null)" || ! quarantined_len="$(jq 'length' <<< "$QUARANTINED" 2>/dev/null)"; }; then
   # An unreadable list must not read as an empty one: nothing is posted, the run is incomplete.
@@ -2297,7 +2298,9 @@ if [ "$PRT_MODE" = enforce ] &&
   overflow_len=0
   quarantined_len=0
 fi
-if [ "$PRT_MODE" = enforce ] && { [ "$overflow_len" -gt 0 ] || [ "$quarantined_len" -gt 0 ]; }; then
+if [ "$PRT_MODE" = enforce ] && { [ "$overflow_len" -gt 0 ] || [ "$quarantined_len" -gt 0 ] || [ "$SUPPRESSED_COUNT" -gt 0 ]; }; then
+  # go-kure/.github#296: suppressed false positives ride in the same comment, so a run whose only
+  # output is suppressed findings posts it too. They never gate and never open a thread.
   # The body is split into parts when one comment would pass GitHub's
   # 65,536-character limit (go-kure/.github#307). The rules of the split (order,
   # what part 1 says, shortening, posting) are stated once, in
@@ -2309,7 +2312,7 @@ if [ "$PRT_MODE" = enforce ] && { [ "$overflow_len" -gt 0 ] || [ "$quarantined_l
   overflow_truncated=0
   if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
     if ! mkdir -p "$overflow_dir" ||
-       ! overflow_plan="$(prt_render_overflow_parts "$OVERFLOW" "$QUARANTINED" "$overflow_dir")" ||
+       ! overflow_plan="$(prt_render_overflow_parts "$OVERFLOW" "$QUARANTINED" "$overflow_dir" "$SUPPRESSED")" ||
        ! read -r overflow_parts overflow_truncated <<< "$overflow_plan"; then
       # A render or payload fault posts nothing: an incomplete table (for example
       # a quarantine table that failed to build) must never be written as if it
@@ -2346,9 +2349,11 @@ if [ "$PRT_MODE" = enforce ] && { [ "$overflow_len" -gt 0 ] || [ "$quarantined_l
         # blocker instead of the advisory it's meant to be.
         if prt_gh_rest POST "/repos/${PRT_REPO}/issues/${PRT_PR_NUMBER}/comments" \
           "$overflow_payload" >/dev/null; then
-          if read -r overflow_part_f overflow_part_q < "$overflow_dir/part-${overflow_part}.counts"; then
+          if read -r overflow_part_f overflow_part_q < "$overflow_dir/part-${overflow_part}.counts" &&
+             read -r overflow_part_s < "$overflow_dir/part-${overflow_part}.suppressed"; then
             overflow_posted_len=$((overflow_posted_len + overflow_part_f))
             quarantined_posted_len=$((quarantined_posted_len + overflow_part_q))
+            suppressed_posted_len=$((suppressed_posted_len + overflow_part_s))
           else
             # The part posted but its row counts are unreadable: credit nothing
             # for it, so the supersede text errs toward "re-check", never
@@ -2465,7 +2470,7 @@ if [ "$PRT_MODE" = enforce ]; then
               superseded_overflow_arg="$overflow_posted_len"
               superseded_quarantined_arg="$quarantined_posted_len"
             fi
-            superseded_body="$(prt_render_clean_comment_superseded "$PRT_HEAD_SHA" "$total_findings_this_run" "$THREADS_WRITTEN" "$SUPPRESSED_COUNT" "$superseded_overflow_arg" "$superseded_quarantined_arg" "$NONE_ANCHORED_COUNT" "${overflow_truncated:-0}")"
+            superseded_body="$(prt_render_clean_comment_superseded "$PRT_HEAD_SHA" "$total_findings_this_run" "$THREADS_WRITTEN" "$SUPPRESSED_COUNT" "$superseded_overflow_arg" "$superseded_quarantined_arg" "$NONE_ANCHORED_COUNT" "${overflow_truncated:-0}" "$suppressed_posted_len")"
             # go-kure/.github#98: degraded, not fatal — matching this
             # branch's own established asymmetry just above (a listing
             # failure here is deliberately NOT prt_mark_incomplete either):
