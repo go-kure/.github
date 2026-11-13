@@ -358,7 +358,8 @@ so the Org Settings status means settings only. `pr-review-digest.yml` is this r
 org-wide scan for fail-closed `pr-review-threads` events (schedule + `workflow_dispatch`; see
 `docs/pr-review-threads.md` § Fail-closed alerting). `pr-review-runner-boundary-probe.yml` is a
 manual acceptance run (`workflow_dispatch` only) of the runner's process boundary on the review
-pool; see `docs/pr-review-threads.md` § Process boundary. `review-pool-acceptance.yml` is the
+pool and records the bundle record of the image it ran in (bundle only, not the base layer); see
+`docs/pr-review-threads.md` § Process boundary. `review-pool-acceptance.yml` is the
 second run on that pool: a hand dispatch, and also callable by another workflow (`workflow_call`,
 see below); no workflow calls it yet. None of the six is consumed by kure/launcher.
 
