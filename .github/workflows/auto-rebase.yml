@@ -21,7 +21,11 @@ jobs:
         with:
           token: ${{ secrets.AUTO_REBASE_PAT }}
           base: main
+          # Opt-in (go-kure/.github#396): only a PR carrying this label is rebased. Rewriting every
+          # open PR on each push to main voided the head-bound reviews of PRs that were not
+          # about to merge. Add the label to the PR that is: gh pr edit <n> --add-label auto-rebase
+          include-labels: auto-rebase
           exclude-labels: dependencies
-          # Drafts are rebased too (GitLab auto-rebase.yml parity — that template ranks
-          # non-drafts ahead of drafts but never excludes them; exclude-drafts: true here had
-          # no recorded rationale, just the 2026-04-21 initial-workflow default).
+          # No exclude-drafts: a labelled draft is rebased too, because the label is the request.
+          # This is not a parity rule: the GitLab auto-rebase template lists non-draft MRs only,
+          # and no check compares the two forges.

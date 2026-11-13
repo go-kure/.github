@@ -58,6 +58,10 @@ go-kure/.github pin bump was reviewed and the flagged change is the intended one
 a PR list can see the blast-radius finding was addressed rather than missed. Scoped to the two
 repos that carry the `pin-impact` gate (`kure`, `launcher`).
 
+`auto-rebase` `#0E8A16` — opt-in request for the auto-rebase workflow (go-kure/.github#396): only a PR
+carrying it is rebased on `main`, when `main` moves or when the label is added. Add it to the PR that
+is about to merge. Scoped to `.github`, the one repo that runs the workflow.
+
 **Repo-scoped labels.** A label in `labels.json` may carry an optional `repos` array
 (e.g. `docs-skip` → `["kure", "launcher"]`, the two repos whose CI runs the doc gate). The
 settings audit then requires that label only on

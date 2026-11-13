@@ -216,6 +216,12 @@
       "repos": ["kure", "launcher"]
     },
     {
+      "name": "auto-rebase",
+      "color": "#0E8A16",
+      "description": "Rebase this PR automatically on main; add it to a PR that is about to merge",
+      "repos": [".github"]
+    },
+    {
       "name": "pin-impact-ack",
       "color": "#006B75",
       "description": "Acknowledges a reviewed go-kure/.github pin bump's blast-radius report; informational only",
