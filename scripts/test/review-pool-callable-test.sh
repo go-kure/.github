@@ -94,7 +94,7 @@ violations() {
 expect() {
   local label="$1" want="$2" f="$3" out
   out=$(violations "$f") || { echo "a read failed for $label" >&2; exit 2; }
-  if { [ -z "$want" ] && [ -z "$out" ]; } || { [ -n "$want" ] && printf '%s\n' "$out" | grep -qF -- "$want"; }; then
+  if { [ -z "$want" ] && [ -z "$out" ]; } || { [ -n "$want" ] && grep -qF -- "$want" <<<"$out"; }; then
     PASS=$((PASS + 1))
     printf 'PASS  %s\n' "$label"
   else

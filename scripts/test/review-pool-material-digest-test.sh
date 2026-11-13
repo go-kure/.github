@@ -60,7 +60,7 @@ fi
 # passes. What this control catches is a body extracted from the wrong step, which would fail every
 # case for a reason that has nothing to do with the digests. It names that cause once, here, instead
 # of leaving it to be inferred from seven failures.
-if ! printf '%s' "$BODY" | grep -q 'material_sha256'; then
+if ! grep -q 'material_sha256' <<<"$BODY"; then
   echo "the extract step body names no material_sha256; this suite is aimed at the wrong step" >&2
   exit 2
 fi
@@ -171,7 +171,7 @@ check() {
   local out rc
   out=$(run_step "$WORK/$name" "$provider")
   rc=$?
-  if [ "$rc" -eq "$want_rc" ] && printf '%s' "$out" | grep -qF -- "$want_text"; then
+  if [ "$rc" -eq "$want_rc" ] && grep -qF -- "$want_text" <<<"$out"; then
     PASS=$((PASS + 1))
     printf 'PASS  %s\n' "$label"
   else
