@@ -258,6 +258,14 @@ FX_REL_PIN=- run_case "a missing release.yml is fatal" 2 "release.yml" "$CHECKER
 run_raw "a version literal in ci.yml fails" 1 \
   "FAIL: git-cliff: .github/workflows/ci.yml names a version literal" "$MISE_STD" \
   "$(ci_with "$CI_LINT_STEP" "$CI_A_STEP" "$CI_B_STEP" '      - run: |' '          CLIFF_VERSION="1.2.3"')"
+for lit in 'CLIFF_VERSION: "9.9.9"' "CLIFF_VERSION: '9.9.9'" 'CLIFF_VERSION: 9.9.9' 'GIT_CLIFF_VERSION: 9.9.9'; do
+  run_raw "a YAML env literal [$lit] in ci.yml fails" 1 \
+    "FAIL: git-cliff: .github/workflows/ci.yml names a version literal" "$MISE_STD" \
+    "$(ci_with "$CI_LINT_STEP" "$CI_A_STEP" "$CI_B_STEP" '      - env:' "          $lit" '        run: echo go')"
+done
+# shellcheck disable=SC2016  # literal workflow text, not an expansion
+run_raw "a quoted step-output expression in ci.yml is not a literal" 0 "git-cliff pin 1.2.3" "$MISE_STD" \
+  "$(ci_with "$CI_LINT_STEP" "$CI_A_STEP" "$CI_B_STEP" '      - env:' '          CLIFF_VERSION: "${{ steps.v.outputs.version }}"' '        run: echo go')"
 # shellcheck disable=SC2016  # literal workflow text, not an expansion
 run_raw "ci.yml reading the pin from the step output is not a literal" 0 "git-cliff pin 1.2.3" "$MISE_STD" \
   "$(ci_with "$CI_LINT_STEP" "$CI_A_STEP" "$CI_B_STEP" '      - env:' '          CLIFF_VERSION: ${{ steps.v.outputs.version }}' '        run: echo go')"

@@ -9,9 +9,11 @@
 #       release, verifies the signature, then installs the binary into
 #       GIT_CLIFF_INSTALL_DIR (default /usr/local/bin; `sudo -n` is used only when
 #       that directory is not writable, and the script exits at once, before any
-#       download, when sudo would ask for a password). When the wanted version is
-#       already installed (`git-cliff --version` prints exactly "git-cliff <version>"
-#       from GIT_CLIFF_INSTALL_DIR or PATH), nothing is downloaded or installed.
+#       download, when sudo would ask for a password). A missing install dir is
+#       created first, without sudo, when its parent allows. When the git-cliff in
+#       GIT_CLIFF_INSTALL_DIR already prints exactly "git-cliff <version>" for
+#       --version, nothing is downloaded or installed; a binary elsewhere on PATH
+#       never counts, because its provenance is unknown.
 #
 # The signature must verify, and its VALIDSIG status line must name
 # GIT_CLIFF_SIGNING_FPR below as the signing key's primary key. The key itself
@@ -105,17 +107,16 @@ ensure_gpg() {
 }
 
 # already_installed VERSION INSTALL_DIR
-# Succeed when git-cliff in INSTALL_DIR, or else the first one on PATH, answers
-# --version with exactly "git-cliff VERSION". Any other answer (a different or
-# longer version, an unparsable line, no binary) fails, so the install goes
-# ahead and its signature check runs.
+# Succeed when the git-cliff in INSTALL_DIR answers --version with exactly
+# "git-cliff VERSION". Any other answer (a different or longer version, an
+# unparsable line, no binary) fails, so the install goes ahead and its
+# signature check runs. Only INSTALL_DIR counts: that is where this script puts
+# a verified binary, whereas a binary elsewhere on PATH reports a version with
+# no known provenance and must never stand in for the signature check.
 already_installed() {
-    local version="$1" install_dir="$2" bin
-    for bin in "$install_dir/git-cliff" "$(command -v git-cliff 2>/dev/null || true)"; do
-        [ -n "$bin" ] && [ -x "$bin" ] || continue
-        [ "$("$bin" --version 2>/dev/null || true)" = "git-cliff ${version}" ] && return 0
-    done
-    return 1
+    local version="$1" bin="$2/git-cliff"
+    [ -x "$bin" ] || return 1
+    [ "$("$bin" --version 2>/dev/null || true)" = "git-cliff ${version}" ]
 }
 
 main() {
@@ -132,8 +133,11 @@ main() {
         return 0
     fi
 
-    # Decide before downloading anything: an install dir this user cannot write
+    # A fresh checkout has no .tools/bin, and a missing directory is not
+    # writable: create it first, as this user, when its parent allows. Then
+    # decide before downloading anything: an install dir this user cannot write
     # needs passwordless sudo.
+    [ -d "$install_dir" ] || mkdir -p "$install_dir" 2>/dev/null || true
     [ -w "$install_dir" ] || need_sudo "installing into ${install_dir}"
 
     ensure_gpg
@@ -156,7 +160,7 @@ main() {
     if [ -w "$install_dir" ]; then
         install -m755 "$work/git-cliff-${version}/git-cliff" "$install_dir/git-cliff"
     else
-        sudo -n install -m755 "$work/git-cliff-${version}/git-cliff" "$install_dir/git-cliff"
+        sudo -n install -D -m755 "$work/git-cliff-${version}/git-cliff" "$install_dir/git-cliff"
     fi
     echo "install-git-cliff: installed git-cliff ${version} (signature by ${GIT_CLIFF_SIGNING_FPR} verified) into ${install_dir}"
 }
