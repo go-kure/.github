@@ -36,6 +36,7 @@ Follow [Conventional Commits](https://www.conventionalcommits.org/):
 
 - Rebase on `main` before opening a PR (no merge commits — linear history is enforced)
 - CI must be green: `lint`, `test`, `build`, `rebase-check`
+- A PR is rebased on `main` automatically only when it carries the `auto-rebase` label; add it to a PR that is about to merge with `gh pr edit <n> --add-label auto-rebase`
 - All review conversations must be resolved before merge
 - 0 approving reviews required, but feedback should be addressed
 

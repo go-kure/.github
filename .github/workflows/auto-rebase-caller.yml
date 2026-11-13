@@ -3,11 +3,15 @@ name: Auto-Rebase
 on:
   push:
     branches: [main]
+  # Labelling a PR `auto-rebase` rebases it at once; any other label starts nothing.
+  pull_request:
+    types: [labeled]
 
 permissions:
   contents: read
 
 jobs:
   auto-rebase:
+    if: github.event_name == 'push' || github.event.label.name == 'auto-rebase'
     uses: go-kure/.github/.github/workflows/auto-rebase.yml@main
     secrets: inherit
