@@ -31,9 +31,26 @@ jobs:
             echo "FAIL: review-bundle-verify is absent, so this pod is not the review image and the probe says nothing about it"
             exit 1
           }
+
+          # A command substitution inside a printf argument cannot stop the step, so every read goes
+          # through read_field first. A read that fails, or succeeds with nothing, is recorded as
+          # unavailable with its reason, never as an empty field. A hash of an empty file is not an
+          # empty value (it is a valid sha256), so hash_of refuses an empty file itself.
+          read_field() { # read_field <variable> <reason> <command> [argument...]
+            local value
+            if value="$("${@:3}" 2>/dev/null)" && [ -n "$value" ]; then
+              printf -v "$1" '%s' "$value"
+            else
+              printf -v "$1" 'unavailable: %s' "$2"
+            fi
+          }
+          hash_of() { [ -s "$1" ] && sha256sum "$1" | cut -d' ' -f1; }
+
+          # A record the tool fails to write stops the step. A record it writes empty is recorded as
+          # unavailable.
           record_dir="$(mktemp -d)"
           review-bundle-verify record /opt/review-runner > "$record_dir/bundle.record"
-          bundle_sha="$(sha256sum "$record_dir/bundle.record" | cut -d' ' -f1)"
+          read_field bundle_sha 'the bundle record was empty or could not be hashed' hash_of "$record_dir/bundle.record"
 
           # The registry digest of the latest tag, as a cross-check only. The scale set pulls that
           # tag on every pod start, so the two agree unless the tag moved during this job. A failed
@@ -63,24 +80,12 @@ jobs:
             digest='unavailable: the registry token read failed'
           fi
 
-          # A command substitution inside a printf argument cannot stop the step, so every read goes
-          # through read_field first. A read that fails, or succeeds with nothing, is recorded as
-          # unavailable with its reason, never as an empty field.
-          read_field() { # read_field <variable> <reason> <command> [argument...]
-            local value
-            if value="$("${@:3}" 2>/dev/null)" && [ -n "$value" ]; then
-              printf -v "$1" '%s' "$value"
-            else
-              printf -v "$1" 'unavailable: %s' "$2"
-            fi
-          }
-          pin_of() { sha256sum "$1" | cut -d' ' -f1; }
           read_field pod_hostname 'hostname returned nothing' hostname
           read_field uid 'id -u returned nothing' id -u
           read_field gid 'id -g returned nothing' id -g
           read_field namespaces 'max_user_namespaces could not be read' cat /proc/sys/user/max_user_namespaces
           read_field review_run 'review-run is not on PATH' command -v review-run
-          read_field scripts_pin 'runner.sha256 could not be hashed' pin_of /opt/review-runner/bin/runner.sha256
+          read_field scripts_pin 'runner.sha256 is missing, empty or could not be hashed' hash_of /opt/review-runner/bin/runner.sha256
 
           {
             printf 'pod_hostname=%s\n' "$pod_hostname"
