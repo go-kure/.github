@@ -9872,6 +9872,12 @@ assert_eq "excluded section #374: the comment names a skipped deletion as one no
 prt_exclude_files "$xf_dir/del-only.diff" "" "$xf_dir/del-kept4.diff" > "$xf_dir/del-out4"
 assert_eq "exclude: with no ceiling argument nothing is skipped (the three-argument form is unchanged)" \
   "[] true" "$(jq -c . "$xf_dir/del-out4") $(cmp -s "$xf_dir/del-only.diff" "$xf_dir/del-kept4.diff" && echo true || echo false)"
+# A deleted file is the same case: its single hunk is all removed lines, so the whole record goes.
+{ printf 'diff --git a/gone.md b/gone.md\ndeleted file mode 100644\nindex 3333333..0000000\n--- a/gone.md\n+++ /dev/null\n'; xf_del_hunk 1 3000; } > "$xf_dir/del-file.diff"
+prt_exclude_files "$xf_dir/del-file.diff" "" "$xf_dir/del-file-kept.diff" "$xf_ceil" > "$xf_dir/del-file-out"
+assert_eq "exclude #374: a deleted file over the ceiling leaves whole and is counted" \
+  '[{"path":"gone.md","added":0,"removed":3000,"reason":"deletion-only hunk over the ceiling"}] 0' \
+  "$(jq -c . "$xf_dir/del-file-out") $(wc -c < "$xf_dir/del-file-kept.diff" | tr -d ' ')"
 
 # --- end to end, through the real script ---
 PRT_TEST_ISSUE_COMMENT_LOG="$xf_dir/comments.log"
