@@ -49,9 +49,12 @@ STEP_FILTER='.jobs.review.steps[] | select((.run // "") | contains("<<PROMPT"))'
 # edit it then stop with exit 2, so a reworded rule needs this line updated with it.
 RULE_LINE='Never write the word FINDING anywhere except in a block header, in the position the form'
 
-# The only variables the prompt prose may expand besides the two example lines, by name. Their values
-# are a revision and an object id, read at run time and not by this suite. A new variable in the
-# prompt makes the reader refuse with exit 2, and the fix is to list it here after reading its value.
+# The only variables the prompt prose may expand besides the two example lines, by name. Both hold a
+# full object id printed by git rev-parse, never the text of a ref or of the base input: REVIEW_BASE
+# comes from `git rev-parse --verify "<input>^{commit}"` or `<rev>^`, and head_oid from
+# `git rev-parse HEAD`. Hex digits cannot spell the word, so neither value can carry it into the
+# prompt. A new variable in the prompt makes the reader refuse with exit 2, and the fix is to list
+# it here after reading how its value is set.
 PROMPT_VARS='REVIEW_BASE head_oid'
 
 WORK=$(mktemp -d)
