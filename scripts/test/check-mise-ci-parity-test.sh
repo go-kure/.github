@@ -251,7 +251,28 @@ FX_REL_PIN=1.2.4 run_case "a release.yml pin that differs fails" 1 \
 FX_PUB_PIN=1.2.4 run_case "a release-publish.yml pin that differs fails" 1 \
   "FAIL: git-cliff: .github/workflows/release-publish.yml pins 1.2.4, mise.toml pins 1.2.3" "$CHECKER" "$L" "$T" "$L" "$T"
 FX_MISE_PIN=1.2.4 run_case "a mise.toml pin that differs from both workflows fails twice" 1 \
-  "check-mise-ci-parity: 2 path(s)" "$CHECKER" "$L" "$T" "$L" "$T"
+  "check-mise-ci-parity: git-cliff pin problem" "$CHECKER" "$L" "$T" "$L" "$T"
+# A pin failure alone must not blame the path lists, and a list failure alone must not blame the pin.
+pin_only_dir="$(mktemp -d)"
+FX_MISE_PIN=1.2.4 write_fixture "$pin_only_dir" "$L" "$T" "$L" "$T"
+pin_only_out="$(bash "$CHECKER" "$pin_only_dir" 2>&1)"
+rm -rf "$pin_only_dir"
+if grep -qF -- "checked on one side only" <<< "$pin_only_out"; then
+  echo "FAIL: a pin-only failure blames the path lists; output: $pin_only_out" >&2
+  failures=$((failures + 1))
+else
+  pass_count=$((pass_count + 1))
+fi
+list_only_dir="$(mktemp -d)"
+write_fixture "$list_only_dir" "$L scripts/c.sh" "$T" "$L" "$T"
+list_only_out="$(bash "$CHECKER" "$list_only_dir" 2>&1)"
+rm -rf "$list_only_dir"
+if grep -qF -- "pin problem" <<< "$list_only_out"; then
+  echo "FAIL: a list-only failure blames the pin; output: $list_only_out" >&2
+  failures=$((failures + 1))
+else
+  pass_count=$((pass_count + 1))
+fi
 FX_MISE_PIN=- run_case "no pin in mise.toml is fatal, not a pass" 2 "GIT_CLIFF_VERSION" "$CHECKER" "$L" "$T" "$L" "$T"
 FX_MISE_PIN=latest run_case "a mise.toml pin that is not X.Y.Z is fatal" 2 "GIT_CLIFF_VERSION" "$CHECKER" "$L" "$T" "$L" "$T"
 FX_REL_PIN=- run_case "a missing release.yml is fatal" 2 "release.yml" "$CHECKER" "$L" "$T" "$L" "$T"
