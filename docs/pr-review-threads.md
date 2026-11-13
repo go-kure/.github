@@ -645,7 +645,10 @@ the boundary needs. A result therefore applies to that pool only. The review job
 on `autops-kube-kure`, so the runner backend stays unaccepted there until that job moves to a pool
 where this probe passes. The workflow runs the probe step after a failed suite
 step too (a failed suite step still fails the job), so a lane that cannot build the boundary still
-reports why. It uses a made-up canary in place of the posting token (placed in the
+reports why. A step right after the checkout reads the workspace `.git/config` and fails if it holds
+an `extraheader` or `includeIf` entry, so `persist-credentials: false` is shown and not assumed. Its
+control line must read exactly one `remote.origin.url`, or the step fails, because a read of the wrong
+file would also find nothing. It reads the probe's own checkout, not the review job's. It uses a made-up canary in place of the posting token (placed in the
 script's own environment when it starts, where the token sits for the orchestrator) and a stub in
 place of the runner: no secret, no model call, no forge access. The stub reads `/proc` and makes one
 attempt to mount a `procfs`, and only inside the boundary's own mount namespace: it refuses to try in
