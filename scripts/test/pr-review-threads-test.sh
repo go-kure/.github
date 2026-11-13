@@ -274,6 +274,9 @@ unset json_big_payload json_out
 #               (a line is rebuilt at normalization as an integer below 10^9, or null: no long spelling)
 #   id-like     a login, owner, repo name or GraphQL node id or cursor (GitHub caps each far below 4 KiB)
 #   const       a fixed string the script itself defines
+#               (render.sh:mode is the word comment or summary, chosen by the calling renderer;
+#               render.sh:PRT_EXCLUDED_ROWS_MAX_CHARS is the number 20000;
+#               diff.sh:dropped_lines is a line count)
 #   config      operator configuration (a model name, a token budget, the severity rank map)
 #   file        a repository path: dropped at ingress above 4096 bytes (prt_normalize_findings)
 #   severity    a severity word: a value past 64 characters is reset before use
@@ -291,7 +294,7 @@ pr-review-threads.sh:cursor pr-review-threads.sh:tcursor pr-review-threads.sh:th
 pr-review-threads.sh:tid_pg pr-review-threads.sh:foreign_login pr-review-threads.sh:OWNER \
 pr-review-threads.sh:REPO_NAME pr-review-threads.sh:PRT_BOT_LOGIN_GQL \
 pr-review-threads.sh:file pr-review-threads.sh:owned_severity \
-diff.sh:added diff.sh:removed diff.sh:path diff.sh:reason \
+diff.sh:added diff.sh:removed diff.sh:path diff.sh:reason diff.sh:dropped_lines \
 finding.sh:cat finding.sh:fp_base finding.sh:outside_marker \
 gh.sh:bot_login gh.sh:ci gh.sh:cursor gh.sh:marker gh.sh:query gh.sh:superseded \
 gh.sh:thread_id gh.sh:variables \
@@ -300,7 +303,7 @@ model.sh:idx model.sh:max_tokens model.sh:model model.sh:n \
 model.sh:PRT_HEAD_SHA model.sh:PRT_REVIEW_BASE_SHA model.sh:PRT_REVIEW_MATERIAL_SHA256 \
 model.sh:req_sha \
 reconcile.sh:2 reconcile.sh:cap reconcile.sh:fp reconcile.sh:rank reconcile.sh:sev_rank \
-reconcile.sh:this_cfp render.sh:budget \
+reconcile.sh:this_cfp render.sh:budget render.sh:mode render.sh:PRT_EXCLUDED_ROWS_MAX_CHARS \
 review-adapter.sh:chunk_count review-adapter.sh:n_chunk_failed review-adapter.sh:n_chunk_ok \
 "
 
@@ -9783,6 +9786,84 @@ assert_eq "exclude: quoted paths are matched decoded and reported as git quoted 
   '[{"path":"\"tab\\tdir/package-lock.json\"","reason":"lockfile"},{"path":"\"gen/a\\tb.go\"","reason":"linguist-generated"}] keep.go' \
   "$(jq -c 'map({path, reason})' "$xf_dir/out4") $(prt_diff_files "$xf_dir/kept4.diff")"
 
+# --- go-kure/.github#295: a comment never carries an unbounded excluded list ---
+# GitHub refuses a comment body over 65536 UTF-16 units (422), the upsert fails
+# and the run marks itself incomplete. A comment lists excluded files up to a
+# character budget and then says how many it left out; the job summary keeps
+# every row. The `| excluded | N |` row always carries the full count.
+xf_u16() { printf '%s' "$1" | jq -Rs 'explode | map(if . > 65535 then 2 else 1 end) | add // 0'; }
+xf_sha="$(printf '1%.0s' {1..40})"
+xf_many="$(jq -nc '[range(2000) | {path: "vendor/pkg\(.)/yarn.lock", added: 1, removed: 1, reason: "lockfile"}]')"
+# xf_check_bounded LABEL BODY — fits the limit, full count kept, shown + omitted = 2000, caveat present.
+xf_check_bounded() {
+  local label="$1" body="$2" shown omitted
+  shown="$(grep -c '^| `vendor/pkg' <<< "$body")"
+  omitted="$(grep -oE 'and [0-9]+ more excluded files' <<< "$body" | grep -oE '[0-9]+' | head -n 1)"
+  assert_eq "$label: fits GitHub's 65536-unit comment limit" "true" "$([ "$(xf_u16 "$body")" -le 65536 ] && echo true || echo false)"
+  assert_eq "$label: shown rows plus the omitted count are all 2000 files" "2000" "$((shown + ${omitted:-0}))"
+  assert_eq "$label: the omitted line says they were not reviewed and where the full list is" \
+    "true" "$(grep -qE 'and [0-9]+ more excluded files \(\+[0-9]+/-[0-9]+ lines\), not reviewed; every file is listed in the job summary of this run' <<< "$body" && echo true || echo false)"
+}
+xf_clean_many="$(prt_render_clean_comment "$xf_sha" m 2 "$xf_many")"
+xf_check_bounded "clean comment, 2000 excluded files" "$xf_clean_many"
+assert_eq "clean comment, 2000 excluded files: the excluded row keeps the full count and the marker stays last" \
+  "1 $PRT_MARKER_CLEAN" "$(grep -c '^| excluded | 2000 |$' <<< "$xf_clean_many") $(tail -n 1 <<< "$xf_clean_many")"
+xf_check_bounded "advisory comment, 2000 excluded files" "$(prt_render_advisory_comment '[]' '' '' "$xf_many")"
+xf_sum_many="$(prt_render_summary enforce "$xf_sha" 2 '[]' 0 '' '' '[]' "$xf_many")"
+assert_eq "job summary, 2000 excluded files: every row is there and no 'more excluded' line" \
+  "2000 0" "$(grep -c '^| `vendor/pkg' <<< "$xf_sum_many") $(grep -c 'more excluded files' <<< "$xf_sum_many")"
+# The budget is characters: 200 paths of 3000 characters are a few rows, not 200.
+xf_long="$(jq -nc '[range(200) | {path: ("deep/" + (. | tostring) + "/" + ([range(2990)] | map("x") | join("")) + "/yarn.lock"), added: 1, removed: 1, reason: "lockfile"}]')"
+xf_long_body="$(prt_render_clean_comment "$xf_sha" m 2 "$xf_long")"
+assert_eq "clean comment, 200 paths of 3000 characters: fits the limit and counts the omitted ones" \
+  "true true" "$([ "$(xf_u16 "$xf_long_body")" -le 65536 ] && echo true || echo false) $(grep -qE 'and [0-9]+ more excluded files' <<< "$xf_long_body" && echo true || echo false)"
+xf_few='[{"path":"web/package-lock.json","added":2,"removed":1,"reason":"lockfile"},{"path":"go.sum","added":0,"removed":2,"reason":"lockfile"}]'
+assert_eq "excluded section: a list under the budget is identical in comment and summary mode, with no omitted line" \
+  "true 0" "$([ "$(prt_render_excluded_section "$xf_few" comment)" = "$(prt_render_excluded_section "$xf_few" summary)" ] && echo true || echo false) $(prt_render_excluded_section "$xf_few" comment | grep -c 'more excluded files')"
+
+# --- go-kure/.github#374: a deletion-only hunk over the hard ceiling is skipped, and reported ---
+# A hunk with no added line gives a reviewer nothing to comment on, yet it used
+# to truncate and fail the run. prt_exclude_files takes the hard ceiling as its
+# 4th argument and drops such a hunk; a hunk with an added line keeps today's
+# behaviour in prt_split_diff.
+xf_ceil=200000
+# xf_del_hunk START COUNT — one hunk deleting COUNT lines of 99 characters each.
+xf_del_hunk() {
+  printf '@@ -%s,%s +%s,0 @@\n' "$1" "$2" "$1"
+  awk -v n="$2" 'BEGIN { s = sprintf("%99s", ""); gsub(/ /, "y", s); for (i = 0; i < n; i++) print "-" s }'
+}
+xf_hdr() { printf 'diff --git a/%s b/%s\nindex 1111111..2222222 100644\n--- a/%s\n+++ b/%s\n' "$1" "$1" "$1" "$1"; }
+{ xf_hdr big.go; xf_del_hunk 1 3000; } > "$xf_dir/del-only.diff"
+prt_exclude_files "$xf_dir/del-only.diff" "" "$xf_dir/del-kept.diff" "$xf_ceil" > "$xf_dir/del-out"
+assert_eq "exclude #374: a deletion-only hunk over the ceiling leaves, reported with its removed line count and reason" \
+  '[{"path":"big.go","added":0,"removed":3000,"reason":"deletion-only hunk over the ceiling"}]' "$(jq -c . "$xf_dir/del-out")"
+assert_eq "exclude #374: a record left with no hunk is not written at all" "0" "$(wc -c < "$xf_dir/del-kept.diff" | tr -d ' ')"
+{ xf_hdr big.go; xf_del_hunk 1 3000; printf '@@ -5000,1 +2000,1 @@\n-old\n+new\n'; } > "$xf_dir/del-and-small.diff"
+prt_exclude_files "$xf_dir/del-and-small.diff" "" "$xf_dir/del-kept2.diff" "$xf_ceil" > "$xf_dir/del-out2"
+assert_eq "exclude #374: a second, small hunk of the same file stays under its header; the oversized one goes" \
+  "$(xf_hdr big.go; printf '@@ -5000,1 +2000,1 @@\n-old\n+new\n')" "$(cat "$xf_dir/del-kept2.diff")"
+assert_eq "exclude #374: ... and the dropped lines are reported" \
+  '[{"path":"big.go","added":0,"removed":3000,"reason":"deletion-only hunk over the ceiling"}]' "$(jq -c . "$xf_dir/del-out2")"
+# A hunk with one added line is not skipped: it reaches prt_split_diff unchanged.
+{ xf_hdr big.go; xf_del_hunk 1 3000; printf '+added\n'; } > "$xf_dir/del-plus.diff"
+prt_exclude_files "$xf_dir/del-plus.diff" "" "$xf_dir/del-kept3.diff" "$xf_ceil" > "$xf_dir/del-out3"
+assert_eq "exclude #374: an oversized hunk with one added line is kept byte for byte and nothing is reported" \
+  "true []" "$(cmp -s "$xf_dir/del-plus.diff" "$xf_dir/del-kept3.diff" && echo true || echo false) $(jq -c . "$xf_dir/del-out3")"
+# The measure is ${#hunk}, as in prt_split_diff: exactly at the ceiling stays, one character over leaves.
+# The measured hunk is not the last of its record, so its text ends at its own newline.
+{ xf_hdr edge.go; printf '@@ -1,2 +1,0 @@\n-zzzzzzzzzz\n@@ -9,1 +8,1 @@\n-a\n+b\n'; } > "$xf_dir/edge.diff"
+xf_edge_len="$(printf '@@ -1,2 +1,0 @@\n-zzzzzzzzzz\n' | wc -c | tr -d ' ')"
+prt_exclude_files "$xf_dir/edge.diff" "" "$xf_dir/edge-kept1.diff" "$xf_edge_len" > "$xf_dir/edge-out1"
+prt_exclude_files "$xf_dir/edge.diff" "" "$xf_dir/edge-kept2.diff" "$((xf_edge_len - 1))" > "$xf_dir/edge-out2"
+assert_eq "exclude #374: a deletion-only hunk exactly at the ceiling stays; one character over leaves" \
+  "0 1" "$(jq 'length' "$xf_dir/edge-out1") $(jq 'length' "$xf_dir/edge-out2")"
+xf_del_section="$(prt_render_excluded_section '[{"path":"big.go","added":0,"removed":3000,"reason":"deletion-only hunk over the ceiling"}]')"
+assert_eq "excluded section #374: the comment names a skipped deletion as one nobody read, and the row carries the reason" \
+  "true true" "$(grep -qF 'a deletion nobody read' <<< "$xf_del_section" && echo true || echo false) $(grep -qxF '| `big.go` | +0 | -3000 | not reviewed | deletion-only hunk over the ceiling |' <<< "$xf_del_section" && echo true || echo false)"
+prt_exclude_files "$xf_dir/del-only.diff" "" "$xf_dir/del-kept4.diff" > "$xf_dir/del-out4"
+assert_eq "exclude: with no ceiling argument nothing is skipped (the three-argument form is unchanged)" \
+  "[] true" "$(jq -c . "$xf_dir/del-out4") $(cmp -s "$xf_dir/del-only.diff" "$xf_dir/del-kept4.diff" && echo true || echo false)"
+
 # --- end to end, through the real script ---
 PRT_TEST_ISSUE_COMMENT_LOG="$xf_dir/comments.log"
 PRT_TEST_MODEL_REQUEST_LOG="$xf_dir/model.log"
@@ -9854,7 +9935,42 @@ PRT_TEST_BASE_ATTRS_FAIL=1
 rc="$(run_orchestrator enforce 0 0 0)"
 assert_eq "e2e #293: base .gitattributes read fails -> warning, file reviewed, exits 1 on the ceiling" \
   "1 true true" "$rc $(grep -qF '::warning title=PR review threads::the base commit'\''s .gitattributes could not be read' "$PRT_TEST_STDOUT_FILE" && echo true || echo false) $(grep -qF 'hard ceiling' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
-unset PRT_TEST_BASE_ATTRS_FAIL PRT_TEST_BASE_GITATTRIBUTES PRT_TEST_DIFF_PATH PRT_TEST_ISSUE_COMMENT_LOG PRT_TEST_MODEL_REQUEST_LOG
+unset PRT_TEST_BASE_ATTRS_FAIL PRT_TEST_BASE_GITATTRIBUTES
+
+# 7. go-kure/.github#295: 2000 excluded lockfiles beside one code file. The stub
+#    refuses a body over 65536 units with a 422, so an unbounded list shows as a
+#    FAILED post, a non-zero exit and no verdict.
+{ for xf_i in $(seq 1 2000); do xf_rec "vendor/pkg$xf_i/yarn.lock" l; done; xf_rec x.go new; } > "$xf_dir/many-locks.diff"
+PRT_TEST_DIFF_PATH="$xf_dir/many-locks.diff"
+: > "$PRT_TEST_ISSUE_COMMENT_LOG"; : > "$PRT_TEST_MODEL_REQUEST_LOG"
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "e2e #295: 2000 excluded files -> exits 0, one comment posted, none refused" \
+  "0 1 0" "$rc $(grep -c '^POST ' "$PRT_TEST_ISSUE_COMMENT_LOG") $(grep -c '^FAILED ' "$PRT_TEST_ISSUE_COMMENT_LOG")"
+assert_eq "e2e #295: the verdict keeps the full excluded count and says how many it left out" \
+  "true true" "$(grep -qxF '  | | excluded | 2000 |' "$PRT_TEST_ISSUE_COMMENT_LOG" && echo true || echo false) $(grep -qE '^  \| and [0-9]+ more excluded files' "$PRT_TEST_ISSUE_COMMENT_LOG" && echo true || echo false)"
+: > "$PRT_TEST_ISSUE_COMMENT_LOG"
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "e2e #295: 2000 excluded files, advisory -> exits 0, no refused post" \
+  "0 0" "$rc $(grep -c '^FAILED ' "$PRT_TEST_ISSUE_COMMENT_LOG")"
+
+# 8. go-kure/.github#374: one deletion-only hunk over the ceiling in a reviewed
+#    file. The run is degraded, not incomplete: nothing reaches the model, it
+#    exits 0 and the file is listed as not reviewed.
+{ xf_hdr big.go; xf_del_hunk 1 3000; } > "$xf_dir/del-e2e.diff"
+PRT_TEST_DIFF_PATH="$xf_dir/del-e2e.diff"
+: > "$PRT_TEST_ISSUE_COMMENT_LOG"; : > "$PRT_TEST_MODEL_REQUEST_LOG"
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "e2e #374: a deletion-only hunk over the ceiling -> exits 0, no truncation, model never called" \
+  "0 false 0" "$rc $(grep -qF 'REVIEW_INCOMPLETE' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(wc -l < "$PRT_TEST_MODEL_REQUEST_LOG" | tr -d ' ')"
+assert_eq "e2e #374: chunks 0, the file is named as not reviewed, and the run says it was degraded" \
+  "true true true" "$(grep -qxF '  | | chunks | 0 |' "$PRT_TEST_ISSUE_COMMENT_LOG" && echo true || echo false) $(grep -qxF '  | | `big.go` | +0 | -3000 | not reviewed | deletion-only hunk over the ceiling |' "$PRT_TEST_ISSUE_COMMENT_LOG" && echo true || echo false) $(grep -qF 'REVIEW_DEGRADED' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+# The same hunk with one added line still fails closed.
+{ xf_hdr big.go; xf_del_hunk 1 3000; printf '+added\n'; } > "$xf_dir/del-plus-e2e.diff"
+PRT_TEST_DIFF_PATH="$xf_dir/del-plus-e2e.diff"
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "e2e #374: the same hunk with one added line -> exits 1, REVIEW_INCOMPLETE names the ceiling" \
+  "1 true" "$rc $(grep -qF 'REVIEW_INCOMPLETE: diff chunking: a single hunk exceeded the 200000-char hard ceiling' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+unset PRT_TEST_DIFF_PATH PRT_TEST_ISSUE_COMMENT_LOG PRT_TEST_MODEL_REQUEST_LOG
 rm -rf "$xf_dir"
 
 echo "passed: $pass_count, failed: $failures"

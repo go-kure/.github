@@ -390,13 +390,18 @@ prt_generated_paths() {
 # on its old path, a rename on its new one. Matching uses the decoded path: a
 # path git C-quotes (a control character in it) is unquoted first, while the
 # reported `path` keeps the quoted form git wrote. `added`/`removed` count the +/-
-# lines of its hunks. Every other record is copied byte for byte, so a hunk
-# over the hard ceiling in a file that is not excluded still reaches
-# prt_split_diff and still fails the run. Returns 1, printing nothing, when a
+# lines of its hunks. The optional 4th argument is the hard ceiling
+# (go-kure/.github#374): in a file that is not excluded, a hunk over it with no
+# added line (a pure deletion) is left out of OUT_DIFF and reported as
+# {path, added: 0, removed: <its deleted lines>, reason: "deletion-only hunk
+# over the ceiling"}; a file left with no hunk is not written at all. With no
+# ceiling nothing is skipped. Every other record is copied byte for byte, so a
+# hunk over the hard ceiling that adds a line still reaches prt_split_diff and
+# still fails the run. Returns 1, printing nothing, when a
 # write fails or the attribute check cannot run; the caller must then treat
 # the review as incomplete rather than fall back to either diff.
 prt_exclude_files() {
-  local diff_file="$1" attr_file="$2" out_diff="$3"
+  local diff_file="$1" attr_file="$2" out_diff="$3" ceiling="${4:-0}"
   local work rc=0 rec path base reason added removed i
   work="$(mktemp -d)" || return 1
   : > "$out_diff" || { rm -rf "$work"; return 1; }
@@ -453,6 +458,37 @@ prt_exclude_files() {
       [ -z "$reason" ] && [ -n "${generated[$match]:-}" ] && reason=linguist-generated
     fi
     if [ -z "$reason" ]; then
+      # go-kure/.github#374: a record longer than the ceiling may hold a hunk over it.
+      # Such a hunk with no added line is dropped and reported; a hunk with an added
+      # line stays and still fails the run in prt_split_diff.
+      if [ "$ceiling" -gt 0 ] && [ "${#rec}" -gt "$ceiling" ]; then
+        local -a hunks=()
+        local hunk newrec dropped=0 dropped_lines=0 kept=0 k size r
+        mapfile -d $'\0' -t hunks < <(awk '
+          /^@@ / { if (n++) printf "%c", 0; }
+          n > 0 { print }
+        ' <<< "$rec")
+        newrec="${rec%%$'\n'@@ *}"$'\n'
+        for ((k = 0; k < ${#hunks[@]}; k++)); do
+          hunk="${hunks[$k]}"
+          size=${#hunk}   # as prt_split_diff measures: the here-string above ends the last hunk with one more newline
+          if [ "$size" -gt "$ceiling" ] && [[ "$hunk" != *$'\n+'* ]]; then
+            r="$(awk '/^-/ { n++ } END { print n + 0 }' <<< "$hunk")"
+            dropped=$((dropped + 1))
+            dropped_lines=$((dropped_lines + r))
+          else
+            [ "$k" -eq $((${#hunks[@]} - 1)) ] && hunk="${hunk%$'\n'}"
+            newrec+="$hunk"
+            kept=$((kept + 1))
+          fi
+        done
+        if [ "$dropped" -gt 0 ]; then
+          [ "$kept" -gt 0 ] && { printf '%s' "$newrec" >> "$out_diff" || rc=1; }
+          excluded="$(jq -c --arg p "$path" --argjson r "$dropped_lines" \
+            '. + [{path: $p, added: 0, removed: $r, reason: "deletion-only hunk over the ceiling"}]' <<< "$excluded")" || rc=1
+          continue
+        fi
+      fi
       printf '%s' "$rec" >> "$out_diff" || rc=1
       continue
     fi

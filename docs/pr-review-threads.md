@@ -214,8 +214,8 @@ to an org repo, with no repo picker even offered for org repos.
 
 ## Excluded files
 
-Before chunking, the orchestrator removes two kinds of file from the diff it sends to the model
-(`prt_exclude_files`, `diff.sh`; go-kure/.github#293). Without this, a consumer repository with a
+Before chunking, the orchestrator removes two kinds of file, and one kind of hunk, from the diff it
+sends to the model (`prt_exclude_files`, `diff.sh`; go-kure/.github#293 and go-kure/.github#374). Without this, a consumer repository with a
 committed npm lockfile failed every dependency PR: the lockfile's single hunk exceeds the
 200000-char hard ceiling, so the run truncated it and marked itself `REVIEW_INCOMPLETE`.
 
@@ -231,9 +231,17 @@ committed npm lockfile failed every dependency PR: the lockfile's single hunk ex
   Nested `.gitattributes` files are not read. A missing file (404) excludes nothing extra. If the
   base commit is unknown or the read fails, the run emits a `::warning` and excludes lockfiles only,
   reviewing every other file.
+- **A deletion-only hunk over the hard ceiling**, in a file that is not otherwise excluded
+  (go-kure/.github#374). A hunk with no added line gives the reviewer nothing to comment on, yet a
+  PR that deletes a large file made the run truncate it and mark itself `REVIEW_INCOMPLETE`. Such a
+  hunk is now left out of the reviewed diff and listed as `+0/-N`, with the reason "deletion-only
+  hunk over the ceiling". It is measured as `prt_split_diff` measures a hunk. The file's other
+  hunks stay in the reviewed diff, and a file left with no hunk is not reviewed at all. **A
+  skipped deletion is a deletion nobody read**: it can remove something a caller still needs, and
+  no reviewer looks at it. The comment says so.
 
-The ceiling still applies to everything else: a truncated hunk in any file that is not excluded
-marks the run `REVIEW_INCOMPLETE`, as before. A failure of the exclusion step itself also marks it
+The ceiling still applies to everything else: a truncated hunk in any file that is not excluded,
+including a hunk over the ceiling that adds even one line, marks the run `REVIEW_INCOMPLETE`, as before. A failure of the exclusion step itself also marks it
 `REVIEW_INCOMPLETE`. The commentable-line index is still built from the full diff.
 
 **Named, not silent.** Each excluded file is listed with its path, added and removed line counts,
@@ -245,6 +253,18 @@ as literal text instead of a code span: every ASCII character but a letter or di
 numeric character reference, so no path renders as an image, link, code span or extra cell. A path
 git C-quotes (one holding a control character) is matched on its decoded form and listed as git
 quoted it.
+
+**A comment lists a bounded number of them** (go-kure/.github#295). GitHub refuses a comment body
+over 65536 UTF-16 units, and a PR that changes thousands of lockfiles or generated files used to
+push the list past it: the post failed with a 422 and the run marked itself `REVIEW_INCOMPLETE`,
+so the required check could never pass. The clean-verdict and advisory comments now list rows
+while their total length stays within `PRT_EXCLUDED_ROWS_MAX_CHARS` (20000 characters, counted in
+characters and not in rows, because one path can be thousands of characters long). Then they print
+one line, "and N more excluded files (+A/-R lines), not reviewed; every file is listed in the job
+summary of this run". The `| excluded | N |` row still carries the full count, and the job summary
+lists every file. Past the limit the file names live only in the job summary, which expires with
+the run's retention. This bounds the excluded list only: an advisory comment whose findings table
+alone is over the limit is a separate case.
 
 **What "complete" means here.** A clean verdict means every hunk outside the excluded list was
 reviewed; the excluded files are named as unreviewed, not covered by it. A diff whose every file is

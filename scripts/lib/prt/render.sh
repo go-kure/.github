@@ -194,7 +194,7 @@ prt_render_summary() {
     ' <<< "$suppressed" 2>/dev/null)" || return 1
   fi
   if [ "$excluded_len" -gt 0 ]; then
-    excluded_section="$(prt_render_excluded_section "$excluded")" || return 1
+    excluded_section="$(prt_render_excluded_section "$excluded" summary)" || return 1
   fi
   {
     printf '## PR Review Threads (%s mode)\n\n' "$mode"
@@ -852,22 +852,40 @@ EOF
 # reference, which Markdown never reads as markup, a cell break or marker
 # syntax (`!`, `[`, a backtick, `\`, `|`, `<`, a leading space). Non-ASCII
 # characters pass unchanged; none of them is markup.
+#
+# A second argument, "comment" (the default) or "summary" (go-kure/.github#295).
+# GitHub refuses a comment body over 65536 UTF-16 units, so a comment lists rows
+# only while their total stays within PRT_EXCLUDED_ROWS_MAX_CHARS, then says how
+# many files it left out and their line counts; the job summary ("summary")
+# prints every row. The caller's own `| excluded | N |` row keeps the full count.
+PRT_EXCLUDED_ROWS_MAX_CHARS=20000
 prt_render_excluded_section() {
-  local excluded="$1" count rows
+  local excluded="$1" mode="${2:-comment}" count rows
   count="$(jq 'length' <<< "$excluded" 2>/dev/null)" || return 1
   [ "$count" -gt 0 ] || return 0
-  rows="$(jq -r '
+  rows="$(jq -r --arg mode "$mode" --argjson max "$PRT_EXCLUDED_ROWS_MAX_CHARS" '
     def esc: tostring | gsub("\r\n"; " ") | gsub("[\n\r]"; " ") | gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;") | gsub("\\|"; "\\|");
     def lit: tostring | explode | map(
       if (. >= 48 and . <= 57) or (. >= 65 and . <= 90) or (. >= 97 and . <= 122) or . >= 128
       then [.] | implode else "&#\(.);" end) | join("");
     def shown: if test("^[A-Za-z0-9._/@+=,~-]+$") then "`\(.)`" else lit end;
-    .[] | "| \(.path | shown) | +\(.added) | -\(.removed) | not reviewed | \(.reason | esc) |"
+    def u16len: explode | map(if . > 65535 then 2 else 1 end) | add // 0;
+    reduce .[] as $f ({rows: [], used: 0, left: 0, added: 0, removed: 0};
+      ("| \($f.path | shown) | +\($f.added) | -\($f.removed) | not reviewed | \($f.reason | esc) |") as $row
+      | (($row | u16len) + 1) as $cost
+      | if .left > 0 or ($mode == "comment" and .used + $cost > $max)
+        then .left += 1 | .added += $f.added | .removed += $f.removed
+        else .rows += [$row] | .used += $cost end)
+    | (.rows[]),
+      (if .left > 0
+       then "", "and \(.left) more excluded files (+\(.added)/-\(.removed) lines), not reviewed; every file is listed in the job summary of this run"
+       else empty end)
   ' <<< "$excluded" 2>/dev/null)" || return 1
   printf '### Excluded from review\n\n'
-  printf 'These %s file(s) were not sent to the reviewer: dependency lockfiles by name, and\n' "$count"
+  printf 'These %s file(s) were not sent to the reviewer: dependency lockfiles by name,\n' "$count"
   # shellcheck disable=SC2016 # the backticks are markdown code spans, not command substitution
-  printf 'files the base branch'\''s `.gitattributes` marks `linguist-generated`. A defect in them\n'
+  printf 'files the base branch'\''s `.gitattributes` marks `linguist-generated`, and a hunk over the\n'
+  printf 'size limit that only deletes lines (a deletion nobody read). A defect in them\n'
   printf 'was not looked for.\n\n'
   printf '| File | Added | Removed | Review | Why |\n'
   printf '|------|-------|---------|--------|-----|\n'

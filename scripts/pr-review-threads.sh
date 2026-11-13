@@ -414,7 +414,7 @@ if [ -n "$base_attrs_note" ]; then
   printf '::warning title=PR review threads::%s; linguist-generated is not honoured this run, so every file except lockfiles is reviewed\n' "$base_attrs_note"
 fi
 REVIEW_DIFF_FILE="$WORKDIR/review.diff"
-if ! EXCLUDED_FILES="$(prt_exclude_files "$DIFF_FILE" "$BASE_ATTRS_FILE" "$REVIEW_DIFF_FILE")"; then
+if ! EXCLUDED_FILES="$(prt_exclude_files "$DIFF_FILE" "$BASE_ATTRS_FILE" "$REVIEW_DIFF_FILE" "$((PRT_MAX_DIFF_CHARS * PRT_HARD_CEILING_MULT))")"; then
   # Neither diff is a safe fallback: the full one would send excluded files to
   # the model, a partial one would review less than it claims. Review nothing,
   # like a prt_split_diff failure below.
@@ -429,7 +429,7 @@ prt_log "excluded from review: $(jq 'length' <<< "$EXCLUDED_FILES") file(s)"
 # found." over an unreviewed diff would read as complete. Degraded, not
 # incomplete: nothing failed, and the run stays green.
 if [ ! -s "$REVIEW_DIFF_FILE" ] && [ "$(jq 'length' <<< "$EXCLUDED_FILES")" -gt 0 ]; then
-  prt_mark_degraded "every file in this diff was excluded from review (lockfiles or base linguist-generated); no part of it was reviewed"
+  prt_mark_degraded "every file in this diff was excluded from review (lockfiles, base linguist-generated, or a deletion-only hunk over the size limit); no part of it was reviewed"
 fi
 
 # --- Commentable-line index (full diff, not per chunk) ---
