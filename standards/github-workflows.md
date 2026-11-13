@@ -89,13 +89,14 @@ must also pass `bot-login`.
 
 ### Configuration
 
-The defaults are set in `pr-review.yml`. The mode can be changed with a variable, and the
-standards file with the `standards-file` and `standards-source` inputs; changing any other value
-means editing `pr-review.yml` in `go-kure/.github`.
+The defaults are set in `pr-review.yml`. The mode and the proxy URL can be changed with a
+variable, and the standards file with the `standards-file` and `standards-source` inputs;
+changing any other value means editing `pr-review.yml` in `go-kure/.github`.
 
 | Setting | Default | Notes |
 |---------|---------|-------|
 | `PR_REVIEW_THREADS_MODE` | `enforce` | Overridable through the `PR_REVIEW_THREADS_MODE` variable |
+| `CCPROXY_URL` | `http://claude-proxy.claude-proxy.svc:3456` | Overridable through the `CCPROXY_URL` variable, read from the calling repository or its organization. An empty variable keeps the default. The name is historical |
 | `PR_REVIEW_MAX_FINDINGS_TOTAL` | `5` | Cap on new threads, after open and reopened ones are counted |
 | `PR_REVIEW_MAX_DIFF_CHARS` | `50000` | Soft size of one diff chunk: a hunk is never split, so a chunk can exceed it; a single hunk over 4 times this value is truncated and the review marked incomplete |
 | `PR_REVIEW_MAX_TOKENS` | `1500` | Review pass |

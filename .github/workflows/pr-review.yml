@@ -91,8 +91,13 @@
 # once the job itself is skipped.
 #
 # Defaults below (only actually overridable via a `vars.*` repository variable
-# for PR_REVIEW_THREADS_MODE — see note above; every other one is env: only,
-# so overriding it means editing this file, not setting a repo variable):
+# for PR_REVIEW_THREADS_MODE and CCPROXY_URL — see note above; every other one
+# is env: only, so overriding it means editing this file, not setting a repo
+# variable):
+#   CCPROXY_URL                 (default: http://claude-proxy.claude-proxy.svc:3456;
+#                                 vars.CCPROXY_URL overrides, resolved against the
+#                                 caller's repository like PR_REVIEW_THREADS_MODE;
+#                                 an empty variable keeps the default)
 #   PR_REVIEW_MODEL             (default: claude-opus-5-5)
 #   PR_REVIEW_MAX_DIFF_CHARS    (default: 50000)
 #   PR_REVIEW_MAX_TOKENS        (default: 1500)
@@ -326,7 +331,7 @@ jobs:
           pr-number: ${{ github.event.pull_request.number }}
           head-sha: ${{ github.event.pull_request.head.sha }}
           mode: ${{ vars.PR_REVIEW_THREADS_MODE || env.PR_REVIEW_THREADS_MODE }}
-          proxy-url: ${{ env.CCPROXY_URL }}
+          proxy-url: ${{ vars.CCPROXY_URL || env.CCPROXY_URL }}
           bot-login: ${{ inputs.bot-login != '' && inputs.bot-login || (secrets.KURE_BOT_PAT != '' && 'kure-bot' || 'github-actions[bot]') }}
           model: ${{ env.PR_REVIEW_MODEL }}
           max-tokens: ${{ env.PR_REVIEW_MAX_TOKENS }}
