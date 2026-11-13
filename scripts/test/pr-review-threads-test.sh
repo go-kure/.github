@@ -8776,6 +8776,45 @@ assert_eq "assess runner, the namespace ids of the first process read empty: the
 prt_ar_reap_sleepers
 PRT_TEST_RUNNER_MODE=probe
 
+# The same read, empty once and right on the next try (go-kure/.github#372, #395): a live first
+# process can read empty for a moment on a loaded host, so the finder reads again a few times before
+# it gives up. The shim answers end of file to the first read of the status file only, and records
+# that it did, so the case proves the empty read happened and that the call went on to run the
+# runner. It needs no loaded host. A marker file carries the state because the finder may run in a
+# subshell.
+rm -f "$PRT_TEST_RUNNER_LOG".*
+rm -f "$prt_ar_dir/nspid-once"
+# shellcheck disable=SC2016 # shim text evaluated in the child, not an expansion
+prt_ar_nspid_once_shim_src='read() {
+  local shim_arg
+  for shim_arg in "$@"; do
+    if [ "$shim_arg" = key ] && [ "${FUNCNAME[1]:-}" = _prt_runner_pid1_record ] && [ ! -e "$PRT_AR_NSPID_ONCE" ]; then
+      : > "$PRT_AR_NSPID_ONCE"
+      builtin read "$@" < /dev/null
+      return
+    fi
+  done
+  builtin read "$@"
+}'
+# The runner is the heartbeat stub, which stays up until the call's bound cuts it short: a stub that
+# ends at once can be gone before the finder looks, and the shim then never fires.
+PRT_TEST_RUNNER_MODE=heartbeat
+PRT_TEST_MODEL_BUDGET_SECONDS=$prt_ar_budget
+rc="$(
+  export PRT_AR_NSPID_ONCE="$prt_ar_dir/nspid-once"
+  eval "$prt_ar_nspid_once_shim_src"
+  export -f read
+  PRT_MODEL_TIMEOUT_FLOOR=1 run_orchestrator advisory 0 0 0
+)"
+PRT_TEST_MODEL_BUDGET_SECONDS=""
+assert_eq "assess runner, the namespace ids of the first process read empty once: the shim's empty read happened" \
+  "true" "$([ -e "$prt_ar_dir/nspid-once" ] && echo true || echo false)"
+assert_eq "assess runner, the namespace ids of the first process read empty once: the finder reads again, the runner ran to its bound (runner-timeout) and the call was not abandoned" \
+  "0 1 true false false" "$rc $(prt_ar_calls) $(prt_ar_reason runner-timeout) $(prt_ar_reason runner-pid1-unread) $(prt_ar_reason runner-lifetime)"
+assert_eq "assess runner, the namespace ids of the first process read empty once: nothing of the runner's tree is left running" "true" "$(prt_ar_hb_stopped)"
+rm -f "$prt_ar_dir/nspid-once"
+PRT_TEST_RUNNER_MODE=probe
+
 # A discovery that fails before `timeout` has started: no process group with the launch pid exists
 # yet (`timeout` creates it), so the group kill reaches nothing and the launch subshell would go on
 # to start the runner and let it run to its bound. The pid itself is killed as well. The wrapper

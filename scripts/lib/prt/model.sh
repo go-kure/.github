@@ -1097,7 +1097,7 @@ _prt_proc_children() {
 # everything else, with the cause in PRT_RUNNER_PID1_ERROR for 1 and 2.
 # shellcheck disable=SC2034 # the PRT_RUNNER_PID1* variables are read by _prt_call_runner
 _prt_runner_pid1_record() {
-  local IFS=$' \t\n' tp="$1" polls="${PRT_RUNNER_PID1_POLLS:-100}" comm launcher launcher_gone pid1 key nspid rc kids=()
+  local IFS=$' \t\n' tp="$1" polls="${PRT_RUNNER_PID1_POLLS:-100}" comm launcher launcher_gone pid1 key nspid nspid_tries rc kids=()
   PRT_RUNNER_PID1=""
   PRT_RUNNER_PID1_START=""
   PRT_RUNNER_PID1_ERROR=""
@@ -1150,15 +1150,23 @@ _prt_runner_pid1_record() {
           fi
           if ! $launcher_gone && [ "${#kids[@]}" -eq 1 ]; then
             pid1="${kids[0]}"
-            nspid=""
-            { while IFS=$'\t' read -r key nspid; do [ "$key" = "NSpid:" ] && break; nspid=""; done < "/proc/$pid1/status"; } 2> /dev/null || nspid=""
+            # A live process can read empty here for a moment on a loaded host
+            # (go-kure/.github#372), so an empty read is repeated: at most five reads, 0.05 s apart.
+            nspid_tries=5
+            while :; do
+              nspid=""
+              { while IFS=$'\t' read -r key nspid; do [ "$key" = "NSpid:" ] && break; nspid=""; done < "/proc/$pid1/status"; } 2> /dev/null || nspid=""
+              nspid_tries=$((nspid_tries - 1))
+              if [ -n "$nspid" ] || [ "$nspid_tries" -le 0 ]; then break; fi
+              sleep 0.05
+            done
             rc=0; _prt_proc_start "$pid1" || rc=$?
             if [ "$rc" -eq 0 ]; then
               if [ "$nspid" != "$pid1"$'\t'1 ]; then
                 if [ -z "$nspid" ]; then
-                  # A process that is going away reads empty here while its stat is still there,
-                  # which a live process that cannot be identified does too: the two cannot be told
-                  # apart, and a retry would not settle which one this is.
+                  # Still empty after the repeated reads. A process that is going away reads empty
+                  # here while its stat is still there, which a live process that cannot be
+                  # identified does too: the two cannot be told apart.
                   PRT_RUNNER_PID1_ERROR="the namespace process ids of the child of the namespace launcher cannot be read"
                   return 2
                 fi
