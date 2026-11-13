@@ -270,6 +270,7 @@ _PRT_OVERFLOW_JQ_DEFS='
     end;
   def overflow_row: "| \(.severity|esc) | \(.category|esc) | \(.file|esc) | \((.line // "n/a")|esc) | \(.issue|esc) |";
   def quarantine_row: "| \(.severity|esc) | \(.category|esc) | \(.file|esc) | \((.line // "n/a")|esc) | \(.issue|esc) | \(.fix|esc) | \(collision_cell) | \(if .gating == true then "yes (existing thread)" else "no" end) |";
+  def suppressed_row: "| \(.severity|esc) | \(.category|esc) | \(.file|esc) | \((.line // "n/a")|esc) | \(.issue|esc) | \((.reasoning // "")|esc) |";
   def u16len: explode | map(if . > 65535 then 2 else 1 end) | add // 0;
   def sevrank: ({"critical":0,"high":1,"medium":2}[(.severity | tostring | ascii_downcase)]) // 99;
 '
@@ -308,51 +309,58 @@ prt_overflow_part_line() {
   printf '%s' "$n"
 }
 
-# prt_render_overflow_parts FINDINGS_JSON QUARANTINED_JSON OUTDIR — renders the
-# overflow and withheld findings as one or more comment bodies, OUTDIR/part-1.md
+# prt_render_overflow_parts FINDINGS_JSON QUARANTINED_JSON OUTDIR [SUPPRESSED_JSON]
+# — renders the overflow, withheld and suppressed findings as one or more comment bodies, OUTDIR/part-1.md
 # ... part-M.md, and prints "M T" (parts, truncated findings) on stdout.
 # A body GitHub accepts whole (PRT_COMMENT_LIMIT) is one part, byte-for-byte
 # what prt_render_overflow_comment prints; a larger one is split into parts
 # (go-kure/.github#307, rules in the doc named above). Each part is rendered by
 # prt_render_overflow_comment on that part's rows, and OUTDIR/part-N.counts holds
-# "OVERFLOW WITHHELD", how many rows of each kind that part carries (the caller
-# sums the parts that posted). T counts the findings that
+# "OVERFLOW WITHHELD", how many rows of each kind that part carries, and
+# OUTDIR/part-N.suppressed holds its suppressed row count (the caller sums the
+# parts that posted). Suppressed rows (go-kure/.github#296) are planned last. T counts the findings that
 # had to be shortened: their cut text is not in any posted part, so the
 # caller marks the run incomplete when T > 0.
 # Returns 1 with nothing printed on any fault, including a part that still
 # exceeds PRT_COMMENT_LIMIT.
 prt_render_overflow_parts() {
-  local findings="$1" quarantined="$2" outdir="$3"
-  local overhead reserve budget plan total truncated n i part_f part_q body line gating_last count_f count_q
+  local findings="$1" quarantined="$2" outdir="$3" suppressed="${4:-[]}"
+  local overhead reserve budget plan total truncated n i part_f part_q part_s body line gating_last count_f count_q count_s
   local dummy_f='[{"severity":"","category":"","file":"","issue":""}]'
   local dummy_q='[{"severity":"","category":"","file":"","issue":"","fix":"","gating":true}]'
+  # The suppressed section's fixed cost counts only when there are suppressed rows, so a run with
+  # none keeps exactly the budget it had before go-kure/.github#296.
+  local dummy_s='[]'
+  [ "$suppressed" = '[]' ] || dummy_s='[{"severity":"","category":"","file":"","issue":"","reasoning":""}]'
   [ -d "$outdir" ] || return 1
-  body="$(prt_render_overflow_comment "$findings" "$quarantined")" || return 1
+  body="$(prt_render_overflow_comment "$findings" "$quarantined" "$suppressed")" || return 1
   # A body GitHub accepts whole stays one comment: the 60,000 cap applies to the
   # parts of a split only.
   if [ "$(printf '%s' "$body" | jq -Rs "${_PRT_OVERFLOW_JQ_DEFS}"' u16len' 2>/dev/null)" -le "$PRT_COMMENT_LIMIT" ] 2>/dev/null; then
     printf '%s\n' "$body" > "$outdir/part-1.md" || return 1
     count_f="$(jq 'length' <<< "$findings" 2>/dev/null)" || return 1
     count_q="$(jq 'length' <<< "$quarantined" 2>/dev/null)" || return 1
+    count_s="$(jq 'length' <<< "$suppressed" 2>/dev/null)" || return 1
     printf '%s %s\n' "$count_f" "$count_q" > "$outdir/part-1.counts" || return 1
+    printf '%s\n' "$count_s" > "$outdir/part-1.suppressed" || return 1
     printf '1 0\n'
     return 0
   fi
   # Fixed cost of one part: both sections, the longest footer, and room for the
   # longest part line (measured, with five-digit counts) and the blank line after it.
-  overhead="$(prt_render_overflow_comment "$dummy_f" "$dummy_q" | jq -Rs "${_PRT_OVERFLOW_JQ_DEFS}"' u16len' 2>/dev/null)" || return 1
+  overhead="$(prt_render_overflow_comment "$dummy_f" "$dummy_q" "$dummy_s" | jq -Rs "${_PRT_OVERFLOW_JQ_DEFS}"' u16len' 2>/dev/null)" || return 1
   reserve="$(prt_overflow_part_line 1 99999 99999 99999 | jq -Rs "${_PRT_OVERFLOW_JQ_DEFS}"' u16len' 2>/dev/null)" || return 1
   budget=$(( PRT_OVERFLOW_PART_MAX - overhead - reserve - 2 ))
   [ "$budget" -gt 1000 ] || return 1
   # One jq pass plans the split on stdin: line 1 is "parts truncated", then one
-  # JSON object per part {f: [...], q: [...]}.
-  plan="$(printf '%s\n%s\n' "$findings" "$quarantined" | jq -sr --argjson budget "$budget" "${_PRT_OVERFLOW_JQ_DEFS}"'
+  # JSON object per part {f: [...], q: [...], s: [...]}.
+  plan="$(printf '%s\n%s\n%s\n' "$findings" "$quarantined" "$suppressed" | jq -sr --argjson budget "$budget" "${_PRT_OVERFLOW_JQ_DEFS}"'
     # Shorten one oversized item until its row fits the budget. $row names the row filter.
     def shorten($kind):
       . as $item
       | ($item.issue | tostring) as $oi
-      | (($item.fix // "") | tostring) as $of
-      | def row: if $kind == "q" then quarantine_row else overflow_row end;
+      | (if $kind == "s" then ($item.reasoning // "") else ($item.fix // "") end | tostring) as $of
+      | def row: if $kind == "q" then quarantine_row elif $kind == "s" then suppressed_row else overflow_row end;
         # The short fields are bounded too (200 characters), so a row whose
         # file, category, severity or line is itself enormous still fits.
         def cap200: tostring | if length > 200 then .[0:200] + " [truncated: \(length - 200) of \(length) characters omitted]" else . end;
@@ -361,26 +369,29 @@ prt_render_overflow_parts() {
           | .severity = (.severity | cap200) | .category = (.category | cap200) | .file = (.file | cap200)
           | .line = (if .line == null then null else (.line | cap200) end)
           | .issue = (if ($oi | length) > $keep then $oi[0:$keep] + " [truncated: \(($oi | length) - $keep) of \($oi | length) characters omitted]" else $oi end)
-          | if $kind == "q" then .fix = (if ($of | length) > $keep then $of[0:$keep] + " [truncated: \(($of | length) - $keep) of \($of | length) characters omitted]" else $of end) else . end;
+          | ( if ($of | length) > $keep then $of[0:$keep] + " [truncated: \(($of | length) - $keep) of \($of | length) characters omitted]" else $of end ) as $cf
+          | if $kind == "q" then .fix = $cf elif $kind == "s" then .reasoning = $cf else . end;
         def fit($keep): cutdown($keep) as $c | if ($c | row | u16len) <= $budget or $keep == 0 then $c else fit(($keep * 0.9 | floor)) end;
         fit([($oi | length), ($of | length), $budget] | max);
-    .[0] as $f | .[1] as $q
+    .[0] as $f | .[1] as $q | .[2] as $s
     | ( [ $q | to_entries[] | {kind: "q", item: .value, gating: (.value.gating == true), rank: (.value | sevrank), pos: .key} ]
       + [ $f | to_entries[] | {kind: "o", item: .value, gating: false, rank: (.value | sevrank), pos: .key} ] ) as $all
-    | ( $all | sort_by([(if .gating then 0 else 1 end), .rank, (if .kind == "q" then 0 else 1 end), .pos]) ) as $ordered
+    | ( [ $s | to_entries[] | {kind: "s", item: .value, gating: false, rank: (.value | sevrank), pos: .key} ] ) as $sall
+    | ( ( $all | sort_by([(if .gating then 0 else 1 end), .rank, (if .kind == "q" then 0 else 1 end), .pos]) )
+        + ( $sall | sort_by([.rank, .pos]) ) ) as $ordered
     | ( $ordered | map(
-          (if .kind == "q" then (.item | quarantine_row | u16len) else (.item | overflow_row | u16len) end) as $cost
+          (if .kind == "q" then (.item | quarantine_row | u16len) elif .kind == "s" then (.item | suppressed_row | u16len) else (.item | overflow_row | u16len) end) as $cost
           | if $cost > $budget
             then . as $e | .item = ($e.item | shorten($e.kind)) | .cut = true | .cost = $budget
             else .cost = $cost + 1 | .cut = false end
         ) ) as $sized
-    | ( reduce $sized[] as $e ({parts: [], cur: {f: [], q: [], used: 0}};
-          if (.cur.used + $e.cost) > $budget and (.cur.f + .cur.q | length) > 0
-          then .parts += [.cur] | .cur = {f: [], q: [], used: 0}
+    | ( reduce $sized[] as $e ({parts: [], cur: {f: [], q: [], s: [], used: 0}};
+          if (.cur.used + $e.cost) > $budget and (.cur.f + .cur.q + .cur.s | length) > 0
+          then .parts += [.cur] | .cur = {f: [], q: [], s: [], used: 0}
           else . end
-          | if $e.kind == "q" then .cur.q += [$e.item] else .cur.f += [$e.item] end
+          | if $e.kind == "q" then .cur.q += [$e.item] elif $e.kind == "s" then .cur.s += [$e.item] else .cur.f += [$e.item] end
           | .cur.used += $e.cost
-        ) | .parts + [.cur] | map({f, q, g: ([.q[] | select(.gating == true)] | length)}) ) as $parts
+        ) | .parts + [.cur] | map({f, q, s, g: ([.q[] | select(.gating == true)] | length)}) ) as $parts
     | "\($parts | length) \([$sized[] | select(.cut)] | length)",
       ($parts[] | tojson)
   ' 2>/dev/null)" || return 1
@@ -394,20 +405,23 @@ prt_render_overflow_parts() {
     i=$((i + 1))
     part_f="$(jq -c '.f' <<< "$line" 2>/dev/null)" || return 1
     part_q="$(jq -c '.q' <<< "$line" 2>/dev/null)" || return 1
-    body="$(prt_render_overflow_comment "$part_f" "$part_q")" || return 1
+    part_s="$(jq -c '.s' <<< "$line" 2>/dev/null)" || return 1
+    body="$(prt_render_overflow_comment "$part_f" "$part_q" "$part_s")" || return 1
     n="$(prt_overflow_part_line "$i" "$total" "$gating_last" "$truncated")" || return 1
     body="$(printf '%s\n\n%s' "$n" "$body")"
     [ "$(printf '%s' "$body" | jq -Rs "${_PRT_OVERFLOW_JQ_DEFS}"' u16len' 2>/dev/null)" -le "$PRT_COMMENT_LIMIT" ] 2>/dev/null || return 1
     printf '%s\n' "$body" > "$outdir/part-${i}.md" || return 1
     count_f="$(jq 'length' <<< "$part_f" 2>/dev/null)" || return 1
     count_q="$(jq 'length' <<< "$part_q" 2>/dev/null)" || return 1
+    count_s="$(jq 'length' <<< "$part_s" 2>/dev/null)" || return 1
     printf '%s %s\n' "$count_f" "$count_q" > "$outdir/part-${i}.counts" || return 1
+    printf '%s\n' "$count_s" > "$outdir/part-${i}.suppressed" || return 1
   done < <(printf '%s\n' "$plan" | sed 1d)
   [ "$i" -eq "$total" ] || return 1
   printf '%s %s\n' "$total" "$truncated"
 }
 
-# prt_render_overflow_comment FINDINGS_JSON [QUARANTINED_JSON] — FINDINGS_JSON
+# prt_render_overflow_comment FINDINGS_JSON [QUARANTINED_JSON] [SUPPRESSED_JSON] — FINDINGS_JSON
 # is the array of VALID/PARTIALLY VALID findings beyond the PR-wide cap.
 # QUARANTINED_JSON (optional, defaults to empty array) is the array of
 # findings withheld because their fp_base collided with another finding this
@@ -416,13 +430,17 @@ prt_render_overflow_parts() {
 # expires with run retention. Both render as their own table, in one plain
 # (non-resolvable) issue comment, reusing the pre-existing endpoint but now
 # for overflow and quarantine, never for the whole review.
+# SUPPRESSED_JSON (optional, defaults to empty) is the array of findings the assessor
+# judged false positives (go-kure/.github#296): a collapsed section with the whole issue
+# and reasoning, never gating.
 prt_render_overflow_comment() {
-  local findings="$1" quarantined="${2:-[]}"
-  local count qcount has_gating_row overflow_rows="" quarantine_rows=""
+  local findings="$1" quarantined="${2:-[]}" suppressed="${3:-[]}"
+  local count qcount scount has_gating_row overflow_rows="" quarantine_rows="" suppressed_rows=""
   # Every jq runs, checked, before anything is printed: a fault returns 1 with
   # no output, so a table that failed to build is never posted as an empty one.
   count="$(jq 'length' <<< "$findings" 2>/dev/null)" || return 1
   qcount="$(jq 'length' <<< "$quarantined" 2>/dev/null)" || return 1
+  scount="$(jq 'length' <<< "$suppressed" 2>/dev/null)" || return 1
   has_gating_row="$(jq 'any(.[]; .gating == true)' <<< "$quarantined" 2>/dev/null)" || return 1
   if [ "$count" -gt 0 ]; then
     # gsub("<!-- gokure-pr-review"; ...) neutralizes marker syntax in
@@ -448,6 +466,14 @@ prt_render_overflow_comment() {
     quarantine_rows="$(jq -r "${_PRT_OVERFLOW_JQ_DEFS}"'
       .[] | quarantine_row
     ' <<< "$quarantined" 2>/dev/null)" || return 1
+  fi
+  if [ "$scount" -gt 0 ]; then
+    # go-kure/.github#296: a false positive with no thread is posted nowhere else but the job
+    # summary, which expires with run retention. The assessor's whole reasoning is here so a
+    # person can check the call. Same esc filter as both tables above.
+    suppressed_rows="$(jq -r "${_PRT_OVERFLOW_JQ_DEFS}"'
+      .[] | suppressed_row
+    ' <<< "$suppressed" 2>/dev/null)" || return 1
   fi
   {
     if [ "$count" -gt 0 ]; then
@@ -482,6 +508,17 @@ prt_render_overflow_comment() {
       printf '|----------|----------|------|------|-------|-----|-----------|--------|\n'
       printf '%s\n' "$quarantine_rows"
       printf '\n'
+    fi
+    if [ "$scount" -gt 0 ]; then
+      # Collapsed by default. The blank line after <summary> is required: without it GitHub
+      # renders the table below as plain text.
+      printf '<details>\n<summary>Suppressed as false positives (%s) — no thread was created</summary>\n\n' "$scount"
+      printf 'The assessor judged these %s finding(s) false positives, so no review thread was opened. ' "$scount"
+      printf 'They do not gate. Read each reason to check the call.\n\n'
+      printf '| Severity | Category | File | Line | Issue | Assessor reasoning |\n'
+      printf '|----------|----------|------|------|-------|--------------------|\n'
+      printf '%s\n' "$suppressed_rows"
+      printf '\n</details>\n\n'
     fi
     printf -- '---\n'
     if [ "$has_gating_row" = true ] && [ "$count" -gt 0 ]; then
@@ -660,7 +697,7 @@ EOF
 # prt_render_clean_comment_superseded SHA FINDING_COUNT THREADS_WRITTEN \
 #                                      SUPPRESSED_COUNT OVERFLOW_COUNT \
 #                                      QUARANTINED_COUNT NONE_ANCHORED_COUNT \
-#                                      SHORTENED_COUNT
+#                                      SHORTENED_COUNT SUPPRESSED_POSTED_COUNT
 # — rewrites (never deletes) a prior clean-verdict comment once a later run
 # on the same PR finds something. Deleting would destroy the audit trail
 # that SHA really was reviewed clean. Every branch ends with the
@@ -685,18 +722,28 @@ EOF
 #      not let "threads carry the current state" imply that's *everything*,
 #      and a threads_carry=0 run must not claim threads carry nothing while
 #      staying silent about where the rest actually is.
-#   3. neither: every finding this run was a suppressed false positive
-#      (SUPPRESS has no durable output surface anywhere, by design — go-kure/
-#      .github#180 codex review) — must not point at an advisory comment that
-#      was never posted (that POST requires overflow or quarantined > 0).
+#   3. neither: every finding this run was a suppressed false positive and
+#      none reached a posted advisory comment — must not point at a comment
+#      that was never posted. The job summary lists them (go-kure/.github#183).
+# SUPPRESSED_POSTED_COUNT (go-kure/.github#296) is how many suppressed findings
+# reached a posted part of the advisory comment. Above 0, that comment exists
+# even with no overflow or withheld row, and it lists them with the assessor's
+# reasoning, so the text points there.
 prt_render_clean_comment_superseded() {
-  local sha="$1" count="$2" threads_written="$3" suppressed="$4" overflow="$5" quarantined="$6" none_anchored="${7:-0}" shortened="${8:-0}"
+  local sha="$1" count="$2" threads_written="$3" suppressed="$4" overflow="$5" quarantined="$6" none_anchored="${7:-0}" shortened="${8:-0}" suppressed_posted="${9:-0}"
   local threads_carry=$((threads_written + none_anchored))
   # The advisory comments are the readers' next stop, so a finding shortened there says so: its
   # omitted text is in no part of them.
   local shortened_note=""
   [ "$shortened" -eq 0 ] || shortened_note=" ${shortened} of them were shortened; the omitted text is in no part."
   local advisory_count=$((overflow + quarantined))
+  local comment_count=$((advisory_count + suppressed_posted))
+  local suppressed_note=""
+  if [ "$suppressed_posted" -gt 0 ] && [ "$suppressed_posted" -ge "$suppressed" ]; then
+    suppressed_note=" The suppressed findings are listed there with the assessor's reasoning."
+  elif [ "$suppressed_posted" -gt 0 ]; then
+    suppressed_note=" ${suppressed_posted} of the ${suppressed} suppressed findings are listed there with the assessor's reasoning; the job summary of this run lists them all."
+  fi
   # A finding whose CREATE failed (network error, non-422 rejection) is
   # counted in none of threads_written/suppressed/overflow/quarantined —
   # prt_mark_incomplete records it, but this function only sees counters.
@@ -720,7 +767,7 @@ part only) and re-run if needed.
 ${PRT_MARKER_STATE_SUPERSEDED}
 ${PRT_MARKER_CLEAN}
 EOF
-  elif [ "$advisory_count" -eq 0 ] && [ "$threads_carry" -gt 0 ]; then
+  elif [ "$comment_count" -eq 0 ] && [ "$threads_carry" -gt 0 ]; then
     cat <<EOF
 ## ~~AI Code Review — Reviewed, no findings~~ (superseded)
 
@@ -730,20 +777,24 @@ threads on this PR carry the current state.
 ${PRT_MARKER_STATE_SUPERSEDED}
 ${PRT_MARKER_CLEAN}
 EOF
-  elif [ "$advisory_count" -gt 0 ]; then
-    local lead
+  elif [ "$comment_count" -gt 0 ]; then
+    local lead advisory_pointer
     if [ "$threads_carry" -gt 0 ]; then
       lead="Review threads on this PR carry part of the current state."
     else
       lead="Created or updated no review thread this run."
+    fi
+    if [ "$advisory_count" -gt 0 ]; then
+      advisory_pointer="see the advisory comment(s) on this PR for the withheld/overflow finding bodies.${suppressed_note}"
+    else
+      advisory_pointer="see the advisory comment on this PR.${suppressed_note}"
     fi
     cat <<EOF
 ## ~~AI Code Review — Reviewed, no findings~~ (superseded)
 
 A later review of \`${sha}\` reported **${count} finding(s)**. ${lead}
 ${suppressed} suppressed (false positive), ${overflow} beyond the gating cap,
-${quarantined} withheld (ambiguous fingerprint) — see the advisory comment(s)
-on this PR for the withheld/overflow finding bodies.${shortened_note}
+${quarantined} withheld (ambiguous fingerprint) — ${advisory_pointer}${shortened_note}
 
 ${PRT_MARKER_STATE_SUPERSEDED}
 ${PRT_MARKER_CLEAN}
@@ -753,9 +804,8 @@ EOF
 ## ~~AI Code Review — Reviewed, no findings~~ (superseded)
 
 A later review of \`${sha}\` reported **${count} finding(s)**, but created or
-updated no review thread this run: all suppressed as false positives, with
-no durable output surface anywhere on this PR (suppressed findings are
-never rendered, by design).
+updated no review thread this run: all suppressed as false positives. No
+comment on this PR lists them; the job summary of this run does.
 
 ${PRT_MARKER_STATE_SUPERSEDED}
 ${PRT_MARKER_CLEAN}
