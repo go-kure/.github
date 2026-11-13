@@ -366,7 +366,8 @@ see below); no workflow calls it yet. None of the six is consumed by kure/launch
 the review pool: it completes one `review-run` review of a commit range in this repository and
 records what ran. A caller passes `secrets: inherit` and the same four inputs as a dispatch. In a
 call the concurrency group carries the calling run's id, so pull requests do not queue behind each
-other, while a hand dispatch keeps the repository-wide group. The artifact is named with the run
+other, while a hand dispatch keeps the repository-wide group. The group reads `github.workflow_ref`
+and never `github.event_name`, which in a call is the caller's event. The artifact is named with the run
 id and the run attempt, so a rerun does not collide with its first attempt, and the name is the
 `artifact` output of the call. `scripts/test/review-pool-callable-test.sh` pins all three. It is separate from the boundary probe on purpose, because the probe holds no
 secret and calls no model, and this one holds the backend credential. Five limits decide its shape,
