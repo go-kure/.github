@@ -121,6 +121,12 @@ check 'opencode anthropic refuses an empty key' \
 check 'opencode names an unheld provider' \
   1 'names a provider with no credential here' 'opencode:groq/llama-3' "$K" "$K" "$K"
 
+# The second line of that refusal names the providers the workflow has an arm for. It once said the
+# organization held keys for openai and anthropic, and it holds one for openai only
+# (go-kure/.github#365), so the line states what the workflow does and not what the organization holds.
+check 'the unheld-provider refusal names the arms the workflow has' \
+  1 'credential arm for the providers openai and anthropic only' 'opencode:groq/llama-3' "$K" "$K" "$K"
+
 check 'an unknown backend is refused' \
   1 'has no credential in this organization' gemini "$K" "$K" "$K"
 

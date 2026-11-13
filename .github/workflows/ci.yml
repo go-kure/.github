@@ -62,7 +62,10 @@ jobs:
         env:
           ACTIONLINT_VERSION: ${{ steps.actionlint-version.outputs.version }}
         run: |
-          curl -fsSL -o /tmp/actionlint.tar.gz \
+          # The release downloads here all retry the same way. --retry-all-errors retries any
+          # failure, not only the transient HTTP statuses that --retry alone covers, so one
+          # 503 or 504 from the release host no longer fails the job (go-kure/.github#356).
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 -o /tmp/actionlint.tar.gz \
             "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
           tar -xzf /tmp/actionlint.tar.gz -C /tmp actionlint
           sudo mv /tmp/actionlint /usr/local/bin/actionlint
@@ -171,7 +174,7 @@ jobs:
         env:
           LYCHEE_VERSION: ${{ steps.lychee-version.outputs.version }}
         run: |
-          curl -fsSL -o /tmp/lychee.tar.gz \
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 -o /tmp/lychee.tar.gz \
             "https://github.com/lycheeverse/lychee/releases/download/lychee-v${LYCHEE_VERSION}/lychee-x86_64-unknown-linux-gnu.tar.gz"
           tar -xzf /tmp/lychee.tar.gz -C /tmp
           sudo install -m755 "$(find /tmp -type f -name lychee | head -1)" /usr/local/bin/lychee
@@ -217,7 +220,7 @@ jobs:
         env:
           SHELLCHECK_VERSION: ${{ steps.shellcheck-version.outputs.version }}
         run: |
-          curl -fsSL -o /tmp/shellcheck.tar.xz \
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 -o /tmp/shellcheck.tar.xz \
             "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
           tar -xJf /tmp/shellcheck.tar.xz -C /tmp
           sudo install -m755 "/tmp/shellcheck-v${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck
@@ -236,7 +239,7 @@ jobs:
         env:
           YQ_VERSION: ${{ steps.yq-version.outputs.version }}
         run: |
-          sudo curl -fsSL -o /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64"
+          sudo curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 -o /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64"
           sudo chmod +x /usr/local/bin/yq
       - name: check-mise-ci-parity.sh test suite
         run: bash scripts/test/check-mise-ci-parity-test.sh .
@@ -330,7 +333,7 @@ jobs:
         env:
           LYCHEE_VERSION: ${{ steps.lychee-version.outputs.version }}
         run: |
-          curl -fsSL -o /tmp/lychee.tar.gz \
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 -o /tmp/lychee.tar.gz \
             "https://github.com/lycheeverse/lychee/releases/download/lychee-v${LYCHEE_VERSION}/lychee-x86_64-unknown-linux-gnu.tar.gz"
           tar -xzf /tmp/lychee.tar.gz -C /tmp
           sudo install -m755 "$(find /tmp -type f -name lychee | head -1)" /usr/local/bin/lychee

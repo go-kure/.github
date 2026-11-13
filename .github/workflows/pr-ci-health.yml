@@ -100,4 +100,4 @@ jobs:
             fi
             echo ""
             echo "_Generated: $(date -u '+%Y-%m-%d %H:%M UTC')_"
-          } >> $GITHUB_STEP_SUMMARY
+          } >> "$GITHUB_STEP_SUMMARY"
