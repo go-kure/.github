@@ -55,10 +55,13 @@ prt_test_failure_context() {
   head -n 15 "$f" | cut -c1-300 | sed 's/^/    | /' >&2
 }
 
+# With PRT_TEST_VERBOSE set to a non-empty value, a passing case prints its description, so a verify run can
+# show that a named case ran. Unset or empty, the output is unchanged: a pass prints nothing.
 assert_eq() {
   local desc="$1" expected="$2" actual="$3"
   if [ "$expected" = "$actual" ]; then
     pass_count=$((pass_count + 1))
+    [ -z "${PRT_TEST_VERBOSE:-}" ] || echo "PASS: $desc"
   else
     echo "FAIL: $desc — expected [$expected], got [$actual]" >&2
     prt_test_failure_context
