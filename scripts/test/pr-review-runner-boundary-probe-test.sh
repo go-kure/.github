@@ -505,6 +505,10 @@ assert_eq "identity step: with every read healthy it exits 0 (control)" 0 "${ok_
 assert_eq "identity step: the healthy hostname is recorded (control)" "stub-host" "$(identity_value pod_hostname "$ok_out")"
 assert_eq "identity step: the healthy uid and gid are recorded (control)" "1001 1002" \
   "$(identity_value uid "$ok_out") $(identity_value gid "$ok_out")"
+assert_eq "identity step: the healthy user-namespace limit is recorded (control)" "31337" \
+  "$(identity_value user_max_user_namespaces "$ok_out")"
+assert_eq "identity step: the healthy review-run path is recorded (control)" "$dir/rr/review-run" \
+  "$(identity_value review_run_path "$ok_out")"
 assert_eq "identity step: the healthy runner script pin is recorded (control)" "$(printf 'ab%.0s' $(seq 32))" \
   "$(identity_value runner_scripts_pin "$ok_out")"
 for pair in $identity_cases; do
