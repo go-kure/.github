@@ -74,6 +74,11 @@ trap 'rm -rf "$WORK"' EXIT
 #     backslashes is an escaped backslash, so only an odd run joins.
 #   - an expansion other than the two example lines and the names in PROMPT_VARS ($name form only):
 #     reject. Its text is unknown here, and the braces form counts as unknown.
+#   - an escaped dollar sign, backtick or backslash (\$, \` or \\): accept as literal text, and
+#     remove the pair before the expansion test. The pairs go left to right, so \\$(...) is still an
+#     expansion.
+#   - a bare dollar sign that bash would keep literal ("$ 5"): reject too. Modelling every case where
+#     bash expands is the open-ended way; the message tells the author to write \$ instead.
 #   - the delimiter word in a comment-shaped or quoted line: accept as prose, as bash does.
 #   - a quoted or dash opener (<<'PROMPT', <<-PROMPT): reject. It is not the unquoted heredoc, so no
 #     step matches the filter and the suite is aimed wrong.
@@ -100,15 +105,20 @@ render() {
   printf '%s\n' "$body" | LC_ALL=C awk -v vars="$PROMPT_VARS" '
     function bad_input(msg) { print msg > "/dev/stderr"; bad = 1 }
     # One prose line of the prompt, after any backslash-newline join. A line that is exactly an example
-    # variable stands for that body. Any other $ or backtick must be a listed variable followed by a
-    # non-name character: anything else would put text in the prompt that this reader never saw.
+    # variable stands for that body. A backslash pair (\\, \$ or \`) is literal text, so it goes first,
+    # left to right. Any other $ or backtick must then be a listed variable followed by a non-name
+    # character: anything else would put text in the prompt that this reader never saw. Only the name
+    # is removed, never the character after it, because that character can start the next expansion.
     function emit(line,    t, i, n, v) {
       if (line == "$example_one")   { for (i = 1; i <= no; i++) print "E:" one[i]; ne += no; return }
       if (line == "$example_clean") { for (i = 1; i <= nc; i++) print "E:" clean[i]; ne += nc; return }
       t = line
+      gsub(/\\[\\$`]/, "", t)
       n = split(vars, v, " ")
-      for (i = 1; i <= n; i++) gsub("[$]" v[i] "([^A-Za-z0-9_]|$)", " ", t)
-      if (t ~ /[$`]/) bad_input("unsupported expansion in the prompt: " line)
+      for (i = 1; i <= n; i++)
+        while (match(t, "[$]" v[i] "([^A-Za-z0-9_]|$)"))
+          t = substr(t, 1, RSTART - 1) " " substr(t, RSTART + 1 + length(v[i]))
+      if (t ~ /[$`]/) bad_input("unsupported expansion in the prompt: " line " (a literal dollar sign or backtick needs a backslash before it)")
       print "P:" line; np++
     }
     expect != "" {
@@ -345,6 +355,30 @@ check 'a backtick command in the prose is refused as unreadable' \
 check 'a variable the suite does not list is refused as unreadable' \
   2 'unsupported expansion in the prompt' \
   "$(mutate expansion-unlisted "s/^\( *\)${LEAD}\$/&\n\1Report \$OTHER_VAR now./")"
+
+# A listed variable is removed, but the text next to it is not: an expansion that follows it stays seen.
+check 'a command substitution right after a listed variable is refused as unreadable' \
+  2 'unsupported expansion in the prompt' \
+  "$(mutate expansion-adjacent "s/^\( *\)${LEAD}\$/&\n\1Report \$REVIEW_BASE\$(printf fin%s ding) now./")"
+
+# A backslash escapes the dollar sign and the backtick in an unquoted heredoc, so the text is literal.
+check 'an escaped dollar sign is literal text and passes' \
+  0 'stray=0' \
+  "$(mutate escaped-dollar "s/^\( *\)${LEAD}\$/&\n\1Report ${ONE_BS}\$5 now./")"
+
+check 'an escaped backtick is literal text and passes' \
+  0 'stray=0' \
+  "$(mutate escaped-backtick "s/^\( *\)${LEAD}\$/&\n\1Report ${ONE_BS}\`x${ONE_BS}\` now./")"
+
+# A bare dollar sign that bash keeps literal is still refused, with the way out in the message.
+check 'a bare dollar sign is refused as unreadable and the message names the backslash' \
+  2 'needs a backslash before it' \
+  "$(mutate bare-dollar "s/^\( *\)${LEAD}\$/&\n\1Report the cost \$ 5 now./")"
+
+# Two backslashes are one escaped backslash, and the dollar sign after them is a live expansion.
+check 'an escaped backslash before a command substitution is still refused as unreadable' \
+  2 'unsupported expansion in the prompt' \
+  "$(mutate escaped-backslash-expansion "s/^\( *\)${LEAD}\$/&\n\1Report ${TWO_BS}\$(printf fin%s ding) now./")"
 
 # The delimiter word on a line of its own shape is prose, in bash too: nothing to refuse.
 check 'the delimiter word inside a comment-shaped or quoted line is prose and passes' \
