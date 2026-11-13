@@ -834,6 +834,16 @@ guide: which option to pick, release branches, and what to do when a release
 fails. It is written for both repos at once and vendored unchanged into each
 one's docs site.
 
+The Test job of **Release / Publish** restores the Go build cache that the CI test jobs of
+`kure` and `launcher` save on `main`. It does not use the cache of `setup-go`, which only held the
+downloaded modules and never held compiled test packages. The restore tries the exact key, then
+the key up to the `go.mod` and `go.sum` hash, then any build cache for the same Go version. The
+job never saves a cache, so only `main` writes it. A miss builds and tests cold, and the job limit
+of 40 minutes covers that. The cache server keeps an entry for 7 days after its last use, so a tag
+pushed after a long quiet period also runs cold.
+`scripts/test/release-publish-build-cache-test.sh` asserts the restore, its key names and the
+absence of a save step.
+
 ## What Stays the Same
 
 The following standards apply identically to kure and launcher (not applicable to `.github`):
