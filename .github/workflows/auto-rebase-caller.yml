@@ -3,7 +3,9 @@ name: Auto-Rebase
 on:
   push:
     branches: [main]
-  # Labelling a PR `auto-rebase` rebases it at once; any other label starts nothing.
+  # Labelling a PR `auto-rebase` rebases it at once; any other label starts nothing. A fork PR
+  # gets no secrets on this event, and its run would cancel an authenticated push run through
+  # the shared concurrency group, so only same-repository PRs start a run from the label.
   pull_request:
     types: [labeled]
 
@@ -12,6 +14,9 @@ permissions:
 
 jobs:
   auto-rebase:
-    if: github.event_name == 'push' || github.event.label.name == 'auto-rebase'
+    if: >-
+      github.event_name == 'push' ||
+      (github.event.label.name == 'auto-rebase' &&
+      github.event.pull_request.head.repo.full_name == github.repository)
     uses: go-kure/.github/.github/workflows/auto-rebase.yml@main
     secrets: inherit
