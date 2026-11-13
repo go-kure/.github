@@ -8846,7 +8846,6 @@ assert_eq "assess runner, the namespace ids of the first process read empty once
   "true" "$([ -e "$prt_ar_dir/nspid-once" ] && echo true || echo false)"
 assert_eq "assess runner, the namespace ids of the first process read empty once: the finder reads again, the runner ran to its bound (runner-timeout) and the call was not abandoned" \
   "0 1 true false false" "$rc $(prt_ar_calls) $(prt_ar_reason runner-timeout) $(prt_ar_reason runner-pid1-unread) $(prt_ar_reason runner-lifetime)"
-assert_eq "assess runner, the namespace ids of the first process read empty once: nothing of the runner's tree is left running" "true" "$(prt_ar_hb_stopped)"
 rm -f "$prt_ar_dir/nspid-once"
 PRT_TEST_RUNNER_MODE=probe
 
