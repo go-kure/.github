@@ -458,7 +458,15 @@ fi
 # time, each as a failing command and as an empty value, and every other field must stay a real value.
 WORKFLOW="$ROOT/.github/workflows/pr-review-runner-boundary-probe.yml"
 step="$dir/identity-step.sh"
-yq -r '.jobs.probe.steps[] | select(.name == "Record the image this probe runs in") | .run' "$WORKFLOW" > "$step"
+# The review pool's image has no yq, and this suite runs there, so the step's run block is cut out
+# with awk: the lines under that step's "run: |", less their ten-space block indent.
+awk '
+  /^      - name: Record the image this probe runs in$/ { found = 1; next }
+  found && !inrun && /^        run: \|$/ { inrun = 1; next }
+  inrun && /^          / { sub(/^          /, ""); print; next }
+  inrun && /^[[:space:]]*$/ { print ""; next }
+  inrun { exit }
+' "$WORKFLOW" > "$step"
 assert_eq "identity step: the step text was extracted (control)" "true" \
   "$([ "$(wc -l < "$step")" -gt 10 ] && grep -q 'review-bundle-verify' "$step" && echo true || echo false)"
 # The runner script pin is read from a fixed path under /opt, which a test cannot create: the
