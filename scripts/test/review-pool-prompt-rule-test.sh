@@ -109,13 +109,13 @@ render() {
     function emit(line,    t, i, n, v) {
       if (line == "$example_one")   { for (i = 1; i <= no; i++) print "E:" one[i]; ne += no; return }
       if (line == "$example_clean") { for (i = 1; i <= nc; i++) print "E:" clean[i]; ne += nc; return }
-      if (index(line, "\\") > 0) bad_input("a backslash in the prompt prose is not read by this suite: " line)
+      if (index(line, "\\") > 0) bad_input("a backslash in the prompt prose is not read by this suite; reword the line without a backslash: " line)
       t = line
       n = split(vars, v, " ")
       for (i = 1; i <= n; i++)
         while (match(t, "[$]" v[i] "([^A-Za-z0-9_]|$)"))
           t = substr(t, 1, RSTART - 1) " " substr(t, RSTART + 1 + length(v[i]))
-      if (t ~ /[$`]/) bad_input("unsupported expansion in the prompt: " line " (the prose may not hold a dollar sign or a backtick except the listed variables)")
+      if (t ~ /[$`]/) bad_input("unsupported expansion in the prompt: " line " (the prose may not hold a dollar sign or a backtick except the listed variables; reword the line)")
       print "P:" line; np++
     }
     expect != "" {
@@ -292,6 +292,8 @@ check 'the word in the sentence of the clean example is refused' \
 
 # The reader must read the prompt as bash does. One case per shape the region can receive; the
 # decision for each shape (join, reject or accept) is written above the reader in render().
+# The refusal for a backslash names the rule and the remedy, and every case below asserts both.
+BS_MSG='a backslash in the prompt prose is not read by this suite; reword the line without a backslash'
 # shellcheck disable=SC1003  # literal backslashes for a sed replacement, not an escaped quote
 ONE_BS='\\'
 # shellcheck disable=SC1003  # as above: two literal backslashes in the replacement
@@ -324,16 +326,16 @@ check 'an example closer that is renamed is refused as unreadable' \
 # attempt to model one of those rules was found short of bash by a later review, so the reader models
 # none of them. Every shape below is a backslash in the prose, and each is refused for that reason.
 check 'a backslash-newline that splits the word across two lines is refused' \
-  2 'a backslash in the prompt' \
+  2 "$BS_MSG" \
   "$(mutate continuation-split "s/^\( *\)${LEAD}\$/&\n\1Report each find${ONE_BS}\n\1ing as its own block./")"
 
 check 'an escaped backslash before the newline is refused' \
-  2 'a backslash in the prompt' \
+  2 "$BS_MSG" \
   "$(mutate continuation-escaped "s/^\( *\)${LEAD}\$/&\n\1Report each find${TWO_BS}\n\1ing as its own block./")"
 
 # Bash joins the backslash line with the delimiter line, so a closer after it is prose, not a closer.
 check 'a backslash on the last prose line, then a delimiter and more prose, is refused' \
-  2 'a backslash in the prompt' \
+  2 "$BS_MSG" \
   "$(mutate continuation-delimiter "s/^\( *\)Write the completion line once, as the last line, and write no other line like it\.\$/&${ONE_BS}\n\1PROMPT\n\1)\"\n\1Report each finding as its own block./")"
 
 # An expansion the reader does not model puts text in the prompt that it never saw.
@@ -360,15 +362,15 @@ check 'a command substitution right after a listed variable is refused as unread
 
 # An escaped dollar sign or backtick is a backslash in the prose, so it is refused like the rest.
 check 'an escaped dollar sign is refused' \
-  2 'a backslash in the prompt' \
+  2 "$BS_MSG" \
   "$(mutate escaped-dollar "s/^\( *\)${LEAD}\$/&\n\1Report ${ONE_BS}\$5 now./")"
 
 check 'an escaped backtick is refused' \
-  2 'a backslash in the prompt' \
+  2 "$BS_MSG" \
   "$(mutate escaped-backtick "s/^\( *\)${LEAD}\$/&\n\1Report ${ONE_BS}\`x${ONE_BS}\` now./")"
 
 check 'a listed variable followed by an escaped dollar sign is refused' \
-  2 'a backslash in the prompt' \
+  2 "$BS_MSG" \
   "$(mutate escaped-after-variable "s/^\( *\)${LEAD}\$/&\n\1Use \$head_oid${ONE_BS}\$suffix./")"
 
 # A bare dollar sign that bash would keep literal is refused too, and the message names the rule.
@@ -377,7 +379,7 @@ check 'a bare dollar sign is refused as unreadable' \
   "$(mutate bare-dollar "s/^\( *\)${LEAD}\$/&\n\1Report the cost \$ 5 now./")"
 
 check 'an escaped backslash before a command substitution is refused' \
-  2 'a backslash in the prompt' \
+  2 "$BS_MSG" \
   "$(mutate escaped-backslash-expansion "s/^\( *\)${LEAD}\$/&\n\1Report ${TWO_BS}\$(printf fin%s ding) now./")"
 
 # The delimiter word on a line of its own shape is prose, in bash too: nothing to refuse.
