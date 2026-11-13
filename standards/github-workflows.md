@@ -207,8 +207,9 @@ still create such a branch by hand from a stable tag.
 [`auto-rebase.yml`](https://github.com/go-kure/.github/blob/main/.github/workflows/auto-rebase.yml)
 is opt-in: it runs only in a repository whose own workflow calls it on `push` to `main`, with
 `secrets: inherit`. A pull request is rebased only if it carries the `auto-rebase` label, so a
-pull request under review is never rewritten and its head-bound reviews stay valid. Add the label
-to the pull request that is about to merge: `gh pr edit <n> --add-label auto-rebase`. Each run
+pull request without the label is never rewritten and its head-bound reviews stay valid. A labelled
+one is rewritten, and its head-bound reviews no longer match its head. Add the label to the pull
+request that is about to merge: `gh pr edit <n> --add-label auto-rebase`. Each run
 rebases the labelled open pull requests that target `main` onto it, drafts included, and pushes
 with the `AUTO_REBASE_PAT` secret. A run starts on a `push` to `main` and, if the caller also
 listens for `pull_request` `labeled` events and skips every label but `auto-rebase`, when the label
@@ -216,7 +217,7 @@ is added to a pull request from the same repository. It skips pull requests labe
 `dependencies`, those targeting any other branch (release or stacked branches), and those from a
 fork that does not allow maintainer edits. A newer run cancels one still in progress, and a
 labelled pull request is still rewritten at every later push to `main` until it merges. The merge
-queue does not need it; it keeps labelled pull requests current for review.
+queue does not need it; it keeps labelled pull requests current with `main`.
 
 ## Draft PRs
 
