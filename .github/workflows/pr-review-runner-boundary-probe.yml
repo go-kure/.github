@@ -24,6 +24,17 @@ jobs:
         with:
           persist-credentials: false
 
+      # persist-credentials: false is a request, so read the result. The control line proves the
+      # read sees the workspace config at all: a read of the wrong file would also find nothing.
+      - name: Checkout leaves no credential in the workspace config
+        run: |
+          control=$(git config --local --get-regexp '^remote\.origin\.url$' | wc -l)
+          echo "control: remote.origin.url entries read: ${control}"
+          [ "${control}" -eq 1 ] || { echo "FAIL: the control read did not find the origin remote, so the check below proves nothing"; exit 1; }
+          leaked=$(git config --local --get-regexp '(extraheader|^includeif\.)' | wc -l) || true
+          echo "credential entries (extraheader, includeIf) in .git/config: ${leaked}"
+          [ "${leaked}" -eq 0 ] || { echo "FAIL: the checkout left credential configuration in the workspace"; exit 1; }
+
       - name: Positive isolation cases of the suite
         env:
           PRT_TEST_REQUIRE_NAMESPACE: "1"
