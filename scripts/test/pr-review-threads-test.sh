@@ -33,6 +33,10 @@ source "$LIB/render.sh"
 failures=0
 pass_count=0
 
+# The job summary file of the CI run, read now: a case below sets and unsets GITHUB_STEP_SUMMARY for
+# itself, so by the time a skip happens the variable is gone. prt_skip_notice writes to this copy.
+prt_summary_file="${GITHUB_STEP_SUMMARY:-}"
+
 # prt_test_failure_context — after a failed assertion, shows what the last orchestrator run wrote to
 # standard error. run_orchestrator keeps that in PRT_TEST_STDERR_FILE and nothing printed it, so a
 # case that degraded (a refused boundary, a stub that never started) failed with counts and no reason.
@@ -61,6 +65,36 @@ assert_eq() {
     failures=$((failures + 1))
   fi
 }
+
+# prt_skip_notice MESSAGE — a case that needs a namespace the host forbids is skipped, and the suite
+# still passes. In a CI log that skip is one NOTE line in a green job, so nobody sees the hole
+# (go-kure/.github#388). In GitHub Actions the same message is also a warning annotation on the run
+# and a line in the job summary. The suite still passes: PRT_TEST_REQUIRE_NAMESPACE=1 is what turns
+# a skip into a failure.
+prt_skip_notice() {
+  echo "NOTE: $1"
+  if [ "${GITHUB_ACTIONS:-}" = true ]; then
+    echo "::warning title=pr-review-threads suite skipped cases::$1"
+    if [ -n "$prt_summary_file" ]; then
+      echo "- pr-review-threads suite: $1" >> "$prt_summary_file"
+    fi
+  fi
+}
+
+prt_sn_summary="$(mktemp)"
+prt_sn_msg="the cases that need a namespace are skipped"
+assert_eq "prt_skip_notice: outside GitHub Actions it prints the NOTE line only" \
+  "NOTE: $prt_sn_msg" "$( unset GITHUB_ACTIONS; prt_summary_file="$prt_sn_summary" prt_skip_notice "$prt_sn_msg" )"
+assert_eq "prt_skip_notice: outside GitHub Actions it writes no summary line" \
+  "0" "$(wc -c < "$prt_sn_summary" | tr -d ' ')"
+assert_eq "prt_skip_notice: in GitHub Actions it adds a warning annotation naming the skip" \
+  "NOTE: $prt_sn_msg|::warning title=pr-review-threads suite skipped cases::$prt_sn_msg" \
+  "$( unset GITHUB_STEP_SUMMARY; GITHUB_ACTIONS=true prt_summary_file="$prt_sn_summary" prt_skip_notice "$prt_sn_msg" | paste -sd'|')"
+assert_eq "prt_skip_notice: in GitHub Actions it adds one summary line" \
+  "- pr-review-threads suite: $prt_sn_msg" "$(cat "$prt_sn_summary")"
+assert_eq "prt_skip_notice: in GitHub Actions with no summary file it still annotates and does not fail" \
+  "2 0" "$(GITHUB_ACTIONS=true prt_summary_file='' prt_skip_notice "$prt_sn_msg" | wc -l | tr -d ' ') $(GITHUB_ACTIONS=true prt_summary_file='' prt_skip_notice "$prt_sn_msg" > /dev/null; echo $?)"
+rm -f "$prt_sn_summary"
 
 # prt_test_real_jq — prints the first jq on PATH that a PATH shim can exec. `command -v jq` can name a
 # version-manager shim (for example mise's) that looks `jq` up on PATH again, finds the test's own
@@ -7680,7 +7714,7 @@ prt_ar_ns=true
 # that need none still run there.
 if [ -n "${PRT_TEST_FORCE_NO_NAMESPACE:-}" ] || ! prt_ar_ns_raw; then
   prt_ar_ns=false
-  echo "NOTE: this host forbids the PID namespace the default boundary needs: the cases that need one are skipped; a CI lane that can run them is required for acceptance"
+  prt_skip_notice "this host forbids the PID namespace the default boundary needs: the cases that need one are skipped; a CI lane that can run them is required for acceptance"
   assert_eq "no PID namespace here: PRT_TEST_REQUIRE_NAMESPACE is not set (acceptance needs a lane that runs the positive isolation cases)" \
     "" "${PRT_TEST_REQUIRE_NAMESPACE:-}"
   # Only a host that really lacks the namespace can show the refusal; the forced switch cannot.
@@ -9414,7 +9448,7 @@ if unshare --user --map-root-user true > /dev/null 2>&1; then
   assert_eq "boundary as the root of a user namespace: the runner cannot unmount /proc to reach the outside, and holds no capability; the check accepts it" \
     "hidden 0000000000000000 accepted " "$prt_ar_rootsim"
 else
-  echo "NOTE: no user namespace with a mapped root here; the root boundary case is skipped"
+  prt_skip_notice "no user namespace with a mapped root here; the root boundary case is skipped"
 fi
 rm -f "$prt_ar_dir/rootsim.sh"
 
