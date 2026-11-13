@@ -159,18 +159,19 @@ jobs:
           repository: ${{ job.workflow_repository }}
           ref: ${{ job.workflow_sha }}
           path: release-tools
+          # Cone mode (the default) also checks out the root files, so mise.toml,
+          # which holds the git-cliff pin, arrives with scripts/release;
+          # scripts/test/release-checkout-pin-test.sh proves it.
           sparse-checkout: scripts/release
           persist-credentials: false
 
       - name: Install git-cliff
         run: |
-          # Renovate bumps this pin together with the other git-cliff pins
-          # (customManagers in renovate.json, one depName).
-          # renovate: datasource=github-releases depName=orhun/git-cliff
-          CLIFF_VERSION="2.14.2"
-          # Verifies the upstream signature against the key pinned in the
-          # script before installing (go-kure/.github#227).
-          bash release-tools/scripts/release/install-git-cliff.sh "$CLIFF_VERSION"
+          # The version is GIT_CLIFF_VERSION in this repository's mise.toml,
+          # which the installer reads from the checkout above. Verifies the
+          # upstream signature against the key pinned in the script before
+          # installing (go-kure/.github#227).
+          bash release-tools/scripts/release/install-git-cliff.sh
 
       - name: Run the release script
         id: run

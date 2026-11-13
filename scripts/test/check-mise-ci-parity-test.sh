@@ -17,29 +17,39 @@ CHECKER="$ROOT/scripts/check-mise-ci-parity.sh"
 failures=0
 pass_count=0
 
-# The git-cliff pin (go-kure/.github#370): mise.toml [env] holds it, and
-# release.yml and release-publish.yml carry a literal each. Every fixture gets
-# all three, equal, so the cases below test what they say; a case sets one of
-# these (FX_MISE_PIN=... run_case ...) to make that file differ. "-" omits the
-# file or the line.
+# The git-cliff pin (go-kure/.github#390): mise.toml [env] holds it and the
+# installer reads it, so no workflow carries a version. Every fixture gets a
+# pin in mise.toml and release.yml and release-publish.yml that only call the
+# installer, so the cases below test what they say. A case sets one of these
+# (FX_MISE_PIN=... run_case ...) to change that file: FX_MISE_PIN "-" omits the
+# pin; FX_REL_LINE / FX_PUB_LINE add one more run line to that workflow, and
+# "OMIT" leaves the workflow file out.
 FX_MISE_PIN=1.2.3
-FX_REL_PIN=1.2.3
-FX_PUB_PIN=1.2.3
+FX_REL_LINE=-
+FX_PUB_LINE=-
+FX_REL_RAW=
+FX_PUB_RAW=
 
 # write_pin_files DIR — appends the pin to DIR/mise.toml and writes the two
 # shared workflows next to DIR/.github/workflows/ci.yml.
 write_pin_files() {
-  local dir="$1" wf pin
+  local dir="$1" wf line raw
   if [ "$FX_MISE_PIN" != "-" ]; then
     printf '\n[env]\nGIT_CLIFF_VERSION = "%s"\n' "$FX_MISE_PIN" >> "$dir/mise.toml"
   fi
-  for wf in release:"$FX_REL_PIN" release-publish:"$FX_PUB_PIN"; do
-    pin="${wf#*:}"
-    [ "$pin" = "-" ] && continue
-    # shellcheck disable=SC2016  # literal workflow text, not an expansion
-    printf '%s\n' 'name: x' 'jobs:' '  j:' '    steps:' '      - run: |' \
-      "          CLIFF_VERSION=\"$pin\"" '          bash install-git-cliff.sh "$CLIFF_VERSION"' \
-      > "$dir/.github/workflows/${wf%%:*}.yml"
+  for wf in release:"$FX_REL_LINE" release-publish:"$FX_PUB_LINE"; do
+    line="${wf#*:}"
+    [ "$line" = "OMIT" ] && continue
+    if [ "${wf%%:*}" = release ]; then raw="$FX_REL_RAW"; else raw="$FX_PUB_RAW"; fi
+    if [ -n "$raw" ]; then
+      printf '%s\n' "$raw" > "$dir/.github/workflows/${wf%%:*}.yml"
+      continue
+    fi
+    {
+      printf '%s\n' 'name: x' 'jobs:' '  j:' '    steps:' '      - run: |' \
+        '          bash release-tools/scripts/release/install-git-cliff.sh'
+      [ "$line" = "-" ] || printf '          %s\n' "$line"
+    } > "$dir/.github/workflows/${wf%%:*}.yml"
   done
 }
 
@@ -243,18 +253,19 @@ run_raw "a workflow default working-directory is refused" 2 "sets working-direct
   "$(printf '%s\n' 'name: CI' 'on: [push]' 'defaults:' '  run:' '    working-directory: other-checkout' \
      'jobs:' '  smoke:' '    runs-on: ubuntu-latest' '    steps:' "$CI_LINT_STEP" "$CI_A_STEP" "$CI_B_STEP")"
 
-# The git-cliff pin: mise.toml is the one place a version is written for ci.yml;
-# the two shared workflows keep a literal each and must equal it.
-run_case "pin held in all three files passes" 0 "git-cliff pin 1.2.3" "$CHECKER" "$L" "$T" "$L" "$T"
-FX_REL_PIN=1.2.4 run_case "a release.yml pin that differs fails" 1 \
-  "FAIL: git-cliff: .github/workflows/release.yml pins 1.2.4, mise.toml pins 1.2.3" "$CHECKER" "$L" "$T" "$L" "$T"
-FX_PUB_PIN=1.2.4 run_case "a release-publish.yml pin that differs fails" 1 \
-  "FAIL: git-cliff: .github/workflows/release-publish.yml pins 1.2.4, mise.toml pins 1.2.3" "$CHECKER" "$L" "$T" "$L" "$T"
-FX_MISE_PIN=1.2.4 run_case "a mise.toml pin that differs from both workflows fails twice" 1 \
+# The git-cliff pin: mise.toml is the one place a version is written, and the
+# installer reads it. ci.yml, release.yml and release-publish.yml must not name
+# a version at all.
+run_case "a pin in mise.toml and none in the workflows passes" 0 "git-cliff pin 1.2.3 held in mise.toml only" "$CHECKER" "$L" "$T" "$L" "$T"
+FX_REL_LINE='CLIFF_VERSION="1.2.3"' run_case "a version literal in release.yml fails, even one equal to the pin" 1 \
+  "FAIL: git-cliff: .github/workflows/release.yml names a version literal" "$CHECKER" "$L" "$T" "$L" "$T"
+FX_PUB_LINE='CLIFF_VERSION="1.2.4"' run_case "a version literal in release-publish.yml fails" 1 \
+  "FAIL: git-cliff: .github/workflows/release-publish.yml names a version literal" "$CHECKER" "$L" "$T" "$L" "$T"
+FX_REL_LINE='CLIFF_VERSION="1.2.4"' FX_PUB_LINE='CLIFF_VERSION="1.2.4"' run_case "literals in both release workflows fail with the pin summary" 1 \
   "check-mise-ci-parity: git-cliff pin problem" "$CHECKER" "$L" "$T" "$L" "$T"
 # A pin failure alone must not blame the path lists, and a list failure alone must not blame the pin.
 pin_only_dir="$(mktemp -d)"
-FX_MISE_PIN=1.2.4 write_fixture "$pin_only_dir" "$L" "$T" "$L" "$T"
+FX_REL_LINE='CLIFF_VERSION="1.2.4"' write_fixture "$pin_only_dir" "$L" "$T" "$L" "$T"
 pin_only_out="$(bash "$CHECKER" "$pin_only_dir" 2>&1)"
 rm -rf "$pin_only_dir"
 if grep -qF -- "checked on one side only" <<< "$pin_only_out"; then
@@ -275,7 +286,8 @@ else
 fi
 FX_MISE_PIN=- run_case "no pin in mise.toml is fatal, not a pass" 2 "GIT_CLIFF_VERSION" "$CHECKER" "$L" "$T" "$L" "$T"
 FX_MISE_PIN=latest run_case "a mise.toml pin that is not X.Y.Z is fatal" 2 "GIT_CLIFF_VERSION" "$CHECKER" "$L" "$T" "$L" "$T"
-FX_REL_PIN=- run_case "a missing release.yml is fatal" 2 "release.yml" "$CHECKER" "$L" "$T" "$L" "$T"
+FX_REL_LINE=OMIT run_case "a missing release.yml is fatal" 2 "release.yml" "$CHECKER" "$L" "$T" "$L" "$T"
+FX_PUB_LINE=OMIT run_case "a missing release-publish.yml is fatal" 2 "release-publish.yml" "$CHECKER" "$L" "$T" "$L" "$T"
 run_raw "a version literal in ci.yml fails" 1 \
   "FAIL: git-cliff: .github/workflows/ci.yml names a version literal" "$MISE_STD" \
   "$(ci_with "$CI_LINT_STEP" "$CI_A_STEP" "$CI_B_STEP" '      - run: |' '          CLIFF_VERSION="1.2.3"')"
@@ -312,12 +324,34 @@ run_raw "a YAML comment naming the variable passes" 0 "git-cliff pin 1.2.3" "$MI
 # shellcheck disable=SC2016  # literal workflow text, not an expansion
 run_raw "reading the pin with grep and sed is not a literal" 0 "git-cliff pin 1.2.3" "$MISE_STD" \
   "$(ci_with "$CI_LINT_STEP" "$CI_A_STEP" "$CI_B_STEP" '      - run: |' "          VER=\$(grep '^GIT_CLIFF_VERSION = ' mise.toml | sed 's/GIT_CLIFF_VERSION = \"\\(.*\\)\"/\\1/')" '          bash x.sh "$CLIFF_VERSION"')"
+# The installer reads the pin itself, so a workflow has no reason to set the variable
+# from an expression either: that would be a second reader of the pin.
 # shellcheck disable=SC2016  # literal workflow text, not an expansion
-run_raw "a quoted step-output expression in ci.yml is not a literal" 0 "git-cliff pin 1.2.3" "$MISE_STD" \
-  "$(ci_with "$CI_LINT_STEP" "$CI_A_STEP" "$CI_B_STEP" '      - env:' '          CLIFF_VERSION: "${{ steps.v.outputs.version }}"' '        run: echo go')"
-# shellcheck disable=SC2016  # literal workflow text, not an expansion
-run_raw "ci.yml reading the pin from the step output is not a literal" 0 "git-cliff pin 1.2.3" "$MISE_STD" \
+run_raw "a step-output expression assigned to the variable in ci.yml fails" 1 \
+  "FAIL: git-cliff: .github/workflows/ci.yml names a version literal" "$MISE_STD" \
   "$(ci_with "$CI_LINT_STEP" "$CI_A_STEP" "$CI_B_STEP" '      - env:' '          CLIFF_VERSION: ${{ steps.v.outputs.version }}' '        run: echo go')"
+
+# The same forms in the two release workflows, one form per case.
+# shellcheck disable=SC2016  # literal workflow text, not an expansion
+for lit in 'export CLIFF_VERSION="9.9.9"' 'export GIT_CLIFF_VERSION=9.9.9' 'env CLIFF_VERSION=9.9.9 bash x.sh' 'echo go && CLIFF_VERSION=9.9.9' 'CLIFF_VERSION="${X}"'; do
+  FX_REL_LINE="$lit" run_case "a shell form [$lit] in release.yml fails" 1 \
+    "FAIL: git-cliff: .github/workflows/release.yml names a version literal" "$CHECKER" "$L" "$T" "$L" "$T"
+  FX_PUB_LINE="$lit" run_case "a shell form [$lit] in release-publish.yml fails" 1 \
+    "FAIL: git-cliff: .github/workflows/release-publish.yml names a version literal" "$CHECKER" "$L" "$T" "$L" "$T"
+done
+for yml in '"CLIFF_VERSION": "9.9.9"' 'GIT_CLIFF_VERSION: 9.9.9' 'env: {CLIFF_VERSION: 9.9.9}'; do
+  FX_REL_RAW="$(printf '%s\n' 'name: x' 'jobs:' '  j:' '    steps:' '      - name: s' "        $yml" '        run: bash release-tools/scripts/release/install-git-cliff.sh')" \
+    run_case "a YAML form [$yml] in release.yml fails" 1 \
+    "FAIL: git-cliff: .github/workflows/release.yml names a version literal" "$CHECKER" "$L" "$T" "$L" "$T"
+  FX_PUB_RAW="$(printf '%s\n' 'name: x' 'jobs:' '  j:' '    steps:' '      - name: s' "        $yml" '        run: bash .git-cliff-installer/scripts/release/install-git-cliff.sh')" \
+    run_case "a YAML form [$yml] in release-publish.yml fails" 1 \
+    "FAIL: git-cliff: .github/workflows/release-publish.yml names a version literal" "$CHECKER" "$L" "$T" "$L" "$T"
+done
+# Controls: text that is not an assignment never fails a release workflow.
+for text in '# CLIFF_VERSION="9.9.9"' 'echo "CLIFF_VERSION=9.9.9"' 'echo go # CLIFF_VERSION=9.9.9'; do
+  FX_REL_LINE="$text" FX_PUB_LINE="$text" run_case "not an assignment [$text] in the release workflows passes" 0 \
+    "git-cliff pin 1.2.3" "$CHECKER" "$L" "$T" "$L" "$T"
+done
 
 # Opt-out: a copy of the checker with one entry in PARITY_OPT_OUT.
 optdir="$(mktemp -d)"

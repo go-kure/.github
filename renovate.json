@@ -12,10 +12,10 @@
   "customManagers": [
     {
       "customType": "regex",
-      "description": "git-cliff pins: CLIFF_VERSION in the shared release workflows (release, release-publish) and GIT_CLIFF_VERSION in mise.toml, which ci.yml and `mise run verify` read for the release-test step. Each is passed to scripts/release/install-git-cliff.sh, which verifies the release signature against a pinned key. One depName, so a bump moves every site in one PR, and the release tests run on the version the workflows install. The signing-key fingerprint lives in the script, never on a line this manager rewrites.",
-      "managerFilePatterns": ["/^(\\.github/workflows/(release|release-publish)\\.yml|mise\\.toml)$/"],
+      "description": "git-cliff pin: GIT_CLIFF_VERSION in mise.toml, the one place the version is written. scripts/release/install-git-cliff.sh reads it from there, so ci.yml, `mise run verify` and both shared release workflows all install the version this line names, and the script verifies the release signature against a pinned key. The signing-key fingerprint lives in the script, never on a line this manager rewrites.",
+      "managerFilePatterns": ["/^mise\\.toml$/"],
       "matchStrings": [
-        "#\\s*renovate:\\s*datasource=(?<datasource>\\S+)\\s+depName=(?<depName>\\S+)\\s*\\n\\s*(?:(?:GIT_)?CLIFF_VERSION\\s*=\\s*|version:\\s*)\"(?<currentValue>[^\"]+)\""
+        "#\\s*renovate:\\s*datasource=(?<datasource>\\S+)\\s+depName=(?<depName>\\S+)\\s*\\n\\s*GIT_CLIFF_VERSION\\s*=\\s*\"(?<currentValue>[^\"]+)\""
       ],
       "extractVersionTemplate": "^v(?<version>.*)$"
     }

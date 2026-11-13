@@ -1,16 +1,18 @@
 #!/usr/bin/env node
-// Asserts the git-cliff pin lives where Renovate can move it, and that one bump
-// moves every site (go-kure/.github#370).
+// Asserts the git-cliff pin lives where Renovate can move it, and that it is the
+// only place the version is written (go-kure/.github#390).
 //
 // Runs the customManagers regex from renovate.json over the real files, the way
 // Renovate does (file pattern first, then each matchString), and checks:
-//   - mise.toml, release.yml and release-publish.yml each match exactly once,
-//     with depName orhun/git-cliff, datasource github-releases and one value;
-//   - ci.yml matches nothing, because it reads the pin from mise.toml and carries
-//     no literal of its own (a literal there would be a second source of truth).
-// Two controls prove the regex can match at all and can refuse: a made-up pin
-// line in each of the two spellings it must accept, and the same line without
-// the `# renovate:` comment.
+//   - mise.toml matches exactly once, with depName orhun/git-cliff, datasource
+//     github-releases and a value;
+//   - ci.yml, release.yml and release-publish.yml are not selected by the file
+//     pattern and match nothing, because install-git-cliff.sh reads the pin from
+//     mise.toml and a literal in a workflow would be a second source of truth.
+// Controls prove the regex can match at all and can refuse: a made-up pin line
+// must be read, the same line without the `# renovate:` comment must not be, and
+// the old workflow spellings (a CLIFF_VERSION="x" line, a `version: "x"` input)
+// must not be read as a pin.
 //
 // Usage: node renovate-git-cliff-pins-test.mjs [renovate.json]   (run from the repo root)
 
@@ -58,28 +60,28 @@ function extract(text) {
   return found;
 }
 
-const sites = ["mise.toml", ".github/workflows/release.yml", ".github/workflows/release-publish.yml"];
-const values = new Set();
-for (const rel of sites) {
-  check(appliesTo(rel), `${rel}: the manager's file pattern selects it`);
-  const found = extract(readFileSync(join(root, rel), "utf8"));
-  check(found.length === 1, `${rel}: exactly one pin matches (found ${found.length})`);
-  const hit = found[0] ?? {};
-  check(hit.depName === "orhun/git-cliff", `${rel}: depName is orhun/git-cliff (got ${hit.depName})`);
-  check(hit.datasource === "github-releases", `${rel}: datasource is github-releases (got ${hit.datasource})`);
-  values.add(hit.currentValue);
-}
-check(values.size === 1, `every site pins one version (got ${[...values].join(", ")})`);
+const site = "mise.toml";
+check(appliesTo(site), `${site}: the manager's file pattern selects it`);
+const found = extract(readFileSync(join(root, site), "utf8"));
+check(found.length === 1, `${site}: exactly one pin matches (found ${found.length})`);
+const hit = found[0] ?? {};
+check(hit.depName === "orhun/git-cliff", `${site}: depName is orhun/git-cliff (got ${hit.depName})`);
+check(hit.datasource === "github-releases", `${site}: datasource is github-releases (got ${hit.datasource})`);
+check(/^\d+\.\d+\.\d+$/.test(hit.currentValue ?? ""), `${site}: the pin is X.Y.Z (got ${hit.currentValue})`);
 
-const ci = ".github/workflows/ci.yml";
-check(extract(readFileSync(join(root, ci), "utf8")).length === 0, `${ci}: no pin literal (it reads the pin from mise.toml)`);
+for (const rel of [".github/workflows/ci.yml", ".github/workflows/release.yml", ".github/workflows/release-publish.yml"]) {
+  check(!appliesTo(rel), `${rel}: the file pattern does not select it (the installer reads mise.toml)`);
+  check(extract(readFileSync(join(root, rel), "utf8")).length === 0, `${rel}: no pin literal`);
+}
 
 // Controls.
 const header = "# renovate: datasource=github-releases depName=orhun/git-cliff\n";
-for (const line of ['CLIFF_VERSION="9.9.9"', '  CLIFF_VERSION="9.9.9"', 'GIT_CLIFF_VERSION = "9.9.9"']) {
-  const found = extract(header + line + "\n");
-  check(found.length === 1 && found[0].currentValue === "9.9.9", `control: [${line}] is read as 9.9.9`);
-  check(extract(line + "\n").length === 0, `control: [${line}] without its renovate comment is not a pin`);
+const pin = 'GIT_CLIFF_VERSION = "9.9.9"';
+const read = extract(header + pin + "\n");
+check(read.length === 1 && read[0].currentValue === "9.9.9", `control: [${pin}] is read as 9.9.9`);
+check(extract(pin + "\n").length === 0, `control: [${pin}] without its renovate comment is not a pin`);
+for (const line of ['CLIFF_VERSION="9.9.9"', '  CLIFF_VERSION="9.9.9"', 'version: "9.9.9"']) {
+  check(extract(header + line + "\n").length === 0, `control: [${line}] is not a pin any more`);
 }
 
 console.log(`renovate-git-cliff-pins-test: passed ${passed}, failed ${failures} (config ${relative(process.cwd(), configPath) || "renovate.json"})`);
