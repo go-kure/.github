@@ -58,7 +58,7 @@ assert_not_contains() {
 
 for tool in git git-cliff yq; do
     if ! command -v "$tool" >/dev/null 2>&1; then
-        echo "release-test: $tool is required on PATH (git-cliff: the version pinned in .github/workflows/release.yml)" >&2
+        echo "release-test: $tool is required on PATH (git-cliff: run \`mise run tools:git-cliff\`, which installs the version pinned in mise.toml)" >&2
         exit 1
     fi
 done

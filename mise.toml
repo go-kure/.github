@@ -1,7 +1,8 @@
 [tools]
 # Source of truth: ci.yml and settings.yml each read these versions at runtime
 # (their "Read <tool> version from mise.toml" steps), so bumping a version here
-# is the only edit needed — local runs and CI can no longer diverge.
+# is the only edit needed — local runs and CI can no longer diverge. (git-cliff's
+# pin is the one exception to "under [tools]"; see [env] below.)
 actionlint = "1.7.12"
 shellcheck = "0.11.0"
 yq = "4.54.3"
@@ -9,6 +10,19 @@ lychee = "0.24.2"
 # renovate 44 declares engines.node ^24.11.0 (npm refuses to install it on an
 # older runtime) -- needed only to run scripts/test/renovate-lane-policy-test.mjs.
 node = "24"
+
+# git-cliff is not under [tools]: mise would install it from its own backend and
+# skip scripts/release/install-git-cliff.sh, which verifies the release signature
+# against a pinned key. The pin lives here as a plain variable instead, and the
+# tools:git-cliff task installs it through that script, into a directory inside
+# the checkout so no sudo is needed. ci.yml reads this line too, and Renovate
+# bumps it together with the pins in release.yml and release-publish.yml
+# (check-mise-ci-parity.sh holds all of them equal).
+[env]
+# renovate: datasource=github-releases depName=orhun/git-cliff
+GIT_CLIFF_VERSION = "2.14.2"
+GIT_CLIFF_INSTALL_DIR = "{{config_root}}/.tools/bin"
+_.path = ["{{config_root}}/.tools/bin"]
 
 [tasks.lint]
 description = "Lint all workflow YAML"
@@ -70,8 +84,14 @@ run = "bash scripts/check-mise-ci-parity.sh ."
 description = "Run all repo checks (matches the scripts-smoke-test CI job)"
 depends = ["lint:shell", "check:doc-sync", "check:doc-gate", "check:workflow-refs", "check:action-pins", "check:settings-doc", "check:label-docs", "check:pin-bump", "check:mise-ci-parity"]
 
+[tasks."tools:git-cliff"]
+description = "Install the pinned git-cliff (signature-verified) into .tools/bin; does nothing when it is already installed"
+run = 'bash scripts/release/install-git-cliff.sh "$GIT_CLIFF_VERSION"'
+
 [tasks.test]
 description = "Run this repo's own script test suites"
+# release-test.sh runs the real git-cliff, so the suites cannot run without it.
+depends = ["tools:git-cliff"]
 run = """
 bash scripts/test/check-action-pins-test.sh .
 bash scripts/test/check-forbidden-terms-test.sh .
@@ -103,6 +123,7 @@ npm install --no-save --prefix .renovate-lane-test "renovate@${RENOVATE_VERSION}
 npx --prefix .renovate-lane-test renovate-config-validator --no-global renovate/shared.json
 node scripts/test/renovate-lane-policy-test.mjs renovate/shared.json \
   .renovate-lane-test/node_modules/renovate/dist/util/package-rules/index.js
+node scripts/test/renovate-git-cliff-pins-test.mjs renovate.json
 """
 
 [tasks.verify]

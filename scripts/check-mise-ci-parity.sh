@@ -180,10 +180,35 @@ report lint 'ci.yml shellcheck' "$(comm -13 <(printf '%s\n' "$mise_lint") <(prin
 report test 'mise.toml test' "$(comm -23 <(printf '%s\n' "$mise_test") <(printf '%s\n' "$ci_test"))"
 report test 'ci.yml' "$(comm -13 <(printf '%s\n' "$mise_test") <(printf '%s\n' "$ci_test"))"
 
-if [ "$failures" -gt 0 ]; then
-  echo "check-mise-ci-parity: $failures path(s) checked on one side only — add each to the other list" >&2
+# git-cliff pin (go-kure/.github#370): mise.toml [env] GIT_CLIFF_VERSION is the
+# one place ci.yml and `mise run verify` read the version from. The two shared
+# release workflows keep a literal each (callers in other repos run them) and
+# must equal it. A version literal in ci.yml would be a second source of truth.
+mise_pin="$(yq -p toml -o yaml '.env.GIT_CLIFF_VERSION // ""' "$MISE")" || die "cannot parse $MISE"
+[[ "$mise_pin" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "no GIT_CLIFF_VERSION = \"X.Y.Z\" under [env] in $MISE (got '$mise_pin')"
+
+pin_failures=0
+for wf in release release-publish; do
+  file="$ROOT/.github/workflows/$wf.yml"
+  [ -f "$file" ] || die "missing $file"
+  wf_pins="$(sed -n 's/^[[:space:]]*CLIFF_VERSION="\([^"]*\)".*/\1/p' "$file")"
+  [ -n "$wf_pins" ] || die "no CLIFF_VERSION=\"...\" line in $file"
+  while IFS= read -r pin; do
+    if [ "$pin" != "$mise_pin" ]; then
+      echo "FAIL: git-cliff: .github/workflows/$wf.yml pins $pin, mise.toml pins $mise_pin"
+      pin_failures=$((pin_failures + 1))
+    fi
+  done <<< "$wf_pins"
+done
+if grep -Eq '^[[:space:]]*(GIT_)?CLIFF_VERSION[[:space:]]*=' "$CI"; then
+  echo "FAIL: git-cliff: .github/workflows/ci.yml names a version literal; read it from mise.toml"
+  pin_failures=$((pin_failures + 1))
+fi
+
+if [ "$failures" -gt 0 ] || [ "$pin_failures" -gt 0 ]; then
+  echo "check-mise-ci-parity: $((failures + pin_failures)) path(s) checked on one side only — add each to the other list" >&2
   exit 1
 fi
 
-printf 'check-mise-ci-parity: OK (lint %d paths, test %d suites)\n' \
-  "$(printf '%s\n' "$mise_lint" | wc -l)" "$(printf '%s\n' "$mise_test" | wc -l)"
+printf 'check-mise-ci-parity: OK (lint %d paths, test %d suites); git-cliff pin %s held in mise.toml and both release workflows\n' \
+  "$(printf '%s\n' "$mise_lint" | wc -l)" "$(printf '%s\n' "$mise_test" | wc -l)" "$mise_pin"
