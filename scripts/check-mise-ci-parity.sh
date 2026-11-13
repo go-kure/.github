@@ -38,6 +38,11 @@
 # A ci.yml step or job that sets working-directory makes a textual path name a
 # different file, so the check refuses (exit 2) rather than compare it.
 #
+# A third check is not a comparison: mise.toml [env] GIT_CLIFF_VERSION is the one
+# place the git-cliff version is written, and ci.yml, release.yml and
+# release-publish.yml must not set CLIFF_VERSION or GIT_CLIFF_VERSION at all
+# (go-kure/.github#390; the installer reads the pin itself).
+#
 # A path in only one list of a pair fails, unless PARITY_OPT_OUT below names it
 # as "<pair>:<path>". The list starts empty: add an entry only with a comment
 # saying why that script is checked on one side only.
@@ -180,62 +185,45 @@ report lint 'ci.yml shellcheck' "$(comm -13 <(printf '%s\n' "$mise_lint") <(prin
 report test 'mise.toml test' "$(comm -23 <(printf '%s\n' "$mise_test") <(printf '%s\n' "$ci_test"))"
 report test 'ci.yml' "$(comm -13 <(printf '%s\n' "$mise_test") <(printf '%s\n' "$ci_test"))"
 
-# git-cliff pin (go-kure/.github#370): mise.toml [env] GIT_CLIFF_VERSION is the
-# one place ci.yml and `mise run verify` read the version from. The two shared
-# release workflows keep a literal each (callers in other repos run them) and
-# must equal it. A version literal in ci.yml would be a second source of truth.
+# git-cliff pin (go-kure/.github#390): mise.toml [env] GIT_CLIFF_VERSION is the
+# one place the version is written. install-git-cliff.sh reads it from there when
+# given no argument, so ci.yml, release.yml and release-publish.yml name no
+# version and any (GIT_)CLIFF_VERSION they set would be a second source of truth.
+# Two reads per workflow, each for what it understands:
+#   YAML    any mapping, at any depth, with a (GIT_)CLIFF_VERSION key (plain,
+#           quoted or in a flow map), whatever its value.
+#   shell   in the `run:` bodies, an assignment `NAME=value` (after whitespace,
+#           `;`, `&`, `(` or `|`, comments removed). The name in a grep pattern,
+#           a sed expression, a comment or an echoed string is not an
+#           assignment, and `env "NAME=value"` (a quoted argument) is not read:
+#           the check backs up Renovate and review, it is not a shell parser.
 mise_pin="$(yq -p toml -o yaml '.env.GIT_CLIFF_VERSION // ""' "$MISE")" || die "cannot parse $MISE"
 [[ "$mise_pin" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "no GIT_CLIFF_VERSION = \"X.Y.Z\" under [env] in $MISE (got '$mise_pin')"
 
 pin_failures=0
-for wf in release release-publish; do
+for wf in ci release release-publish; do
   file="$ROOT/.github/workflows/$wf.yml"
   [ -f "$file" ] || die "missing $file"
-  wf_pins="$(sed -n 's/^[[:space:]]*CLIFF_VERSION="\([^"]*\)".*/\1/p' "$file")"
-  [ -n "$wf_pins" ] || die "no CLIFF_VERSION=\"...\" line in $file"
-  while IFS= read -r pin; do
-    if [ "$pin" != "$mise_pin" ]; then
-      echo "FAIL: git-cliff: .github/workflows/$wf.yml pins $pin, mise.toml pins $mise_pin"
-      pin_failures=$((pin_failures + 1))
-    fi
-  done <<< "$wf_pins"
+  wf_yaml="$(yq '.. | select(tag == "!!map") | (.CLIFF_VERSION, .GIT_CLIFF_VERSION) | select(. != null)' "$file")" \
+    || die "cannot parse $file"
+  wf_runs="$(yq '.jobs[].steps[].run | select(. != null)' "$file")" || die "cannot parse $file"
+  wf_shell="$(printf '%s\n' "$wf_runs" | sed -E 's/(^|[[:space:]])#.*$//' \
+    | { grep -oE "(^|[[:space:];&(|])(GIT_)?CLIFF_VERSION=" || true; })"
+  if [ -n "$wf_yaml" ] || [ -n "$wf_shell" ]; then
+    echo "FAIL: git-cliff: .github/workflows/$wf.yml names a version literal; the installer reads it from mise.toml"
+    pin_failures=$((pin_failures + 1))
+  fi
 done
-# ci.yml may set CLIFF_VERSION only from an expression (the step output that
-# reads mise.toml). Two reads, each for what it understands:
-#   YAML    every mapping, at any depth, with a (GIT_)CLIFF_VERSION key (plain,
-#           quoted or in a flow map) must hold a value starting with `${{`.
-#   shell   in the `run:` bodies, an assignment `NAME=value` (after whitespace,
-#           `;`, `&`, `(` or `|`, comments removed) must do the same. The name in
-#           a grep pattern, a sed expression, a comment or an echoed string is
-#           not an assignment, and `env "NAME=value"` (a quoted argument) is not
-#           read: the check backs up Renovate and review, it is not a shell parser.
-literal_hits() {
-  yq '.. | select(tag == "!!map") | (.CLIFF_VERSION, .GIT_CLIFF_VERSION) | select(. != null)' "$CI" \
-    || die "cannot parse $CI"
-  printf '%s\n' "$ci_runs" | sed -E 's/(^|[[:space:]])#.*$//' \
-    | { grep -oE "(^|[[:space:];&(|])(GIT_)?CLIFF_VERSION=[\"']?.{0,3}" || true; } | sed -E 's/^[^=]*=//; s/^["'"'"']//'
-}
-ci_hits="$(literal_hits)" || exit 2
-while IFS= read -r value; do
-  [ -n "$value" ] || continue
-  # shellcheck disable=SC2016  # the literal text ${{, not an expansion
-  case "$value" in
-    '${{'*) continue ;;
-  esac
-  echo "FAIL: git-cliff: .github/workflows/ci.yml names a version literal; read it from mise.toml"
-  pin_failures=$((pin_failures + 1))
-  break
-done <<< "$ci_hits"
 
 if [ "$failures" -gt 0 ] || [ "$pin_failures" -gt 0 ]; then
   if [ "$failures" -gt 0 ]; then
     echo "check-mise-ci-parity: $failures path(s) checked on one side only — add each to the other list" >&2
   fi
   if [ "$pin_failures" -gt 0 ]; then
-    echo "check-mise-ci-parity: git-cliff pin problem — make release.yml and release-publish.yml equal mise.toml's GIT_CLIFF_VERSION, and keep ci.yml free of a version literal" >&2
+    echo "check-mise-ci-parity: git-cliff pin problem — remove the CLIFF_VERSION assignment from the workflow; mise.toml's GIT_CLIFF_VERSION is the only place the version is written" >&2
   fi
   exit 1
 fi
 
-printf 'check-mise-ci-parity: OK (lint %d paths, test %d suites); git-cliff pin %s held in mise.toml and both release workflows\n' \
+printf 'check-mise-ci-parity: OK (lint %d paths, test %d suites); git-cliff pin %s held in mise.toml only\n' \
   "$(printf '%s\n' "$mise_lint" | wc -l)" "$(printf '%s\n' "$mise_test" | wc -l)" "$mise_pin"

@@ -293,15 +293,13 @@ table — it hosts rendered site content, not application code) is the one
 repo left in the org on Dependabot, for its single `github-actions` ecosystem.
 
 `.github`'s own `renovate.json` adds one `customManagers` regex entry, for the
-git-cliff version the shared release workflows install (`CLIFF_VERSION` in
-`release.yml` and `release-publish.yml`) and the one `mise.toml` carries
-(`GIT_CLIFF_VERSION` under `[env]`), which `ci.yml` and `mise run verify` read for
-`scripts/test/release-test.sh`. Every site installs through
-`scripts/release/install-git-cliff.sh`, which verifies the release signature
-against a pinned key first (see `standards/release-process.md`). Each site carries a
-`# renovate: datasource=github-releases depName=orhun/git-cliff` line, and one
-depName means a bump moves every site in the same PR, so the release tests run
-on the binary the releases use. A consumer's `mise.toml` git-cliff pin is
+git-cliff version in `mise.toml` (`GIT_CLIFF_VERSION` under `[env]`), the one place
+the version is written. `scripts/release/install-git-cliff.sh` reads it from there,
+so `ci.yml`, `mise run verify` and both shared release workflows install the same
+version, and the script verifies the release signature against a pinned key first
+(see `standards/release-process.md`). The line carries a
+`# renovate: datasource=github-releases depName=orhun/git-cliff` comment, so a bump
+is one edit and the release tests run on the binary the releases use. A consumer's `mise.toml` git-cliff pin is
 tracked separately by that consumer's Renovate, so the release binary and a
 local preview can still differ for the time between the two bumps.
 

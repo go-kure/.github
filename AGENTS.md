@@ -34,10 +34,14 @@ on a line of its own. Other test runners, such as the renovate lane's node scrip
 first (`tools:git-cliff`, through `scripts/release/install-git-cliff.sh`, into `.tools/bin` in the
 checkout, so no `sudo`). The version is `GIT_CLIFF_VERSION` under `[env]` in `mise.toml`, not under
 `[tools]`: mise would install git-cliff from its own backend and skip the installer's signature check.
-`ci.yml` reads the same line. `release.yml` and `release-publish.yml` keep a literal `CLIFF_VERSION`
-each, because callers in other repositories run them; `check-mise-ci-parity.sh` fails when either
-differs from `mise.toml` or when `ci.yml` names a literal, and Renovate moves all three in one PR
-(`scripts/test/renovate-git-cliff-pins-test.mjs`). The installer never waits for a `sudo` password: it
+With no version argument the installer reads that line from the `mise.toml` two directories above
+itself, so `ci.yml`, `release.yml` and `release-publish.yml` name no version at all.
+`check-mise-ci-parity.sh` fails when any of the three sets `CLIFF_VERSION` or `GIT_CLIFF_VERSION`,
+and Renovate bumps only the `mise.toml` line (`scripts/test/renovate-git-cliff-pins-test.mjs`). The
+release workflows find `mise.toml` because their sparse checkout of `scripts/release` runs in cone
+mode, which also checks out the root files; `scripts/test/release-checkout-pin-test.sh` makes that
+checkout and fails if the pin stops arriving with it. A version argument still wins over the file.
+The installer never waits for a `sudo` password: it
 uses `sudo -n` and exits before downloading when that would ask. It creates a missing install
 directory first, and it does nothing when the `git-cliff` in that directory already prints exactly the
 wanted version (a binary elsewhere on `PATH` never counts, because its origin is unknown). In an
