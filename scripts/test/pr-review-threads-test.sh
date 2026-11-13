@@ -8792,17 +8792,16 @@ PRT_TEST_RUNNER_MODE=probe
 # The child of the launcher is there and its stat reads, but its namespace ids read empty (a first
 # process that is going away reads the same as a live one that cannot be identified): the call is
 # abandoned like any other that cannot name its first process, but under its own reason, so the
-# boundary probe can call it inconclusive instead of a leak. The shim gives the finder's one read of
-# the status file (the `read -r key nspid` loop; no other read in the finder names `key`) an empty
-# status, so the chain is real and only that read is empty.
+# boundary probe can call it inconclusive instead of a leak. The shim gives the one read of the
+# status file in `_prt_proc_nspid` (the `read -r -d '' status_text` read; no other read there names
+# `status_text`) an empty status, so the chain is real and only that read is empty.
 rm -f "$PRT_TEST_RUNNER_LOG".*
 # shellcheck disable=SC2016 # shim text evaluated in the child, not an expansion
 prt_ar_nspid_shim_src='read() {
   local shim_arg
   for shim_arg in "$@"; do
-    if [ "$shim_arg" = key ] && [ "${FUNCNAME[1]:-}" = _prt_runner_pid1_record ]; then
-      # End of file at once: the loop that reads the status file ends with an empty answer. A
-      # successful read of an empty line would keep that loop reading for ever.
+    if [ "$shim_arg" = status_text ] && [ "${FUNCNAME[1]:-}" = _prt_proc_nspid ]; then
+      # End of file at once: nothing is read and the answer is empty.
       builtin read "$@" < /dev/null
       return
     fi
@@ -8823,19 +8822,19 @@ assert_eq "assess runner, the namespace ids of the first process read empty: the
 prt_ar_reap_sleepers
 PRT_TEST_RUNNER_MODE=probe
 
-# The same read, empty once and right on the next try (go-kure/.github#372, #395): a live first
-# process can read empty for a moment on a loaded host, so the finder reads again a few times before
-# it gives up. The shim answers end of file to the first read of the status file only, and records
-# that it did, so the case proves the empty read happened and that the call went on to run the
-# runner. It needs no loaded host. A marker file carries the state because the finder may run in a
-# subshell.
+# The same read, empty once and right on the next try (go-kure/.github#372): a live first process
+# can read empty for a moment on a loaded host, so the finder reads again a few times before it gives
+# up. The shim answers end of file to the first read of the status file only (the `status_text` read
+# in `_prt_proc_nspid`), and records that it did, so the case proves the empty read happened and that
+# the call went on to run the runner. It needs no loaded host. A marker file carries the state
+# because the finder may run in a subshell.
 rm -f "$PRT_TEST_RUNNER_LOG".*
 rm -f "$prt_ar_dir/nspid-once"
 # shellcheck disable=SC2016 # shim text evaluated in the child, not an expansion
 prt_ar_nspid_once_shim_src='read() {
   local shim_arg
   for shim_arg in "$@"; do
-    if [ "$shim_arg" = key ] && [ "${FUNCNAME[1]:-}" = _prt_runner_pid1_record ] && [ ! -e "$PRT_AR_NSPID_ONCE" ]; then
+    if [ "$shim_arg" = status_text ] && [ "${FUNCNAME[1]:-}" = _prt_proc_nspid ] && [ ! -e "$PRT_AR_NSPID_ONCE" ]; then
       : > "$PRT_AR_NSPID_ONCE"
       builtin read "$@" < /dev/null
       return
@@ -9224,6 +9223,36 @@ for prt_ar_opt in 'IFS=' 'IFS=:' 'IFS=x' "IFS=\$'\\n'" "IFS=\$'\\n\\t'" 'IFS=012
 done
 unset prt_ar_opt prt_ar_state_base
 fi
+
+# The namespace ids of a process that is changing are read whole. A loop that read the status file a
+# line at a time lost to such a process (bash seeks back after each line, the kernel renders the file
+# again on a seek, and a name that changed length had moved the lines): 54 to 93 of 500 reads came
+# back empty in three runs, which the finder reports as runner-pid1-unread (go-kure/.github#395). The
+# process here rewrites its own name in a loop and never execs, so no namespace is needed and these
+# cases sit outside the namespace gate: they run on a host that forbids one, a CI pod included. Every
+# read of its status must hold the NSpid line (the kernel prints one without PID namespaces too).
+prt_ar_nspid_empty="$(bash -c '
+  source "$1/scripts/lib/prt/model.sh"
+  bash -c "while :; do echo a > /proc/self/comm; echo longername > /proc/self/comm; done" &
+  p=$!
+  command sleep 0.2
+  empty=0
+  for ((i = 0; i < 500; i++)); do
+    _prt_proc_nspid "$p"
+    [ -n "$PRT_PROC_NSPID" ] || empty=$((empty + 1))
+  done
+  kill -KILL "$p" 2> /dev/null
+  echo "$empty"' bash "$ROOT" 2> /dev/null)"
+assert_eq "namespace ids, a process that changes its name all the time: no read of 500 comes back empty" "0" "$prt_ar_nspid_empty"
+assert_eq "namespace ids, a pid that is not there: empty, and the helper still returns 0" "rc=0 nspid=" \
+  "$(bash -c '
+    source "$1/scripts/lib/prt/model.sh"
+    _prt_proc_nspid "$(< /proc/sys/kernel/pid_max)"; echo "rc=$? nspid=$PRT_PROC_NSPID"' bash "$ROOT" 2> /dev/null)"
+assert_eq "namespace ids, this shell: the line names its own pid" "true" \
+  "$(bash -c '
+    source "$1/scripts/lib/prt/model.sh"
+    _prt_proc_nspid "$$"; [[ "$PRT_PROC_NSPID" == "$$"* ]] && echo true || echo false' bash "$ROOT" 2> /dev/null)"
+unset prt_ar_nspid_empty
 
 # go-kure/.github#309: the default prefix sets no_new_privs for every user, not only for root. The
 # builder is tested with a stand-in `id`, so the root and non-root forms are both checked here,
