@@ -313,7 +313,7 @@ jobs:
           done
 
       - name: Run PR review threads
-        uses: go-kure/.github/.github/actions/pr-review-threads@ac530aac6108cec06f27dc29808e2d352cd97870 # placeholder pending the final re-pin to the merge of this change, which carries the file-backend assess fix — base-ref tip, see docs/standards.md "GitHub Actions pinning"
+        uses: go-kure/.github/.github/actions/pr-review-threads@fa951035e532c5b94e2b9d0a2370de90673bb87a # placeholder pending the final re-pin to the merge of this change, which carries the file-backend assess fix — base-ref tip, see docs/standards.md "GitHub Actions pinning"
         with:
           # github-token / bot-login: GITHUB_TOKEN always gets viewerCanResolve:false
           # on threads it authors (GitHub rejects bot/App actors for
