@@ -308,7 +308,7 @@ jobs:
           done
 
       - name: Run PR review threads
-        uses: go-kure/.github/.github/actions/pr-review-threads@a5149d8f998febefb64eb08673cc1d0d7f1fe359 # the merge of go-kure/.github#387, which carries the bounded excluded list and the deletion-only hunk skip — see docs/standards.md "GitHub Actions pinning"
+        uses: go-kure/.github/.github/actions/pr-review-threads@2161f999354ee7060b8cd316044617a301726fb9 # placeholder pending the final re-pin after the orchestrator's own deadline for a stopped process group, go-kure/.github#319 — base-ref tip, see docs/standards.md "GitHub Actions pinning"
         with:
           # github-token / bot-login: GITHUB_TOKEN always gets viewerCanResolve:false
           # on threads it authors (GitHub rejects bot/App actors for
