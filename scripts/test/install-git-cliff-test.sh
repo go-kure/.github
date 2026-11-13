@@ -181,7 +181,7 @@ run_main() {
   mkdir -p "$install_dir"
   MAIN_OUT="$(
     exec 2>&1
-    export PATH="$STUBBIN:$PATH" CURL_FIXTURES="$fixtures" GIT_CLIFF_INSTALL_DIR="$install_dir"
+    export PATH="${EXTRA_PATH:+$EXTRA_PATH:}$STUBBIN:$PATH" CURL_FIXTURES="$fixtures" GIT_CLIFF_INSTALL_DIR="$install_dir"
     # shellcheck source=/dev/null
     source "$MAINDIR/install-git-cliff.sh"
     # shellcheck disable=SC2034  # read by the sourced main()
@@ -220,6 +220,86 @@ assert_rc "main: missing .sig download is refused" 1 "$MAIN_RC"
 assert_contains "main: missing .sig download: reason" "download failed: " "$MAIN_OUT"
 assert_contains "main: missing .sig download: names the .sig URL" "$MAIN_ASSET.sig" "$MAIN_OUT"
 assert_contains "main: missing .sig download: nothing installed" "[]" "[$(ls -A "$WORK/inst-nosig")]"
+
+# 10. An unattended run never waits on a sudo password (go-kure/.github#370).
+#
+# An unattended session cannot answer a password prompt, so a bare `sudo`
+# hangs with an empty log and no exit code, and a hang reads as a slow run.
+# The stub sudo stands in for that: any call without -n is recorded as HANG
+# (a real one would sit there), and a call with -n fails at once unless
+# SUDO_MODE=ok, which is how real `sudo -n` behaves without cached credentials.
+cat > "$STUBBIN/sudo" <<'STUB'
+#!/usr/bin/env bash
+echo "$*" >> "$SUDO_LOG"
+if [ "${1:-}" != -n ]; then
+  echo "HANG: sudo called without -n: $*" >> "$SUDO_LOG"
+  exit 124
+fi
+shift
+[ "${SUDO_MODE:-deny}" = ok ] || exit 1
+# Stand in for the privilege: an install into the read-only dir is allowed.
+[ "${1:-}" = install ] && chmod u+w "$(dirname "${!#}")"
+exec "$@"
+STUB
+chmod +x "$STUBBIN/sudo"
+export SUDO_LOG="$WORK/sudo.log"
+
+# Control: a writable install dir never reaches sudo (a stub that is never
+# called would make the cases below pass for the wrong reason).
+: > "$SUDO_LOG"
+run_main "$WORK/fx-good" "$WORK/inst-writable"
+assert_rc "sudo: writable install dir installs" 0 "$MAIN_RC"
+assert_contains "sudo: writable install dir never calls sudo" "[]" "[$(cat "$SUDO_LOG")]"
+
+# Unwritable dir, no passwordless sudo: refuse at once, name the way out, and
+# never call sudo without -n.
+mkdir -m 555 "$WORK/inst-ro"
+: > "$SUDO_LOG"
+SUDO_MODE=deny run_main "$WORK/fx-good" "$WORK/inst-ro"
+assert_rc "sudo: unwritable dir, no passwordless sudo is refused" 1 "$MAIN_RC"
+assert_contains "sudo: refusal names GIT_CLIFF_INSTALL_DIR" "GIT_CLIFF_INSTALL_DIR" "$MAIN_OUT"
+assert_contains "sudo: no call without -n" "[]" "[$(grep HANG "$SUDO_LOG")]"
+assert_contains "sudo: nothing installed" "[]" "[$(ls -A "$WORK/inst-ro")]"
+
+# Unwritable dir with passwordless sudo: installs through `sudo -n`.
+: > "$SUDO_LOG"
+SUDO_MODE=ok run_main "$WORK/fx-good" "$WORK/inst-ro"
+assert_rc "sudo: unwritable dir with passwordless sudo installs" 0 "$MAIN_RC"
+assert_contains "sudo: the install went through sudo -n" "-n install" "$(cat "$SUDO_LOG")"
+assert_contains "sudo: no call without -n on the success path" "[]" "[$(grep HANG "$SUDO_LOG")]"
+chmod 755 "$WORK/inst-ro"
+
+# 11. A wanted version that is already installed is not downloaded again.
+#
+# The check compares the exact line `git-cliff <version>`. A different, longer
+# (1.2.30 against 1.2.3) or unparsable answer installs, with the signature
+# check, as before. The fixture directory below holds no release asset, so a
+# download attempt fails the run: rc 0 proves nothing was fetched.
+present_stub() {
+  local dir="$1" line="$2"
+  mkdir -p "$dir"
+  printf '#!/bin/sh\necho "%s"\n' "$line" > "$dir/git-cliff"
+  chmod +x "$dir/git-cliff"
+}
+
+present_stub "$WORK/present-ok" "git-cliff ${MAIN_VERSION}"
+EXTRA_PATH="$WORK/present-ok" run_main "$WORK/fx-empty" "$WORK/inst-present"
+assert_rc "present: the wanted version on PATH is not downloaded again" 0 "$MAIN_RC"
+assert_contains "present: says it is already installed" "already installed" "$MAIN_OUT"
+assert_contains "present: installs nothing" "[]" "[$(ls -A "$WORK/inst-present")]"
+
+mkdir -p "$WORK/inst-present-own"
+present_stub "$WORK/inst-present-own" "git-cliff ${MAIN_VERSION}"
+run_main "$WORK/fx-empty" "$WORK/inst-present-own"
+assert_rc "present: the wanted version in the install dir is not downloaded again" 0 "$MAIN_RC"
+
+for other in "git-cliff 1.2.30" "git-cliff 1.2.2" "git-cliff ${MAIN_VERSION}-beta" "not a version line"; do
+  present_stub "$WORK/present-other" "$other"
+  rm -rf "$WORK/inst-other"
+  EXTRA_PATH="$WORK/present-other" run_main "$WORK/fx-good" "$WORK/inst-other"
+  assert_rc "present: [$other] still installs the wanted version" 0 "$MAIN_RC"
+  assert_contains "present: [$other] installs the signed binary" "genuine" "$(cat "$WORK/inst-other/git-cliff" 2>/dev/null)"
+done
 
 echo "passed: $pass_count, failed: $failures"
 [ "$failures" -eq 0 ]

@@ -7,8 +7,11 @@
 #       Renovate-managed CLIFF_VERSION line). Downloads the
 #       x86_64-unknown-linux-gnu .tar.gz and its .tar.gz.sig from the orhun/git-cliff
 #       release, verifies the signature, then installs the binary into
-#       GIT_CLIFF_INSTALL_DIR (default /usr/local/bin; sudo is used only when that
-#       directory is not writable).
+#       GIT_CLIFF_INSTALL_DIR (default /usr/local/bin; `sudo -n` is used only when
+#       that directory is not writable, and the script exits at once, before any
+#       download, when sudo would ask for a password). When the wanted version is
+#       already installed (`git-cliff --version` prints exactly "git-cliff <version>"
+#       from GIT_CLIFF_INSTALL_DIR or PATH), nothing is downloaded or installed.
 #
 # The signature must verify, and its VALIDSIG status line must name
 # GIT_CLIFF_SIGNING_FPR below as the signing key's primary key. The key itself
@@ -84,12 +87,35 @@ verify_git_cliff_archive() {
     return "$rc"
 }
 
+# need_sudo WHAT
+# Succeed only when sudo can run without a password. An unattended run has no
+# way to answer a password prompt, so a bare sudo would wait for ever with no
+# output and no exit code; fail at once and say what to do instead.
+need_sudo() {
+    sudo -n true 2>/dev/null || die "$1 needs root and sudo asks for a password: set GIT_CLIFF_INSTALL_DIR to a writable directory (and install gnupg yourself if gpg is missing)"
+}
+
 ensure_gpg() {
     command -v gpg >/dev/null 2>&1 && return 0
     echo "install-git-cliff: gpg not found, installing gnupg" >&2
-    sudo apt-get update -qq
-    sudo apt-get install -y -qq --no-install-recommends gnupg
+    need_sudo "installing gnupg"
+    sudo -n apt-get update -qq
+    sudo -n apt-get install -y -qq --no-install-recommends gnupg
     command -v gpg >/dev/null 2>&1 || die "gpg still not available after installing gnupg"
+}
+
+# already_installed VERSION INSTALL_DIR
+# Succeed when git-cliff in INSTALL_DIR, or else the first one on PATH, answers
+# --version with exactly "git-cliff VERSION". Any other answer (a different or
+# longer version, an unparsable line, no binary) fails, so the install goes
+# ahead and its signature check runs.
+already_installed() {
+    local version="$1" install_dir="$2" bin
+    for bin in "$install_dir/git-cliff" "$(command -v git-cliff 2>/dev/null || true)"; do
+        [ -n "$bin" ] && [ -x "$bin" ] || continue
+        [ "$("$bin" --version 2>/dev/null || true)" = "git-cliff ${version}" ] && return 0
+    done
+    return 1
 }
 
 main() {
@@ -100,6 +126,15 @@ main() {
     local keyfile install_dir work name url
     keyfile="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/git-cliff-signing-key.asc"
     install_dir="${GIT_CLIFF_INSTALL_DIR:-/usr/local/bin}"
+
+    if already_installed "$version" "$install_dir"; then
+        echo "install-git-cliff: git-cliff ${version} already installed, nothing to do"
+        return 0
+    fi
+
+    # Decide before downloading anything: an install dir this user cannot write
+    # needs passwordless sudo.
+    [ -w "$install_dir" ] || need_sudo "installing into ${install_dir}"
 
     ensure_gpg
 
@@ -121,7 +156,7 @@ main() {
     if [ -w "$install_dir" ]; then
         install -m755 "$work/git-cliff-${version}/git-cliff" "$install_dir/git-cliff"
     else
-        sudo install -m755 "$work/git-cliff-${version}/git-cliff" "$install_dir/git-cliff"
+        sudo -n install -m755 "$work/git-cliff-${version}/git-cliff" "$install_dir/git-cliff"
     fi
     echo "install-git-cliff: installed git-cliff ${version} (signature by ${GIT_CLIFF_SIGNING_FPR} verified) into ${install_dir}"
 }
