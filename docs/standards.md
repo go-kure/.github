@@ -294,7 +294,8 @@ repo left in the org on Dependabot, for its single `github-actions` ecosystem.
 
 `.github`'s own `renovate.json` adds one `customManagers` regex entry, for the
 git-cliff version the shared release workflows install (`CLIFF_VERSION` in
-`release.yml` and `release-publish.yml`) and the one `ci.yml` installs for
+`release.yml` and `release-publish.yml`) and the one `mise.toml` carries
+(`GIT_CLIFF_VERSION` under `[env]`), which `ci.yml` and `mise run verify` read for
 `scripts/test/release-test.sh`. Every site installs through
 `scripts/release/install-git-cliff.sh`, which verifies the release signature
 against a pinned key first (see `standards/release-process.md`). Each site carries a

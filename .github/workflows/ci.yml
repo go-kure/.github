@@ -148,6 +148,8 @@ jobs:
         run: |
           node scripts/test/renovate-lane-policy-test.mjs renovate/shared.json \
             .renovate-lane-test/node_modules/renovate/dist/util/package-rules/index.js
+      - name: renovate-git-cliff-pins-test.mjs — one bump moves every git-cliff pin
+        run: node scripts/test/renovate-git-cliff-pins-test.mjs renovate.json
 
   link-check:
     name: link-check
@@ -296,15 +298,23 @@ jobs:
         run: bash scripts/test/review-pool-revision-test.sh .
       - name: review pool acceptance material digest test suite
         run: bash scripts/test/review-pool-material-digest-test.sh .
-      - name: Install git-cliff
+      - name: Read git-cliff version from mise.toml
+        id: git-cliff-version
         run: |
-          # Renovate bumps this pin together with the other git-cliff pins
-          # (customManagers in renovate.json, one depName).
-          # renovate: datasource=github-releases depName=orhun/git-cliff
-          CLIFF_VERSION="2.14.2"
-          # Verifies the upstream signature against the pinned key before
-          # installing; the same script the release workflows run.
-          bash scripts/release/install-git-cliff.sh "$CLIFF_VERSION"
+          VER=$(grep '^GIT_CLIFF_VERSION = ' mise.toml | sed 's/GIT_CLIFF_VERSION = "\(.*\)"/\1/')
+          if [ -z "$VER" ]; then
+            echo "::error::Failed to parse git-cliff version from mise.toml"
+            exit 1
+          fi
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+      - name: Install git-cliff
+        env:
+          CLIFF_VERSION: ${{ steps.git-cliff-version.outputs.version }}
+        # Verifies the upstream signature against the pinned key before
+        # installing; the same script the release workflows run. Renovate bumps
+        # the pin in mise.toml together with the ones in release.yml and
+        # release-publish.yml (customManagers in renovate.json, one depName).
+        run: bash scripts/release/install-git-cliff.sh "$CLIFF_VERSION"
       - name: install-git-cliff.sh signature-check test suite
         run: bash scripts/test/install-git-cliff-test.sh .
       - name: release.sh and publish-policy.sh test suite (real git and git-cliff)

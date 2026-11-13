@@ -17,6 +17,32 @@ CHECKER="$ROOT/scripts/check-mise-ci-parity.sh"
 failures=0
 pass_count=0
 
+# The git-cliff pin (go-kure/.github#370): mise.toml [env] holds it, and
+# release.yml and release-publish.yml carry a literal each. Every fixture gets
+# all three, equal, so the cases below test what they say; a case sets one of
+# these (FX_MISE_PIN=... run_case ...) to make that file differ. "-" omits the
+# file or the line.
+FX_MISE_PIN=1.2.3
+FX_REL_PIN=1.2.3
+FX_PUB_PIN=1.2.3
+
+# write_pin_files DIR — appends the pin to DIR/mise.toml and writes the two
+# shared workflows next to DIR/.github/workflows/ci.yml.
+write_pin_files() {
+  local dir="$1" wf pin
+  if [ "$FX_MISE_PIN" != "-" ]; then
+    printf '\n[env]\nGIT_CLIFF_VERSION = "%s"\n' "$FX_MISE_PIN" >> "$dir/mise.toml"
+  fi
+  for wf in release:"$FX_REL_PIN" release-publish:"$FX_PUB_PIN"; do
+    pin="${wf#*:}"
+    [ "$pin" = "-" ] && continue
+    # shellcheck disable=SC2016  # literal workflow text, not an expansion
+    printf '%s\n' 'name: x' 'jobs:' '  j:' '    steps:' '      - run: |' \
+      "          CLIFF_VERSION=\"$pin\"" '          bash install-git-cliff.sh "$CLIFF_VERSION"' \
+      > "$dir/.github/workflows/${wf%%:*}.yml"
+  done
+}
+
 # write_fixture DIR MISE_LINT MISE_TESTS CI_LINT CI_TESTS
 # MISE_LINT/CI_LINT: the shellcheck argument string ("" omits the line).
 # MISE_TESTS/CI_TESTS: space-separated suite paths, one bash line each.
@@ -57,6 +83,7 @@ write_fixture() {
     echo '        run: |'
     echo '          echo unrelated'
   } > "$dir/.github/workflows/ci.yml"
+  write_pin_files "$dir"
 }
 
 # run_case DESC EXPECTED_RC EXPECTED_SUBSTRING CHECKER_PATH FIXTURE_ARGS...
@@ -111,6 +138,7 @@ run_raw() {
   mkdir -p "$dir/.github/workflows"
   printf '%s\n' "$4" > "$dir/mise.toml"
   printf '%s\n' "$5" > "$dir/.github/workflows/ci.yml"
+  write_pin_files "$dir"
   out="$(bash "$CHECKER" "$dir" 2>&1)"
   rc=$?
   rm -rf "$dir"
@@ -214,6 +242,25 @@ run_raw "a job default working-directory is refused" 2 "sets working-directory" 
 run_raw "a workflow default working-directory is refused" 2 "sets working-directory" "$MISE_STD" \
   "$(printf '%s\n' 'name: CI' 'on: [push]' 'defaults:' '  run:' '    working-directory: other-checkout' \
      'jobs:' '  smoke:' '    runs-on: ubuntu-latest' '    steps:' "$CI_LINT_STEP" "$CI_A_STEP" "$CI_B_STEP")"
+
+# The git-cliff pin: mise.toml is the one place a version is written for ci.yml;
+# the two shared workflows keep a literal each and must equal it.
+run_case "pin held in all three files passes" 0 "git-cliff pin 1.2.3" "$CHECKER" "$L" "$T" "$L" "$T"
+FX_REL_PIN=1.2.4 run_case "a release.yml pin that differs fails" 1 \
+  "FAIL: git-cliff: .github/workflows/release.yml pins 1.2.4, mise.toml pins 1.2.3" "$CHECKER" "$L" "$T" "$L" "$T"
+FX_PUB_PIN=1.2.4 run_case "a release-publish.yml pin that differs fails" 1 \
+  "FAIL: git-cliff: .github/workflows/release-publish.yml pins 1.2.4, mise.toml pins 1.2.3" "$CHECKER" "$L" "$T" "$L" "$T"
+FX_MISE_PIN=1.2.4 run_case "a mise.toml pin that differs from both workflows fails twice" 1 \
+  "check-mise-ci-parity: 2 path(s)" "$CHECKER" "$L" "$T" "$L" "$T"
+FX_MISE_PIN=- run_case "no pin in mise.toml is fatal, not a pass" 2 "GIT_CLIFF_VERSION" "$CHECKER" "$L" "$T" "$L" "$T"
+FX_MISE_PIN=latest run_case "a mise.toml pin that is not X.Y.Z is fatal" 2 "GIT_CLIFF_VERSION" "$CHECKER" "$L" "$T" "$L" "$T"
+FX_REL_PIN=- run_case "a missing release.yml is fatal" 2 "release.yml" "$CHECKER" "$L" "$T" "$L" "$T"
+run_raw "a version literal in ci.yml fails" 1 \
+  "FAIL: git-cliff: .github/workflows/ci.yml names a version literal" "$MISE_STD" \
+  "$(ci_with "$CI_LINT_STEP" "$CI_A_STEP" "$CI_B_STEP" '      - run: |' '          CLIFF_VERSION="1.2.3"')"
+# shellcheck disable=SC2016  # literal workflow text, not an expansion
+run_raw "ci.yml reading the pin from the step output is not a literal" 0 "git-cliff pin 1.2.3" "$MISE_STD" \
+  "$(ci_with "$CI_LINT_STEP" "$CI_A_STEP" "$CI_B_STEP" '      - env:' '          CLIFF_VERSION: ${{ steps.v.outputs.version }}' '        run: echo go')"
 
 # Opt-out: a copy of the checker with one entry in PARITY_OPT_OUT.
 optdir="$(mktemp -d)"
