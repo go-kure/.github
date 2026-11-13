@@ -2790,8 +2790,9 @@ prt_parts_sedge="$(jq -n '[{fp:"se", file:"s.go", line:1, severity:"low", catego
 prt_parts_clear
 find "$prt_parts_dir" -name 'part-*.suppressed' -delete
 prt_render_overflow_parts '[]' '[]' "$prt_parts_dir" "$prt_parts_sedge" > /dev/null
+prt_parts_i57k="$(head -c 57000 /dev/zero | tr '\0' 'i')"
 assert_eq "prt_render_overflow_parts: a 57000-character issue with 13000 of reasoning keeps all 57000 issue characters" \
-  "true true" "$(awk -v n=57000 'BEGIN { s = sprintf("%*s", n, ""); gsub(/ /, "i", s) } /^\| low \|/ { print (index($0, s) > 0) ? "true" : "false" }' "$prt_parts_dir/part-1.md") $(sup_has "$(grep '^| low |' "$prt_parts_dir/part-1.md")" '[truncated: 13004 of 13004')"
+  "true true" "$(grep -qF -e "$prt_parts_i57k" "$prt_parts_dir/part-1.md" && echo true || echo false) $(sup_has "$(grep '^| low |' "$prt_parts_dir/part-1.md")" '[truncated: 13004 of 13004')"
 # An issue alone over the part is still shortened, after the reasoning is gone, never refused.
 prt_parts_sissue2="$(jq -n '[{fp:"si2", file:"s.go", line:1, severity:"low", category:"c", issue:("j" * 70000), reasoning:"r", verdict:"FALSE_POSITIVE"}]')"
 prt_parts_clear
