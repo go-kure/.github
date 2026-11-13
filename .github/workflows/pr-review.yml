@@ -273,6 +273,27 @@ jobs:
           # started under this checkout could read it.
           persist-credentials: false
 
+      # The review reads this tree and reports against `head-sha`, so fail the job
+      # unless HEAD is that commit and the tree is clean. The status is read into a
+      # variable first: inside `test -z "$(...)"` a failing `git status` prints
+      # nothing and would pass as a clean tree.
+      - name: Assert the checkout is the pull request head and clean
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          head=$(git rev-parse HEAD)
+          if [ "$head" != "$HEAD_SHA" ]; then
+            echo "::error title=pr-review checkout::HEAD is $head, not the pull request head $HEAD_SHA."
+            exit 1
+          fi
+          status=$(git status --porcelain --untracked-files=all)
+          if [ -n "$status" ]; then
+            echo "::error title=pr-review checkout::the working tree is not clean after checkout."
+            printf '%s\n' "$status"
+            exit 1
+          fi
+          echo "checkout is $head, working tree clean"
+
       - name: Setup tools
         run: |
           for cmd in curl jq; do

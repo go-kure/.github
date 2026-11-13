@@ -105,7 +105,10 @@ path is not checked for `..` or an absolute prefix, as `agents-file` is not.
 **Which commit the caller's checkout is.** The workflow checks out the pull request head
 (`github.event.pull_request.head.sha`) with full history, the same commit it attributes its results
 to, instead of the temporary merge commit a `pull_request` event checks out by default. The job only
-runs for same-repository pull requests, so the head carries no fork code. The diff under review
+runs for same-repository pull requests, so the head carries no fork code. A step right after the
+checkout fails the job unless `HEAD` equals that head SHA and `git status --porcelain
+--untracked-files=all` prints nothing, so the review never runs on a different or modified tree.
+The diff under review
 still comes from the GitHub API, not from the checkout. What the checkout feeds the review is
 `agents-file`, `.claude/CLAUDE.md` and, with `standards-source: caller`, the standards file: these
 are now the head's versions, which differ from the merge commit's only when the base branch changed
