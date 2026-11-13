@@ -121,6 +121,19 @@
 #   PR_REVIEW_THREADS_MODE      (default: enforce; vars.PR_REVIEW_THREADS_MODE overrides — see note above)
 #   PR_REVIEW_MAX_FINDINGS_TOTAL (default: 5)
 #
+# Review from the review pool (srgvg/claude-dotfiles#109). Two more `vars.*` repository variables,
+# both off by default:
+#   PR_REVIEW_BACKEND           (default: unset = the proxy, exactly as before; `file` takes the
+#                                 review from a producer job on the review pool. Any other value
+#                                 fails the job: an expression compares strings without regard to
+#                                 case, so a typo must never read as the default)
+#   PR_REVIEW_PRODUCER_BACKEND  (default: claude; the review-run --backend of the producer)
+# With `file`, the `plan` job takes the base from the pull request, the `review-producer` job
+# reviews the head, and this workflow's `pr-review` job downloads the three result files and posts
+# from them. The assessment still goes to the proxy: the other two routes are refused in enforce mode.
+# The first step of `pr-review` refuses to go on unless both new jobs succeeded: a job whose `needs`
+# failed is skipped, and a skipped required check counts as passing.
+#
 # Both model names are sent as the request's `model` field, and the backend
 # maps that name to a Claude Code CLI family alias — opus, sonnet or haiku —
 # then spawns `claude --model <alias>`. Only the family is selectable, so the
@@ -212,10 +225,73 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # The base of the reviewed range, taken from the pull request and never from the producer's own
+  # record: the guide says a record read against itself binds nothing. It is the merge base of the
+  # pull request's base and head, which is what the diff the threads are built from shows.
+  plan:
+    name: Plan the pool review
+    runs-on: autops-kube-kure
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      vars.PR_REVIEW_THREADS_MODE != 'off' &&
+      vars.PR_REVIEW_BACKEND == 'file'
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      base: ${{ steps.base.outputs.base }}
+    steps:
+      - name: Read the merge base of the pull request
+        id: base
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          for cmd in curl jq; do
+            command -v "$cmd" > /dev/null || { echo "::error title=pr-review plan::$cmd is not installed on this runner."; exit 1; }
+          done
+          base=$(curl -fsS --max-time 30 \
+            -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/$REPO/compare/$BASE_SHA...$HEAD_SHA" \
+            | jq -er '.merge_base_commit.sha')
+          if ! [[ "$base" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error title=pr-review plan::the compare API returned '$base', not a commit id."
+            exit 1
+          fi
+          echo "merge base of $BASE_SHA and $HEAD_SHA is $base"
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+
+  # The review itself, on the review pool, by the callable acceptance workflow. It holds the backend
+  # credential and no sandbox, so it reviews only code this repository carries (its own reachability
+  # guard refuses a fork head), and this job is skipped for a fork pull request as well. Called at
+  # main like pr-review-caller.yml calls this file, so there is no second pin to keep.
+  review-producer:
+    name: Review on the review pool
+    needs: plan
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      vars.PR_REVIEW_THREADS_MODE != 'off' &&
+      vars.PR_REVIEW_BACKEND == 'file'
+    permissions:
+      contents: read
+    uses: go-kure/.github/.github/workflows/review-pool-acceptance.yml@main
+    with:
+      backend: ${{ vars.PR_REVIEW_PRODUCER_BACKEND || 'claude' }}
+      revision: ${{ github.event.pull_request.head.sha }}
+      base: ${{ needs.plan.outputs.base }}
+    secrets: inherit
+
   pr-review:
     name: AI Code Review
     runs-on: autops-kube-kure
+    # `!cancelled()` so this job runs after a producer that failed: without it the job is skipped,
+    # and a skipped required check counts as passing. The first step is what then refuses.
+    needs: [plan, review-producer]
     if: >-
+      !cancelled() &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       vars.PR_REVIEW_THREADS_MODE != 'off'
     timeout-minutes: 20
@@ -242,6 +318,35 @@ jobs:
       PR_REVIEW_MAX_FINDINGS_TOTAL: "5"
 
     steps:
+      # The gate for the pool path, and the first step on purpose: nothing below it runs on a review
+      # that was asked for and not delivered. With the switch unset, plan and review-producer are
+      # both skipped and this passes. With it `file`, both must have succeeded. Any other value is
+      # refused, because the jobs above compare it without regard to case and the shell does not.
+      - name: Refuse to continue when the review producer did not succeed
+        env:
+          BACKEND: ${{ vars.PR_REVIEW_BACKEND }}
+          PLAN_RESULT: ${{ needs.plan.result }}
+          PRODUCER_RESULT: ${{ needs.review-producer.result }}
+        run: |
+          case "$BACKEND" in
+            file)
+              if [ "$PLAN_RESULT" != success ] || [ "$PRODUCER_RESULT" != success ]; then
+                echo "::error title=pr-review producer::PR_REVIEW_BACKEND is file, but plan ended '$PLAN_RESULT' and review-producer ended '$PRODUCER_RESULT'. The review was asked for and not delivered, so this check fails rather than passing unreviewed."
+                exit 1
+              fi
+              ;;
+            '')
+              if [ "$PLAN_RESULT" != skipped ] || [ "$PRODUCER_RESULT" != skipped ]; then
+                echo "::error title=pr-review producer::PR_REVIEW_BACKEND is unset, but plan ended '$PLAN_RESULT' and review-producer ended '$PRODUCER_RESULT'. Refusing a state that cannot happen."
+                exit 1
+              fi
+              ;;
+            *)
+              echo "::error title=pr-review producer::PR_REVIEW_BACKEND is '$BACKEND'. It must be unset or exactly 'file'."
+              exit 1
+              ;;
+          esac
+
       # go-kure/.github#156: a PAT whose login is unknown cannot own the
       # threads it opens (ownership needs marker AND author == bot-login), and
       # a bot-login without its PAT names an account the token does not post
@@ -311,6 +416,61 @@ jobs:
               break
             fi
           done
+
+      # The pool path only: fetch what the producer wrote and name it to the action. Nothing here runs
+      # with the switch unset, so the default path's environment is exactly what it was.
+      - name: Download the producer's result files
+        if: vars.PR_REVIEW_BACKEND == 'file'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ needs.review-producer.outputs.artifact }}
+          path: ${{ runner.temp }}/review-artifact
+
+      # The action reads PRT_REVIEW_BACKEND, PRT_FINDINGS_FILE, PRT_REVIEW_BASE_SHA and
+      # PRT_REVIEW_MATERIAL_SHA256 from its calling step's environment, so they are set for the job.
+      # The base is the plan job's, taken from the pull request. The digest is recomputed here from
+      # this checkout with the flags the guide names, never copied from provider.json: a value copied
+      # out of the record would make the importer's comparison read the record against itself.
+      - name: Name the findings file and the identity it must carry
+        if: vars.PR_REVIEW_BACKEND == 'file'
+        env:
+          ARTIFACT_DIR: ${{ runner.temp }}/review-artifact
+          BASE_SHA: ${{ needs.plan.outputs.base }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          out="$ARTIFACT_DIR/out"
+          for name in review.md provider.json findings.json; do
+            if [ ! -s "$out/$name" ]; then
+              echo "::error title=pr-review producer::$out/$name is missing or empty."
+              exit 1
+            fi
+          done
+          # Written to a file first and tested for content: the sha256 of an empty stream is a valid
+          # looking digest, and a failed git inside a pipe would otherwise leave exactly that.
+          diff_file="$RUNNER_TEMP/material.diff"
+          git -c core.quotePath=false -c diff.suppressBlankEmpty=false diff \
+            --no-color --no-ext-diff --no-textconv --no-renames --full-index --binary \
+            --src-prefix=a/ --dst-prefix=b/ --unified=3 --inter-hunk-context=0 \
+            --diff-algorithm=myers --indent-heuristic --no-relative --submodule=short \
+            --ignore-submodules=none -O/dev/null "$BASE_SHA" "$HEAD_SHA" -- > "$diff_file"
+          if [ ! -s "$diff_file" ]; then
+            echo "::error title=pr-review producer::the canonical diff of $BASE_SHA..$HEAD_SHA is empty, so no digest can stand for it."
+            exit 1
+          fi
+          digest=$(sha256sum "$diff_file")
+          digest="${digest%% *}"
+          if ! [[ "$digest" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error title=pr-review producer::the material digest '$digest' is not a sha256."
+            exit 1
+          fi
+          {
+            echo "PRT_REVIEW_BACKEND=file"
+            echo "PRT_FINDINGS_FILE=$out/findings.json"
+            echo "PRT_REVIEW_BASE_SHA=$BASE_SHA"
+            echo "PRT_REVIEW_MATERIAL_SHA256=$digest"
+          } >> "$GITHUB_ENV"
+          echo "findings file $out/findings.json; base $BASE_SHA; material digest $digest"
 
       - name: Run PR review threads
         uses: go-kure/.github/.github/actions/pr-review-threads@24896c034cf7cc32737b5f5a72d0e263132ae1a7 # placeholder pending the final re-pin to the merge of the change that lists suppressed findings in the advisory comment (go-kure/.github#296), which also covers go-kure/.github#306 and go-kure/.github#372 — base-ref tip, see docs/standards.md "GitHub Actions pinning"

@@ -485,6 +485,43 @@ the chunk directory to the call as
 shared wording `review call failed (transport/proxy error, exit 1)` that the rest of this
 document and the tests match on; in file mode the bracketed reason after it is the cause.
 
+## The review from the review pool in `pr-review.yml` (`PR_REVIEW_BACKEND`)
+
+The reusable workflow `pr-review.yml` can take its review from a producer job on the review pool
+instead of the proxy. It is off by default: with the repository variable `PR_REVIEW_BACKEND` unset the
+job runs exactly as before. Set to `file`, three jobs run, for same-repository pull requests only:
+
+| Job | What it does |
+|---|---|
+| `plan` | Reads the merge base of the pull request's base and head from the compare API. The base comes from the pull request, never from the producer's record. |
+| `review-producer` | Calls `review-pool-acceptance.yml` at `main` (as `pr-review-caller.yml` calls `pr-review.yml`, so there is no second pin) with `secrets: inherit`. It reviews the head with the backend in `PR_REVIEW_PRODUCER_BACKEND` (default `claude`) and uploads `review.md`, `provider.json` and `findings.json`. |
+| `pr-review` | The job whose check is `pr-review / AI Code Review`. It downloads the three files, recomputes the material digest from its own checkout with the flags in "Review from a findings file", and sets `PRT_REVIEW_BACKEND=file`, `PRT_FINDINGS_FILE`, `PRT_REVIEW_BASE_SHA` and `PRT_REVIEW_MATERIAL_SHA256` for the action. |
+
+The assessment stays on the proxy. `PRT_ASSESS_ENABLED=false` and `PRT_ASSESS_BACKEND=runner` are both
+refused in enforce mode, so the proxy is the only route that works in every mode, and the runner route
+depends on a process boundary that is not yet shown to hold.
+
+**The first step of `pr-review` fails closed.** A job whose `needs` did not succeed is skipped, and a
+skipped required check counts as passing, so a producer that failed, was cancelled or never started
+would let the pull request through unreviewed. The job therefore runs after a failed producer
+(`!cancelled()`), and its first step refuses unless the switch is unset with both new jobs skipped, or
+`file` with both succeeded. Any other value of the switch is refused, because the jobs compare it
+without regard to case and the shell does not. `scripts/test/pr-review-producer-gate-test.sh` runs the
+step body out of the workflow for each result and checks the job structure.
+
+Limits:
+
+- A range that holds an exact rename is reviewed with `-M100%` by the producer and digested with
+  `--no-renames` here, so such a pull request ends in a red `provenance-mismatch` until the two share
+  one generator.
+- A pull request to this repository cannot exercise this workflow in its own CI, because the called
+  workflow resolves from `main`. Until the switch is set on a repository, the proof is `actionlint`
+  and the structure suite; the first live proof is the pilot.
+- The workflow's concurrency group does not cancel in progress, so a push during a long producer run
+  queues behind it.
+- Whether `secrets: inherit` reaches the producer through two levels of reusable workflow, and whether
+  a repository's runners can use the review pool, are not shown until the first run.
+
 ## Skipping assessment (`PRT_ASSESS_ENABLED`, action input `assess-enabled`)
 
 `true` (the default, also when unset or empty) runs the per-chunk assess call as before. `false`
