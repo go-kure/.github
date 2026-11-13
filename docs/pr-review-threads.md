@@ -663,7 +663,10 @@ that this repository does not build.
 Acceptance needs a CI lane that can run the positive isolation cases. On a host without a PID
 namespace the test suite skips the cases that need one (and says so) but still runs the ones that do
 not: invalid configuration, a prefix that isolates nothing, the check's deadline and the enforce
-refusal. Setting `PRT_TEST_REQUIRE_NAMESPACE=1` turns that skip into a failure, so a lane that must
+refusal. In GitHub Actions the skip also shows as a warning annotation on the run and a line in the
+job summary, so a green job that skipped them says so. The per-pull-request job runs on the general
+CI pool, which forbids the namespace, so it shows that warning today and does not run those cases.
+Setting `PRT_TEST_REQUIRE_NAMESPACE=1` turns that skip into a failure, so a lane that must
 run them cannot pass by skipping. The probe's own fixture suite has the same switch for its
 full-run cases, and the acceptance workflow sets it for both suites.
 
