@@ -469,15 +469,33 @@ prt_exclude_files() {
           n > 0 { print }
         ' <<< "$rec")
         newrec="${rec%%$'\n'@@ *}"$'\n'
-        for ((k = 0; k < ${#hunks[@]}; k++)); do
+        local -a drop=()
+        local last=$((${#hunks[@]} - 1)) tail_k
+        for ((k = 0; k <= last; k++)); do
           hunk="${hunks[$k]}"
           size=${#hunk}   # as prt_split_diff measures: the here-string above ends the last hunk with one more newline
-          if [ "$size" -gt "$ceiling" ] && [[ "$hunk" != *$'\n+'* ]]; then
+          drop[k]=0
+          if [ "$size" -gt "$ceiling" ] && [[ "$hunk" != *$'\n+'* ]]; then drop[k]=1; fi
+        done
+        # Dropping the trailing hunks makes the last kept hunk the last one, and
+        # prt_split_diff measures that one a newline longer: drop it too if that tips
+        # a deletion-only hunk over the ceiling.
+        tail_k=$last
+        while [ "$tail_k" -ge 0 ] && [ "${drop[$tail_k]}" = 1 ]; do tail_k=$((tail_k - 1)); done
+        while [ "$tail_k" -ge 0 ] && [ "$tail_k" -lt "$last" ]; do
+          hunk="${hunks[$tail_k]}"
+          if [ $((${#hunk} + 1)) -le "$ceiling" ] || [[ "$hunk" == *$'\n+'* ]]; then break; fi
+          drop[tail_k]=1
+          while [ "$tail_k" -ge 0 ] && [ "${drop[$tail_k]}" = 1 ]; do tail_k=$((tail_k - 1)); done
+        done
+        for ((k = 0; k <= last; k++)); do
+          hunk="${hunks[$k]}"
+          if [ "${drop[$k]}" = 1 ]; then
             r="$(awk '/^-/ { n++ } END { print n + 0 }' <<< "$hunk")"
             dropped=$((dropped + 1))
             dropped_lines=$((dropped_lines + r))
           else
-            [ "$k" -eq $((${#hunks[@]} - 1)) ] && hunk="${hunk%$'\n'}"
+            [ "$k" -eq "$last" ] && hunk="${hunk%$'\n'}"
             newrec+="$hunk"
             kept=$((kept + 1))
           fi

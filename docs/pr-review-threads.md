@@ -222,17 +222,18 @@ committed npm lockfile failed every dependency PR: the lockfile's single hunk ex
 - **Lockfiles, by exact basename** at any depth (`PRT_EXCLUDED_BASENAMES`): `package-lock.json`,
   `npm-shrinkwrap.json`, `pnpm-lock.yaml`, `yarn.lock`, `go.sum`, `Cargo.lock`, `poetry.lock`,
   `uv.lock`, `composer.lock`, `Gemfile.lock`. The list is fixed in code, not an input. Manifests stay
-  in the reviewed diff: `go.mod`, `package.json`, `Cargo.toml` and the rest are always reviewed.
+  in the reviewed diff: `go.mod`, `package.json`, `Cargo.toml` and the rest are not excluded by
+  name (a deletion-only hunk over the hard ceiling in them still is, see below).
 - **Files the base branch marks `linguist-generated`** (set, or `=true`). Only the root
   `.gitattributes` of the PR's base commit counts. It is read through the contents API at `base.sha`
   (`prt_fetch_base_gitattributes`, `gh.sh`) and evaluated by `git check-attr` in an empty temporary
   repository with system, global and user attribute files disabled (`prt_generated_paths`). The
   head's `.gitattributes` is never read, so a PR cannot exclude its own files by adding an entry.
   Nested `.gitattributes` files are not read. A missing file (404) excludes nothing extra. If the
-  base commit is unknown or the read fails, the run emits a `::warning` and excludes lockfiles only,
-  reviewing every other file.
+  base commit is unknown or the read fails, the run emits a `::warning` and excludes only lockfiles
+  and deletion-only hunks over the hard ceiling, reviewing every other file.
 - **A deletion-only hunk over the hard ceiling**, in a file that is not otherwise excluded
-  (go-kure/.github#374). A hunk with no added line gives the reviewer nothing to comment on, yet a
+  (go-kure/.github#374). A hunk with no added line cannot hold a new defect, yet a
   PR that deletes a large file made the run truncate it and mark itself `REVIEW_INCOMPLETE`. Such a
   hunk is now left out of the reviewed diff and listed as `+0/-N`, with the reason "deletion-only
   hunk over the ceiling". It is measured as `prt_split_diff` measures a hunk. The file's other

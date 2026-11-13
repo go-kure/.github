@@ -882,7 +882,7 @@ prt_render_excluded_section() {
        else empty end)
   ' <<< "$excluded" 2>/dev/null)" || return 1
   printf '### Excluded from review\n\n'
-  printf 'These %s file(s) were not sent to the reviewer: dependency lockfiles by name,\n' "$count"
+  printf 'These %s file(s) were excluded from review, in whole or in part: dependency lockfiles by name,\n' "$count"
   # shellcheck disable=SC2016 # the backticks are markdown code spans, not command substitution
   printf 'files the base branch'\''s `.gitattributes` marks `linguist-generated`, and a hunk over the\n'
   printf 'size limit that only deletes lines (a deletion nobody read). A defect in them\n'
