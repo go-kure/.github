@@ -228,7 +228,12 @@ while IFS= read -r value; do
 done <<< "$ci_hits"
 
 if [ "$failures" -gt 0 ] || [ "$pin_failures" -gt 0 ]; then
-  echo "check-mise-ci-parity: $((failures + pin_failures)) path(s) checked on one side only — add each to the other list" >&2
+  if [ "$failures" -gt 0 ]; then
+    echo "check-mise-ci-parity: $failures path(s) checked on one side only — add each to the other list" >&2
+  fi
+  if [ "$pin_failures" -gt 0 ]; then
+    echo "check-mise-ci-parity: git-cliff pin problem — make release.yml and release-publish.yml equal mise.toml's GIT_CLIFF_VERSION, and keep ci.yml free of a version literal" >&2
+  fi
   exit 1
 fi
 

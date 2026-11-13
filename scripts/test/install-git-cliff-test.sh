@@ -253,20 +253,29 @@ assert_contains "sudo: writable install dir never calls sudo" "[]" "[$(cat "$SUD
 
 # Unwritable dir, no passwordless sudo: refuse at once, name the way out, and
 # never call sudo without -n.
+#
+# Mode 555 makes a directory unwritable only for an unprivileged user: root (a
+# development container) passes the installer's -w check, so the installer
+# correctly never reaches sudo. These cases need the directory to stay
+# unwritable, so they are skipped, and say so, where it does not.
 mkdir -m 555 "$WORK/inst-ro"
-: > "$SUDO_LOG"
-SUDO_MODE=deny run_main "$WORK/fx-good" "$WORK/inst-ro"
-assert_rc "sudo: unwritable dir, no passwordless sudo is refused" 1 "$MAIN_RC"
-assert_contains "sudo: refusal names GIT_CLIFF_INSTALL_DIR" "GIT_CLIFF_INSTALL_DIR" "$MAIN_OUT"
-assert_contains "sudo: no call without -n" "[]" "[$(grep HANG "$SUDO_LOG")]"
-assert_contains "sudo: nothing installed" "[]" "[$(ls -A "$WORK/inst-ro")]"
+if [ -w "$WORK/inst-ro" ]; then
+  echo "SKIP  sudo: mode 555 leaves the directory writable here (running as root); 7 cases not run"
+else
+  : > "$SUDO_LOG"
+  SUDO_MODE=deny run_main "$WORK/fx-good" "$WORK/inst-ro"
+  assert_rc "sudo: unwritable dir, no passwordless sudo is refused" 1 "$MAIN_RC"
+  assert_contains "sudo: refusal names GIT_CLIFF_INSTALL_DIR" "GIT_CLIFF_INSTALL_DIR" "$MAIN_OUT"
+  assert_contains "sudo: no call without -n" "[]" "[$(grep HANG "$SUDO_LOG")]"
+  assert_contains "sudo: nothing installed" "[]" "[$(ls -A "$WORK/inst-ro")]"
 
-# Unwritable dir with passwordless sudo: installs through `sudo -n`.
-: > "$SUDO_LOG"
-SUDO_MODE=ok run_main "$WORK/fx-good" "$WORK/inst-ro"
-assert_rc "sudo: unwritable dir with passwordless sudo installs" 0 "$MAIN_RC"
-assert_contains "sudo: the install went through sudo -n" "-n install" "$(cat "$SUDO_LOG")"
-assert_contains "sudo: no call without -n on the success path" "[]" "[$(grep HANG "$SUDO_LOG")]"
+  # Unwritable dir with passwordless sudo: installs through `sudo -n`.
+  : > "$SUDO_LOG"
+  SUDO_MODE=ok run_main "$WORK/fx-good" "$WORK/inst-ro"
+  assert_rc "sudo: unwritable dir with passwordless sudo installs" 0 "$MAIN_RC"
+  assert_contains "sudo: the install went through sudo -n" "-n install" "$(cat "$SUDO_LOG")"
+  assert_contains "sudo: no call without -n on the success path" "[]" "[$(grep HANG "$SUDO_LOG")]"
+fi
 chmod 755 "$WORK/inst-ro"
 
 # 11. A wanted version already in the install dir is not downloaded again.
