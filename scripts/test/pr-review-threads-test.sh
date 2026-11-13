@@ -2749,6 +2749,14 @@ assert_eq "prt_render_overflow_parts: the whole issue is kept and only the reaso
   "true true" "$(grep -q 'i\{30000\}' "$prt_parts_dir/part-1.md" && echo true || echo false) $(sup_has "$(grep 'RSN' "$prt_parts_dir/part-1.md")" '[truncated:')"
 assert_eq "prt_render_overflow_parts: that part is under the real limit" \
   "true" "$([ "$(prt_parts_max_u16)" -le "$PRT_COMMENT_LIMIT" ] && echo true || echo false)"
+# The boundary: the whole issue plus a fully cut reasoning fits, so no issue text may be cut, even
+# when a 10% step from the start would jump past the issue length (second review round, P2).
+prt_parts_sedge="$(jq -n '[{fp:"se", file:"s.go", line:1, severity:"low", category:"c", issue:("i" * 57000), reasoning:("RSN " + ("r" * 13000)), verdict:"FALSE_POSITIVE"}]')"
+prt_parts_clear
+find "$prt_parts_dir" -name 'part-*.suppressed' -delete
+prt_render_overflow_parts '[]' '[]' "$prt_parts_dir" "$prt_parts_sedge" > /dev/null
+assert_eq "prt_render_overflow_parts: a 57000-character issue with 13000 of reasoning keeps all 57000 issue characters" \
+  "true true" "$(awk -v n=57000 'BEGIN { s = sprintf("%*s", n, ""); gsub(/ /, "i", s) } /^\| low \|/ { print (index($0, s) > 0) ? "true" : "false" }' "$prt_parts_dir/part-1.md") $(sup_has "$(grep '^| low |' "$prt_parts_dir/part-1.md")" '[truncated: 13004 of 13004')"
 # An issue alone over the part is still shortened, after the reasoning is gone, never refused.
 prt_parts_sissue2="$(jq -n '[{fp:"si2", file:"s.go", line:1, severity:"low", category:"c", issue:("j" * 70000), reasoning:"r", verdict:"FALSE_POSITIVE"}]')"
 prt_parts_clear

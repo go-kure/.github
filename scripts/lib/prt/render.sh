@@ -380,8 +380,10 @@ prt_render_overflow_parts() {
           | .issue = (if ($oi | length) > $ik then $oi[0:$ik] + " [truncated: \(($oi | length) - $ik) of \($oi | length) characters omitted]" else $oi end)
           | ( if ($of | length) > $fk then $of[0:$fk] + " [truncated: \(($of | length) - $fk) of \($of | length) characters omitted]" else $of end ) as $cf
           | if $kind == "q" then .fix = $cf elif $kind == "s" then .reasoning = $cf else . end;
-        def fit($keep): cutdown($keep) as $c | if ($c | row | u16len) <= $lim or $keep == 0 then $c else fit(($keep * 0.9 | floor)) end;
-        # A suppressed row cuts its reasoning first and its issue only when the row still does not fit.
+        def next_keep($keep): ($keep * 0.9 | floor) as $n | if $kind == "s" and $keep > ($oi | length) and $n < ($oi | length) then ($oi | length) else $n end;
+        def fit($keep): cutdown($keep) as $c | if ($c | row | u16len) <= $lim or $keep == 0 then $c else fit(next_keep($keep)) end;
+        # A suppressed row cuts its reasoning first and its issue only when the row still does not fit:
+        # next_keep stops once at the whole issue with no reasoning before any issue text is cut.
         fit(if $kind == "s" then ($oi | length) + ($of | length) else [($oi | length), ($of | length), $budget] | max end);
     .[0] as $f | .[1] as $q | .[2] as $s
     | ( [ $q | to_entries[] | {kind: "q", item: .value, gating: (.value.gating == true), rank: (.value | sevrank), pos: .key} ]
