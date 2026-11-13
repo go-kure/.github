@@ -181,6 +181,7 @@ run_main() {
   [ -n "${NO_MKDIR:-}" ] || mkdir -p "$install_dir"
   MAIN_OUT="$(
     exec 2>&1
+    # shellcheck disable=SC2030,SC2031  # each run_* helper exports in its own subshell on purpose: the caller's environment stays clean
     export PATH="${EXTRA_PATH:+$EXTRA_PATH:}$STUBBIN:$PATH" CURL_FIXTURES="$fixtures" GIT_CLIFF_INSTALL_DIR="$install_dir"
     # shellcheck source=/dev/null
     source "$MAINDIR/install-git-cliff.sh"
@@ -323,6 +324,70 @@ NO_MKDIR=1 SUDO_MODE=deny run_main "$WORK/fx-good" "$WORK/fresh/checkout/.tools/
 assert_rc "fresh: a missing install dir under a writable parent installs" 0 "$MAIN_RC"
 assert_contains "fresh: the installed binary is the signed one" "genuine" "$(cat "$WORK/fresh/checkout/.tools/bin/git-cliff" 2>/dev/null)"
 assert_contains "fresh: sudo was never called" "[]" "[$(cat "$SUDO_LOG")]"
+
+# 13. No version argument: the pin in mise.toml, two directories above the script.
+#
+# release.yml, release-publish.yml, ci.yml and `mise run verify` all call the
+# installer with no argument, so the pin is written once, in mise.toml
+# (GIT_CLIFF_VERSION under [env]). The installer finds that file by its own
+# location, the way it finds the key file. Each case copies the script into a
+# throwaway tree, scripts/release/ beside a mise.toml of the case's choosing, and
+# runs main() from there with a stub curl, as case 9 does.
+#
+# run_tree MISE_CONTENT|- FIXTURES INSTALL_DIR [ARGS...] — MISE_CONTENT is the
+# text of the tree's mise.toml, or - for no mise.toml. Sets MAIN_OUT and MAIN_RC.
+TREE_N=0
+run_tree() {
+  local mise="$1" fixtures="$2" install_dir="$3" tree
+  shift 3
+  TREE_N=$((TREE_N + 1))
+  tree="$WORK/tree$TREE_N"
+  mkdir -p "$tree/scripts/release" "$install_dir"
+  cp "$ROOT/scripts/release/install-git-cliff.sh" "$tree/scripts/release/install-git-cliff.sh"
+  cp "$WORK/key-a.asc" "$tree/scripts/release/git-cliff-signing-key.asc"
+  [ "$mise" = - ] || printf '%s\n' "$mise" > "$tree/mise.toml"
+  MAIN_OUT="$(
+    exec 2>&1
+    # shellcheck disable=SC2030,SC2031  # as in run_main: the exports stay inside this subshell
+    export PATH="$STUBBIN:$PATH" CURL_FIXTURES="$fixtures" GIT_CLIFF_INSTALL_DIR="$install_dir"
+    # shellcheck source=/dev/null
+    source "$tree/scripts/release/install-git-cliff.sh"
+    # shellcheck disable=SC2034  # read by the sourced main()
+    GIT_CLIFF_SIGNING_FPR="$FPR_A"
+    main "$@"
+  )"
+  MAIN_RC=$?
+}
+
+PIN_OK=$'[env]\n# renovate: datasource=github-releases depName=orhun/git-cliff\nGIT_CLIFF_VERSION = "'"${MAIN_VERSION}"$'"\nGIT_CLIFF_INSTALL_DIR = "x"'
+
+run_tree "$PIN_OK" "$WORK/fx-good" "$WORK/inst-pin"
+assert_rc "pin: no argument installs the version pinned in mise.toml" 0 "$MAIN_RC"
+assert_contains "pin: the installed binary is the signed one" "genuine" "$(cat "$WORK/inst-pin/git-cliff" 2>/dev/null)"
+assert_contains "pin: the success line names the pinned version" "installed git-cliff ${MAIN_VERSION} " "$MAIN_OUT"
+
+# An explicit argument wins over the file, so a test or a manual run can ask for another version.
+run_tree "${PIN_OK//${MAIN_VERSION}/9.9.9}" "$WORK/fx-good" "$WORK/inst-pin-arg" "$MAIN_VERSION"
+assert_rc "pin: an explicit version wins over mise.toml" 0 "$MAIN_RC"
+assert_contains "pin: the explicit version is the one installed" "installed git-cliff ${MAIN_VERSION} " "$MAIN_OUT"
+
+# Every way the pin can be unreadable stops the run before a download, names mise.toml, installs nothing.
+pin_refused() {
+  local desc="$1" mise="$2" dir="$WORK/inst-pin-bad-$TREE_N"
+  run_tree "$mise" "$WORK/fx-good" "$dir"
+  assert_rc "pin: $desc is refused" 1 "$MAIN_RC"
+  assert_contains "pin: $desc names mise.toml" "mise.toml" "$MAIN_OUT"
+  assert_contains "pin: $desc installs nothing" "[]" "[$(ls -A "$dir")]"
+}
+pin_refused "a missing mise.toml" -
+pin_refused "a mise.toml with no GIT_CLIFF_VERSION" $'[env]\nOTHER = "1"'
+pin_refused "a commented-out pin" $'[env]\n# GIT_CLIFF_VERSION = "1.2.3"'
+pin_refused "a pin that is not X.Y.Z" $'[env]\nGIT_CLIFF_VERSION = "latest"'
+pin_refused "a pin with a leading v" $'[env]\nGIT_CLIFF_VERSION = "v1.2.3"'
+pin_refused "two pin lines" $'[env]\nGIT_CLIFF_VERSION = "1.2.3"\nGIT_CLIFF_VERSION = "1.2.4"'
+
+run_tree "$PIN_OK" "$WORK/fx-good" "$WORK/inst-pin-two" "$MAIN_VERSION" extra
+assert_rc "pin: two arguments are a usage error" 2 "$MAIN_RC"
 
 echo "passed: $pass_count, failed: $failures"
 [ "$failures" -eq 0 ]

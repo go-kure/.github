@@ -2,9 +2,12 @@
 # install-git-cliff.sh — download a git-cliff release binary, verify its
 # upstream OpenPGP signature against a pinned key, and install it.
 #
-#   install-git-cliff.sh <version>
-#       <version> is X.Y.Z, without the leading v (the value of the callers'
-#       Renovate-managed CLIFF_VERSION line). Downloads the
+#   install-git-cliff.sh [<version>]
+#       <version> is X.Y.Z, without the leading v. Left out, it is the
+#       GIT_CLIFF_VERSION under [env] in the mise.toml two directories above this
+#       script: the one place the version is written, which Renovate bumps and
+#       which release.yml, release-publish.yml, ci.yml and `mise run verify` all
+#       read through this script. Downloads the
 #       x86_64-unknown-linux-gnu .tar.gz and its .tar.gz.sig from the orhun/git-cliff
 #       release, verifies the signature, then installs the binary into
 #       GIT_CLIFF_INSTALL_DIR (default /usr/local/bin; `sudo -n` is used only when
@@ -119,9 +122,28 @@ already_installed() {
     [ "$("$bin" --version 2>/dev/null || true)" = "git-cliff ${version}" ]
 }
 
+# pinned_version MISE_TOML
+# Print the X.Y.Z that GIT_CLIFF_VERSION is set to under [env] in MISE_TOML, the
+# one place the version is written. Dies, naming the file, when the file is
+# missing or holds no such line, more than one, or a value that is not X.Y.Z.
+pinned_version() {
+    local mise="$1" lines version
+    [ -f "$mise" ] || die "no $mise: the version is read from GIT_CLIFF_VERSION in the mise.toml two directories above this script (or pass <version>)"
+    lines="$(sed -n 's/^GIT_CLIFF_VERSION = "\(.*\)"[[:space:]]*$/\1/p' "$mise")"
+    [ -n "$lines" ] || die "no GIT_CLIFF_VERSION = \"X.Y.Z\" line in $mise"
+    [ "$(printf '%s\n' "$lines" | wc -l)" -eq 1 ] || die "more than one GIT_CLIFF_VERSION line in $mise"
+    version="$lines"
+    [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "GIT_CLIFF_VERSION in $mise must be X.Y.Z (no leading v), got: $version"
+    printf '%s\n' "$version"
+}
+
 main() {
-    [ $# -eq 1 ] || { echo "Usage: $0 <version>" >&2; exit 2; }
-    local version="$1"
+    local version
+    case $# in
+        0) version="$(pinned_version "$(dirname "${BASH_SOURCE[0]}")/../../mise.toml")" || exit 1 ;;
+        1) version="$1" ;;
+        *) echo "Usage: $0 [<version>]" >&2; exit 2 ;;
+    esac
     [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "install-git-cliff: version must be X.Y.Z (no leading v), got: $version" >&2; exit 2; }
 
     local keyfile install_dir work name url
