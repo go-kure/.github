@@ -461,8 +461,13 @@ step="$dir/identity-step.sh"
 yq -r '.jobs.probe.steps[] | select(.name == "Record the image this probe runs in") | .run' "$WORKFLOW" > "$step"
 assert_eq "identity step: the step text was extracted (control)" "true" \
   "$([ "$(wc -l < "$step")" -gt 10 ] && grep -q 'review-bundle-verify' "$step" && echo true || echo false)"
+# The runner script pin is read from a fixed path under /opt, which a test cannot create: the
+# extracted copy reads the same file from the test directory instead, and nothing else changes.
+pin_file="$dir/runner.sha256"
+sed -i "s|/opt/review-runner/bin/runner.sha256|$pin_file|" "$step"
+assert_eq "identity step: the pin path was redirected into the test directory (control)" "true" \
+  "$(grep -q "$pin_file" "$step" && ! grep -q '/opt/review-runner/bin/' "$step" && echo true || echo false)"
 REAL_CAT="$(command -v cat)"
-REAL_SHA="$(command -v sha256sum)"
 mkdir -p "$dir/ib" "$dir/rr"
 # A stub reads STUB_FIELD (the read to break) and STUB_SHAPE (fail: exit 1; empty: exit 0, no output).
 stub_head='if [ "$STUB_FIELD" = @FIELD@ ]; then [ "$STUB_SHAPE" = fail ] && exit 1; exit 0; fi'
@@ -474,12 +479,10 @@ mkstub hostname hostname 'echo stub-host'
 printf '#!/bin/sh\ncase "$1" in -u) f=uid; v=1001 ;; *) f=gid; v=1002 ;; esac\nif [ "$STUB_FIELD" = "$f" ]; then [ "$STUB_SHAPE" = fail ] && exit 1; exit 0; fi\necho "$v"\n' > "$dir/ib/id"
 printf '#!/bin/sh\nif [ "$1" = /proc/sys/user/max_user_namespaces ]; then\n%s\necho 31337; exit 0; fi\nexec %s "$@"\n' \
   "${stub_head//@FIELD@/namespaces}" "$REAL_CAT" > "$dir/ib/cat"
-printf '#!/bin/sh\nif [ "$1" = /opt/review-runner/bin/runner.sha256 ]; then\n%s\necho "%s  $1"; exit 0; fi\nexec %s "$@"\n' \
-  "${stub_head//@FIELD@/scripts_pin}" "$(printf 'ab%.0s' $(seq 32))" "$REAL_SHA" > "$dir/ib/sha256sum"
-printf '#!/bin/sh\necho stub-record\n' > "$dir/ib/review-bundle-verify"
+mkstub review-bundle-verify bundle 'echo stub-record'
 printf '#!/bin/sh\nexit 22\n' > "$dir/ib/curl"
 printf '#!/bin/sh\nexit 0\n' > "$dir/rr/review-run"
-chmod 755 "$dir/ib/id" "$dir/ib/cat" "$dir/ib/sha256sum" "$dir/ib/review-bundle-verify" "$dir/ib/curl" "$dir/rr/review-run"
+chmod 755 "$dir/ib/id" "$dir/ib/cat" "$dir/ib/curl" "$dir/rr/review-run"
 
 identity_value() { # identity_value KEY OUTPUT -> the value of one field of the record
   local key="$1" out="$2" line
@@ -490,10 +493,16 @@ identity_value() { # identity_value KEY OUTPUT -> the value of one field of the 
   esac
 }
 # FIELD is the STUB_FIELD name; KEY is the field it ends up in.
-identity_cases="hostname:pod_hostname uid:uid gid:gid namespaces:user_max_user_namespaces review_run:review_run_path scripts_pin:runner_scripts_pin"
+identity_cases="hostname:pod_hostname uid:uid gid:gid namespaces:user_max_user_namespaces review_run:review_run_path scripts_pin:runner_scripts_pin bundle:bundle_record_sha256"
+# The pin file is real: healthy it holds text, "fail" removes it, "empty" truncates it (a hash of
+# an empty file is a valid sha256, which is the shape that must not be recorded as an identity).
+PIN_TEXT="pin-text"
 run_identity() { # run_identity FIELD SHAPE -> the step's output, then its exit code on the last line
   local rrdir="$dir/rr" out rc
   [ "$1" = review_run ] && [ "$2" = fail ] && rrdir="$dir/none"
+  printf '%s\n' "$PIN_TEXT" > "$pin_file"
+  if [ "$1" = scripts_pin ] && [ "$2" = fail ]; then rm -f "$pin_file"; fi
+  if [ "$1" = scripts_pin ] && [ "$2" = empty ]; then : > "$pin_file"; fi
   out="$(env -i PATH="$dir/ib:$rrdir:/usr/bin:/bin" TMPDIR="$dir" STUB_FIELD="$1" STUB_SHAPE="$2" bash "$step" 2> /dev/null)"
   rc=$?
   printf '%s\n%s' "$out" "$rc"
@@ -509,13 +518,23 @@ assert_eq "identity step: the healthy user-namespace limit is recorded (control)
   "$(identity_value user_max_user_namespaces "$ok_out")"
 assert_eq "identity step: the healthy review-run path is recorded (control)" "$dir/rr/review-run" \
   "$(identity_value review_run_path "$ok_out")"
-assert_eq "identity step: the healthy runner script pin is recorded (control)" "$(printf 'ab%.0s' $(seq 32))" \
+assert_eq "identity step: the healthy runner script pin is recorded (control)" "$(printf '%s\n' "$PIN_TEXT" | sha256sum | cut -d' ' -f1)" \
   "$(identity_value runner_scripts_pin "$ok_out")"
+assert_eq "identity step: the healthy bundle record hash is recorded (control)" "$(printf 'stub-record\n' | sha256sum | cut -d' ' -f1)" \
+  "$(identity_value bundle_record_sha256 "$ok_out")"
+# A record the tool fails to write stops the step: the identity is then not recorded at all.
+bundle_fail="$(run_identity bundle fail)"
+assert_eq "identity step: bundle fail: the step stops with a failure" "true" \
+  "$([ "${bundle_fail##*$'\n'}" -ne 0 ] && echo true || echo false)"
+assert_eq "identity step: bundle fail: no identity record is written" "false" \
+  "$(printf '%s\n' "${bundle_fail%$'\n'*}" | grep -q '^bundle_record_sha256=' && echo true || echo false)"
 for pair in $identity_cases; do
   field="${pair%%:*}" key="${pair##*:}"
   for shape in fail empty; do
     # review-run is found by command -v, which prints a path or nothing: it has no empty shape.
     [ "$field" = review_run ] && [ "$shape" = empty ] && continue
+    # A failing record stops the step; that shape is the stop case above.
+    [ "$field" = bundle ] && [ "$shape" = fail ] && continue
     run="$(run_identity "$field" "$shape")"
     out="${run%$'\n'*}"
     assert_eq "identity step: $field $shape: the step still exits 0" 0 "${run##*$'\n'}"

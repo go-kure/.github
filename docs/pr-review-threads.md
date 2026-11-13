@@ -680,8 +680,11 @@ fields and fallback text as the identity step of `review-pool-acceptance.yml`: t
 bundle record of `/opt/review-runner`, the registry digest of the `latest` tag (a cross-check that
 reads `unavailable: <reason>` when it fails), the uid and the pod hostname. Every other read of
 the record (the user-namespace limit, the `review-run` path, the runner script pin, the hostname
-and the uid and gid) also reads `unavailable: <reason>` when it fails, never an empty value. The step fails when
-`review-bundle-verify` is absent, because a pod that is not the review image says nothing about it.
+and the uid and gid) also reads `unavailable: <reason>` when it fails, never an empty value. A
+hash of an empty file is a valid sha256 and reads as a real identity, so the bundle record and the
+runner script pin read `unavailable: <reason>` when their file is empty too. The step fails when
+`review-bundle-verify` is absent or fails to write its record, because a pod that is not the review
+image says nothing about it.
 The record covers the review image family and the bundle bytes only. It does not cover the base
 layer where the boundary runs, and the image digest needs a credential the pod does not have, so a
 recorded sha is never proof that the boundary holds. The workflow runs the probe step after a failed suite
