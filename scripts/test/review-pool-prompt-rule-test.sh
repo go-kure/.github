@@ -171,6 +171,16 @@ mutate() {
 }
 
 
+# An unreadable live prompt ends the run with exit 2, as the header says. Left to the cases below it
+# would only count as a failed case and exit 1, the same as a violation, and a reader of the exit
+# code could not tell "the prompt broke the rule" from "this suite read no prompt".
+live_rc=0
+evaluate "$WF" > /dev/null 2>&1 || live_rc=$?
+if [ "$live_rc" -eq 2 ]; then
+  evaluate "$WF" >&2
+  exit 2
+fi
+
 # The live prompt. It states its scope, so a pass cannot be an empty read.
 check 'the live prompt writes the word only in headers, completion lines and its one rule' \
   0 'stray=0' "$WF"
@@ -235,6 +245,23 @@ check 'the word in the sentence of the clean example is refused' \
 check 'a workflow whose PROMPT heredoc is not closed as one is refused as unreadable' \
   2 'could not be rendered' \
   "$(mutate heredoc-broken 's/^\( *\)prompt="\$(cat <<PROMPT$/\1prompt="$(cat <<PROMPT_RENAMED/')"
+
+# The same unreadable prompt as the live workflow, run through this script itself: the exit code is
+# 2, not 1, so a reader of the code can tell an unreadable prompt from a broken rule.
+broken_root="$WORK/broken-root"
+mkdir -p "$broken_root/.github/workflows"
+# shellcheck disable=SC2016  # the $( in the sed script is the workflow's own text, not an expansion
+cp "$(mutate heredoc-broken-live 's/^\( *\)prompt="\$(cat <<PROMPT$/\1prompt="$(cat <<PROMPT_RENAMED/')" \
+  "$broken_root/.github/workflows/review-pool-acceptance.yml"
+broken_rc=0
+bash "$0" "$broken_root" > /dev/null 2>&1 || broken_rc=$?
+if [ "$broken_rc" -eq 2 ]; then
+  PASS=$((PASS + 1))
+  printf 'PASS  an unreadable live prompt makes this script exit 2\n'
+else
+  FAIL=$((FAIL + 1))
+  printf 'FAIL  an unreadable live prompt makes this script exit %s, want 2\n' "$broken_rc"
+fi
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
