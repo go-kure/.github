@@ -201,15 +201,23 @@ for wf in release release-publish; do
   done <<< "$wf_pins"
 done
 # ci.yml may set CLIFF_VERSION only from an expression (the step output that
-# reads mise.toml). Any other value, in a shell assignment (=) or a YAML env
-# entry (:), quoted or not, at the start of a line or after `export`, `env`,
-# `;`, `&&` or `run:`, is a literal. The name must follow whitespace, `;`, `&`,
-# `(`, `|` or a quote, so `'^GIT_CLIFF_VERSION = '` in a grep pattern or a sed
-# expression (how ci.yml reads the pin) is not an assignment.
-while IFS= read -r hit; do
-  value="${hit#*[=:]}"
-  value="${value#"${value%%[![:space:]]*}"}"
-  value="${value#[\"\']}"
+# reads mise.toml). Two reads, each for what it understands:
+#   YAML    every mapping, at any depth, with a (GIT_)CLIFF_VERSION key (plain,
+#           quoted or in a flow map) must hold a value starting with `${{`.
+#   shell   in the `run:` bodies, an assignment `NAME=value` (after whitespace,
+#           `;`, `&`, `(` or `|`, comments removed) must do the same. The name in
+#           a grep pattern, a sed expression, a comment or an echoed string is
+#           not an assignment, and `env "NAME=value"` (a quoted argument) is not
+#           read: the check backs up Renovate and review, it is not a shell parser.
+literal_hits() {
+  yq '.. | select(tag == "!!map") | (.CLIFF_VERSION, .GIT_CLIFF_VERSION) | select(. != null)' "$CI" \
+    || die "cannot parse $CI"
+  printf '%s\n' "$ci_runs" | sed -E 's/(^|[[:space:]])#.*$//' \
+    | { grep -oE "(^|[[:space:];&(|])(GIT_)?CLIFF_VERSION=[\"']?.{0,3}" || true; } | sed -E 's/^[^=]*=//; s/^["'"'"']//'
+}
+ci_hits="$(literal_hits)" || exit 2
+while IFS= read -r value; do
+  [ -n "$value" ] || continue
   # shellcheck disable=SC2016  # the literal text ${{, not an expansion
   case "$value" in
     '${{'*) continue ;;
@@ -217,7 +225,7 @@ while IFS= read -r hit; do
   echo "FAIL: git-cliff: .github/workflows/ci.yml names a version literal; read it from mise.toml"
   pin_failures=$((pin_failures + 1))
   break
-done < <(grep -oE "(^|[[:space:];&(|\"'])(GIT_)?CLIFF_VERSION[[:space:]]*[=:][[:space:]]*[\"']?.{0,3}" "$CI" || true)
+done <<< "$ci_hits"
 
 if [ "$failures" -gt 0 ] || [ "$pin_failures" -gt 0 ]; then
   echo "check-mise-ci-parity: $((failures + pin_failures)) path(s) checked on one side only — add each to the other list" >&2

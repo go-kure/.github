@@ -273,6 +273,19 @@ done
 run_raw "a one-line run: with a literal in ci.yml fails" 1 \
   "FAIL: git-cliff: .github/workflows/ci.yml names a version literal" "$MISE_STD" \
   "$(ci_with "$CI_LINT_STEP" "$CI_A_STEP" "$CI_B_STEP" '      - run: CLIFF_VERSION="9.9.9"; bash x.sh')"
+# YAML is read as YAML, so a quoted key or a flow map is still a literal.
+for lit in '"CLIFF_VERSION": "9.9.9"' "'CLIFF_VERSION': '9.9.9'" 'env: {CLIFF_VERSION: 9.9.9}' "env: {'CLIFF_VERSION': '9.9.9'}"; do
+  run_raw "a YAML form [$lit] in ci.yml fails" 1 \
+    "FAIL: git-cliff: .github/workflows/ci.yml names a version literal" "$MISE_STD" \
+    "$(ci_with "$CI_LINT_STEP" "$CI_A_STEP" "$CI_B_STEP" '      - name: x' "        $lit" '        run: echo go')"
+done
+# Controls: text that is not an assignment never fails the check.
+for text in '# CLIFF_VERSION: 9.9.9' '# export CLIFF_VERSION="9.9.9"' 'echo "CLIFF_VERSION=9.9.9"' 'echo go # CLIFF_VERSION=9.9.9'; do
+  run_raw "not an assignment [$text] in a run body passes" 0 "git-cliff pin 1.2.3" "$MISE_STD" \
+    "$(ci_with "$CI_LINT_STEP" "$CI_A_STEP" "$CI_B_STEP" '      - run: |' "          $text")"
+done
+run_raw "a YAML comment naming the variable passes" 0 "git-cliff pin 1.2.3" "$MISE_STD" \
+  "$(ci_with "$CI_LINT_STEP" "$CI_A_STEP" "$CI_B_STEP" '      # CLIFF_VERSION: 9.9.9' '      - run: echo go')"
 # Controls: the name inside a grep pattern or a sed expression, and a use of the variable, are
 # not assignments. The real ci.yml reads the pin that way.
 # shellcheck disable=SC2016  # literal workflow text, not an expansion
