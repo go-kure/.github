@@ -394,11 +394,12 @@ fi
 # Lockfiles by exact basename, and files the BASE commit's root .gitattributes
 # marks linguist-generated (never the PR head's, so a PR cannot exclude its
 # own files), leave the reviewed diff here; every verdict this run posts names
-# them. A file that is not excluded keeps every hunk: one over the hard
-# ceiling still truncates in prt_split_diff and still fails the run. The
-# attributes read fails safe: when it fails, only the fixed lockfile list is
-# excluded and everything else is reviewed, so a failure can never widen the
-# exclusion.
+# them. A file that is not excluded keeps every hunk, except a deletion-only
+# hunk over the hard ceiling, which prt_exclude_files drops and reports; a hunk
+# with an added line over the ceiling still truncates in prt_split_diff and
+# still fails the run. The attributes read fails safe: when it fails, only the
+# fixed lockfile list and those deletion-only hunks are excluded and everything
+# else is reviewed, so a failure can never widen the exclusion.
 BASE_ATTRS_FILE="$WORKDIR/base.gitattributes"
 : > "$BASE_ATTRS_FILE"
 base_sha="$(jq -r '.base.sha // empty' <<< "$meta_json")"

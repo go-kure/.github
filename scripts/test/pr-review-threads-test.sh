@@ -9822,10 +9822,10 @@ assert_eq "excluded section: a list under the budget is identical in comment and
   "true 0" "$([ "$(prt_render_excluded_section "$xf_few" comment)" = "$(prt_render_excluded_section "$xf_few" summary)" ] && echo true || echo false) $(prt_render_excluded_section "$xf_few" comment | grep -c 'more excluded files')"
 
 # --- go-kure/.github#374: a deletion-only hunk over the hard ceiling is skipped, and reported ---
-# A hunk with no added line gives a reviewer nothing to comment on, yet it used
-# to truncate and fail the run. prt_exclude_files takes the hard ceiling as its
-# 4th argument and drops such a hunk; a hunk with an added line keeps today's
-# behaviour in prt_split_diff.
+# A hunk with no added line over the ceiling used to truncate and fail the run.
+# prt_exclude_files takes the hard ceiling as its 4th argument and drops such a
+# hunk, reported as a deletion nobody read; a hunk with an added line keeps
+# today's behaviour in prt_split_diff.
 xf_ceil=200000
 # xf_del_hunk START COUNT — one hunk deleting COUNT lines of 99 characters each.
 xf_del_hunk() {
