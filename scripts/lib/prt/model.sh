@@ -537,7 +537,7 @@ prt_chunk_scope() {
 # (null line) takes the second rule.
 _prt_call_file() {
   local idx="$1" findings_file="${PRT_FINDINGS_FILE:-}" chunk_dir="${PRT_CHUNK_DIR:-}" \
-        provider chunk_file tmp n=0
+        provider chunk_file tmp records n=0
   _prt_set_model_failure ""
   _prt_set_model_calls 0
   if [ -z "$findings_file" ] || [ -z "$chunk_dir" ] || ! [[ "$idx" =~ ^[0-9]+$ ]] \
@@ -577,25 +577,38 @@ _prt_call_file() {
   # single-argument cap, see _prt_call_proxy), so each chunk's index and file
   # list are written to files, joined into one record per chunk, and read back
   # with --slurpfile.
-  tmp="$(mktemp -d)"
-  if [ -z "$tmp" ] || [ ! -d "$tmp" ]; then
-    _prt_set_model_failure "local-tempdir"
-    return 1
-  fi
-  : > "$tmp/chunks.jsonl"
-  for chunk_file in "$chunk_dir"/chunk-*.diff; do
-    [ -f "$chunk_file" ] || continue
-    if ! prt_build_line_index "$chunk_file" > "$tmp/index.json" \
-       || ! prt_diff_files "$chunk_file" | jq -R -s -c 'split("\n") | map(select(length > 0))' > "$tmp/files.json" \
-       || ! jq -c -n --argjson n "$n" --slurpfile index "$tmp/index.json" --slurpfile files "$tmp/files.json" \
-            '{idx: $n, index: $index[0], files: $files[0]}' >> "$tmp/chunks.jsonl"; then
-      rm -rf "$tmp"
+  # The records are built once per run and kept beside the chunk files, because each call
+  # runs in its own command substitution and no shell variable survives it (go-kure/.github#306).
+  # Built under a private name and renamed, so a failed build leaves no partial record.
+  records="$chunk_dir/.file-backend-chunks.jsonl"
+  if [ ! -s "$records" ]; then
+    tmp="$(mktemp -d)"
+    if [ -z "$tmp" ] || [ ! -d "$tmp" ]; then
+      _prt_set_model_failure "local-tempdir"
+      return 1
+    fi
+    : > "$records.$$"
+    for chunk_file in "$chunk_dir"/chunk-*.diff; do
+      [ -f "$chunk_file" ] || continue
+      if ! prt_build_line_index "$chunk_file" > "$tmp/index.json" \
+         || ! prt_diff_files "$chunk_file" | jq -R -s -c 'split("\n") | map(select(length > 0))' > "$tmp/files.json" \
+         || ! jq -c -n --argjson n "$n" --slurpfile index "$tmp/index.json" --slurpfile files "$tmp/files.json" \
+              '{idx: $n, index: $index[0], files: $files[0]}' >> "$records.$$"; then
+        rm -rf "$tmp"
+        rm -f "$records.$$"
+        _prt_set_model_failure "payload-build"
+        return 1
+      fi
+      n=$((n + 1))
+    done
+    rm -rf "$tmp"
+    if ! mv -f "$records.$$" "$records"; then
+      rm -f "$records.$$"
       _prt_set_model_failure "payload-build"
       return 1
     fi
-    n=$((n + 1))
-  done
-  jq -c --argjson want "$idx" --slurpfile chunks "$tmp/chunks.jsonl" '
+  fi
+  jq -c --argjson want "$idx" --slurpfile chunks "$records" '
     {findings: [.findings[] | . as $f
       | (([$chunks[] | select($f.line != null and ((.index[$f.file] // []) | any(. == $f.line))) | .idx] | .[0])
          // ([$chunks[] | select(.files | any(. == $f.file)) | .idx] | .[0])
@@ -603,11 +616,9 @@ _prt_call_file() {
       | select($at == $want)
       | {file, line, severity, category, issue, fix}]}
   ' "$findings_file" || {
-    rm -rf "$tmp"
     _prt_set_model_failure "payload-build"
     return 1
   }
-  rm -rf "$tmp"
 }
 
 # prt_model_review PROXY_URL MODEL MAX_TOKENS CHUNK_DIFF PR_TITLE PR_DESC \
