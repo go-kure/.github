@@ -571,7 +571,7 @@ jobs:
             # review-run writes `outcome`, never `status`. Selecting `status` emitted
             # "status":null for every valid record and dropped the completed, incomplete, quota
             # and launch-failed classification this record exists to carry.
-            outcome="$(jq -c '{outcome, reason, backend, model, seconds}' "$OUT_DIR/provider.json" 2>&1 || true)"
+            outcome="$(jq -c '{outcome, reason, backend, model, wall_seconds}' "$OUT_DIR/provider.json" 2>&1 || true)"
           fi
 
           file_sha() {
