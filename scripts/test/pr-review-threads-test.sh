@@ -95,6 +95,7 @@ assert_eq "prt_skip_notice: in GitHub Actions it adds one summary line" \
 assert_eq "prt_skip_notice: in GitHub Actions with no summary file it still annotates and does not fail" \
   "2 0" "$(GITHUB_ACTIONS=true prt_summary_file='' prt_skip_notice "$prt_sn_msg" | wc -l | tr -d ' ') $(GITHUB_ACTIONS=true prt_summary_file='' prt_skip_notice "$prt_sn_msg" > /dev/null; echo $?)"
 rm -f "$prt_sn_summary"
+echo "prt_skip_notice: 5 assertions ran"
 
 # prt_test_real_jq — prints the first jq on PATH that a PATH shim can exec. `command -v jq` can name a
 # version-manager shim (for example mise's) that looks `jq` up on PATH again, finds the test's own
