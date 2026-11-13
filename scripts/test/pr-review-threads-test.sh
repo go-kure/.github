@@ -341,7 +341,7 @@ model.sh:idx model.sh:max_tokens model.sh:model model.sh:n \
 model.sh:PRT_HEAD_SHA model.sh:PRT_REVIEW_BASE_SHA model.sh:PRT_REVIEW_MATERIAL_SHA256 \
 model.sh:req_sha \
 reconcile.sh:2 reconcile.sh:cap reconcile.sh:fp reconcile.sh:rank reconcile.sh:sev_rank \
-reconcile.sh:this_cfp render.sh:budget render.sh:mode render.sh:PRT_EXCLUDED_ROWS_MAX_CHARS \
+reconcile.sh:this_cfp render.sh:budget render.sh:sup_overhead render.sh:mode render.sh:PRT_EXCLUDED_ROWS_MAX_CHARS \
 review-adapter.sh:chunk_count review-adapter.sh:n_chunk_failed review-adapter.sh:n_chunk_ok \
 "
 
@@ -2666,6 +2666,176 @@ prt_parts_nogate="$(jq -n '[range(0;3) | {file:"n.go", line:1, severity:"low", c
 prt_parts_clear
 assert_eq "prt_render_overflow_parts: with no merge-gating row the part 1 line says none is" \
   "true" "$(prt_render_overflow_parts '[]' "$prt_parts_nogate" "$prt_parts_dir" >/dev/null; head -1 "$prt_parts_dir/part-1.md" | grep -qF 'None of the withheld findings is merge-gating.' && echo true || echo false)"
+
+# ============================================================ render.sh: suppressed findings in the overflow comment (go-kure/.github#296)
+# A false positive with no thread is never posted as a thread (SUPPRESS). The third argument of
+# prt_render_overflow_comment and the third of prt_render_overflow_parts carry those findings into a
+# collapsed section of the overflow comment, with the assessor's full reasoning, so a person can check
+# the call. They never gate. The job summary keeps its own list (go-kure/.github#183).
+sup_has() { grep -qF -- "$2" <<< "$1" && echo true || echo false; }
+sup_one='[{"fp":"abc123","severity":"High","category":"logic-error","file":"s.go","line":7,"issue":"SUPISSUE first line\nSUPISSUE second line","reasoning":"SUPREASON first line\nSUPREASON second line","verdict":"FALSE_POSITIVE"}]'
+sup_out="$(prt_render_overflow_comment '[]' '[]' "$sup_one")"
+assert_eq "prt_render_overflow_comment: a suppressed finding is listed inside a collapsed <details> section" \
+  "true" "$(sup_has "$sup_out" '<details>')"
+assert_eq "prt_render_overflow_comment: the section is collapsed by default (no open attribute)" \
+  "false" "$(sup_has "$sup_out" '<details open')"
+assert_eq "prt_render_overflow_comment: the summary line names the count" \
+  "true" "$(sup_has "$sup_out" 'Suppressed as false positives (1)')"
+assert_eq "prt_render_overflow_comment: the row carries severity, category, file and line" \
+  "true" "$(sup_has "$sup_out" '| High | logic-error | s.go | 7 |')"
+assert_eq "prt_render_overflow_comment: the whole issue is there, not only its first line" \
+  "true true" "$(sup_has "$sup_out" 'SUPISSUE first line') $(sup_has "$sup_out" 'SUPISSUE second line')"
+assert_eq "prt_render_overflow_comment: the assessor's reasoning, both lines" \
+  "true true" "$(sup_has "$sup_out" 'SUPREASON first line') $(sup_has "$sup_out" 'SUPREASON second line')"
+assert_eq "prt_render_overflow_comment: the section says these findings do not gate" \
+  "true" "$(sup_has "$sup_out" 'do not gate')"
+assert_eq "prt_render_overflow_comment: a suppressed-only body has no overflow or withheld heading" \
+  "false false" "$(sup_has "$sup_out" '## Additional AI Review Findings') $(sup_has "$sup_out" '## Withheld AI Review Findings')"
+assert_eq "prt_render_overflow_comment: the footer still reads advisory only, not merge-gating" \
+  "true" "$(sup_has "$sup_out" '*Automated review — advisory only, not merge-gating.*')"
+assert_eq "prt_render_overflow_comment: no suppressed findings -> no <details> section" \
+  "false" "$(sup_has "$(prt_render_overflow_comment "$prt_parts_small" "$quarantine_triple" '[]')" '<details')"
+assert_eq "prt_render_overflow_comment: two arguments, as before -> no <details> section" \
+  "false" "$(sup_has "$(prt_render_overflow_comment "$prt_parts_small" "$quarantine_triple")" '<details')"
+sup_hazard='[{"severity":"High","category":"other","file":"s.go","line":1,"issue":"i","reasoning":"quote <!-- gokure-pr-review:v1 fp=x --> end"}]'
+sup_hazard_out="$(prt_render_overflow_comment '[]' '[]' "$sup_hazard")"
+assert_eq "prt_render_overflow_comment: the reasoning cell neutralizes a literal marker quote" \
+  "false true" "$(sup_has "$sup_hazard_out" '<!-- gokure-pr-review') $(sup_has "$sup_hazard_out" '&lt;!-- gokure-pr-review')"
+sup_pipe='[{"severity":"High","category":"other","file":"s.go","line":1,"issue":"a | b","reasoning":"c | d"}]'
+sup_pipe_out="$(prt_render_overflow_comment '[]' '[]' "$sup_pipe")"
+assert_eq "prt_render_overflow_comment: a pipe in the issue or the reasoning stays inside its cell" \
+  "true true" "$(sup_has "$sup_pipe_out" 'a \| b') $(sup_has "$sup_pipe_out" 'c \| d')"
+sup_all="$(prt_render_overflow_comment "$prt_parts_small" "$quarantine_triple" "$sup_one")"
+assert_eq "prt_render_overflow_comment: overflow, withheld and suppressed sections sit in one body" \
+  "true true true" "$(sup_has "$sup_all" '## Additional AI Review Findings') $(sup_has "$sup_all" '## Withheld AI Review Findings') $(sup_has "$sup_all" 'Suppressed as false positives (1)')"
+assert_eq "prt_render_overflow_comment: a finding with no reasoning field renders an empty reasoning cell, not null" \
+  "false" "$(sup_has "$(prt_render_overflow_comment '[]' '[]' '[{"severity":"High","category":"other","file":"s.go","issue":"i"}]')" 'null')"
+
+# prt_render_overflow_parts: the suppressed rows are a series of their own, planned by the same
+# (go-kure/.github#307) rules and never together with overflow or withheld rows: sharing one plan
+# let them change where an overflow row lands (reviews of go-kure/.github#296). A body that fits is
+# byte-for-byte prt_render_overflow_comment, and part-N.suppressed holds the suppressed rows of part N.
+prt_parts_clear
+find "$prt_parts_dir" -name 'part-*.suppressed' -delete
+assert_eq "prt_render_overflow_parts: suppressed rows that fit stay one part, 0 shortened" \
+  "1 0" "$(prt_render_overflow_parts '[]' '[]' "$prt_parts_dir" "$sup_one")"
+assert_eq "prt_render_overflow_parts: that part is byte-for-byte prt_render_overflow_comment with the suppressed rows" \
+  "$(prt_render_overflow_comment '[]' '[]' "$sup_one")" "$(cat "$prt_parts_dir/part-1.md")"
+assert_eq "prt_render_overflow_parts: part 1 records one suppressed row" \
+  "1" "$(cat "$prt_parts_dir/part-1.suppressed")"
+assert_eq "prt_render_overflow_parts: it carries no overflow or withheld row" \
+  "0 0" "$(cat "$prt_parts_dir/part-1.counts")"
+prt_parts_mixed_out="$(prt_render_overflow_parts "$prt_parts_small" "$quarantine_triple" "$prt_parts_dir" "$sup_one" 2>/dev/null)"; prt_parts_mixed_rc=$?
+assert_eq "prt_render_overflow_parts: suppressed rows with overflow or withheld rows are refused, with no output" \
+  "1 " "$prt_parts_mixed_rc $prt_parts_mixed_out"
+# Suppressed rows alone pass one part: they split, each row once, each part with its own section.
+prt_parts_s="$(jq -n '[range(0;6) | {fp:"s\(.)", file:"s.go", line:1, severity:"low", category:"c\(.)", issue:("SUPROW-\(.) " + ("z" * 12000)), reasoning:"why", verdict:"FALSE_POSITIVE"}]')"
+prt_parts_clear
+find "$prt_parts_dir" -name 'part-*.suppressed' -delete
+prt_parts_sp="$(prt_render_overflow_parts '[]' '[]' "$prt_parts_dir" "$prt_parts_s")"
+assert_eq "prt_render_overflow_parts: 6 suppressed rows of 12 KB need 2 parts, none shortened" \
+  "2 0" "$prt_parts_sp"
+assert_eq "prt_render_overflow_parts: every suppressed row is posted exactly once across the parts" \
+  "6" "$(cat "$prt_parts_dir"/part-*.md | grep -oE 'SUPROW-[0-9]' | wc -l | tr -d ' ')"
+assert_eq "prt_render_overflow_parts: the suppressed counts of the parts add up to the input" \
+  "6" "$(cat "$prt_parts_dir"/part-*.suppressed | awk '{s += $1} END {print s}')"
+assert_eq "prt_render_overflow_parts: part 1 of a suppressed series says none of its findings gates, and names no withheld finding" \
+  "true false" "$(sup_has "$(head -1 "$prt_parts_dir/part-1.md")" 'None of these findings is merge-gating.') $(sup_has "$(head -1 "$prt_parts_dir/part-1.md")" 'withheld')"
+assert_eq "prt_render_overflow_parts: each part has its own <details> section" \
+  "1 1" "$(for n in 1 2; do grep -c '<details>' "$prt_parts_dir/part-$n.md"; done | paste -sd' ')"
+assert_eq "prt_render_overflow_parts: no part is over the cap (60000 units)" \
+  "true" "$([ "$(prt_parts_max_u16)" -le "$PRT_OVERFLOW_PART_MAX" ] && echo true || echo false)"
+# One suppressed row that alone passes a part is shortened, and the run is told (the truncated count).
+prt_parts_sbig="$(jq -n '[{fp:"big", file:"s.go", line:1, severity:"low", category:"c", issue:"i", reasoning:("BIGREASON " + ("r" * 70000)), verdict:"FALSE_POSITIVE"}]')"
+prt_parts_clear
+find "$prt_parts_dir" -name 'part-*.suppressed' -delete
+assert_eq "prt_render_overflow_parts: a suppressed row over the part cap is shortened and counted" \
+  "1 1" "$(prt_render_overflow_parts '[]' '[]' "$prt_parts_dir" "$prt_parts_sbig")"
+assert_eq "prt_render_overflow_parts: the shortened reasoning ends with a truncated marker" \
+  "true" "$(sup_has "$(cat "$prt_parts_dir/part-1.md")" '[truncated:')"
+# Reasoning text is HTML-encoded, so it cannot hide itself or leave the collapsed section.
+sup_html='[{"severity":"High","category":"other","file":"s.go","line":1,"issue":"i","reasoning":"before <!-- hidden justification --> after </td></tr></tbody></table></details><p>REASON OUTSIDE</p>"}]'
+sup_html_out="$(prt_render_overflow_comment '[]' '[]' "$sup_html")"
+assert_eq "prt_render_overflow_comment: an HTML comment in the reasoning is encoded, not left to hide the text" \
+  "false true" "$(sup_has "$sup_html_out" '<!-- hidden') $(sup_has "$sup_html_out" '&lt;!-- hidden justification --&gt;')"
+assert_eq "prt_render_overflow_comment: a closing details tag in the reasoning cannot close the section early" \
+  "1 1" "$(grep -c '</details>' <<< "$sup_html_out") $(grep -c '<details>' <<< "$sup_html_out")"
+assert_eq "prt_render_overflow_comment: the raw paragraph tag from the reasoning is not in the body" \
+  "false" "$(sup_has "$sup_html_out" '<p>REASON OUTSIDE')"
+# part-N.cut says how many rows of part N were shortened, so the caller counts only a part that posted.
+prt_parts_cut2="$(jq -n '[{fp:"c1", file:"s.go", line:1, severity:"high", category:"c", issue:"i", reasoning:("CUTROW " + ("r" * 70000)), verdict:"FALSE_POSITIVE"}, {fp:"c2", file:"s.go", line:2, severity:"low", category:"c", issue:("SHORTROW " + ("z" * 20000)), reasoning:"why", verdict:"FALSE_POSITIVE"}]')"
+prt_parts_clear
+find "$prt_parts_dir" -name 'part-*.suppressed' -o -name 'part-*.cut' | xargs -r rm -f
+assert_eq "prt_render_overflow_parts: a shortened row and a short row are 2 parts, 1 shortened" \
+  "2 1" "$(prt_render_overflow_parts '[]' '[]' "$prt_parts_dir" "$prt_parts_cut2")"
+assert_eq "prt_render_overflow_parts: part-N.cut puts the shortened row in the part that carries it, and a fitting body has none" \
+  "1 0" "$(cat "$prt_parts_dir/part-1.cut") $(cat "$prt_parts_dir/part-2.cut")"
+prt_parts_clear
+find "$prt_parts_dir" -name 'part-*.suppressed' -delete
+assert_eq "prt_render_overflow_parts: a body that fits has part-1.cut = 0" \
+  "0" "$(prt_render_overflow_parts '[]' '[]' "$prt_parts_dir" "$sup_one" > /dev/null; cat "$prt_parts_dir/part-1.cut")"
+# A suppressed row too large for a part loses its reasoning first and keeps its whole issue when that fits.
+prt_parts_sissue="$(jq -n '[{fp:"si", file:"s.go", line:1, severity:"low", category:"c", issue:("i" * 30000), reasoning:("RSN " + ("r" * 40000)), verdict:"FALSE_POSITIVE"}]')"
+prt_parts_clear
+find "$prt_parts_dir" -name 'part-*.suppressed' -delete
+assert_eq "prt_render_overflow_parts: a 30000-character issue with a 40000-character reasoning is 1 part, 1 shortened" \
+  "1 1" "$(prt_render_overflow_parts '[]' '[]' "$prt_parts_dir" "$prt_parts_sissue")"
+assert_eq "prt_render_overflow_parts: the whole issue is kept and only the reasoning carries the truncated marker" \
+  "true true" "$(grep -q 'i\{30000\}' "$prt_parts_dir/part-1.md" && echo true || echo false) $(sup_has "$(grep 'RSN' "$prt_parts_dir/part-1.md")" '[truncated:')"
+assert_eq "prt_render_overflow_parts: that part is under the real limit" \
+  "true" "$([ "$(prt_parts_max_u16)" -le "$PRT_COMMENT_LIMIT" ] && echo true || echo false)"
+# The boundary: the whole issue plus a fully cut reasoning fits, so no issue text may be cut, even
+# when a 10% step from the start would jump past the issue length (second review round, P2).
+prt_parts_sedge="$(jq -n '[{fp:"se", file:"s.go", line:1, severity:"low", category:"c", issue:("i" * 57000), reasoning:("RSN " + ("r" * 13000)), verdict:"FALSE_POSITIVE"}]')"
+prt_parts_clear
+find "$prt_parts_dir" -name 'part-*.suppressed' -delete
+prt_render_overflow_parts '[]' '[]' "$prt_parts_dir" "$prt_parts_sedge" > /dev/null
+assert_eq "prt_render_overflow_parts: a 57000-character issue with 13000 of reasoning keeps all 57000 issue characters" \
+  "true true" "$(awk -v n=57000 'BEGIN { s = sprintf("%*s", n, ""); gsub(/ /, "i", s) } /^\| low \|/ { print (index($0, s) > 0) ? "true" : "false" }' "$prt_parts_dir/part-1.md") $(sup_has "$(grep '^| low |' "$prt_parts_dir/part-1.md")" '[truncated: 13004 of 13004')"
+# An issue alone over the part is still shortened, after the reasoning is gone, never refused.
+prt_parts_sissue2="$(jq -n '[{fp:"si2", file:"s.go", line:1, severity:"low", category:"c", issue:("j" * 70000), reasoning:"r", verdict:"FALSE_POSITIVE"}]')"
+prt_parts_clear
+find "$prt_parts_dir" -name 'part-*.suppressed' -delete
+assert_eq "prt_render_overflow_parts: a 70000-character suppressed issue is shortened and counted, not refused" \
+  "1 1" "$(prt_render_overflow_parts '[]' '[]' "$prt_parts_dir" "$prt_parts_sissue2")"
+# A suppressed count that cannot be read fails the render, never reads as zero.
+jq() {
+  if [ "${1:-}" = length ] && [ -n "${prt_sup_fail:-}" ]; then
+    echo x >> "$prt_cnt_file"
+    [ "$(wc -l < "$prt_cnt_file")" = "$prt_sup_fail" ] && return 5
+  fi
+  command jq "$@"
+}
+prt_sup_render() { local out rc; : > "$prt_cnt_file"; prt_sup_fail="$1"; out="$(prt_render_overflow_parts '[]' '[]' "$prt_parts_dir" "$sup_one")"; rc=$?; echo "$rc $out"; }
+prt_sup_render 0 > /dev/null
+prt_sup_calls="$(wc -l < "$prt_cnt_file")"
+assert_eq "prt_render_overflow_parts: a body that fits fails when any of its three row counts cannot be read" \
+  "1 |1 |1 " "$(for k in 1 2 3; do prt_sup_render "$((prt_sup_calls - k + 1))"; done | paste -sd'|')"
+unset -f jq prt_sup_render
+unset prt_sup_fail
+prt_parts_clear
+find "$prt_parts_dir" -name 'part-*.suppressed' -delete
+
+# prt_render_clean_comment_superseded: the 9th argument is how many suppressed rows reached a posted
+# part. With it above 0, the all-suppressed case points at the comment instead of saying nothing was
+# rendered, and the other cases name the suppressed findings as listed there.
+superseded_sup_posted="$(prt_render_clean_comment_superseded 'def4567890def4567890def4567890def4567890' 2 0 2 0 0 0 0 2)"
+assert_eq "prt_render_clean_comment_superseded: all suppressed and posted -> points at the advisory comment" \
+  "true" "$(sup_has "$superseded_sup_posted" 'advisory comment')"
+assert_eq "prt_render_clean_comment_superseded: all suppressed and posted -> says they are listed there with the reasoning" \
+  "true" "$(sup_has "$superseded_sup_posted" 'listed there')"
+assert_eq "prt_render_clean_comment_superseded: all suppressed and posted -> no longer says nothing renders them" \
+  "false" "$(sup_has "$superseded_sup_posted" 'never rendered')"
+assert_eq "prt_render_clean_comment_superseded: all suppressed and posted -> still names the finding count" \
+  "true" "$(sup_has "$superseded_sup_posted" '2 finding(s)')"
+superseded_sup_failed="$(prt_render_clean_comment_superseded 'def4567890def4567890def4567890def4567890' 2 0 2 0 0 0 0 0)"
+assert_eq "prt_render_clean_comment_superseded: all suppressed and none posted -> does not point at a comment that was not posted" \
+  "false" "$(sup_has "$superseded_sup_failed" 'advisory comment')"
+assert_eq "prt_render_clean_comment_superseded: all suppressed and none posted -> says the job summary lists them" \
+  "true" "$(sup_has "$superseded_sup_failed" 'job summary')"
+superseded_sup_mixed="$(prt_render_clean_comment_superseded 'def4567890def4567890def4567890def4567890' 4 1 2 1 0 0 0 2)"
+assert_eq "prt_render_clean_comment_superseded: overflow plus posted suppressed rows -> names both as in the comment" \
+  "true true" "$(sup_has "$superseded_sup_mixed" 'advisory comment') $(sup_has "$superseded_sup_mixed" 'suppressed findings are listed there')"
 
 # Longest CONTIGUOUS run of each given character on the line read from stdin, space separated, in
 # argument order. This is the property the full-text assertion below needs (an unbroken run of
@@ -5464,6 +5634,46 @@ unset prt_orch_shim prt_orch_real_jq
 PRT_TEST_MODEL_RESPONSE_MODE=clean
 rm -f "$PRT_TEST_ISSUE_COMMENT_BODY_FILE"
 unset PRT_TEST_ISSUE_COMMENT_BODY_FILE
+
+# ---- go-kure/.github#296: a suppressed false positive is listed in the advisory comment, end to end ----
+# One finding the assessor judges a false positive, with no thread to match: no thread is created, and
+# the only comment posted is the suppressed-findings comment, with no overflow or withheld table.
+PRT_TEST_ISSUE_COMMENT_BODY_FILE="$(mktemp)"
+PRT_TEST_MODEL_RESPONSE_MODE=clean_with_finding
+PRT_TEST_ASSESS_RESPONSE_MODE=false_positive_survivor
+PRT_TEST_OWNED_FP="deadbeefcafebabe"
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "orchestrator go-kure/.github#296: a lone false positive -> exits 0, no thread, done line reports suppressed=1" \
+  "0 0 true" "$rc $(cat "$PRT_TEST_CREATE_COUNTFILE") $(grep -qE 'done: findings=1 .*suppressed=1 ' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator go-kure/.github#296: the suppressed finding is listed in a collapsed section of the posted comment" \
+  "true true" "$(grep -qF '<details>' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && echo true || echo false) $(grep -qF 'Suppressed as false positives (1)' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && echo true || echo false)"
+assert_eq "orchestrator go-kure/.github#296: that comment has no overflow or withheld table" \
+  "false false" "$(grep -qF 'Additional AI Review Findings' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && echo true || echo false) $(grep -qF 'Withheld AI Review Findings' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && echo true || echo false)"
+assert_eq "orchestrator go-kure/.github#296: the run is complete and every finding is accounted for" \
+  "false false" "$(grep -qF 'accounting mismatch' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(grep -qF 'could not be rendered' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+# Advisory mode never posts it: the suppressed comment is enforce only.
+: > "$PRT_TEST_ISSUE_COMMENT_BODY_FILE"
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "orchestrator go-kure/.github#296: advisory mode posts no suppressed-findings comment" \
+  "false" "$(grep -qF 'Suppressed as false positives' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && echo true || echo false)"
+# A suppressed-findings comment that fails to post: the run is incomplete, the reason names that
+# comment, and a superseded clean verdict does not point at a comment that is not there.
+PRT_TEST_ISSUE_COMMENT_LOG="$(mktemp)"
+PRT_TEST_WRITE_FAIL_BODY_MATCH='Suppressed as false positives'
+prt_sf_saved_list="${PRT_TEST_ISSUE_COMMENTS_LIST:-}"
+PRT_TEST_ISSUE_COMMENTS_LIST='[{"id":88,"user":{"login":"test-bot[bot]"},"body":"old clean\n<!-- gokure-pr-review:v1-clean -->"}]'
+rc="$(run_orchestrator enforce 0 0 0)"
+PRT_TEST_ISSUE_COMMENTS_LIST="$prt_sf_saved_list"
+assert_eq "orchestrator go-kure/.github#296: a suppressed-findings comment that fails to post -> exits 1 and names that comment" \
+  "1 true" "$rc $(grep -qF 'failed to post suppressed-findings comment (HTTP 500)' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator go-kure/.github#296: the superseded clean verdict then says the job summary lists them, and points at no comment" \
+  "true false" "$(grep -qF 'the job summary of this run does' "$PRT_TEST_ISSUE_COMMENT_LOG" && echo true || echo false) $(grep -qF 'listed there' "$PRT_TEST_ISSUE_COMMENT_LOG" && echo true || echo false)"
+rm -f "$PRT_TEST_ISSUE_COMMENT_LOG"
+unset PRT_TEST_ISSUE_COMMENT_LOG PRT_TEST_WRITE_FAIL_BODY_MATCH
+rm -f "$PRT_TEST_ISSUE_COMMENT_BODY_FILE"
+unset PRT_TEST_ISSUE_COMMENT_BODY_FILE
+PRT_TEST_MODEL_RESPONSE_MODE=clean
+PRT_TEST_ASSESS_RESPONSE_MODE=clean
 
 # ---- go-kure/.github#192: the OVERFLOW path end to end ----
 # Seven distinct VALID findings against the default cap of 5: three High and
