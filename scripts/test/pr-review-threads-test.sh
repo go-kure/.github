@@ -7074,6 +7074,39 @@ unset PRT_TEST_REVIEW_BACKEND PRT_TEST_FINDINGS_FILE PRT_TEST_REVIEW_BASE_SHA PR
 PRT_TEST_TWO_FILE_DIFF=0
 rm -rf "$prt_fo_dir"
 
+# A finding that names a file no chunk shows is still served, from chunk 0, so it is never
+# dropped. Chunk 0's diff is not the code it names, so the assess call must not be handed it:
+# the finding goes on unverdicted, and the one in x.go is still assessed (srgvg/claude-dotfiles#109).
+prt_fu_dir="$(mktemp -d)"
+cat > "$prt_fu_dir/findings.json" <<'FUFINDINGS'
+{"format":"review-findings-v1","findings":[
+ {"file":"x.go","line":1,"severity":"high","category":"logic-error","issue":"issue-for-x","fix":"fix-x","klass":"blocking","claim":"cx"},
+ {"file":"y.go","line":1,"severity":"high","category":"race","issue":"issue-for-y","fix":"fix-y","klass":"blocking","claim":"cy"},
+ {"file":"z.go","line":1,"severity":"high","category":"other","issue":"issue-for-z","fix":"fix-z","klass":"blocking","claim":"cz"}
+]}
+FUFINDINGS
+jq -n '{format:"review-run-v1", outcome:"completed", backend:"x", identity:{root:"/r", head:"1111111111111111111111111111111111111111", base:"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", material_sha256:"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", input_sha256:"d", add_dirs:[]}}' \
+  > "$prt_fu_dir/provider.json"
+PRT_TEST_REVIEW_BACKEND="file"
+PRT_TEST_FINDINGS_FILE="$prt_fu_dir/findings.json"
+PRT_TEST_REVIEW_BASE_SHA="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+PRT_TEST_REVIEW_MATERIAL_SHA256="cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+PRT_TEST_TWO_FILE_DIFF=1
+PRT_TEST_CREATE_BODY_LOG="$(mktemp)"
+PRT_TEST_MODEL_REQUEST_LOG="$(mktemp)"
+rc="$(run_orchestrator enforce 0 0 0 150)"
+assert_eq "file backend, unplaced finding: the run still exits 0" "0" "$rc"
+# The file backend makes no review call, so every request in the log is an assess request.
+assert_eq "file backend, unplaced finding: the placed findings are assessed (the log sees assess requests)" \
+  "true true" "$(grep -qF 'issue-for-x' "$PRT_TEST_MODEL_REQUEST_LOG" && echo true || echo false) $(grep -qF 'issue-for-y' "$PRT_TEST_MODEL_REQUEST_LOG" && echo true || echo false)"
+assert_eq "file backend, unplaced finding: it is not sent to an assess call with a diff that lacks its file" \
+  "false" "$(grep -qF 'issue-for-z' "$PRT_TEST_MODEL_REQUEST_LOG" && echo true || echo false)"
+assert_eq "file backend, unplaced finding: it is still reported, not dropped" \
+  "true" "$(grep -qF 'issue-for-z' "$PRT_TEST_CREATE_BODY_LOG" && echo true || echo false)"
+unset PRT_TEST_REVIEW_BACKEND PRT_TEST_FINDINGS_FILE PRT_TEST_REVIEW_BASE_SHA PRT_TEST_REVIEW_MATERIAL_SHA256 PRT_TEST_CREATE_BODY_LOG PRT_TEST_MODEL_REQUEST_LOG
+PRT_TEST_TWO_FILE_DIFF=0
+rm -rf "$prt_fu_dir"
+
 # A findings file whose findings together exceed the kernel's single-argument
 # limit (131072 bytes) must reach the report intact. 6 findings of ~24 KiB
 # each are ~144 KiB: before findings travelled over stdin the accumulator

@@ -796,6 +796,26 @@ for ((i = 0; i < chunk_idx; i++)); do
     assessed_fault "$i"
     continue
   fi
+  # PRT_REVIEW_BACKEND=file serves a finding that names a file no chunk shows from chunk 0
+  # (model.sh, _prt_call_file), so it is never dropped. Chunk 0's diff is not the code it
+  # names, so an assessor handed both would judge the finding against the wrong code. Such a
+  # finding is kept, unverdicted, and not assessed; the chunk is credited for the rest.
+  if [ "${PRT_REVIEW_BACKEND:-}" = file ] && [ "$(jq 'length' <<< "$chunk_findings")" -gt 0 ]; then
+    if ! chunk_files="$(prt_diff_files "$chunk_file" | jq -R -s -c 'split("\n") | map(select(length > 0))')" ||
+       ! chunk_split="$({ printf '%s\n' "$chunk_files"; printf '%s\n' "$chunk_findings"; } | jq -sce '
+            .[0] as $files | .[1]
+            | {shown: map(select(.file as $f | $files | any(. == $f))),
+               unshown: map(select(.file as $f | $files | any(. == $f) | not))}')" ||
+       ! chunk_findings="$(jq -ce '.shown' <<< "$chunk_split")" ||
+       ! chunk_unshown="$(jq -ce '.unshown' <<< "$chunk_split")"; then
+      assessed_fault "$i"
+      continue
+    fi
+    if [ "$(jq 'length' <<< "$chunk_unshown")" -gt 0 ]; then
+      assessed_append_unverdicted "$i" "$chunk_unshown" || continue
+      prt_log "chunk $((i + 1))/$chunk_count: $(jq 'length' <<< "$chunk_unshown") finding(s) name a file this chunk does not show, kept unverdicted"
+    fi
+  fi
   if [ "$(jq 'length' <<< "$chunk_findings")" -eq 0 ]; then
     [ -n "${CHUNK_REVIEW_FAILED[$i]:-}" ] || chunk_ok_count=$((chunk_ok_count + 1))
     continue
