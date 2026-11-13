@@ -178,7 +178,7 @@ make_release_archive() {
 # run_main FIXTURES INSTALL_DIR — sets MAIN_OUT (stdout+stderr) and MAIN_RC.
 run_main() {
   local fixtures="$1" install_dir="$2"
-  mkdir -p "$install_dir"
+  [ -n "${NO_MKDIR:-}" ] || mkdir -p "$install_dir"
   MAIN_OUT="$(
     exec 2>&1
     export PATH="${EXTRA_PATH:+$EXTRA_PATH:}$STUBBIN:$PATH" CURL_FIXTURES="$fixtures" GIT_CLIFF_INSTALL_DIR="$install_dir"
@@ -269,12 +269,15 @@ assert_contains "sudo: the install went through sudo -n" "-n install" "$(cat "$S
 assert_contains "sudo: no call without -n on the success path" "[]" "[$(grep HANG "$SUDO_LOG")]"
 chmod 755 "$WORK/inst-ro"
 
-# 11. A wanted version that is already installed is not downloaded again.
+# 11. A wanted version already in the install dir is not downloaded again.
 #
-# The check compares the exact line `git-cliff <version>`. A different, longer
-# (1.2.30 against 1.2.3) or unparsable answer installs, with the signature
-# check, as before. The fixture directory below holds no release asset, so a
-# download attempt fails the run: rc 0 proves nothing was fetched.
+# Only the binary in the install dir counts, because that is where this script
+# puts a verified one. A binary elsewhere on PATH reports a version but has no
+# known provenance, so it never replaces the signature check. The check compares
+# the exact line `git-cliff <version>`: a different, longer (1.2.30 against
+# 1.2.3) or unparsable answer installs, with the signature check, as before. The
+# empty fixture directory holds no release asset, so a download attempt fails
+# the run: rc 0 proves nothing was fetched.
 present_stub() {
   local dir="$1" line="$2"
   mkdir -p "$dir"
@@ -282,24 +285,35 @@ present_stub() {
   chmod +x "$dir/git-cliff"
 }
 
-present_stub "$WORK/present-ok" "git-cliff ${MAIN_VERSION}"
-EXTRA_PATH="$WORK/present-ok" run_main "$WORK/fx-empty" "$WORK/inst-present"
-assert_rc "present: the wanted version on PATH is not downloaded again" 0 "$MAIN_RC"
-assert_contains "present: says it is already installed" "already installed" "$MAIN_OUT"
-assert_contains "present: installs nothing" "[]" "[$(ls -A "$WORK/inst-present")]"
-
-mkdir -p "$WORK/inst-present-own"
 present_stub "$WORK/inst-present-own" "git-cliff ${MAIN_VERSION}"
 run_main "$WORK/fx-empty" "$WORK/inst-present-own"
 assert_rc "present: the wanted version in the install dir is not downloaded again" 0 "$MAIN_RC"
+assert_contains "present: says it is already installed" "already installed" "$MAIN_OUT"
+
+# The same stub elsewhere on PATH does not count: the signed binary is installed.
+present_stub "$WORK/present-path" "git-cliff ${MAIN_VERSION}"
+EXTRA_PATH="$WORK/present-path" run_main "$WORK/fx-good" "$WORK/inst-path-only"
+assert_rc "present: a matching binary only on PATH still installs" 0 "$MAIN_RC"
+assert_contains "present: a matching binary only on PATH is replaced by the signed one" "genuine" "$(cat "$WORK/inst-path-only/git-cliff" 2>/dev/null)"
 
 for other in "git-cliff 1.2.30" "git-cliff 1.2.2" "git-cliff ${MAIN_VERSION}-beta" "not a version line"; do
-  present_stub "$WORK/present-other" "$other"
   rm -rf "$WORK/inst-other"
-  EXTRA_PATH="$WORK/present-other" run_main "$WORK/fx-good" "$WORK/inst-other"
-  assert_rc "present: [$other] still installs the wanted version" 0 "$MAIN_RC"
-  assert_contains "present: [$other] installs the signed binary" "genuine" "$(cat "$WORK/inst-other/git-cliff" 2>/dev/null)"
+  present_stub "$WORK/inst-other" "$other"
+  run_main "$WORK/fx-good" "$WORK/inst-other"
+  assert_rc "present: [$other] in the install dir still installs the wanted version" 0 "$MAIN_RC"
+  assert_contains "present: [$other] is replaced by the signed binary" "genuine" "$(cat "$WORK/inst-other/git-cliff" 2>/dev/null)"
 done
+
+# 12. A missing install dir under a writable parent is created without sudo.
+#
+# A fresh checkout has no .tools/bin, and a missing directory is not writable,
+# so the first run must create it before the writability test. The run_main
+# helper normally creates the dir itself, which hid this (found on the cluster).
+: > "$SUDO_LOG"
+NO_MKDIR=1 SUDO_MODE=deny run_main "$WORK/fx-good" "$WORK/fresh/checkout/.tools/bin"
+assert_rc "fresh: a missing install dir under a writable parent installs" 0 "$MAIN_RC"
+assert_contains "fresh: the installed binary is the signed one" "genuine" "$(cat "$WORK/fresh/checkout/.tools/bin/git-cliff" 2>/dev/null)"
+assert_contains "fresh: sudo was never called" "[]" "[$(cat "$SUDO_LOG")]"
 
 echo "passed: $pass_count, failed: $failures"
 [ "$failures" -eq 0 ]

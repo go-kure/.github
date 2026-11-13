@@ -200,10 +200,21 @@ for wf in release release-publish; do
     fi
   done <<< "$wf_pins"
 done
-if grep -Eq '^[[:space:]]*(GIT_)?CLIFF_VERSION[[:space:]]*=' "$CI"; then
+# ci.yml may set CLIFF_VERSION only from an expression (the step output that
+# reads mise.toml). Any other value, in a shell assignment (=) or a YAML env
+# entry (:), quoted or not, is a literal.
+while IFS= read -r line; do
+  value="${line#*[=:]}"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value#[\"\']}"
+  # shellcheck disable=SC2016  # the literal text ${{, not an expansion
+  case "$value" in
+    '${{'*) continue ;;
+  esac
   echo "FAIL: git-cliff: .github/workflows/ci.yml names a version literal; read it from mise.toml"
   pin_failures=$((pin_failures + 1))
-fi
+  break
+done < <(grep -E '^[[:space:]-]*(GIT_)?CLIFF_VERSION[[:space:]]*[=:]' "$CI" || true)
 
 if [ "$failures" -gt 0 ] || [ "$pin_failures" -gt 0 ]; then
   echo "check-mise-ci-parity: $((failures + pin_failures)) path(s) checked on one side only — add each to the other list" >&2

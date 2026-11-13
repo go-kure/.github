@@ -38,8 +38,10 @@ checkout, so no `sudo`). The version is `GIT_CLIFF_VERSION` under `[env]` in `mi
 each, because callers in other repositories run them; `check-mise-ci-parity.sh` fails when either
 differs from `mise.toml` or when `ci.yml` names a literal, and Renovate moves all three in one PR
 (`scripts/test/renovate-git-cliff-pins-test.mjs`). The installer never waits for a `sudo` password: it
-uses `sudo -n` and exits before downloading when that would ask, and it does nothing when
-`git-cliff --version` already prints exactly the wanted version. In an unattended run, set
+uses `sudo -n` and exits before downloading when that would ask. It creates a missing install
+directory first, and it does nothing when the `git-cliff` in that directory already prints exactly the
+wanted version (a binary elsewhere on `PATH` never counts, because its origin is unknown). In an
+unattended run, set
 `GIT_CLIFF_INSTALL_DIR` to a writable directory instead of installing into `/usr/local/bin`.
 
 ## Repository Structure

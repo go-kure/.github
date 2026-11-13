@@ -493,7 +493,9 @@ by hand once its provenance is settled.
   git-cliff's own installation docs. The script installs into `GIT_CLIFF_INSTALL_DIR` (default
   `/usr/local/bin`); when that directory is not writable it uses `sudo -n` and stops before any
   download if sudo would ask for a password, so an unattended run fails at once instead of
-  hanging. It does nothing when `git-cliff --version` already prints exactly the wanted version.
+  hanging. It creates a missing install directory first. It does nothing when the `git-cliff` in
+  that directory already prints exactly the wanted version; a binary elsewhere on `PATH` never
+  counts, because its origin is unknown.
 - **Identity.** Release commits and tags are pushed by the `kure-release-bot` GitHub App (secrets
   `KURE_BOT_APP_ID` and `KURE_BOT_APP_PRIVATE_KEY`), the one actor allowed to push past the
   protection of `main` and `release/*`. Automation reuses this identity rather than minting a new
