@@ -2317,10 +2317,6 @@ for overflow_series in main suppressed; do
       series_dir="$WORKDIR/suppressed-parts"
       ;;
   esac
-  # Whether this series posted whole is read on its own: the shortened count below goes to the
-  # superseded text only for a series that posted, never for rows of a part that failed to post.
-  overflow_posted_before="$OVERFLOW_COMMENT_POSTED"
-  OVERFLOW_COMMENT_POSTED=true
   overflow_truncated=0
   if [ "$PRT_MODE" = enforce ] && [ "$series_count" -gt 0 ]; then
     # The body is split into parts when one comment would pass GitHub's
@@ -2372,10 +2368,13 @@ for overflow_series in main suppressed; do
           if prt_gh_rest POST "/repos/${PRT_REPO}/issues/${PRT_PR_NUMBER}/comments" \
             "$overflow_payload" >/dev/null; then
             if read -r overflow_part_f overflow_part_q < "$overflow_dir/part-${overflow_part}.counts" &&
-               read -r overflow_part_s < "$overflow_dir/part-${overflow_part}.suppressed"; then
+               read -r overflow_part_s < "$overflow_dir/part-${overflow_part}.suppressed" &&
+             read -r overflow_part_c < "$overflow_dir/part-${overflow_part}.cut"; then
               overflow_posted_len=$((overflow_posted_len + overflow_part_f))
               quarantined_posted_len=$((quarantined_posted_len + overflow_part_q))
               suppressed_posted_len=$((suppressed_posted_len + overflow_part_s))
+            # Only a shortened row that reached a posted part is a row whose cut text a reader can see.
+            overflow_truncated_total=$((overflow_truncated_total + overflow_part_c))
             else
               # The part posted but its row counts are unreadable: credit nothing
               # for it, so the supersede text errs toward "re-check", never
@@ -2394,8 +2393,6 @@ for overflow_series in main suppressed; do
       OVERFLOW_COMMENT_POSTED=false
     fi
   fi
-  [ "$OVERFLOW_COMMENT_POSTED" != true ] || overflow_truncated_total=$((overflow_truncated_total + overflow_truncated))
-  [ "$overflow_posted_before" = true ] || OVERFLOW_COMMENT_POSTED=false
 done
 
 # --- Clean-verdict comment (enforce mode only; GitLab mr-review.yml parity,

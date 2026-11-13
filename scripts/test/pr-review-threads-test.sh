@@ -2724,6 +2724,18 @@ assert_eq "prt_render_overflow_comment: a closing details tag in the reasoning c
   "1 1" "$(grep -c '</details>' <<< "$sup_html_out") $(grep -c '<details>' <<< "$sup_html_out")"
 assert_eq "prt_render_overflow_comment: the raw paragraph tag from the reasoning is not in the body" \
   "false" "$(sup_has "$sup_html_out" '<p>REASON OUTSIDE')"
+# part-N.cut says how many rows of part N were shortened, so the caller counts only a part that posted.
+prt_parts_cut2="$(jq -n '[{fp:"c1", file:"s.go", line:1, severity:"high", category:"c", issue:"i", reasoning:("CUTROW " + ("r" * 70000)), verdict:"FALSE_POSITIVE"}, {fp:"c2", file:"s.go", line:2, severity:"low", category:"c", issue:("SHORTROW " + ("z" * 20000)), reasoning:"why", verdict:"FALSE_POSITIVE"}]')"
+prt_parts_clear
+find "$prt_parts_dir" -name 'part-*.suppressed' -o -name 'part-*.cut' | xargs -r rm -f
+assert_eq "prt_render_overflow_parts: a shortened row and a short row are 2 parts, 1 shortened" \
+  "2 1" "$(prt_render_overflow_parts '[]' '[]' "$prt_parts_dir" "$prt_parts_cut2")"
+assert_eq "prt_render_overflow_parts: part-N.cut puts the shortened row in the part that carries it, and a fitting body has none" \
+  "1 0" "$(cat "$prt_parts_dir/part-1.cut") $(cat "$prt_parts_dir/part-2.cut")"
+prt_parts_clear
+find "$prt_parts_dir" -name 'part-*.suppressed' -delete
+assert_eq "prt_render_overflow_parts: a body that fits has part-1.cut = 0" \
+  "0" "$(prt_render_overflow_parts '[]' '[]' "$prt_parts_dir" "$sup_one" > /dev/null; cat "$prt_parts_dir/part-1.cut")"
 # A suppressed row too large for a part loses its reasoning first and keeps its whole issue when that fits.
 prt_parts_sissue="$(jq -n '[{fp:"si", file:"s.go", line:1, severity:"low", category:"c", issue:("i" * 30000), reasoning:("RSN " + ("r" * 40000)), verdict:"FALSE_POSITIVE"}]')"
 prt_parts_clear

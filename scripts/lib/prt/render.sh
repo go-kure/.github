@@ -321,15 +321,15 @@ prt_overflow_part_line() {
 # (go-kure/.github#307, rules in the doc named above). Each part is rendered by
 # prt_render_overflow_comment on that part's rows, and OUTDIR/part-N.counts holds
 # "OVERFLOW WITHHELD", how many rows of each kind that part carries, and
-# OUTDIR/part-N.suppressed holds its suppressed row count (the caller sums the
-# parts that posted). Suppressed rows (go-kure/.github#296) are planned last. T counts the findings that
+# OUTDIR/part-N.suppressed holds its suppressed row count and OUTDIR/part-N.cut how many of
+# its rows were shortened (the caller sums the parts that posted). Suppressed rows (go-kure/.github#296) are planned last. T counts the findings that
 # had to be shortened: their cut text is not in any posted part, so the
 # caller marks the run incomplete when T > 0.
 # Returns 1 with nothing printed on any fault, including a part that still
 # exceeds PRT_COMMENT_LIMIT.
 prt_render_overflow_parts() {
   local findings="$1" quarantined="$2" outdir="$3" suppressed="${4:-[]}"
-  local overhead reserve budget plan total truncated n i part_f part_q part_s body line gating_last count_f count_q count_s
+  local overhead reserve budget plan total truncated n i part_f part_q part_s part_c body line gating_last count_f count_q count_s
   local dummy_f='[{"severity":"","category":"","file":"","issue":""}]'
   local dummy_q='[{"severity":"","category":"","file":"","issue":"","fix":"","gating":true}]'
   local dummy_s='[{"severity":"","category":"","file":"","issue":"","reasoning":""}]'
@@ -351,6 +351,7 @@ prt_render_overflow_parts() {
     count_s="$(jq 'length' <<< "$suppressed" 2>/dev/null)" || return 1
     printf '%s %s\n' "$count_f" "$count_q" > "$outdir/part-1.counts" || return 1
     printf '%s\n' "$count_s" > "$outdir/part-1.suppressed" || return 1
+    printf '0\n' > "$outdir/part-1.cut" || return 1
     printf '1 0\n'
     return 0
   fi
@@ -406,15 +407,16 @@ prt_render_overflow_parts() {
             then . as $e | .item = ($e.item | shorten($e.kind)) | .cut = true | .cost = (if .kind == "s" then $budget - $sup else $budget end)
             else .cost = $cost + 1 | .cut = false end
         ) ) as $sized
-    | ( reduce $sized[] as $e ({parts: [], cur: {f: [], q: [], s: [], used: 0}};
+    | ( reduce $sized[] as $e ({parts: [], cur: {f: [], q: [], s: [], c: 0, used: 0}};
           def extra: if $e.kind == "s" and (.cur.s | length) == 0 then $sup else 0 end;
           if (.cur.used + $e.cost + extra) > $budget and (.cur.f + .cur.q + .cur.s | length) > 0
-          then .parts += [.cur] | .cur = {f: [], q: [], s: [], used: 0}
+          then .parts += [.cur] | .cur = {f: [], q: [], s: [], c: 0, used: 0}
           else . end
           | extra as $x
           | if $e.kind == "q" then .cur.q += [$e.item] elif $e.kind == "s" then .cur.s += [$e.item] else .cur.f += [$e.item] end
+          | .cur.c += (if $e.cut then 1 else 0 end)
           | .cur.used += $e.cost + $x
-        ) | .parts + [.cur] | map({f, q, s, g: ([.q[] | select(.gating == true)] | length)}) ) as $parts
+        ) | .parts + [.cur] | map({f, q, s, c, g: ([.q[] | select(.gating == true)] | length)}) ) as $parts
     | "\($parts | length) \([$sized[] | select(.cut)] | length)",
       ($parts[] | tojson)
   ' 2>/dev/null)" || return 1
@@ -429,6 +431,8 @@ prt_render_overflow_parts() {
     part_f="$(jq -c '.f' <<< "$line" 2>/dev/null)" || return 1
     part_q="$(jq -c '.q' <<< "$line" 2>/dev/null)" || return 1
     part_s="$(jq -c '.s' <<< "$line" 2>/dev/null)" || return 1
+    part_c="$(jq -r '.c' <<< "$line" 2>/dev/null)" || return 1
+    [[ "$part_c" =~ ^[0-9]+$ ]] || return 1
     body="$(prt_render_overflow_comment "$part_f" "$part_q" "$part_s")" || return 1
     n="$(prt_overflow_part_line "$i" "$total" "$gating_last" "$truncated" "$suppressed_only")" || return 1
     body="$(printf '%s\n\n%s' "$n" "$body")"
@@ -439,6 +443,7 @@ prt_render_overflow_parts() {
     count_s="$(jq 'length' <<< "$part_s" 2>/dev/null)" || return 1
     printf '%s %s\n' "$count_f" "$count_q" > "$outdir/part-${i}.counts" || return 1
     printf '%s\n' "$count_s" > "$outdir/part-${i}.suppressed" || return 1
+    printf '%s\n' "$part_c" > "$outdir/part-${i}.cut" || return 1
   done < <(printf '%s\n' "$plan" | sed 1d)
   [ "$i" -eq "$total" ] || return 1
   printf '%s %s\n' "$total" "$truncated"
