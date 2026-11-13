@@ -101,7 +101,7 @@ jobs:
           echo "Tag: $TAG"
 
           # Validate tag format
-          echo "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-alpha\.[0-9]+|-beta\.[0-9]+|-rc\.[0-9]+)?$' \
+          grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-alpha\.[0-9]+|-beta\.[0-9]+|-rc\.[0-9]+)?$' <<<"$TAG" \
             || { echo "Invalid tag format: $TAG"; exit 1; }
 
           # Validate CHANGELOG has section for this tag
@@ -423,7 +423,11 @@ jobs:
 
               # Verify module is available
               VERIFY_URL="https://proxy.golang.org/${MODULE}/@v/list"
-              if curl -s "$VERIFY_URL" | grep -q "^${TAG}$"; then
+              # Read the list first: grep -q exits on the first match, and under pipefail a
+              # curl still writing into the closed pipe would read as a missing version.
+              # A failed curl must still count as "not in the list", so the match runs only
+              # after a successful read.
+              if VERSIONS=$(curl -s "$VERIFY_URL") && grep -q "^${TAG}$" <<<"$VERSIONS"; then
                 echo "Verified: ${TAG} is now available on proxy.golang.org"
                 exit 0
               else

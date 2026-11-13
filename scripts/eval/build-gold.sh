@@ -620,7 +620,7 @@ emit_runs() {
 while IFS=$'\t' read -r sha path fix parent lo hi flist; do
     [ -n "$sha" ] || continue
 
-    if ! printf '%s\n' "$path" | grep -Eq -- "$include_re"; then
+    if ! grep -Eq -- "$include_re" <<<"$path"; then
         n_dropped_path=$((n_dropped_path + 1))
         continue
     fi

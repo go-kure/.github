@@ -122,7 +122,7 @@ check() {
   local out rc
   out=$(run_step "$@")
   rc=$?
-  if [ "$rc" -eq "$want_rc" ] && printf '%s' "$out" | grep -qF -- "$want_text"; then
+  if [ "$rc" -eq "$want_rc" ] && grep -qF -- "$want_text" <<<"$out"; then
     PASS=$((PASS + 1))
     printf 'PASS  %s\n' "$label"
   else

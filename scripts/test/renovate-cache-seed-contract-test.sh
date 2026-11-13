@@ -40,7 +40,7 @@ cache_lines() {
 
 # contract CI_FILE SEED_FILE — print one FAIL line per broken fact, return 1 if any.
 contract() {
-  local ci="$1" seed="$2" rc=0 lines f
+  local ci="$1" seed="$2" rc=0 lines f cache
   for f in "$ci" "$seed"; do
     if [ ! -s "$f" ]; then
       echo "FAIL: $f is missing or empty"
@@ -50,12 +50,15 @@ contract() {
   # Every actions/cache step (restore and save) in both files carries a key and a
   # path, read whatever their value is. All of them together must hold exactly one
   # distinct key and one distinct path.
+  # Here-strings, not `cache_lines | grep -q`: grep -q exits on the first match, and
+  # under pipefail a writer still writing into the closed pipe fails the test.
   for f in "$ci" "$seed"; do
-    if ! cache_lines "$f" | grep -q '^key: '; then
+    cache="$(cache_lines "$f")"
+    if ! grep -q '^key: ' <<<"$cache"; then
       echo "FAIL: no cache key in $f"
       rc=1
     fi
-    if ! cache_lines "$f" | grep -q '^path: '; then
+    if ! grep -q '^path: ' <<<"$cache"; then
       echo "FAIL: no cache path in $f"
       rc=1
     fi
@@ -71,7 +74,8 @@ contract() {
     rc=1
   fi
   for f in "$ci" "$seed"; do
-    if cache_lines "$f" | grep '^key: ' | grep -vqF -- '-p${{ steps.cache-period.outputs.n }}'; then
+    cache="$(cache_lines "$f" | grep '^key: ' || true)"
+    if grep -vqF -- '-p${{ steps.cache-period.outputs.n }}' <<<"$cache"; then
       echo "FAIL: a cache key in $f does not end in the cache period"
       rc=1
     fi
@@ -110,7 +114,7 @@ expect_fail() {
   if out="$(contract "$@")"; then
     echo "FAIL: $name: expected a failure, got a pass"
     failures=$((failures + 1))
-  elif ! printf '%s\n' "$out" | grep -qF -- "$want"; then
+  elif ! grep -qF -- "$want" <<<"$out"; then
     echo "FAIL: $name: expected '$want', got:"
     echo "$out"
     failures=$((failures + 1))
@@ -195,6 +199,29 @@ expect_fail "a seed job with no timeout" "no timeout-minutes" "$CI" "$tmp/seed-n
 
 : > "$tmp/empty"
 expect_fail "an empty seed file" "missing or empty" "$CI" "$tmp/empty"
+
+# Control for the here-string matches in contract: a seed with thousands of identical cache
+# steps makes cache_lines write far more than a pipe holds. The pipe form must fail on it
+# (grep -q exits on the first line, awk gets SIGPIPE, pipefail reports it), which proves the
+# case below tests the right thing. The contract must still pass on the same file.
+keyline="$(cache_lines "$SEED" | grep '^key: ' | sort -u)"
+pathline="$(cache_lines "$SEED" | grep '^path: ' | sort -u)"
+{
+  cat "$SEED"
+  for _ in $(seq 1 3000); do
+    printf '      - uses: actions/cache/restore@x\n        with:\n          %s\n          %s\n' "$keyline" "$pathline"
+  done
+} > "$tmp/seed-many"
+cache_lines "$tmp/seed-many" | grep -q '^key: '
+pipe_rc=$?
+if [ "$pipe_rc" -eq 0 ]; then
+  echo "FAIL: control: the pipe form did not fail on a producer over the pipe buffer"
+  failures=$((failures + 1))
+else
+  pass_count=$((pass_count + 1))
+  echo "PASS  control: the pipe form fails on a producer over the pipe buffer"
+fi
+expect_pass "a seed file whose cache lines exceed the pipe buffer" "$CI" "$tmp/seed-many"
 
 if [ "$failures" -eq 0 ]; then
   echo "renovate-cache-seed-contract-test: OK ($pass_count cases)"
