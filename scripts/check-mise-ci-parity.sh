@@ -193,8 +193,10 @@ report test 'ci.yml' "$(comm -13 <(printf '%s\n' "$mise_test") <(printf '%s\n' "
 #   YAML    any mapping, at any depth, with a (GIT_)CLIFF_VERSION key (plain,
 #           quoted or in a flow map), whatever its value.
 #   shell   in the `run:` bodies, an assignment `NAME=value` (after whitespace,
-#           `;`, `&`, `(` or `|`, comments removed). The name in a grep pattern,
-#           a sed expression, a comment or an echoed string is not an
+#           `;`, `&`, `(` or `|`; lines that start with `#` are removed, and a
+#           trailing `# ...` is not, because a `#` inside quotes is not a comment
+#           and cutting there would hide an assignment). The name in a grep
+#           pattern, a sed expression, a comment line or an echoed string is not an
 #           assignment, and `env "NAME=value"` (a quoted argument) is not read:
 #           the check backs up Renovate and review, it is not a shell parser.
 mise_pin="$(yq -p toml -o yaml '.env.GIT_CLIFF_VERSION // ""' "$MISE")" || die "cannot parse $MISE"
@@ -207,7 +209,7 @@ for wf in ci release release-publish; do
   wf_yaml="$(yq '.. | select(tag == "!!map") | (.CLIFF_VERSION, .GIT_CLIFF_VERSION) | select(. != null)' "$file")" \
     || die "cannot parse $file"
   wf_runs="$(yq '.jobs[].steps[].run | select(. != null)' "$file")" || die "cannot parse $file"
-  wf_shell="$(printf '%s\n' "$wf_runs" | sed -E 's/(^|[[:space:]])#.*$//' \
+  wf_shell="$(printf '%s\n' "$wf_runs" | sed -E '/^[[:space:]]*#/d' \
     | { grep -oE "(^|[[:space:];&(|])(GIT_)?CLIFF_VERSION=" || true; })"
   if [ -n "$wf_yaml" ] || [ -n "$wf_shell" ]; then
     echo "FAIL: git-cliff: .github/workflows/$wf.yml names a version literal; the installer reads it from mise.toml"

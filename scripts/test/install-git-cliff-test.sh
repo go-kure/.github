@@ -390,6 +390,10 @@ pin_refused "a pin only under [vars]" $'[vars]\nGIT_CLIFF_VERSION = "1.2.3"'
 pin_refused "a pin above every table header" $'GIT_CLIFF_VERSION = "1.2.3"\n[env]\nOTHER = "1"'
 pin_refused "a pin in [env] with a trailing comment, beside a [vars] decoy" \
   $'[env]\nGIT_CLIFF_VERSION = "2.14.2" # pin\n[vars]\nGIT_CLIFF_VERSION = "1.2.3"'
+# TOML allows whitespace before a table header, so an indented header ends [env] too.
+pin_refused "a pin in [env] with a trailing comment, beside an indented [vars] decoy" \
+  $'[env]\nGIT_CLIFF_VERSION = "2.14.2" # pin\n  [vars]\nGIT_CLIFF_VERSION = "1.2.3"'
+pin_refused "a pin only under an indented [vars]" $'[env]\nOTHER = "1"\n\t[vars]\nGIT_CLIFF_VERSION = "1.2.3"'
 run_tree "${PIN_OK}"$'\n[vars]\nGIT_CLIFF_VERSION = "9.9.9"' "$WORK/fx-good" "$WORK/inst-pin-decoy-after"
 assert_rc "pin: a [vars] decoy after [env] is ignored" 0 "$MAIN_RC"
 assert_contains "pin: the [env] value is the one installed, not the [vars] decoy" "installed git-cliff ${MAIN_VERSION} " "$MAIN_OUT"
