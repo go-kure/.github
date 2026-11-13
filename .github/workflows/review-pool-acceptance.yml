@@ -38,10 +38,59 @@
 # review-bundle-verify, and its sha256 identifies the bytes this review ran. The registry digest of
 # the latest tag is read over the network as a cross-check, and when that read fails the record says
 # "unavailable" with the reason. An unknown is never recorded as a success.
+#
+# The workflow also runs when another workflow calls it (workflow_call), with the same four inputs
+# and the same steps. A caller passes `secrets: inherit`, so the credential step finds the backend
+# credential under the same names. Two things differ for a call, and both are in this file:
+#
+# - The concurrency group. A hand dispatch serializes on the repository, so one acceptance review
+#   at a time holds the pool. A call must not make unrelated pull requests wait for each other, so
+#   its group carries the calling run's id.
+# - The artifact name. It carries the run attempt as well as the run id, so a rerun of the calling
+#   run uploads next to its first attempt instead of colliding with it. The name is also the
+#   `artifact` output, so a caller that reruns only its own later jobs still finds the artifact of
+#   the attempt in which this job succeeded.
 
 name: Review Pool Acceptance
 
 on:
+  workflow_call:
+    inputs:
+      backend:
+        description: The review-run --backend value, as for a hand dispatch.
+        type: string
+        required: false
+        default: 'claude'
+      revision:
+        description: The commit of the calling repository to review, as for a hand dispatch.
+        type: string
+        required: false
+        default: ''
+      base:
+        description: The base of the reviewed range, as for a hand dispatch.
+        type: string
+        required: false
+        default: ''
+      effort:
+        description: The review-run --effort value, as for a hand dispatch.
+        type: string
+        required: false
+        default: ''
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        description: The claude backend credential. Read only when backend is claude.
+        required: false
+      OPENAI_API_KEY:
+        description: The codex and opencode:openai backend credential.
+        required: false
+      ANTHROPIC_API_KEY:
+        description: The opencode:anthropic backend credential.
+        required: false
+    outputs:
+      artifact:
+        description: >-
+          The name of the artifact this run uploaded: the record, and the three result files under out/.
+        value: ${{ jobs.review.outputs.artifact }}
   workflow_dispatch:
     inputs:
       backend:
@@ -73,7 +122,13 @@ on:
         default: ''
 
 concurrency:
-  group: review-pool-acceptance-${{ github.repository }}
+  # A hand dispatch keeps the repository-wide group. In a call, github.event_name is the calling
+  # run's event, so a pull request run gets a group of its own and never queues behind another.
+  # The suffix is built with the non-empty value on the true side of &&, because an empty string
+  # on that side is falsy and the || would then always pick its right side.
+  group: >-
+    review-pool-acceptance-${{ github.repository }}${{ github.event_name != 'workflow_dispatch'
+    && format('-{0}', github.run_id) || '' }}
   cancel-in-progress: false
 
 permissions: {}
@@ -85,8 +140,13 @@ jobs:
     timeout-minutes: 45
     permissions:
       contents: read
+    outputs:
+      artifact: ${{ env.ARTIFACT_NAME }}
 
     env:
+      # One definition for the upload step and for the output a caller reads. It carries the run
+      # attempt, see the header.
+      ARTIFACT_NAME: review-pool-acceptance-${{ github.run_id }}-${{ github.run_attempt }}
       # The review runs under the job's own container, which is the boundary the image was built
       # for. See fact 2 in the header.
       REVIEW_SANDBOX: none
@@ -619,7 +679,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: review-pool-acceptance-${{ github.run_id }}
+          name: ${{ env.ARTIFACT_NAME }}
           path: ${{ runner.temp }}/acceptance
           if-no-files-found: error
           retention-days: 14
