@@ -6,7 +6,9 @@
 # the workflow decide whether that works, and each is quiet when wrong:
 #
 # 1. The concurrency group. A hand dispatch serializes on the repository. A call from a pull
-#    request run must not, or one slow review holds every other pull request's review.
+#    request run must not, or one slow review holds every other pull request's review. The test for
+#    a call reads github.workflow_ref and never github.event_name: in a call the event is the
+#    caller's, so a caller started by workflow_dispatch would fall back to the repository-wide group.
 # 2. The artifact name. It carries the run attempt, so a rerun does not collide with its first
 #    attempt, and the name is the `artifact` output the caller downloads by.
 # 3. The inputs. A call takes the same four inputs as a dispatch, because the step bodies the other
@@ -63,8 +65,11 @@ violations() {
   group=$(q "$f" '.concurrency.group') || return 2
   case "$group" in *github.run_id*) ;; *) echo "group: a call must carry the run id" ;; esac
   case "$group" in
-    *"github.event_name != 'workflow_dispatch' && format("*) ;;
+    *"!contains(github.workflow_ref, '/review-pool-acceptance.yml@') && format("*) ;;
     *) echo "group: the non-empty value must sit on the true side of &&" ;;
+  esac
+  case "$group" in
+    *github.event_name*) echo "group: the test must not read github.event_name, the caller's event in a call" ;;
   esac
 
   artifact_env=$(q "$f" '.jobs.review.env.ARTIFACT_NAME') || return 2
@@ -112,9 +117,13 @@ mutant() {
 expect 'the workflow as it stands breaks no rule' '' "$WF"
 
 mutant repo-only-group \
-  "s|^    review-pool-acceptance-\${{ github.repository }}\${{ github.event_name != 'workflow_dispatch'\$|    review-pool-acceptance-\${{ github.repository }}\${{ github.event_name == 'workflow_dispatch'|; s|^    && format('-{0}', github.run_id) \|\| '' }}\$|    \&\& '' \|\| format('-{0}', github.run_id) }}|"
+  "s|&& format('-{0}', github.run_id) \|\| '' }}\$|\&\& '' \|\| format('-{0}', github.run_id) }}|"
 expect 'a group with the falsy empty string on the true side is refused' \
   'the non-empty value must sit on the true side' "$WORK/repo-only-group.yml"
+
+mutant group-reads-event-name "s|!contains(github.workflow_ref,|github.event_name != 'workflow_dispatch' \&\& contains(github.workflow_ref,|"
+expect 'a group that reads the caller event is refused' \
+  'must not read github.event_name' "$WORK/group-reads-event-name.yml"
 
 mutant group-without-run-id "s|format('-{0}', github.run_id)|'-fixed'|"
 expect 'a group that no longer carries the run id is refused' \

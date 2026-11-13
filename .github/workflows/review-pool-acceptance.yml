@@ -122,13 +122,16 @@ on:
         default: ''
 
 concurrency:
-  # A hand dispatch keeps the repository-wide group. In a call, github.event_name is the calling
-  # run's event, so a pull request run gets a group of its own and never queues behind another.
-  # The suffix is built with the non-empty value on the true side of &&, because an empty string
-  # on that side is falsy and the || would then always pick its right side.
+  # A hand dispatch keeps the repository-wide group. A call gets a group of its own, so a pull
+  # request run never queues behind another. The test reads github.workflow_ref, which names the
+  # top-level workflow of the run: this file in a hand dispatch, the caller in a call. It must not
+  # read github.event_name, because in a call that is the caller's event, and a caller started by
+  # workflow_dispatch would then fall back to the repository-wide group. The suffix is built with
+  # the non-empty value on the true side of &&, because an empty string on that side is falsy and
+  # the || would then always pick its right side.
   group: >-
-    review-pool-acceptance-${{ github.repository }}${{ github.event_name != 'workflow_dispatch'
-    && format('-{0}', github.run_id) || '' }}
+    review-pool-acceptance-${{ github.repository }}${{ !contains(github.workflow_ref,
+    '/review-pool-acceptance.yml@') && format('-{0}', github.run_id) || '' }}
   cancel-in-progress: false
 
 permissions: {}
