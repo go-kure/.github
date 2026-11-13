@@ -102,7 +102,10 @@ check_rendered() {
     { stray++; print "stray: " src ": " line }
     END {
       printf "scope: headers=%d completions=%d rule_sentences=%d stray=%d\n", headers, completions, rules, stray
-      if (rules != 1) print "the rule sentence is present " rules + 0 " times, want exactly 1"
+      if (rules != 1) {
+        print "the rule sentence is present " rules + 0 " times, want exactly 1."
+        print "A deliberate rewording of that sentence needs this test updated with it: the sentence is pinned in this function and in RULE_LINE."
+      }
       if (headers < 1 || completions < 1) print "the examples carry no header or no completion line, so the scope is empty"
       exit (stray > 0 || rules != 1 || headers < 1 || completions < 1) ? 1 : 0
     }
