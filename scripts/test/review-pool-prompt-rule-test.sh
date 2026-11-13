@@ -251,16 +251,22 @@ check 'a workflow whose PROMPT heredoc is not closed as one is refused as unread
 broken_root="$WORK/broken-root"
 mkdir -p "$broken_root/.github/workflows"
 # shellcheck disable=SC2016  # the $( in the sed script is the workflow's own text, not an expansion
-cp "$(mutate heredoc-broken-live 's/^\( *\)prompt="\$(cat <<PROMPT$/\1prompt="$(cat <<PROMPT_RENAMED/')" \
-  "$broken_root/.github/workflows/review-pool-acceptance.yml"
+broken_wf="$(mutate heredoc-broken-live 's/^\( *\)prompt="\$(cat <<PROMPT$/\1prompt="$(cat <<PROMPT_RENAMED/')"
 broken_rc=0
-bash "$0" "$broken_root" > /dev/null 2>&1 || broken_rc=$?
-if [ "$broken_rc" -eq 2 ]; then
+broken_out=
+# Exit 2 alone is not enough: a mutant that was never built also ends in exit 2, from the missing
+# workflow file. So the case needs the mutant built and copied, and the script's own message.
+if [ -n "$broken_wf" ] && cp "$broken_wf" "$broken_root/.github/workflows/review-pool-acceptance.yml"; then
+  broken_out=$(bash "$0" "$broken_root" 2>&1) || broken_rc=$?
+else
+  broken_rc=built-no
+fi
+if [ "$broken_rc" = 2 ] && printf '%s' "$broken_out" | grep -qF 'the prompt could not be rendered'; then
   PASS=$((PASS + 1))
   printf 'PASS  an unreadable live prompt makes this script exit 2\n'
 else
   FAIL=$((FAIL + 1))
-  printf 'FAIL  an unreadable live prompt makes this script exit %s, want 2\n' "$broken_rc"
+  printf 'FAIL  an unreadable live prompt makes this script exit %s, want 2 with its own message: %s\n' "$broken_rc" "$broken_out"
 fi
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
