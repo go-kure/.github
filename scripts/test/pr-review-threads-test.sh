@@ -7701,6 +7701,12 @@ prt_ar_calls() { cat "$PRT_TEST_RUNNER_LOG.count" 2>/dev/null || echo 0; }
 # orchestrator. prt_ar_backstop sits far above any deadline the cases set and far below the time
 # the stubs take when nothing cuts the call short (300 s for a hanging runner, 120 s for the hostile
 # one, 100 s for the hanging boundary check), so a call that was not cut short still fails it.
+# The orchestrator's own time counts against that budget (go-kure/.github#353): three clean calls took 12,
+# 15 and 13 s at host load 12, so a fixed 12 s was gone before the runner call and the cases did not
+# run. The budget starts at 12 s and is set from the first clean call below: three times its time,
+# between 12 and 36 s. An idle host keeps 12 s. The 5 s between TERM and KILL is fixed in the
+# orchestrator and does not move with it. The backstop stays above the longest call a budget of 36 s
+# allows, with its 5 s of kill grace and cleanup.
 prt_ar_budget=12
 prt_ar_backstop=60
 # Enforce refuses the runner (see below), so these cases run in advisory and read the
@@ -7731,7 +7737,13 @@ fi
 if $prt_ar_ns; then
 # A VALID verdict from the runner: the finding gets its thread, the proxy never assesses.
 rm -f "$PRT_TEST_RUNNER_LOG".*
+prt_ar_t0=$SECONDS
 rc="$(run_orchestrator advisory 0 0 0)"
+prt_ar_clean_seconds=$((SECONDS - prt_ar_t0))
+prt_ar_budget=$((prt_ar_clean_seconds * 3))
+[ "$prt_ar_budget" -ge 12 ] || prt_ar_budget=12
+[ "$prt_ar_budget" -le 36 ] || prt_ar_budget=36
+echo "NOTE: the first clean orchestrator call took ${prt_ar_clean_seconds}s, so the hang cases get a run budget of ${prt_ar_budget}s"
 assert_eq "assess runner, VALID: exits 0 and the finding is reported" "0 1" "$rc $(prt_ar_found)"
 assert_eq "assess runner: one runner call, no proxy assess call" "1 0" "$(prt_ar_calls) $(cat "$PRT_TEST_ASSESS_COUNTFILE")"
 assert_eq "assess runner: the review still came from the proxy (review call made)" \
