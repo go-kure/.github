@@ -648,7 +648,7 @@ main_live_match=$(jq -n '{
         }},
         {type: "merge_queue", parameters: {
             merge_method: "REBASE", grouping_strategy: "ALLGREEN",
-            min_entries_to_merge: 1, max_entries_to_merge: 1, max_entries_to_build: 1,
+            min_entries_to_merge: 1, max_entries_to_merge: 3, max_entries_to_build: 3,
             min_entries_to_merge_wait_minutes: 0, check_response_timeout_minutes: 120
         }}
     ]

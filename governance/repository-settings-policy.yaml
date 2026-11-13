@@ -214,9 +214,17 @@ github_repos:
           merge_queue:
             merge_method: REBASE                 # preserves linear history
             grouping_strategy: ALLGREEN          # drop any failing entry from the group
-            min_entries_to_merge: 1              # conservative sizing
-            max_entries_to_merge: 1
-            max_entries_to_build: 1              # tune up after observing runner load
+            min_entries_to_merge: 1
+            # 3, not 1: with one entry built at a time the queue drained about 3 PRs an
+            # hour. Measured on 2026-11-13: about 19 minutes per entry, and 13 PRs queued at
+            # 07:35 CET, so the last would wait about 4 hours (13 x 19 minutes). Up to three
+            # builds run at once and up to three PRs land per merge, and ALLGREEN still
+            # drops a failing entry from its group. The 120-minute check timeout below
+            # still holds: 19 minutes leaves wide room even if three builds on the shared
+            # runners take twice as long. Every repo that uses this block gets the same
+            # values.
+            max_entries_to_merge: 3
+            max_entries_to_build: 3
             min_entries_to_merge_wait_minutes: 0
             # 120, not 60: kure and launcher share one self-hosted runner pool, and a
             # merge_group run queues behind PR jobs from both repos for up to 30
