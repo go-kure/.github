@@ -233,8 +233,8 @@ committed npm lockfile failed every dependency PR: the lockfile's single hunk ex
   base commit is unknown or the read fails, the run emits a `::warning` and excludes only lockfiles
   and deletion-only hunks over the hard ceiling, reviewing every other file.
 - **A deletion-only hunk over the hard ceiling**, in a file that is not otherwise excluded
-  (go-kure/.github#374). A hunk with no added line cannot hold a new defect, yet a
-  PR that deletes a large file made the run truncate it and mark itself `REVIEW_INCOMPLETE`. Such a
+  (go-kure/.github#374). A PR that deletes a large file made the run truncate that hunk and mark
+  itself `REVIEW_INCOMPLETE`, though a hunk with no added line has no new line to put a finding on. Such a
   hunk is now left out of the reviewed diff and listed as `+0/-N`, with the reason "deletion-only
   hunk over the ceiling". It is measured as `prt_split_diff` measures a hunk. The file's other
   hunks stay in the reviewed diff, and a file left with no hunk is not reviewed at all. **A
