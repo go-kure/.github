@@ -451,6 +451,12 @@ chunk, first match in this order:
    a line the diff does not show);
 3. chunk 0, so a finding naming a file the reviewed diff does not contain is never dropped.
 
+The assess call skips a finding served by rule 3: chunk 0's diff is not the code it names, so an
+assessor handed both would judge it against the wrong code. The finding is reported with no
+verdict, as after an assess failure but not degraded, and the chunk's log line says how many
+findings were kept this way. The chunk is credited for the findings that were assessed. A
+finding served by rule 2 is assessed, because its chunk shows its file.
+
 A file is matched by its whole path as `prt_diff_files` reports it: a path with a space (git ends
 the `+++` line with a tab) and a git-quoted path (a `"`, or non-ASCII bytes in octal) are decoded,
 not cut at the space or kept with their quotes. Each chunk's line index and file list go through
