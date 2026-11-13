@@ -35,8 +35,8 @@ KEY_EXACT="${KEY_DEPS}src-\${{ hashFiles('**/*.go', 'go.mod', 'go.sum', 'Makefil
 # test_job FILE — the lines of the "test:" job: from "  test:" up to the next job at the same indent.
 test_job() {
   awk '
-    /^  test:$/ { in_job = 1; print; next }
-    in_job && /^  [A-Za-z0-9_-]+:$/ { exit }
+    /^  test:[[:space:]]*(#.*)?$/ { in_job = 1; print; next }
+    in_job && (/^[^ #]/ || /^  [^ #]/) { exit }
     in_job { print }
   ' "$1"
 }
@@ -182,6 +182,12 @@ awk '
   { print }
 ' "$WF" > "$tmp/other-job"
 expect_fail "a restore that sits in another job" "no actions/cache/restore step" "$tmp/other-job"
+
+# The same move, with a comment or trailing spaces after the job name.
+sed 's/^  extra2:$/  extra2: # later job/' "$tmp/other-job" > "$tmp/other-job-comment"
+expect_fail "a restore in a job whose header has a comment" "no actions/cache/restore step" "$tmp/other-job-comment"
+sed 's/^  extra2:$/  extra2:   /' "$tmp/other-job" > "$tmp/other-job-spaces"
+expect_fail "a restore in a job whose header has trailing spaces" "no actions/cache/restore step" "$tmp/other-job-spaces"
 
 : > "$tmp/empty"
 expect_fail "an empty workflow file" "missing or empty" "$tmp/empty"
