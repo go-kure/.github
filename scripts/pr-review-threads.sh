@@ -2317,6 +2317,11 @@ for overflow_series in main suppressed; do
       series_dir="$WORKDIR/suppressed-parts"
       ;;
   esac
+  # Whether this series posted whole is read on its own: the shortened count below goes to the
+  # superseded text only for a series that posted, never for rows of a part that failed to post.
+  overflow_posted_before="$OVERFLOW_COMMENT_POSTED"
+  OVERFLOW_COMMENT_POSTED=true
+  overflow_truncated=0
   if [ "$PRT_MODE" = enforce ] && [ "$series_count" -gt 0 ]; then
     # The body is split into parts when one comment would pass GitHub's
     # 65,536-character limit (go-kure/.github#307). The rules of the split (order,
@@ -2339,7 +2344,6 @@ for overflow_series in main suppressed; do
       else
         if [ "$overflow_truncated" -gt 0 ]; then
           # The cut text is in no part: say so, and fail the run.
-          overflow_truncated_total=$((overflow_truncated_total + overflow_truncated))
           prt_mark_incomplete "${overflow_truncated} ${series_rows} finding(s) were too long for one comment part and are shortened; the omitted text is in no part"
         fi
         overflow_part=0
@@ -2390,6 +2394,8 @@ for overflow_series in main suppressed; do
       OVERFLOW_COMMENT_POSTED=false
     fi
   fi
+  [ "$OVERFLOW_COMMENT_POSTED" != true ] || overflow_truncated_total=$((overflow_truncated_total + overflow_truncated))
+  [ "$overflow_posted_before" = true ] || OVERFLOW_COMMENT_POSTED=false
 done
 
 # --- Clean-verdict comment (enforce mode only; GitLab mr-review.yml parity,

@@ -5606,6 +5606,20 @@ assert_eq "orchestrator go-kure/.github#296: the run is complete and every findi
 rc="$(run_orchestrator advisory 0 0 0)"
 assert_eq "orchestrator go-kure/.github#296: advisory mode posts no suppressed-findings comment" \
   "false" "$(grep -qF 'Suppressed as false positives' "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" && echo true || echo false)"
+# A suppressed-findings comment that fails to post: the run is incomplete, the reason names that
+# comment, and a superseded clean verdict does not point at a comment that is not there.
+PRT_TEST_ISSUE_COMMENT_LOG="$(mktemp)"
+PRT_TEST_WRITE_FAIL_BODY_MATCH='Suppressed as false positives'
+prt_sf_saved_list="${PRT_TEST_ISSUE_COMMENTS_LIST:-}"
+PRT_TEST_ISSUE_COMMENTS_LIST='[{"id":88,"user":{"login":"test-bot[bot]"},"body":"old clean\n<!-- gokure-pr-review:v1-clean -->"}]'
+rc="$(run_orchestrator enforce 0 0 0)"
+PRT_TEST_ISSUE_COMMENTS_LIST="$prt_sf_saved_list"
+assert_eq "orchestrator go-kure/.github#296: a suppressed-findings comment that fails to post -> exits 1 and names that comment" \
+  "1 true" "$rc $(grep -qF 'failed to post suppressed-findings comment (HTTP 500)' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+assert_eq "orchestrator go-kure/.github#296: the superseded clean verdict then says the job summary lists them, and points at no comment" \
+  "true false" "$(grep -qF 'the job summary of this run does' "$PRT_TEST_ISSUE_COMMENT_LOG" && echo true || echo false) $(grep -qF 'listed there' "$PRT_TEST_ISSUE_COMMENT_LOG" && echo true || echo false)"
+rm -f "$PRT_TEST_ISSUE_COMMENT_LOG"
+unset PRT_TEST_ISSUE_COMMENT_LOG PRT_TEST_WRITE_FAIL_BODY_MATCH
 rm -f "$PRT_TEST_ISSUE_COMMENT_BODY_FILE"
 unset PRT_TEST_ISSUE_COMMENT_BODY_FILE
 PRT_TEST_MODEL_RESPONSE_MODE=clean
