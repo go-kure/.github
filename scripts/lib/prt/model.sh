@@ -1054,6 +1054,29 @@ _prt_proc_start() {
   PRT_PROC_START="${fields[19]}"
 }
 
+# _prt_proc_nspid PID — sets PRT_PROC_NSPID to the value of the `NSpid:` line of /proc/PID/status
+# (the process's ids in each PID namespace, outermost first, tab-separated), or to nothing when
+# the file cannot be read or has no such line. Always returns 0.
+# The whole file is read in one `read -d ''` and the line is taken from the string. A loop that
+# reads the file line by line (`while read ... < file`) makes bash seek back after each line, the
+# kernel renders a status file again on a seek, and a process that changed in between (every exec
+# changes the name and the memory lines) has moved the lines: the loop then ends without having
+# seen the `NSpid:` line. Measured on a process that rewrites its own name in a loop (see the case
+# in scripts/test/pr-review-threads-test.sh): the loop came back empty in 54 to 93 of 500 reads,
+# the single read in none of 3000.
+_prt_proc_nspid() {
+  local status_text="" key nspid
+  PRT_PROC_NSPID=""
+  { IFS= read -r -d '' status_text < "/proc/$1/status"; } 2> /dev/null || :
+  while IFS=$'\t' read -r key nspid; do
+    if [ "$key" = "NSpid:" ]; then
+      PRT_PROC_NSPID="$nspid"
+      break
+    fi
+  done <<< "$status_text"
+  return 0
+}
+
 # _prt_proc_children PID — sets PRT_PROC_KIDS to the direct children of PID, as a space-separated
 # string. Returns 1 when they cannot be read: /proc/PID/task/*/children is missing (a kernel built
 # without CONFIG_PROC_CHILDREN) or the process has gone. The pattern is expanded in a subshell
@@ -1097,7 +1120,7 @@ _prt_proc_children() {
 # everything else, with the cause in PRT_RUNNER_PID1_ERROR for 1 and 2.
 # shellcheck disable=SC2034 # the PRT_RUNNER_PID1* variables are read by _prt_call_runner
 _prt_runner_pid1_record() {
-  local IFS=$' \t\n' tp="$1" polls="${PRT_RUNNER_PID1_POLLS:-100}" comm launcher launcher_gone pid1 key nspid nspid_tries rc kids=()
+  local IFS=$' \t\n' tp="$1" polls="${PRT_RUNNER_PID1_POLLS:-100}" comm launcher launcher_gone pid1 nspid nspid_tries rc kids=()
   PRT_RUNNER_PID1=""
   PRT_RUNNER_PID1_START=""
   PRT_RUNNER_PID1_ERROR=""
@@ -1152,10 +1175,12 @@ _prt_runner_pid1_record() {
             pid1="${kids[0]}"
             # A live process can read empty here for a moment on a loaded host
             # (go-kure/.github#372), so an empty read is repeated: at most five reads, 0.05 s apart.
+            # Each read is one whole-file read (_prt_proc_nspid), so it does not lose its place to a
+            # process that changes between renders of its status file (go-kure/.github#395).
             nspid_tries=5
             while :; do
-              nspid=""
-              { while IFS=$'\t' read -r key nspid; do [ "$key" = "NSpid:" ] && break; nspid=""; done < "/proc/$pid1/status"; } 2> /dev/null || nspid=""
+              _prt_proc_nspid "$pid1"
+              nspid="$PRT_PROC_NSPID"
               nspid_tries=$((nspid_tries - 1))
               if [ -n "$nspid" ] || [ "$nspid_tries" -le 0 ]; then break; fi
               sleep 0.05
@@ -1166,7 +1191,9 @@ _prt_runner_pid1_record() {
                 if [ -z "$nspid" ]; then
                   # Still empty after the repeated reads. A process that is going away reads empty
                   # here while its stat is still there, which a live process that cannot be
-                  # identified does too: the two cannot be told apart.
+                  # identified does too: the two cannot be told apart. The read itself no longer
+                  # loses to a process that is changing (see _prt_proc_nspid), so an empty answer
+                  # is one of those two.
                   PRT_RUNNER_PID1_ERROR="the namespace process ids of the child of the namespace launcher cannot be read"
                   return 2
                 fi
