@@ -385,6 +385,17 @@ pin_refused "a commented-out pin" $'[env]\n# GIT_CLIFF_VERSION = "1.2.3"'
 pin_refused "a pin that is not X.Y.Z" $'[env]\nGIT_CLIFF_VERSION = "latest"'
 pin_refused "a pin with a leading v" $'[env]\nGIT_CLIFF_VERSION = "v1.2.3"'
 pin_refused "two pin lines" $'[env]\nGIT_CLIFF_VERSION = "1.2.3"\nGIT_CLIFF_VERSION = "1.2.4"'
+# Only [env] counts: the same key in another table, or above any table, is not the pin.
+pin_refused "a pin only under [vars]" $'[vars]\nGIT_CLIFF_VERSION = "1.2.3"'
+pin_refused "a pin above every table header" $'GIT_CLIFF_VERSION = "1.2.3"\n[env]\nOTHER = "1"'
+pin_refused "a pin in [env] with a trailing comment, beside a [vars] decoy" \
+  $'[env]\nGIT_CLIFF_VERSION = "2.14.2" # pin\n[vars]\nGIT_CLIFF_VERSION = "1.2.3"'
+run_tree "${PIN_OK}"$'\n[vars]\nGIT_CLIFF_VERSION = "9.9.9"' "$WORK/fx-good" "$WORK/inst-pin-decoy-after"
+assert_rc "pin: a [vars] decoy after [env] is ignored" 0 "$MAIN_RC"
+assert_contains "pin: the [env] value is the one installed, not the [vars] decoy" "installed git-cliff ${MAIN_VERSION} " "$MAIN_OUT"
+run_tree $'[vars]\nGIT_CLIFF_VERSION = "9.9.9"\n'"${PIN_OK}" "$WORK/fx-good" "$WORK/inst-pin-decoy-before"
+assert_rc "pin: a [vars] decoy before [env] is ignored" 0 "$MAIN_RC"
+assert_contains "pin: the [env] value is installed past a decoy above it" "installed git-cliff ${MAIN_VERSION} " "$MAIN_OUT"
 
 run_tree "$PIN_OK" "$WORK/fx-good" "$WORK/inst-pin-two" "$MAIN_VERSION" extra
 assert_rc "pin: two arguments are a usage error" 2 "$MAIN_RC"

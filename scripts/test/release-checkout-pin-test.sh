@@ -9,8 +9,10 @@
 # scripts/release. install-git-cliff.sh reads the pin from the mise.toml two
 # directories above itself (go-kure/.github#390). If cone mode ever stopped
 # carrying root files, or the workflows changed their checkout, every release
-# would fail at the install step, so this test makes the same checkout and runs
-# the installer with no version argument.
+# would fail at the install step, so this test first reads each workflow's own
+# sparse-checkout settings (every one must be scripts/release in the default,
+# cone, mode, so a step that turns cone mode off fails here), then makes the same
+# checkout and runs the installer with no version argument.
 #
 # The installer then fails at its download, by design: a stub curl records the
 # URL it was asked for and fails, and the URL must name the version in mise.toml.
@@ -44,8 +46,35 @@ check() {
   fi
 }
 
-PIN="$(sed -n 's/^GIT_CLIFF_VERSION = "\(.*\)"[[:space:]]*$/\1/p' "$ROOT/mise.toml")"
+PIN="$(sed -n '/^\[env\][[:space:]]*$/,/^\[/ s/^GIT_CLIFF_VERSION = "\(.*\)"[[:space:]]*$/\1/p' "$ROOT/mise.toml")"
 [[ "$PIN" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "cannot read an X.Y.Z GIT_CLIFF_VERSION from $ROOT/mise.toml (got '$PIN')" >&2; exit 2; }
+
+command -v yq >/dev/null 2>&1 || { echo "yq not found" >&2; exit 2; }
+
+# checkout_settings WORKFLOW_YAML — one "<sparse-checkout>|<cone mode>" line for
+# every step that sets sparse-checkout; the cone mode reads "default" when the
+# step does not set it, which actions/checkout runs as cone mode.
+checkout_settings() {
+  printf '%s\n' "$1" | yq '.jobs[].steps[].with | select(.["sparse-checkout"] != null) | .["sparse-checkout"] + "|" + ((.["sparse-checkout-cone-mode"] | select(. != null) | tostring) // "default")'
+}
+
+# Control: a step that turns cone mode off must read as such, or the check below
+# could not see the regression it exists for.
+ctl="$(checkout_settings $'jobs:\n  j:\n    steps:\n      - uses: x\n        with:\n          sparse-checkout: scripts/release\n          sparse-checkout-cone-mode: false')"
+[ "$ctl" = "scripts/release|false" ] && ctl_ok=ok || ctl_ok=no
+check "the settings reader cannot see a step that turns cone mode off (read '$ctl')" "$ctl_ok"
+
+# The workflows' own settings, read from the committed HEAD like the checkout
+# below: every sparse checkout of this repository must be scripts/release in the
+# default (cone) mode, so the checkout the test makes is the one a workflow makes.
+for wf in release release-publish; do
+  settings="$(checkout_settings "$(git -C "$ROOT" show "HEAD:.github/workflows/$wf.yml")")"
+  [ -n "$settings" ] && has_step=ok || has_step=no
+  check "$wf.yml sets no sparse-checkout, so the test reproduces nothing" "$has_step"
+  bad="$(printf '%s\n' "$settings" | grep -vxF 'scripts/release|default' || true)"
+  [ -z "$bad" ] && same=ok || same=no
+  check "$wf.yml has a sparse checkout other than scripts/release in cone mode: $(printf '%s' "$bad" | tr '\n' ' ')" "$same"
+done
 
 # The workflows' checkout: no files, then cone mode on scripts/release, then the commit.
 CO="$WORK/release-tools"
