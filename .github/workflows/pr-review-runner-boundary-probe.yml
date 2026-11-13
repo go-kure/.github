@@ -63,19 +63,28 @@ jobs:
             digest='unavailable: the registry token read failed'
           fi
 
-          # A command substitution inside a printf argument cannot stop the step, so each of these
-          # reads goes into a variable first, where a failure is seen and recorded with its reason.
-          namespaces="$(cat /proc/sys/user/max_user_namespaces)" \
-            || namespaces='unavailable: /proc/sys/user/max_user_namespaces could not be read'
-          review_run="$(command -v review-run)" \
-            || review_run='unavailable: review-run is not on PATH'
-          scripts_pin="$(sha256sum /opt/review-runner/bin/runner.sha256)" \
-            && scripts_pin="${scripts_pin%% *}" \
-            || scripts_pin='unavailable: /opt/review-runner/bin/runner.sha256 could not be read'
+          # A command substitution inside a printf argument cannot stop the step, so every read goes
+          # through read_field first. A read that fails, or succeeds with nothing, is recorded as
+          # unavailable with its reason, never as an empty field.
+          read_field() { # read_field <variable> <reason> <command> [argument...]
+            local value
+            if value="$("${@:3}" 2>/dev/null)" && [ -n "$value" ]; then
+              printf -v "$1" '%s' "$value"
+            else
+              printf -v "$1" 'unavailable: %s' "$2"
+            fi
+          }
+          pin_of() { sha256sum "$1" | cut -d' ' -f1; }
+          read_field pod_hostname 'hostname returned nothing' hostname
+          read_field uid 'id -u returned nothing' id -u
+          read_field gid 'id -g returned nothing' id -g
+          read_field namespaces 'max_user_namespaces could not be read' cat /proc/sys/user/max_user_namespaces
+          read_field review_run 'review-run is not on PATH' command -v review-run
+          read_field scripts_pin 'runner.sha256 could not be hashed' pin_of /opt/review-runner/bin/runner.sha256
 
           {
-            printf 'pod_hostname=%s\n' "$(hostname)"
-            printf 'uid=%s gid=%s\n' "$(id -u)" "$(id -g)"
+            printf 'pod_hostname=%s\n' "$pod_hostname"
+            printf 'uid=%s gid=%s\n' "$uid" "$gid"
             printf 'user_max_user_namespaces=%s\n' "$namespaces"
             printf 'bundle_record_sha256=%s\n' "$bundle_sha"
             printf 'registry_latest_digest=%s\n' "$digest"
