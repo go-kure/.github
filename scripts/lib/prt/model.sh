@@ -1346,7 +1346,7 @@ _prt_call_runner() {
   # the request have used time since the first one), and the same two refusals apply to it: a
   # call with less than the floor left, or one whose TERM-to-KILL grace no longer fits, is
   # refused, never run past the deadline or below the minimum a runner call is worth.
-  local outer runner_pid pid1_rc
+  local outer runner_pid pid1_rc prt_ticks
   if ! _prt_runner_clock_read; then
     rm -rf "$tmp"
     _prt_set_model_failure "deadline-exhausted"
@@ -1477,6 +1477,27 @@ READER
       return 1
     fi
   fi
+  # The wait ends when `timeout` ends, and a runner can stop `timeout` (SIGSTOP to the group it
+  # leads), which then never sends its TERM or its KILL (go-kure/.github#319). So the orchestrator
+  # keeps a deadline of its own at the point of `timeout`'s KILL: it looks at `timeout` every
+  # 0.2 s, and if that many looks pass with it still there (`outer` + 5 s, counted from here,
+  # so after `timeout`'s own KILL in a call that runs without interruption; a group stopped and
+  # resumed can be ended here before `timeout`'s grace, with the same reason), the group is
+  # killed from here. No process is started for
+  # the deadline, so none is left behind. `builtin kill` only looks: it is not a signal sent,
+  # and a bash that reaped `timeout` makes it fail, which ends the loop. The status of the wait
+  # is the one `timeout` ended with, or 137 for a call the deadline killed.
+  prt_ticks=$(( (outer + 5) * 5 ))
+  while builtin kill -0 "$runner_pid" 2>/dev/null; do
+    if [ "$prt_ticks" -le 0 ]; then
+      echo "prt_model: the deadline of the call passed before its timeout process ended — killing the group" >&2
+      kill -KILL -- "-$runner_pid" 2>/dev/null || true
+      kill -KILL "$runner_pid" 2>/dev/null || true
+      break
+    fi
+    prt_ticks=$((prt_ticks - 1))
+    sleep 0.2
+  done
   wait "$runner_pid" || rc=$?
   # A `timeout` that went before the first process was named, with the status of an expired bound
   # (124) or of a signal (128 and above), may have been ended by that process, or by its bound
@@ -1491,10 +1512,10 @@ READER
     return 1
   fi
   # Nothing in the group survives the call, whatever its exit; no member left is fine.
-  # Known window: bash has already reaped `timeout` (its SIGCHLD handler does, before
-  # `wait` runs), so with no member left the group id is free, and this signal would
-  # reach an unrelated group only if that exact id were allocated again as a group
-  # leader in the microseconds between the reap and this line. Ids are handed out
+  # Known window: bash has already reaped `timeout` (its SIGCHLD handler does, even while
+  # the 0.2 s look above sleeps), so with no member left the group id is free, and this
+  # signal would reach an unrelated group only if that exact id were allocated again as a
+  # group leader in the up to 0.2 s between the reap and this line. Ids are handed out
   # sequentially, so that takes a full wrap of the pid space. While any member lives
   # (the case this line exists for) the id is pinned and cannot be reused. This signal
   # goes before the wait for the namespace's first process below, which can take up to two

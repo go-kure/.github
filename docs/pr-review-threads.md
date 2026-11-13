@@ -639,10 +639,12 @@ first process right after the launch and sends it SIGKILL when the call ends, wh
 member of the namespace. If that process cannot be named, if the process launched for the call
 (it becomes `timeout`) is gone with the status of an expired bound or of a signal before it was
 named, or if the end of the process cannot be confirmed (its state cannot be read, before or after
-the kill, or it is still there after it), the call is abandoned as `runner-lifetime` and its answer is not read. The windows that stay
-open, and the fix for them, are tracked in go-kure/.github#319; one of them is a stop signal sent
-to `timeout` from inside the namespace, which also keeps the orchestrator waiting (and the kill
-from running) until the job timeout. Also not covered: the `cmd`
+the kill, or it is still there after it), the call is abandoned as `runner-lifetime` and its answer is not read. The window before the
+first process is named stays open and is tracked in go-kure/.github#319. A stop signal sent to
+`timeout` from inside the namespace (SIGSTOP to the process group it leads) is closed: `timeout`
+then never sends its TERM or its KILL, so the orchestrator keeps a deadline of its own, 5 seconds
+after the outer bound, and when that passes with `timeout` still there it kills the process group
+itself and the call ends as `runner-timeout`. Also not covered: the `cmd`
 boundary (it has no such process to name), a SIGKILL of the orchestrator itself (nothing is left to
 send the kill), and what a surviving runner does while it is still running.
 
@@ -741,18 +743,24 @@ clamped to the run) plus 30 for the snapshots, never beyond the run's model dead
 process that ignores the first signal is killed 5 seconds later. A call is refused as
 `deadline-exhausted` when less than 6 seconds of the deadline remain at launch, because the margin
 would not fit; so is a call made when the clock cannot be read as a whole number, since the time left
-cannot then be known. A hit is `runner-timeout`. When the call ends, whatever its exit, the whole process
+cannot then be known. A hit is `runner-timeout`. The orchestrator checks `timeout` every 0.2 s and
+kills the group itself once the outer bound plus 5 seconds have passed with `timeout` still running,
+which a runner can cause by stopping the group (see "Known limit" above); that kill sits after
+`timeout`'s own KILL for a call that runs without interruption, so `timeout` ends such a call first.
+A group that was stopped and then resumed can be ended by the deadline before `timeout`'s grace
+after its TERM has passed; the reason is `runner-timeout` either way. When the call ends, whatever its exit, the whole process
 group is killed, so a child that ignored the signal does not outlive it. A descendant that leaves
 the process group (for example with `setsid`) is not reached by the group signal; the default
 `pidns` boundary closes that, since ending the namespace's first process ends every member, and the
 orchestrator ends that process itself (see "Known limit" above); a `cmd` boundary does so only if the
 command does.
-The group is signalled after the shell has already reaped `timeout`. With no member left, the group
+The group is signalled after the shell has already reaped `timeout`. A `timeout` that ends while the
+0.2 s look is asleep can be reaped up to 0.2 s before the signal. With no member left, the group
 id is free, and the signal could reach an unrelated group only if that id were allocated again as a
-group leader within microseconds, which takes a full wrap of the pid space; a surviving member pins
+group leader within that time, which takes a full wrap of the pid space; a surviving member pins
 the id, so the case the signal exists for is unaffected. This window is accepted. The group is
-signalled first, right after `timeout` is reaped, and the namespace's first process is ended after
-it, so the wait for that process (up to two seconds) does not widen the window.
+signalled first, as soon as the look ends, and the namespace's first process is ended after it, so
+the wait for that process (up to two seconds) does not widen the window.
 
 **Failures degrade, never abort.** Each ends as an assessment transport failure
 (`REVIEW_DEGRADED`, findings keep `verdict: null` and still gate, as `reconcile.sh` counts a null
