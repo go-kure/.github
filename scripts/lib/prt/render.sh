@@ -215,7 +215,7 @@ prt_render_summary() {
     fi
     if [ "$suppressed_len" -gt 0 ]; then
       printf '\n### Suppressed findings (FALSE POSITIVE, no thread created)\n\n'
-      printf 'The assessor judged these false positives and no thread existed, so nothing was posted.\n\n'
+      printf 'The assessor judged these false positives, so no review thread was opened.\n\n'
       printf '| fp | Severity | File | Line | Issue | Assessor reasoning |\n'
       printf '|----|----------|------|------|-------|--------------------|\n'
       printf '%s\n' "$suppressed_rows"
