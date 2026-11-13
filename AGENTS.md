@@ -359,12 +359,16 @@ org-wide scan for fail-closed `pr-review-threads` events (schedule + `workflow_d
 `docs/pr-review-threads.md` § Fail-closed alerting). `pr-review-runner-boundary-probe.yml` is a
 manual acceptance run (`workflow_dispatch` only) of the runner's process boundary on the review
 pool; see `docs/pr-review-threads.md` § Process boundary. `review-pool-acceptance.yml` is the
-second manual run on that pool (`workflow_dispatch` only). None of the six is consumed by
-kure/launcher.
+second run on that pool: a hand dispatch, and also callable by another workflow (`workflow_call`,
+see below); no workflow calls it yet. None of the six is consumed by kure/launcher.
 
 `review-pool-acceptance.yml` is the only workflow in the org that calls a real review backend on
 the review pool: it completes one `review-run` review of a commit range in this repository and
-records what ran. It is separate from the boundary probe on purpose, because the probe holds no
+records what ran. A caller passes `secrets: inherit` and the same four inputs as a dispatch. In a
+call the concurrency group carries the calling run's id, so pull requests do not queue behind each
+other, while a hand dispatch keeps the repository-wide group. The artifact is named with the run
+id and the run attempt, so a rerun does not collide with its first attempt, and the name is the
+`artifact` output of the call. `scripts/test/review-pool-callable-test.sh` pins all three. It is separate from the boundary probe on purpose, because the probe holds no
 secret and calls no model, and this one holds the backend credential. Five limits decide its shape,
 and a reader needs all five before dispatching it. The pool image installs no bubblewrap, so the
 review passes `--sandbox none` and the job's own container is the boundary. Because that review
