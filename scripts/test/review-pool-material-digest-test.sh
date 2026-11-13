@@ -102,8 +102,11 @@ resolve_jq() {
 # resolve_jq self-test. Each case runs in a subshell whose PATH holds only fixture directories, so
 # the host's own jq cannot decide the answer. The stub "jq" prints a line and needs nothing; the shim
 # fails unless a version manager's variable is set, as a real shim does.
-R="$(mktemp -d)"
-trap 'rm -rf "$R"' EXIT
+# One temporary root holds the resolver fixtures and the step cases, under one cleanup trap.
+WORK=$(mktemp -d)
+trap 'rm -rf "$WORK"' EXIT
+R="$WORK/resolve"
+mkdir -p "$R"
 mkdir -p "$R/tools" "$R/real" "$R/mise/shims" "$R/okshim/shims" "$R/misebin"
 ln -s "$(command -v env)" "$R/tools/env"
 ln -s "$(command -v dirname)" "$R/tools/dirname"
@@ -141,9 +144,6 @@ if [ -z "$JQ" ]; then
   exit 2
 fi
 SANDBOX_PATH="$(dirname "$JQ"):/usr/bin:/bin"
-
-WORK=$(mktemp -d)
-trap 'rm -rf "$WORK"' EXIT
 
 # run_step CASE_DIR PROVIDER_JSON
 # Runs the step body with OUT_DIR pointing at a fresh directory holding only the record under test.

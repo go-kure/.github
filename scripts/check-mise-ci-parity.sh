@@ -202,9 +202,12 @@ for wf in release release-publish; do
 done
 # ci.yml may set CLIFF_VERSION only from an expression (the step output that
 # reads mise.toml). Any other value, in a shell assignment (=) or a YAML env
-# entry (:), quoted or not, is a literal.
-while IFS= read -r line; do
-  value="${line#*[=:]}"
+# entry (:), quoted or not, at the start of a line or after `export`, `env`,
+# `;`, `&&` or `run:`, is a literal. The name must follow whitespace, `;`, `&`,
+# `(`, `|` or a quote, so `'^GIT_CLIFF_VERSION = '` in a grep pattern or a sed
+# expression (how ci.yml reads the pin) is not an assignment.
+while IFS= read -r hit; do
+  value="${hit#*[=:]}"
   value="${value#"${value%%[![:space:]]*}"}"
   value="${value#[\"\']}"
   # shellcheck disable=SC2016  # the literal text ${{, not an expansion
@@ -214,7 +217,7 @@ while IFS= read -r line; do
   echo "FAIL: git-cliff: .github/workflows/ci.yml names a version literal; read it from mise.toml"
   pin_failures=$((pin_failures + 1))
   break
-done < <(grep -E '^[[:space:]-]*(GIT_)?CLIFF_VERSION[[:space:]]*[=:]' "$CI" || true)
+done < <(grep -oE "(^|[[:space:];&(|\"'])(GIT_)?CLIFF_VERSION[[:space:]]*[=:][[:space:]]*[\"']?.{0,3}" "$CI" || true)
 
 if [ "$failures" -gt 0 ] || [ "$pin_failures" -gt 0 ]; then
   echo "check-mise-ci-parity: $((failures + pin_failures)) path(s) checked on one side only — add each to the other list" >&2
