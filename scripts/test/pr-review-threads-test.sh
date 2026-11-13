@@ -6916,6 +6916,27 @@ cp "$prt_fb_dir/art/findings.all" "$prt_fb_dir/art/findings.json"
 assert_eq "file backend: a second call for the same chunk returns the same answer" \
   "$(jq -S -c '.' <<< "$prt_fb_out0")" "$(PRT_REVIEW_BACKEND="file" prt_fb_review 0 | jq -S -c '.')"
 
+# 6a. The line index and file list of every chunk are built once per run, not once per call
+# (go-kure/.github#306): two chunks answered by two calls cost two builds of each, not four.
+# Each call runs in its own command substitution, so the count goes through files.
+rm -f "$prt_fb_dir/chunks/.file-backend-chunks.jsonl"
+: > "$prt_fb_dir/index-calls"
+: > "$prt_fb_dir/files-calls"
+(
+  eval "prt_bli_real() $(declare -f prt_build_line_index | tail -n +2)"
+  eval "prt_df_real() $(declare -f prt_diff_files | tail -n +2)"
+  prt_build_line_index() { printf x >> "$prt_fb_dir/index-calls"; prt_bli_real "$@"; }
+  prt_diff_files() { printf x >> "$prt_fb_dir/files-calls"; prt_df_real "$@"; }
+  PRT_REVIEW_BACKEND="file" prt_fb_review 0 > /dev/null
+  PRT_REVIEW_BACKEND="file" prt_fb_review 1 > /dev/null
+)
+assert_eq "file backend: two calls over two chunks build each line index once" "2" \
+  "$(wc -c < "$prt_fb_dir/index-calls" | tr -d ' ')"
+assert_eq "file backend: two calls over two chunks build each file list once" "2" \
+  "$(wc -c < "$prt_fb_dir/files-calls" | tr -d ' ')"
+assert_eq "file backend: the second chunk's answer is unchanged by the reuse" "$(jq -S -c '.' <<< "$prt_fb_out1")" \
+  "$(PRT_REVIEW_BACKEND="file" prt_fb_review 1 | jq -S -c '.')"
+
 # 6b. A file split across chunks is found by its whole path: one with a space
 # (git ends the +++ path with a tab) and one git quotes (a `"` in the name).
 # The line index used to cut the first at the space and keep the quotes of the
@@ -7044,9 +7065,12 @@ prt_fb_restore
 # A chunk whose line index cannot be built is a local fault, not an input this mode lacks
 # (go-kure/.github#306): the reason is payload-build, as for the other local faults.
 : > "$prt_fb_dir/failure"
+rm -f "$prt_fb_dir/chunks/.file-backend-chunks.jsonl"  # the records of an earlier call would hide the build
 ( prt_build_line_index() { return 1; }; PRT_REVIEW_BACKEND="file" prt_fb_review 0 > /dev/null 2>&1 ); prt_fb_rc=$?
 assert_eq "file backend refusal: a line index that cannot be built: rc" "1" "$prt_fb_rc"
 assert_eq "file backend refusal: a line index that cannot be built: reason" "payload-build" "$(cat "$prt_fb_dir/failure")"
+assert_eq "file backend refusal: a failed build leaves no record file behind" "0" \
+  "$(find "$prt_fb_dir/chunks" -name '.file-backend-chunks*' | wc -l | tr -d ' ')"
 
 # Misconfiguration fails closed too, and says so.
 : > "$prt_fb_dir/failure"
