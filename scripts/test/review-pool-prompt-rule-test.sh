@@ -43,6 +43,12 @@ fi
 # that, not by name, and require exactly one: zero and two both mean this suite is aimed wrong.
 STEP_FILTER='.jobs.review.steps[] | select((.run // "") | contains("<<PROMPT"))'
 
+# The rule sentence the check pins, as the prompt writes it, and the whole of its line. A line is
+# exempt only when it equals this text exactly, so any text added to that line is still checked
+# for the word. The live case below fails when the prompt rewords the sentence, and the mutants that
+# edit it then stop with exit 2, so a reworded rule needs this line updated with it.
+RULE_LINE='Never write the word FINDING anywhere except in a block header, in the position the form'
+
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
@@ -88,7 +94,7 @@ render() {
 # one scope line, so a pass states what it looked at. Exit 1 on any stray line, on a rule sentence
 # that is not present exactly once, or on a scope with no header or no completion line to compare.
 check_rendered() {
-  LC_ALL=C awk '
+  LC_ALL=C awk -v rule="$RULE_LINE" '
     {
       src = substr($0, 1, 1)
       line = substr($0, 3)
@@ -96,7 +102,7 @@ check_rendered() {
     index(tolower(line), "finding") == 0 { next }
     src == "E" && line ~ /^\[(blocking|wording|citation)\] FINDING — / { headers++; next }
     src == "E" && line ~ /^REVIEW_COMPLETE: findings=[0-9]+$/        { completions++; next }
-    src == "P" && index(line, "Never write the word FINDING anywhere except in a block header") == 1 {
+    src == "P" && line == rule {
       rules++; next
     }
     { stray++; print "stray: " src ": " line }
@@ -104,7 +110,7 @@ check_rendered() {
       printf "scope: headers=%d completions=%d rule_sentences=%d stray=%d\n", headers, completions, rules, stray
       if (rules != 1) {
         print "the rule sentence is present " rules + 0 " times, want exactly 1."
-        print "A deliberate rewording of that sentence needs this test updated with it: the sentence is pinned in this function and in RULE_LINE."
+        print "A deliberate rewording of that sentence needs this test updated with it: the whole line is pinned in RULE_LINE, and any text added to that line is checked for the word."
       }
       if (headers < 1 || completions < 1) print "the examples carry no header or no completion line, so the scope is empty"
       exit (stray > 0 || rules != 1 || headers < 1 || completions < 1) ? 1 : 0
@@ -164,10 +170,6 @@ mutate() {
   printf '%s' "$out"
 }
 
-# The rule sentence the check pins, as the prompt writes it. The live case below fails when the
-# prompt rewords it, and the mutants that edit it then stop with exit 2, so a reworded rule needs
-# this line and the check's own copy of it updated together.
-RULE_LINE='Never write the word FINDING anywhere except in a block header, in the position the form'
 
 # The live prompt. It states its scope, so a pass cannot be an empty read.
 check 'the live prompt writes the word only in headers, completion lines and its one rule' \
@@ -196,6 +198,12 @@ check 'a prompt with no rule sentence is refused' \
 check 'a prompt that states the rule twice is refused' \
   1 'the rule sentence is present 2 times' \
   "$(mutate rule-twice "/^ *${RULE_LINE}\$/p")"
+
+# The rule line is exempt only as a whole. Text added to it, here the word in a clause, is checked
+# like any other line, and it also leaves the pinned sentence absent.
+check 'text added to the rule line, naming the word, is refused' \
+  1 'stray: P: Never write the word FINDING anywhere except in a block header, in the position the form, and report each finding' \
+  "$(mutate rule-line-extended "s/^\( *\)${RULE_LINE}\$/&, and report each finding/")"
 
 # The word in an ordinary prose sentence, in each form a later edit could write it.
 LEAD='Report in at least one sentence what you checked, including when you find nothing\.'
