@@ -9857,6 +9857,15 @@ prt_exclude_files "$xf_dir/edge.diff" "" "$xf_dir/edge-kept1.diff" "$xf_edge_len
 prt_exclude_files "$xf_dir/edge.diff" "" "$xf_dir/edge-kept2.diff" "$((xf_edge_len - 1))" > "$xf_dir/edge-out2"
 assert_eq "exclude #374: a deletion-only hunk exactly at the ceiling stays; one character over leaves" \
   "0 1" "$(jq 'length' "$xf_dir/edge-out1") $(jq 'length' "$xf_dir/edge-out2")"
+# Dropping the trailing hunks makes the hunk before them the last one, which prt_split_diff
+# measures one newline longer: a deletion-only hunk exactly at the ceiling goes too, or the
+# run would still truncate. A small hunk before them stays.
+{ xf_hdr edge.go; printf '@@ -1,1 +1,0 @@\n-s\n'; printf '@@ -1,2 +1,0 @@\n-zzzzzzzzzz\n'; xf_del_hunk 9 3; } > "$xf_dir/edge-tail.diff"
+prt_exclude_files "$xf_dir/edge-tail.diff" "" "$xf_dir/edge-tail-kept.diff" "$xf_edge_len" > "$xf_dir/edge-tail-out"
+assert_eq "exclude #374: a hunk at the ceiling that becomes the last one once the hunks after it are dropped goes too" \
+  '[{"path":"edge.go","added":0,"removed":4,"reason":"deletion-only hunk over the ceiling"}]' "$(jq -c . "$xf_dir/edge-tail-out")"
+assert_eq "exclude #374: ... and the small hunk before them stays under its header" \
+  "$(xf_hdr edge.go; printf '@@ -1,1 +1,0 @@\n-s\n')" "$(cat "$xf_dir/edge-tail-kept.diff")"
 xf_del_section="$(prt_render_excluded_section '[{"path":"big.go","added":0,"removed":3000,"reason":"deletion-only hunk over the ceiling"}]')"
 assert_eq "excluded section #374: the comment names a skipped deletion as one nobody read, and the row carries the reason" \
   "true true" "$(grep -qF 'a deletion nobody read' <<< "$xf_del_section" && echo true || echo false) $(grep -qxF '| `big.go` | +0 | -3000 | not reviewed | deletion-only hunk over the ceiling |' <<< "$xf_del_section" && echo true || echo false)"

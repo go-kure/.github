@@ -410,8 +410,8 @@ elif ! prt_retry 3 prt_fetch_base_gitattributes "$PRT_REPO" "$base_sha" "$BASE_A
   base_attrs_note="the base commit's .gitattributes could not be read"
 fi
 if [ -n "$base_attrs_note" ]; then
-  prt_log "$base_attrs_note; linguist-generated is not honoured this run (only lockfiles are excluded)"
-  printf '::warning title=PR review threads::%s; linguist-generated is not honoured this run, so every file except lockfiles is reviewed\n' "$base_attrs_note"
+  prt_log "$base_attrs_note; linguist-generated is not honoured this run (only lockfiles and deletion-only hunks over the size limit are excluded)"
+  printf '::warning title=PR review threads::%s; linguist-generated is not honoured this run, so only lockfiles and deletion-only hunks over the size limit are excluded\n' "$base_attrs_note"
 fi
 REVIEW_DIFF_FILE="$WORKDIR/review.diff"
 if ! EXCLUDED_FILES="$(prt_exclude_files "$DIFF_FILE" "$BASE_ATTRS_FILE" "$REVIEW_DIFF_FILE" "$((PRT_MAX_DIFF_CHARS * PRT_HARD_CEILING_MULT))")"; then
