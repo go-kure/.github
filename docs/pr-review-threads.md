@@ -675,7 +675,9 @@ on `autops-kube-kure`, so the runner backend stays unaccepted there until that j
 where this probe passes. The workflow's first step records which image the pod runs, with the same
 fields and fallback text as the identity step of `review-pool-acceptance.yml`: the sha256 of the
 bundle record of `/opt/review-runner`, the registry digest of the `latest` tag (a cross-check that
-reads `unavailable: <reason>` when it fails), the uid and the pod hostname. The step fails when
+reads `unavailable: <reason>` when it fails), the uid and the pod hostname. The three other reads of
+the record (the user-namespace limit, the `review-run` path and the runner script pin) also read
+`unavailable: <reason>` when they fail, never an empty value. The step fails when
 `review-bundle-verify` is absent, because a pod that is not the review image says nothing about it.
 The record covers the review image family and the bundle bytes only. It does not cover the base
 layer where the boundary runs, and the image digest needs a credential the pod does not have, so a
