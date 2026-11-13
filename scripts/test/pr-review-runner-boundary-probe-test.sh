@@ -10,6 +10,7 @@
 #
 # Usage: pr-review-runner-boundary-probe-test.sh [REPO_ROOT]
 
+# shellcheck disable=SC2016 # file-wide: the stub scripts the identity-step cases write carry literal $ text, not expansions of this shell
 set -uo pipefail # not -e: report every assertion, not just the first failure
 
 ROOT="${1:-.}"
@@ -450,6 +451,80 @@ else
   assert_eq "no PID namespace here: PRT_TEST_REQUIRE_NAMESPACE is not set (the full-run cases did not run)" \
     "" "${PRT_TEST_REQUIRE_NAMESPACE:-}"
 fi
+
+# The identity step of the probe workflow. Its record must never carry an empty field: a read that
+# fails and a read that succeeds with nothing are each recorded as "unavailable: <reason>". A command
+# substitution inside a printf argument cannot stop the step, so the shapes are tried one read at a
+# time, each as a failing command and as an empty value, and every other field must stay a real value.
+WORKFLOW="$ROOT/.github/workflows/pr-review-runner-boundary-probe.yml"
+step="$dir/identity-step.sh"
+yq -r '.jobs.probe.steps[] | select(.name == "Record the image this probe runs in") | .run' "$WORKFLOW" > "$step"
+assert_eq "identity step: the step text was extracted (control)" "true" \
+  "$([ "$(wc -l < "$step")" -gt 10 ] && grep -q 'review-bundle-verify' "$step" && echo true || echo false)"
+REAL_CAT="$(command -v cat)"
+REAL_SHA="$(command -v sha256sum)"
+mkdir -p "$dir/ib" "$dir/rr"
+# A stub reads STUB_FIELD (the read to break) and STUB_SHAPE (fail: exit 1; empty: exit 0, no output).
+stub_head='if [ "$STUB_FIELD" = @FIELD@ ]; then [ "$STUB_SHAPE" = fail ] && exit 1; exit 0; fi'
+mkstub() { # mkstub NAME FIELD BODY
+  printf '#!/bin/sh\n%s\n%s\n' "${stub_head//@FIELD@/$2}" "$3" > "$dir/ib/$1"
+  chmod 755 "$dir/ib/$1"
+}
+mkstub hostname hostname 'echo stub-host'
+printf '#!/bin/sh\ncase "$1" in -u) f=uid; v=1001 ;; *) f=gid; v=1002 ;; esac\nif [ "$STUB_FIELD" = "$f" ]; then [ "$STUB_SHAPE" = fail ] && exit 1; exit 0; fi\necho "$v"\n' > "$dir/ib/id"
+printf '#!/bin/sh\nif [ "$1" = /proc/sys/user/max_user_namespaces ]; then\n%s\necho 31337; exit 0; fi\nexec %s "$@"\n' \
+  "${stub_head//@FIELD@/namespaces}" "$REAL_CAT" > "$dir/ib/cat"
+printf '#!/bin/sh\nif [ "$1" = /opt/review-runner/bin/runner.sha256 ]; then\n%s\necho "%s  $1"; exit 0; fi\nexec %s "$@"\n' \
+  "${stub_head//@FIELD@/scripts_pin}" "$(printf 'ab%.0s' $(seq 32))" "$REAL_SHA" > "$dir/ib/sha256sum"
+printf '#!/bin/sh\necho stub-record\n' > "$dir/ib/review-bundle-verify"
+printf '#!/bin/sh\nexit 22\n' > "$dir/ib/curl"
+printf '#!/bin/sh\nexit 0\n' > "$dir/rr/review-run"
+chmod 755 "$dir/ib/id" "$dir/ib/cat" "$dir/ib/sha256sum" "$dir/ib/review-bundle-verify" "$dir/ib/curl" "$dir/rr/review-run"
+
+identity_value() { # identity_value KEY OUTPUT -> the value of one field of the record
+  local key="$1" out="$2" line
+  case "$key" in
+    uid) line="$(printf '%s\n' "$out" | grep '^uid=')"; line="${line#uid=}"; printf '%s' "${line%% gid=*}" ;;
+    gid) line="$(printf '%s\n' "$out" | grep '^uid=')"; printf '%s' "${line##* gid=}" ;;
+    *) printf '%s\n' "$out" | sed -n "s/^$key=//p" ;;
+  esac
+}
+# FIELD is the STUB_FIELD name; KEY is the field it ends up in.
+identity_cases="hostname:pod_hostname uid:uid gid:gid namespaces:user_max_user_namespaces review_run:review_run_path scripts_pin:runner_scripts_pin"
+run_identity() { # run_identity FIELD SHAPE -> the step's output, then its exit code on the last line
+  local rrdir="$dir/rr" out rc
+  [ "$1" = review_run ] && [ "$2" = fail ] && rrdir="$dir/none"
+  out="$(env -i PATH="$dir/ib:$rrdir:/usr/bin:/bin" TMPDIR="$dir" STUB_FIELD="$1" STUB_SHAPE="$2" bash "$step" 2> /dev/null)"
+  rc=$?
+  printf '%s\n%s' "$out" "$rc"
+}
+mkdir -p "$dir/none"
+ok_run="$(run_identity none none)"
+ok_out="${ok_run%$'\n'*}"
+assert_eq "identity step: with every read healthy it exits 0 (control)" 0 "${ok_run##*$'\n'}"
+assert_eq "identity step: the healthy hostname is recorded (control)" "stub-host" "$(identity_value pod_hostname "$ok_out")"
+assert_eq "identity step: the healthy uid and gid are recorded (control)" "1001 1002" \
+  "$(identity_value uid "$ok_out") $(identity_value gid "$ok_out")"
+assert_eq "identity step: the healthy runner script pin is recorded (control)" "$(printf 'ab%.0s' $(seq 32))" \
+  "$(identity_value runner_scripts_pin "$ok_out")"
+for pair in $identity_cases; do
+  field="${pair%%:*}" key="${pair##*:}"
+  for shape in fail empty; do
+    # review-run is found by command -v, which prints a path or nothing: it has no empty shape.
+    [ "$field" = review_run ] && [ "$shape" = empty ] && continue
+    run="$(run_identity "$field" "$shape")"
+    out="${run%$'\n'*}"
+    assert_eq "identity step: $field $shape: the step still exits 0" 0 "${run##*$'\n'}"
+    assert_eq "identity step: $field $shape: the field says unavailable and gives a reason" "true" \
+      "$([[ "$(identity_value "$key" "$out")" == "unavailable: "?* ]] && echo true || echo false)"
+    for other in $identity_cases; do
+      okey="${other##*:}"
+      [ "$okey" = "$key" ] && continue
+      assert_eq "identity step: $field $shape: the field $okey is untouched" "true" \
+        "$([ "$(identity_value "$okey" "$out")" = "$(identity_value "$okey" "$ok_out")" ] && echo true || echo false)"
+    done
+  done
+done
 
 echo "passed: $pass_count, failed: $failures"
 [ "$failures" -eq 0 ]
