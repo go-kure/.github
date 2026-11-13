@@ -7515,6 +7515,18 @@ case "$mode" in
   heartbeat)
     ( while :; do date +%s%N > "$log.hb"; sleep 0.1; done ) &
     sleep 300; exit 0 ;;
+  # stopgroup: once its heartbeat runs, stops its whole process group with SIGSTOP. `timeout` leads
+  # that group, so the stop reaches it and nothing in the call runs the deadline any more
+  # (go-kure/.github#319).
+  stopgroup)
+    ( while :; do date +%s%N > "$log.hb"; sleep 0.1; done ) &
+    sleep 1; kill -STOP 0; sleep 300; exit 0 ;;
+  # hang_ignoreterm: ignores TERM itself (so do its children), so only the KILL of `timeout`, 5 s
+  # after the TERM, ends it. The orchestrator's own deadline must not end the call sooner.
+  hang_ignoreterm)
+    trap '' TERM
+    ( while :; do date +%s%N > "$log.hb"; sleep 0.1; done ) &
+    sleep 300; exit 0 ;;
   # hostile: the runner is PID 1 of its namespace and escapes everything the launcher's death and
   # the process group reach: it clears its parent-death signal (what --kill-child sets), starts a
   # session of its own and keeps rewriting a counter file, never exiting (go-kure/.github#304).
@@ -8283,13 +8295,72 @@ prt_ar_hang_case() { # mode label
     "true" "$([ "$prt_ar_elapsed" -lt "$prt_ar_backstop" ] && echo true || echo false)"
   assert_eq "$2: degraded as runner-timeout" \
     "true" "$(grep -qF '[runner-timeout]' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+  # `timeout` ended the call itself: the orchestrator's own deadline (go-kure/.github#319, below) sits
+  # after `timeout`'s KILL and prints this line only when it fires, so a deadline that fired early
+  # would end the call with the same reason and be seen nowhere else.
+  assert_eq "$2: the orchestrator's own deadline did not fire" \
+    "false" "$(grep -qF 'the deadline of the call passed before its timeout process ended' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
   prt_ar_child_gone "$2"
 }
 prt_ar_hang_case hang "assess runner hangs"
 # The runner exits on TERM but its child ignores it: timeout sees its own child gone and stops, so
 # the group needs its own KILL.
 prt_ar_hang_case hang_stubborn "assess runner hangs, its child ignores TERM"
+# The runner ignores TERM too: `timeout` KILLs it 5 s later, and the orchestrator's own deadline
+# (go-kure/.github#319, below) sits at that same point, so it must leave the outcome as it was.
+prt_ar_hang_case hang_ignoreterm "assess runner hangs and ignores TERM"
 PRT_TEST_RUNNER_MODE=clean
+
+# A runner that stops its own process group stops `timeout` with it (go-kure/.github#319). `timeout`
+# is what sends the TERM and the KILL, and the orchestrator waits only for `timeout`, so nothing ends
+# the call before the job's own limit. The call runs in the background under a bound of its own, because
+# the defect is a hang and a hang reads as a slow run: a call still running at the bound is a failure,
+# and is ended here (the group, by the pid the wrapper recorded) so the case does not leave the runner.
+# The wrapper records the pid of `timeout` (its parent) for the call's own command (a `bash` reader),
+# not for the boundary preflight.
+mkdir -p "$prt_ar_dir/bin-recordtimeout"
+# shellcheck disable=SC2016 # script text for the wrapper, not an expansion
+printf '#!/bin/bash\nfor a in "$@"; do\n  if [ "$a" = bash ]; then echo "$PPID" > "%s"; fi\ndone\nexec %s "$@"\n' \
+  "$prt_ar_dir/timeout.pid" "$(command -v unshare)" > "$prt_ar_dir/bin-recordtimeout/unshare"
+chmod 755 "$prt_ar_dir/bin-recordtimeout/unshare"
+prt_ar_state() { sed 's/.*) //' "/proc/$1/stat" 2> /dev/null | cut -c1; }
+prt_ar_stop_case() { # label
+  local bound=60 i tp="" seen=false finished=false group=false bg
+  rm -f "$PRT_TEST_RUNNER_LOG".* "$prt_ar_dir/timeout.pid" "$prt_ar_dir/stop.rc"
+  PRT_TEST_RUNNER_MODE=stopgroup
+  PRT_TEST_MODEL_BUDGET_SECONDS=$prt_ar_budget
+  PATH="$prt_ar_dir/bin-recordtimeout:$PATH" PRT_MODEL_TIMEOUT_FLOOR=1 run_orchestrator advisory 0 0 0 > "$prt_ar_dir/stop.rc" &
+  bg=$!
+  # Positive control, and the first question the case asks: the group stop reaches `timeout`. The
+  # state T is read while the call runs; a call that ended first leaves it unseen.
+  for i in $(seq 1 100); do
+    [ -s "$prt_ar_dir/timeout.pid" ] && tp="$(cat "$prt_ar_dir/timeout.pid")"
+    if [ -n "$tp" ] && [ "$(prt_ar_state "$tp")" = T ]; then seen=true; break; fi
+    kill -0 "$bg" 2> /dev/null || break
+    sleep 0.1
+  done
+  for i in $(seq 1 $((bound * 10))); do
+    kill -0 "$bg" 2> /dev/null || { finished=true; break; }
+    sleep 0.1
+  done
+  # The pid is read again here: a slow start can record it after the first loop gave up, and an
+  # empty value would skip the group kill below and let the stopped runner outlive the case.
+  [ -s "$prt_ar_dir/timeout.pid" ] && tp="$(cat "$prt_ar_dir/timeout.pid")"
+  [ -n "$tp" ] && kill -0 -- "-$tp" 2> /dev/null && group=true
+  # A group that survives is ended whether or not the call returned: a call that returned and left
+  # its runner behind is the defect this case is about, and it must not leave the runner running.
+  if $group; then kill -KILL -- "-$tp" 2> /dev/null; fi
+  if ! $finished; then kill -KILL "$bg" 2> /dev/null; fi
+  wait "$bg" 2> /dev/null
+  assert_eq "$1: the runner's group stop reached timeout (state T seen, pid recorded: $([ -n "$tp" ] && echo true || echo false))" "true" "$seen"
+  assert_eq "$1: the call returned within ${bound}s of its own bound" "true" "$finished"
+  assert_eq "$1: one runner call, degraded as runner-timeout, the run still exits 0" \
+    "0 1 true" "$(cat "$prt_ar_dir/stop.rc") $(prt_ar_calls) $(grep -qF '[runner-timeout]' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+  assert_eq "$1: no process of the call's group remains" "false" "$group"
+  PRT_TEST_MODEL_BUDGET_SECONDS=""
+  PRT_TEST_RUNNER_MODE=clean
+}
+prt_ar_stop_case "assess runner stops its process group"
 
 # The outer bound adds 30 s to a whole-number --seconds, so the value is read as decimal: "08" is
 # not an octal error and "060" is 60, not 48. The runner is handed the normalized value, and a value
