@@ -312,7 +312,7 @@ overrides the workflow's own default) is one of three values. An unrecognized va
   never reopened. A PR-wide cap
   (`PRT_MAX_FINDINGS_TOTAL`, default 5) bounds how many *new* threads can start gating per run;
   findings beyond what's left of the cap go into the overflow comment instead of a thread.
-  A false positive with no thread (`SUPPRESS`) never gates. In `enforce` mode the advisory
+  A false positive with no thread (`SUPPRESS`) never gates. In `enforce` mode a separate advisory
   comment lists each one in a collapsed "Suppressed as false positives" section, with the whole
   issue and the assessor's whole reasoning, so the call can be checked and survives past the run's
   retention (go-kure/.github#296). The cells are HTML-encoded, so reasoning text cannot hide
@@ -1358,7 +1358,7 @@ that was never posted (that POST fired only when `overflow` or `quarantined` was
 own third branch that names the count and states everything was suppressed, with no comment
 reference at all. The function is a three-way branch on `threads_carry` and `advisory_count`, not two.
 
-Since go-kure/.github#296 the advisory comment also lists the suppressed findings, so a
+Since go-kure/.github#296 a separate advisory comment also lists the suppressed findings, so a
 ninth argument, `suppressed_posted` (suppressed rows that reached a posted part), joins the
 branch test: the comment exists when `overflow + quarantined + suppressed_posted > 0`. A
 suppressed-only run whose comment posted points at that comment and says the suppressed findings
@@ -1534,8 +1534,11 @@ plus the finding is surfaced instead of discarded), so the row-precedence is not
 
 GitHub rejects an issue comment longer than 65,536 characters with HTTP 422. A report that exceeds a
 hard limit can only be split, truncated or dropped, and splitting is the only one of the three that
-loses nothing. So the overflow, withheld and suppressed findings stay one comment when GitHub accepts
-that comment whole, and are split into several parts when it would not.
+loses nothing. So the overflow and withheld findings stay one comment when GitHub accepts that comment
+whole, and are split into several parts when it would not. The suppressed findings
+(go-kure/.github#296) are a series of their own, posted after it and split by the same rules. They
+are never planned together with overflow or withheld rows, because a shared plan let them change
+where an overflow row lands.
 
 This section is the one place that states the rules of the split. The code
 (`prt_overflow_part_line` and `prt_render_overflow_parts` in `render.sh`) and its tests implement them
@@ -1544,11 +1547,9 @@ and point here instead of restating them.
 - **Size.** Every part is checked against the limit before it is posted, and a part over it fails the
   render, so nothing over the limit is posted.
 - **Order.** Merge-gating withheld rows come first across the parts, then the other overflow and
-  withheld rows by severity, then the suppressed rows by severity (go-kure/.github#296). Size never
-  reorders rows, and a suppressed row never pushes an overflow or withheld row into a later part:
-  the section's fixed cost is charged to the first suppressed row of the part that holds it, so the
-  budget of every other row is the same with or without suppressed findings. Each part that holds
-  suppressed rows carries its own collapsed section.
+  withheld rows by severity. The suppressed series orders its rows by severity. Size never reorders
+  rows. Each part of the suppressed series carries its own collapsed section, and part 1 says that
+  none of its findings gates.
 - **What part 1 says.** In a split, part 1 says how many parts there are and which hold the
   merge-gating rows, and a later part points back to part 1. A comment that is not split has no
   merge-gating note. Part 1 (or the only part) says so when a finding had to be shortened.

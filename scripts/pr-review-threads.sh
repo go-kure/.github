@@ -2298,80 +2298,99 @@ if [ "$PRT_MODE" = enforce ] &&
   overflow_len=0
   quarantined_len=0
 fi
-if [ "$PRT_MODE" = enforce ] && { [ "$overflow_len" -gt 0 ] || [ "$quarantined_len" -gt 0 ] || [ "$SUPPRESSED_COUNT" -gt 0 ]; }; then
-  # go-kure/.github#296: suppressed false positives ride in the same comment, so a run whose only
-  # output is suppressed findings posts it too. They never gate and never open a thread.
-  # The body is split into parts when one comment would pass GitHub's
-  # 65,536-character limit (go-kure/.github#307). The rules of the split (order,
-  # what part 1 says, shortening, posting) are stated once, in
-  # docs/pr-review-threads.md, "The overflow and withheld comment is split when
-  # it would pass GitHub's limit". OVERFLOW_COMMENT_POSTED is true only when
-  # every part posted.
-  overflow_dir="$WORKDIR/overflow-parts"
-  overflow_parts=0
-  overflow_truncated=0
-  if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
-    if ! mkdir -p "$overflow_dir" ||
-       ! overflow_plan="$(prt_render_overflow_parts "$OVERFLOW" "$QUARANTINED" "$overflow_dir" "$SUPPRESSED")" ||
-       ! read -r overflow_parts overflow_truncated <<< "$overflow_plan"; then
-      # A render or payload fault posts nothing: an incomplete table (for example
-      # a quarantine table that failed to build) must never be written as if it
-      # were the whole withheld list.
-      prt_mark_incomplete "the overflow comment could not be rendered (local fault); nothing was posted"
-      OVERFLOW_COMMENT_POSTED=false
-    else
-      if [ "$overflow_truncated" -gt 0 ]; then
-        # The cut text is in no part: say so, and fail the run.
-        prt_mark_incomplete "${overflow_truncated} overflow or withheld finding(s) were too long for one comment part and are shortened; the omitted text is in no part"
-      fi
-      overflow_part=0
-      while [ "$overflow_part" -lt "$overflow_parts" ]; do
-        overflow_part=$((overflow_part + 1))
-        overflow_label="overflow comment"
-        [ "$overflow_parts" -le 1 ] || overflow_label="overflow comment part ${overflow_part} of ${overflow_parts}"
-        # Every part is checked immediately before its own write: the check above
-        # precedes the render, and a later part can follow a long gap.
-        prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA" || {
-          prt_handle_freshness_rc "$?" "$overflow_label"
-          OVERFLOW_COMMENT_POSTED=false
-          break
-        }
-        overflow_payload=""
-        if ! overflow_body="$(cat "$overflow_dir/part-${overflow_part}.md")" ||
-           ! overflow_payload="$(prt_json_body_payload "$overflow_body")" || [ -z "$overflow_payload" ]; then
-          prt_mark_incomplete "the ${overflow_label} could not be prepared for posting (local fault); nothing was posted for it"
-          OVERFLOW_COMMENT_POSTED=false
-          continue
+# go-kure/.github#296: the suppressed findings are a series of their own, posted the same way as the
+# overflow and withheld rows and never planned with them, so they cannot change where one of those
+# lands. A run with only suppressed findings posts only that series.
+overflow_truncated_total=0
+for overflow_series in main suppressed; do
+  case "$overflow_series" in
+    main)
+      series_count=$((overflow_len + quarantined_len))
+      series_f="$OVERFLOW"; series_q="$QUARANTINED"; series_s='[]'
+      series_noun="overflow comment"; series_rows="overflow or withheld"
+      series_dir="$WORKDIR/overflow-parts"
+      ;;
+    *)
+      series_count="$SUPPRESSED_COUNT"
+      series_f='[]'; series_q='[]'; series_s="$SUPPRESSED"
+      series_noun="suppressed-findings comment"; series_rows="suppressed"
+      series_dir="$WORKDIR/suppressed-parts"
+      ;;
+  esac
+  if [ "$PRT_MODE" = enforce ] && [ "$series_count" -gt 0 ]; then
+    # The body is split into parts when one comment would pass GitHub's
+    # 65,536-character limit (go-kure/.github#307). The rules of the split (order,
+    # what part 1 says, shortening, posting) are stated once, in
+    # docs/pr-review-threads.md, "The overflow and withheld comment is split when
+    # it would pass GitHub's limit". OVERFLOW_COMMENT_POSTED is true only when
+    # every part posted.
+    overflow_dir="$series_dir"
+    overflow_parts=0
+    overflow_truncated=0
+    if prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA"; then
+      if ! mkdir -p "$overflow_dir" ||
+         ! overflow_plan="$(prt_render_overflow_parts "$series_f" "$series_q" "$overflow_dir" "$series_s")" ||
+         ! read -r overflow_parts overflow_truncated <<< "$overflow_plan"; then
+        # A render or payload fault posts nothing: an incomplete table (for example
+        # a quarantine table that failed to build) must never be written as if it
+        # were the whole withheld list.
+        prt_mark_incomplete "the ${series_noun} could not be rendered (local fault); nothing was posted"
+        OVERFLOW_COMMENT_POSTED=false
+      else
+        if [ "$overflow_truncated" -gt 0 ]; then
+          # The cut text is in no part: say so, and fail the run.
+          overflow_truncated_total=$((overflow_truncated_total + overflow_truncated))
+          prt_mark_incomplete "${overflow_truncated} ${series_rows} finding(s) were too long for one comment part and are shortened; the omitted text is in no part"
         fi
-        # issues/{n}/comments deliberately, not pulls/{n}/comments: the latter
-        # posts a review thread reply, which sets has_human_reply (content-based,
-        # not author-based) and would make a quarantined/overflow body a merge
-        # blocker instead of the advisory it's meant to be.
-        if prt_gh_rest POST "/repos/${PRT_REPO}/issues/${PRT_PR_NUMBER}/comments" \
-          "$overflow_payload" >/dev/null; then
-          if read -r overflow_part_f overflow_part_q < "$overflow_dir/part-${overflow_part}.counts" &&
-             read -r overflow_part_s < "$overflow_dir/part-${overflow_part}.suppressed"; then
-            overflow_posted_len=$((overflow_posted_len + overflow_part_f))
-            quarantined_posted_len=$((quarantined_posted_len + overflow_part_q))
-            suppressed_posted_len=$((suppressed_posted_len + overflow_part_s))
+        overflow_part=0
+        while [ "$overflow_part" -lt "$overflow_parts" ]; do
+          overflow_part=$((overflow_part + 1))
+          overflow_label="$series_noun"
+          [ "$overflow_parts" -le 1 ] || overflow_label="${series_noun} part ${overflow_part} of ${overflow_parts}"
+          # Every part is checked immediately before its own write: the check above
+          # precedes the render, and a later part can follow a long gap.
+          prt_freshness_check "$PRT_REPO" "$PRT_PR_NUMBER" "$PRT_HEAD_SHA" || {
+            prt_handle_freshness_rc "$?" "$overflow_label"
+            OVERFLOW_COMMENT_POSTED=false
+            break
+          }
+          overflow_payload=""
+          if ! overflow_body="$(cat "$overflow_dir/part-${overflow_part}.md")" ||
+             ! overflow_payload="$(prt_json_body_payload "$overflow_body")" || [ -z "$overflow_payload" ]; then
+            prt_mark_incomplete "the ${overflow_label} could not be prepared for posting (local fault); nothing was posted for it"
+            OVERFLOW_COMMENT_POSTED=false
+            continue
+          fi
+          # issues/{n}/comments deliberately, not pulls/{n}/comments: the latter
+          # posts a review thread reply, which sets has_human_reply (content-based,
+          # not author-based) and would make a quarantined/overflow body a merge
+          # blocker instead of the advisory it's meant to be.
+          if prt_gh_rest POST "/repos/${PRT_REPO}/issues/${PRT_PR_NUMBER}/comments" \
+            "$overflow_payload" >/dev/null; then
+            if read -r overflow_part_f overflow_part_q < "$overflow_dir/part-${overflow_part}.counts" &&
+               read -r overflow_part_s < "$overflow_dir/part-${overflow_part}.suppressed"; then
+              overflow_posted_len=$((overflow_posted_len + overflow_part_f))
+              quarantined_posted_len=$((quarantined_posted_len + overflow_part_q))
+              suppressed_posted_len=$((suppressed_posted_len + overflow_part_s))
+            else
+              # The part posted but its row counts are unreadable: credit nothing
+              # for it, so the supersede text errs toward "re-check", never
+              # toward claiming rows that may be missing.
+              prt_mark_incomplete "the row counts of the ${overflow_label} could not be read (local fault)"
+              OVERFLOW_COMMENT_POSTED=false
+            fi
           else
-            # The part posted but its row counts are unreadable: credit nothing
-            # for it, so the supersede text errs toward "re-check", never
-            # toward claiming rows that may be missing.
-            prt_mark_incomplete "the row counts of the ${overflow_label} could not be read (local fault)"
+            prt_mark_incomplete "failed to post ${overflow_label} (HTTP ${PRT_LAST_HTTP_STATUS:-unknown})"
             OVERFLOW_COMMENT_POSTED=false
           fi
-        else
-          prt_mark_incomplete "failed to post ${overflow_label} (HTTP ${PRT_LAST_HTTP_STATUS:-unknown})"
-          OVERFLOW_COMMENT_POSTED=false
-        fi
-      done
+        done
+      fi
+    else
+      prt_handle_freshness_rc "$?" "$series_noun"
+      OVERFLOW_COMMENT_POSTED=false
     fi
-  else
-    prt_handle_freshness_rc "$?" "overflow comment"
-    OVERFLOW_COMMENT_POSTED=false
   fi
-fi
+done
 
 # --- Clean-verdict comment (enforce mode only; GitLab mr-review.yml parity,
 # "say so when a review finds nothing", 2026-08-22) ---
@@ -2470,7 +2489,7 @@ if [ "$PRT_MODE" = enforce ]; then
               superseded_overflow_arg="$overflow_posted_len"
               superseded_quarantined_arg="$quarantined_posted_len"
             fi
-            superseded_body="$(prt_render_clean_comment_superseded "$PRT_HEAD_SHA" "$total_findings_this_run" "$THREADS_WRITTEN" "$SUPPRESSED_COUNT" "$superseded_overflow_arg" "$superseded_quarantined_arg" "$NONE_ANCHORED_COUNT" "${overflow_truncated:-0}" "$suppressed_posted_len")"
+            superseded_body="$(prt_render_clean_comment_superseded "$PRT_HEAD_SHA" "$total_findings_this_run" "$THREADS_WRITTEN" "$SUPPRESSED_COUNT" "$superseded_overflow_arg" "$superseded_quarantined_arg" "$NONE_ANCHORED_COUNT" "${overflow_truncated_total:-0}" "$suppressed_posted_len")"
             # go-kure/.github#98: degraded, not fatal — matching this
             # branch's own established asymmetry just above (a listing
             # failure here is deliberately NOT prt_mark_incomplete either):

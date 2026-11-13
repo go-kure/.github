@@ -290,8 +290,10 @@ PRT_OVERFLOW_PART_MAX=60000
 # prt_render_overflow_parts also measures this function's longest output to
 # reserve room for it, so the reserve cannot drift from the text.
 prt_overflow_part_line() {
-  local part="$1" total="$2" gating_last="$3" truncated="$4" gating_note n
-  if [ "$gating_last" -eq 0 ]; then
+  local part="$1" total="$2" gating_last="$3" truncated="$4" suppressed_only="${5:-0}" gating_note n
+  if [ "$suppressed_only" -eq 1 ]; then
+    gating_note="None of these findings is merge-gating."
+  elif [ "$gating_last" -eq 0 ]; then
     gating_note="None of the withheld findings is merge-gating."
   elif [ "$gating_last" -eq 1 ]; then
     gating_note="Part 1 lists every merge-gating withheld finding."
@@ -303,6 +305,7 @@ prt_overflow_part_line() {
     [ "$truncated" -eq 0 ] || n="${n} ${truncated} finding(s) were too long for one comment and were shortened: each shortened cell ends with a \"truncated\" marker, and the omitted text is not in this comment."
   elif [ "$part" -eq 1 ]; then
     n="**Part 1 of ${total}.** These findings did not fit in one comment. ${gating_note} Merge-gating rows are placed in the earliest parts, then the most severe of the rest; inside a part the additional-findings table comes before the withheld table. The other parts hold the remaining rows."
+    [ "$suppressed_only" -eq 0 ] || n="**Part 1 of ${total}.** These findings did not fit in one comment. ${gating_note} The most severe rows are in the earliest parts. The other parts hold the remaining rows."
     [ "$truncated" -eq 0 ] || n="${n} ${truncated} finding(s) were too long for one part and were shortened: each shortened cell ends with a \"truncated\" marker, and the omitted text is not in these comments."
   else
     n="**Part ${part} of ${total}.** Continued from part 1. ${gating_note}"
@@ -330,7 +333,13 @@ prt_render_overflow_parts() {
   local dummy_f='[{"severity":"","category":"","file":"","issue":""}]'
   local dummy_q='[{"severity":"","category":"","file":"","issue":"","fix":"","gating":true}]'
   local dummy_s='[{"severity":"","category":"","file":"","issue":"","reasoning":""}]'
-  local sup_overhead base_overhead
+  local sup_overhead base_overhead suppressed_only=0
+  # Suppressed rows are a series of their own, never planned together with overflow or withheld
+  # rows (go-kure/.github#296): sharing one plan let them change where an overflow row lands.
+  if [ "$suppressed" != '[]' ]; then
+    [ "$findings" = '[]' ] && [ "$quarantined" = '[]' ] || return 1
+    suppressed_only=1
+  fi
   [ -d "$outdir" ] || return 1
   body="$(prt_render_overflow_comment "$findings" "$quarantined" "$suppressed")" || return 1
   # A body GitHub accepts whole stays one comment: the 60,000 cap applies to the
@@ -421,7 +430,7 @@ prt_render_overflow_parts() {
     part_q="$(jq -c '.q' <<< "$line" 2>/dev/null)" || return 1
     part_s="$(jq -c '.s' <<< "$line" 2>/dev/null)" || return 1
     body="$(prt_render_overflow_comment "$part_f" "$part_q" "$part_s")" || return 1
-    n="$(prt_overflow_part_line "$i" "$total" "$gating_last" "$truncated")" || return 1
+    n="$(prt_overflow_part_line "$i" "$total" "$gating_last" "$truncated" "$suppressed_only")" || return 1
     body="$(printf '%s\n\n%s' "$n" "$body")"
     [ "$(printf '%s' "$body" | jq -Rs "${_PRT_OVERFLOW_JQ_DEFS}"' u16len' 2>/dev/null)" -le "$PRT_COMMENT_LIMIT" ] 2>/dev/null || return 1
     printf '%s\n' "$body" > "$outdir/part-${i}.md" || return 1
