@@ -41,7 +41,7 @@ write_report() { # write_report FILE KIND [KEY=VALUE...]
   if [ "$kind" = boundary ]; then
     lines=(canary_hits=0 ancestor_environ_open=0 ancestor_mem_open=0 fd_above_2=0
       uid=1000 cap_eff=0000000000000000 cap_bnd=000001ffffffffff no_new_privs=1
-      proc_mount=denied canary_state=ok own_environ_open=1 own_environ_marker=1
+      proc_mount=denied proc_mount_via=syscall canary_state=ok own_environ_open=1 own_environ_marker=1
       environ_entries=40 own_environ_listed=1)
   else
     lines=(canary_hits=1 ancestor_environ_open=6 ancestor_mem_open=6 fd_above_2=0
@@ -116,6 +116,17 @@ assert_eq "judge: a boundary without no-new-privs fails" 1 "$(judge_rc "$dir/b9"
 write_report "$dir/b10" boundary uid=0 cap_bnd=0000000000000000 no_new_privs=0
 assert_eq "judge: root without no-new-privs fails" 1 "$(judge_rc "$dir/b10" "$dir/c")"
 
+# go-kure/.github#328: for a non-root stub the `mount` tool refuses in user space, so only a
+# refusal from the mount(2) call itself shows anything about the boundary.
+write_report "$dir/v1" boundary proc_mount_via=mount
+assert_eq "judge: a non-root mount refusal from the mount tool is inconclusive, not a pass" 3 "$(judge_rc "$dir/v1" "$dir/c")"
+write_report "$dir/v2" boundary proc_mount_via=@
+assert_eq "judge: a non-root report without the route field is inconclusive" 3 "$(judge_rc "$dir/v2" "$dir/c")"
+write_report "$dir/v3" boundary uid=0 cap_bnd=0000000000000000 proc_mount_via=mount
+assert_eq "judge: for root the mount tool reaches the kernel, so its refusal stands" 0 "$(judge_rc "$dir/v3" "$dir/c")"
+write_report "$dir/v4" boundary proc_mount=succeeded proc_mount_via=mount
+assert_eq "judge: a mount that worked is a leak by either route" 1 "$(judge_rc "$dir/v4" "$dir/c")"
+
 # A step that could not be tried is not a step that was denied.
 write_report "$dir/m1" boundary proc_mount=untried:no-mount-command
 assert_eq "judge: a mount experiment that could not run is inconclusive" 3 "$(judge_rc "$dir/m1" "$dir/c")"
@@ -187,12 +198,33 @@ cat > "$dir/fakebin/readlink-empty" <<'EOF'
 #!/bin/sh
 exit 1
 EOF
-chmod 755 "$dir/fakebin/mount" "$dir/fakebin/readlink-empty"
+# A stand-in python3 too, so the real mount(2) call is never made: it prints FAKE_ERRNO as the
+# helper would, and without FAKE_ERRNO it is a helper that cannot run (the tool route then answers).
+cat > "$dir/fakebin/python3" <<'EOF'
+#!/bin/sh
+[ -n "${FAKE_ERRNO:-}" ] || exit 127
+echo "$FAKE_ERRNO"
+EOF
+chmod 755 "$dir/fakebin/mount" "$dir/fakebin/readlink-empty" "$dir/fakebin/python3"
 mount_case() { # mount_case REPORT RC MESSAGE
   stub_run "$1" PATH="$dir/fakebin:$PATH" PRT_PROBE_MOUNT=try PRT_PROBE_PARENT_MNT_NS=mnt:[1] \
     FAKE_MOUNT_RC="$2" FAKE_MOUNT_MSG="$3"
   field "$1" proc_mount
 }
+# go-kure/.github#328: the answer of the direct mount(2) call is the kernel's errno.
+errno_case() { # errno_case REPORT ERRNO -> "<proc_mount> <proc_mount_via>"
+  stub_run "$1" PATH="$dir/fakebin:$PATH" PRT_PROBE_MOUNT=try PRT_PROBE_PARENT_MNT_NS=mnt:[1] \
+    FAKE_ERRNO="$2" FAKE_MOUNT_RC=0 FAKE_MOUNT_MSG=""
+  echo "$(field "$1" proc_mount) $(field "$1" proc_mount_via)"
+}
+assert_eq "stub: EPERM from mount(2) is a kernel denial" "denied syscall" "$(errno_case "$dir/e1" 1)"
+assert_eq "stub: EACCES from mount(2) is a kernel denial" "denied syscall" "$(errno_case "$dir/e2" 13)"
+assert_eq "stub: a mount(2) that returned 0 is a success" "succeeded syscall" "$(errno_case "$dir/e3" 0)"
+assert_eq "stub: another errno is not a denial" "failed:errno22 syscall" "$(errno_case "$dir/e4" 22)"
+assert_eq "stub: a helper answer that is not a number falls back to the mount tool" "succeeded mount" \
+  "$(errno_case "$dir/e5" oops)"
+assert_eq "stub: the tool route reports itself as the mount tool" mount "$(mount_case "$dir/t0" 32 'mount: /x: must be superuser to use mount.' > /dev/null; field "$dir/t0" proc_mount_via)"
+assert_eq "stub: a skipped experiment reports no route" none "$(field "$dir/s2" proc_mount_via)"
 assert_eq "stub: a refusal by mount itself is a denial" denied \
   "$(mount_case "$dir/t1" 32 'mount: /x: must be superuser to use mount.')"
 assert_eq "stub: a mount tool that cannot be executed (126) is not a denial" failed:126 \
