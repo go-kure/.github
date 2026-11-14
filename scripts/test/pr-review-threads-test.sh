@@ -8948,7 +8948,7 @@ prt_ar_hostile_reap
 PRT_TEST_MODEL_BUDGET_SECONDS=""
 
 # The window before the first process is named (go-kure/.github#319). The finder's first poll is
-# late (a `sleep` function stretches the finder's first `sleep 0.05` to 1.5 s, so the poll finds the chain
+# late (a DEBUG trap holds the finder for 1.5 s before its first lookup, so the poll finds the chain
 # 1.5 s after the launch, not within 50 ms), and the runner is hostile_early: 0.3 s after it starts
 # it leaves the process group and a helper kills that group, which takes `timeout` and the launcher
 # with it. A runner that starts before it is named is therefore lost: the finder finds no chain, the
@@ -8958,13 +8958,12 @@ PRT_TEST_MODEL_BUDGET_SECONDS=""
 # miss the chain, which is what makes the case a race and not a pass by luck.
 rm -f "$PRT_TEST_RUNNER_LOG".*
 rm -f "$prt_ar_dir/slowpoll.flag"
-# A shell function named `sleep`, loaded into the orchestrator through BASH_ENV, stretches only the
-# finder's own poll sleep: FUNCNAME names the finder, so the cleanup's `sleep 0.05` in
-# _prt_runner_pid1_end cannot set the flag, and the finder's local `pid1` is still empty, so the
-# retry sleep after a first process was found cannot set it either. The function reads `pid1` by
-# dynamic scope: a rename of that local in the finder silently widens the match, so rename it here too.
+# A DEBUG trap, loaded into the orchestrator through BASH_ENV, holds the finder for 1.5 s before its
+# first command (FUNCNAME names the finder), so the first lookup is late whatever the host load is:
+# a delay hung on one of the finder's `sleep` calls is skipped when the chain is found at once, and
+# the cleanup's and the retry's sleeps are other calls. The flag file records that the hold ran.
 # shellcheck disable=SC2016 # script text for the file, not an expansion
-printf 'sleep() {\n  if [ "${FUNCNAME[1]:-}" = _prt_runner_pid1_record ] && [ -z "${pid1:-}" ] && [ "$1" = 0.05 ] && [ ! -e "%s" ]; then\n    : > "%s"\n    command sleep 1.5\n    return\n  fi\n  command sleep "$@"\n}\n' \
+printf 'set -T\ntrap '"'"'if [ "${FUNCNAME[0]:-}" = _prt_runner_pid1_record ] && [ ! -e "%s" ]; then : > "%s"; command sleep 1.5; fi'"'"' DEBUG\n' \
   "$prt_ar_dir/slowpoll.flag" "$prt_ar_dir/slowpoll.flag" > "$prt_ar_dir/slowpoll.env"
 PRT_TEST_RUNNER_MODE=hostile_early
 PRT_TEST_MODEL_BUDGET_SECONDS=$prt_ar_budget
