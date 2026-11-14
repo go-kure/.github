@@ -755,48 +755,6 @@ _prt_runner_clock_read() {
   now="$t"
 }
 
-# _prt_call_runner REQUEST — the assess call served by a review-run process
-# (PRT_ASSESS_BACKEND=runner) instead of the proxy. Prints the answer body
-# review-run returned, verbatim, so the caller's parse, salvage, retry and join
-# are the proxy path's own. REQUEST (the assess system prompt, the project
-# context, the findings with their fp and the chunk diff) goes to the runner on
-# standard input through a file, never through argv: a chunk can pass the 128 KiB
-# single-argument cap (see _prt_call_proxy). The prompt argument is a fixed
-# instruction. Reads, all from the environment:
-#   PRT_ASSESS_RUNNER_BACKEND    review-run --backend value (required)
-#   PRT_ASSESS_RUNNER            the review-run executable (default: review-run)
-#   PRT_ASSESS_RUNNER_ROOT       the checkout it reads (default: the working directory)
-#   PRT_ASSESS_RUNNER_SECONDS    its deadline (default: 600), clamped to what is left of
-#                                PRT_MODEL_DEADLINE_EPOCH; a call is refused when less
-#                                than PRT_MODEL_TIMEOUT_FLOOR remains (deadline-exhausted)
-#   PRT_REVIEW_BASE_SHA          the PR's base commit (required)
-#   PRT_HEAD_SHA, PRT_REVIEW_MATERIAL_SHA256   the identity its record must carry (required)
-#   PRT_ASSESS_RUNNER_ENV        extra variable names the runner may inherit (the model
-#                                key); it runs under `env -i`, see _prt_runner_env_build
-#   PRT_ASSESS_RUNNER_BOUNDARY   pidns (default) | cmd, with PRT_ASSESS_RUNNER_BOUNDARY_CMD
-#                                the words of the command put in front of the runner;
-#                                see _prt_runner_boundary_build
-# Every refusal returns 1 with a closed-vocabulary reason in the failure file:
-# backend-config (an input this mode needs is not set), local-tempdir,
-# runner-boundary (the process boundary in front of the runner cannot be
-# established or fails its check; see _prt_runner_boundary_build),
-# runner-lifetime (the call's end could not be guaranteed: the first process of the
-# runner's namespace could not be identified after the launch, or its end could not be
-# confirmed (its state cannot be read, before or after the attempt to send SIGKILL, or it is
-# still there after it); see _prt_runner_pid1_record and _prt_runner_pid1_end),
-# runner-pid1-unread (the child of the namespace launcher was there, but its namespace process
-# ids read empty: a first process that is going away and a live one that cannot be identified
-# look the same, so the call is abandoned without saying which; the boundary probe reports it
-# as inconclusive, not as a leak; see _prt_runner_pid1_record),
-# runner-incomplete (review-run exit 2), runner-quota (3), runner-launch (4),
-# runner-usage (64, includes an input over its ceiling), runner-timeout (the outer
-# bound on the whole process tree fired; see the call below), runner-failed (any other
-# non-zero exit), runner-no-output (it exited 0 and left no review.md, or left one
-# that cannot be read), runner-empty (review.md holds nothing), provenance-mismatch
-# (provider.json does not tie the answer to this head, base, material and request,
-# or the digest of the request is not 64 hex characters),
-# deadline-exhausted (the run's model deadline leaves too little time, or the clock
-# cannot be read as a whole number).
 # _prt_runner_env_build — fills PRT_RUNNER_ENV_ARGS with NAME=value words for
 # `env -i`. The runner reads untrusted PR text and runs without a sandbox, so it
 # gets PATH, HOME, TMPDIR, LANG, LC_ALL and the names listed in
@@ -810,15 +768,18 @@ _prt_runner_clock_read() {
 # runner failure. The five defaults are skipped when unset.
 # shellcheck disable=SC2034 # PRT_RUNNER_ENV_ERROR is read by pr-review-threads.sh at start, not within this file
 _prt_runner_env_build() {
-  # The locals start with an underscore, a prefix the case below refuses, and IFS is refused by
-  # name, so a listed name cannot match this function's own locals. That is all this closes:
   # `${!_name}` follows bash's dynamic scope, so a listed name that matches a local of a function
   # up the call chain (`tmp`, `out` or `request` of _prt_call_runner, `model` or `user` of the
-  # assess function, ...) is still read from that local, not from the caller's environment. The
-  # structural fix is to build this list once at start, outside those functions, and reuse it.
-  local _name _extra=() IFS=$' \t\n'
+  # assess function, ...) would be read from that local, not from the caller's environment. The
+  # list is therefore built once, by the orchestrator at start, outside every such function, and
+  # _prt_call_runner reuses PRT_RUNNER_ENV_ARGS (PRT_RUNNER_ENV_BUILT is 1 after a build that
+  # succeeded); it never builds it again. Inside this function the locals start with an
+  # underscore, a prefix the case below refuses, and IFS is refused by name, so a listed name
+  # cannot match them either.
+  local _name _extra=() _tok _tokname IFS=$' \t\n'
   PRT_RUNNER_ENV_ARGS=()
   PRT_RUNNER_ENV_ERROR=""
+  PRT_RUNNER_ENV_BUILT=0
   read -rd '' -a _extra <<< "${PRT_ASSESS_RUNNER_ENV:-}" || true
   for _name in PATH HOME TMPDIR LANG LC_ALL; do
     if [ -n "${!_name+x}" ]; then
@@ -856,8 +817,19 @@ _prt_runner_env_build() {
       PRT_RUNNER_ENV_ERROR="PRT_ASSESS_RUNNER_ENV lists $_name, which is not set"
       return 1
     fi
+    # The deny list above matches names. A name that carries a posting token under another
+    # spelling is refused here by value, with the names of both and never the value. Only a whole
+    # value is compared: a token inside a longer string is not found.
+    for _tokname in PRT_GH_TOKEN GITHUB_TOKEN GH_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN ACTIONS_RUNTIME_TOKEN ACTIONS_ID_TOKEN_REQUEST_TOKEN; do
+      _tok="${!_tokname:-}"
+      if [ -n "$_tok" ] && [ "${!_name}" = "$_tok" ]; then
+        PRT_RUNNER_ENV_ERROR="PRT_ASSESS_RUNNER_ENV lists $_name, whose value is the value of the posting token $_tokname"
+        return 1
+      fi
+    done
     PRT_RUNNER_ENV_ARGS+=("$_name=${!_name}")
   done
+  PRT_RUNNER_ENV_BUILT=1
 }
 
 # _prt_runner_boundary_build — fills PRT_RUNNER_BOUNDARY_ARGS with the command words
@@ -1322,6 +1294,48 @@ _prt_close_fds() {
   done
 }
 
+# _prt_call_runner REQUEST — the assess call served by a review-run process
+# (PRT_ASSESS_BACKEND=runner) instead of the proxy. Prints the answer body
+# review-run returned, verbatim, so the caller's parse, salvage, retry and join
+# are the proxy path's own. REQUEST (the assess system prompt, the project
+# context, the findings with their fp and the chunk diff) goes to the runner on
+# standard input through a file, never through argv: a chunk can pass the 128 KiB
+# single-argument cap (see _prt_call_proxy). The prompt argument is a fixed
+# instruction. Reads, all from the environment:
+#   PRT_ASSESS_RUNNER_BACKEND    review-run --backend value (required)
+#   PRT_ASSESS_RUNNER            the review-run executable (default: review-run)
+#   PRT_ASSESS_RUNNER_ROOT       the checkout it reads (default: the working directory)
+#   PRT_ASSESS_RUNNER_SECONDS    its deadline (default: 600), clamped to what is left of
+#                                PRT_MODEL_DEADLINE_EPOCH; a call is refused when less
+#                                than PRT_MODEL_TIMEOUT_FLOOR remains (deadline-exhausted)
+#   PRT_REVIEW_BASE_SHA          the PR's base commit (required)
+#   PRT_HEAD_SHA, PRT_REVIEW_MATERIAL_SHA256   the identity its record must carry (required)
+#   PRT_ASSESS_RUNNER_ENV        extra variable names the runner may inherit (the model
+#                                key); it runs under `env -i`, see _prt_runner_env_build
+#   PRT_ASSESS_RUNNER_BOUNDARY   pidns (default) | cmd, with PRT_ASSESS_RUNNER_BOUNDARY_CMD
+#                                the words of the command put in front of the runner;
+#                                see _prt_runner_boundary_build
+# Every refusal returns 1 with a closed-vocabulary reason in the failure file:
+# backend-config (an input this mode needs is not set), local-tempdir,
+# runner-boundary (the process boundary in front of the runner cannot be
+# established or fails its check; see _prt_runner_boundary_build),
+# runner-lifetime (the call's end could not be guaranteed: the first process of the
+# runner's namespace could not be identified after the launch, or its end could not be
+# confirmed (its state cannot be read, before or after the attempt to send SIGKILL, or it is
+# still there after it); see _prt_runner_pid1_record and _prt_runner_pid1_end),
+# runner-pid1-unread (the child of the namespace launcher was there, but its namespace process
+# ids read empty: a first process that is going away and a live one that cannot be identified
+# look the same, so the call is abandoned without saying which; the boundary probe reports it
+# as inconclusive, not as a leak; see _prt_runner_pid1_record),
+# runner-incomplete (review-run exit 2), runner-quota (3), runner-launch (4),
+# runner-usage (64, includes an input over its ceiling), runner-timeout (the outer
+# bound on the whole process tree fired; see the call below), runner-failed (any other
+# non-zero exit), runner-no-output (it exited 0 and left no review.md, or left one
+# that cannot be read), runner-empty (review.md holds nothing), provenance-mismatch
+# (provider.json does not tie the answer to this head, base, material and request,
+# or the digest of the request is not 64 hex characters),
+# deadline-exhausted (the run's model deadline leaves too little time, or the clock
+# cannot be read as a whole number).
 _prt_call_runner() {
   local request="$1" runner backend root seconds tmp out req_sha rc=0
   _prt_set_model_failure ""
@@ -1339,7 +1353,7 @@ _prt_call_runner() {
   # octal number) and "060" is 60, and a longer string is no sane number of seconds. The floor
   # is held to the same shape: `[ "$n" -lt soon ]` is an error, which an `if` reads as "not
   # below", so a floor that is not a whole number would let every call past the checks below.
-  if ! _prt_runner_env_build || ! [[ "$seconds" =~ ^[0-9]{1,9}$ ]] \
+  if [ "${PRT_RUNNER_ENV_BUILT:-0}" != 1 ] || ! [[ "$seconds" =~ ^[0-9]{1,9}$ ]] \
      || ! [[ "${PRT_MODEL_TIMEOUT_FLOOR:-30}" =~ ^[0-9]{1,9}$ ]]; then
     _prt_set_model_failure "backend-config"
     return 1
@@ -1434,6 +1448,13 @@ _prt_call_runner() {
     rm -rf "$tmp"
     _prt_set_model_failure "deadline-exhausted"
     return 1
+  fi
+  # The runner's own deadline must come before the outer bound, or a call that is bound by the run
+  # deadline always ends as a timeout and never as the runner's own answer: the runner gets at
+  # most the last budget read less its 30 s for the snapshots and the 5 s margin, never less than 1.
+  if [ "$seconds" -gt $(( budget_left - 35 )) ]; then
+    seconds=$(( budget_left - 35 ))
+    [ "$seconds" -ge 1 ] || seconds=1
   fi
   outer=$(( seconds + 30 ))
   if [ "$outer" -gt $(( budget_left - 5 )) ]; then

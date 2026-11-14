@@ -8534,6 +8534,14 @@ assert_eq "assess runner scrub: an unrelated variable is dropped" \
 assert_eq "assess runner scrub: PATH, HOME and the named model key are kept" \
   "1 1 1" "$(grep -c '^PATH=' "$PRT_TEST_RUNNER_LOG.env.1") $(grep -c '^HOME=' "$PRT_TEST_RUNNER_LOG.env.1") $(grep -c '^OPENAI_API_KEY=sentinel-model-key$' "$PRT_TEST_RUNNER_LOG.env.1")"
 
+# The list is built once, at start (go-kure/.github#441): a listed name that is also a local variable of
+# the function that runs the call (`request` holds the assessment prompt) is read from the
+# environment, as it was at start, and the runner gets that value and not the local's.
+rm -f "$PRT_TEST_RUNNER_LOG".*
+rc="$(export request="sentinel-env-request"; PRT_TEST_ASSESS_RUNNER_ENV="$PRT_TEST_ASSESS_RUNNER_ENV request"; run_orchestrator advisory 0 0 0)"
+assert_eq "assess runner scrub, a listed name that is a local of the call: the runner gets the environment's value, once, and no prompt text" \
+  "0 1 1 0" "$rc $(prt_ar_calls) $(grep -c '^request=sentinel-env-request$' "$PRT_TEST_RUNNER_LOG.env.1") $(grep -c 'FINDINGS' "$PRT_TEST_RUNNER_LOG.env.1")"
+
 # The names the runner may inherit carry the metered model key. It must never be an argument of a
 # process that outlives the start (`timeout`, the namespace's `unshare`): /proc/<pid>/cmdline is
 # readable by every user of the host. While the runner is up, the whole process table is read from
@@ -8616,6 +8624,26 @@ for prt_ar_name in GITHUB_TOKEN GH_TOKEN PRT_GH_TOKEN; do
   assert_eq "assess runner scrub, pass-through names $prt_ar_name: the error names PRT_ASSESS_RUNNER_ENV" \
     "true" "$(grep -qF 'PRT_ASSESS_RUNNER_ENV' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 done
+# A name that carries the value of a posting token under another spelling is refused by value at
+# start, and the message names both variables and never the value. A different value passes.
+rm -f "$PRT_TEST_RUNNER_LOG".*
+PRT_TEST_ASSESS_RUNNER_ENV="OPENAI_API_KEY PRT_AR_TOKEN_COPY"
+rc="$(export PRT_AR_TOKEN_COPY="$GITHUB_TOKEN"; run_orchestrator advisory 0 0 0)"
+assert_eq "assess runner scrub, a name whose value is a token's value: fails closed before any call" \
+  "1 0 0 0" "$rc $(cat "$PRT_TEST_MODEL_COUNTFILE") $(cat "$PRT_TEST_ASSESS_COUNTFILE") $(prt_ar_calls)"
+assert_eq "assess runner scrub, a name whose value is a token's value: the error names both variables and never the value" \
+  "true true true" "$(grep -qF 'PRT_AR_TOKEN_COPY' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(grep -qF 'GITHUB_TOKEN' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(grep -qF 'sentinel-github-token' "$PRT_TEST_STDERR_FILE" "$PRT_TEST_STDOUT_FILE" && echo false || echo true)"
+rm -f "$PRT_TEST_RUNNER_LOG".*
+rc="$(export PRT_AR_TOKEN_COPY="sentinel-not-a-token"; run_orchestrator advisory 0 0 0)"
+assert_eq "assess runner scrub, a name whose value is no token's value: not refused at start" \
+  "0 true" "$rc $(grep -qF 'whose value is the value' "$PRT_TEST_STDERR_FILE" && echo false || echo true)"
+# The refusal text names the real cause only: a shell-reserved name is not explained by a list of
+# posting tokens.
+rm -f "$PRT_TEST_RUNNER_LOG".*
+PRT_TEST_ASSESS_RUNNER_ENV="OPENAI_API_KEY SHLVL"
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "assess runner scrub, a shell-reserved name: the error names it and says nothing of posting tokens" \
+  "1 true true" "$rc $(grep -qF 'must not name SHLVL' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(grep -qiF 'posting token' "$PRT_TEST_STDERR_FILE" && echo false || echo true)"
 rm -f "$PRT_TEST_RUNNER_LOG".*
 PRT_TEST_ASSESS_RUNNER_ENV="OPENAI_API_KEY BAD-NAME"
 rc="$(run_orchestrator advisory 0 0 0)"
@@ -8738,10 +8766,17 @@ assert_eq "assess runner deadline, default budget: each call gets the 600s defau
 rm -f "$PRT_TEST_RUNNER_LOG".*
 PRT_TEST_MODEL_BUDGET_SECONDS=100
 rc="$(run_orchestrator advisory 0 0 0 150)"
-assert_eq "assess runner deadline, 100s budget: the call is clamped to what is left" \
+assert_eq "assess runner deadline, 100s budget: the call is clamped to what is left less 35s, so the runner's own deadline comes before the outer bound" \
   "0 2 true true" "$rc $(prt_ar_calls) \
-$([ "$(prt_ar_seconds 1)" -ge 90 ] && [ "$(prt_ar_seconds 1)" -le 100 ] && echo true || echo false) \
-$([ "$(prt_ar_seconds 2)" -ge 85 ] && [ "$(prt_ar_seconds 2)" -le 100 ] && echo true || echo false)"
+$([ "$(prt_ar_seconds 1)" -ge 50 ] && [ "$(prt_ar_seconds 1)" -le 65 ] && echo true || echo false) \
+$([ "$(prt_ar_seconds 2)" -ge 45 ] && [ "$(prt_ar_seconds 2)" -le 65 ] && echo true || echo false)"
+rm -f "$PRT_TEST_RUNNER_LOG".*
+PRT_TEST_MODEL_BUDGET_SECONDS=45
+rc="$(run_orchestrator advisory 0 0 0 150)"
+assert_eq "assess runner deadline, 45s budget: the runner gets what is left less 35s, never below 1" \
+  "0 2 true true" "$rc $(prt_ar_calls) \
+$([ "$(prt_ar_seconds 1)" -ge 1 ] && [ "$(prt_ar_seconds 1)" -le 10 ] && echo true || echo false) \
+$([ "$(prt_ar_seconds 2)" -ge 1 ] && [ "$(prt_ar_seconds 2)" -le 10 ] && echo true || echo false)"
 rm -f "$PRT_TEST_RUNNER_LOG".*
 PRT_TEST_MODEL_BUDGET_SECONDS=10
 rc="$(run_orchestrator advisory 0 0 0 150)"
