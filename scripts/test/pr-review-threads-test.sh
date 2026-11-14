@@ -9120,7 +9120,7 @@ prt_ar_hostile_reap
 PRT_TEST_MODEL_BUDGET_SECONDS=""
 
 # The window before the first process is named (go-kure/.github#319). The finder's first poll is
-# late (a `sleep` wrapper stretches the first `sleep 0.05` to 1.5 s, so the poll finds the chain
+# late (a `sleep` function stretches the finder's first `sleep 0.05` to 1.5 s, so the poll finds the chain
 # 1.5 s after the launch, not within 50 ms), and the runner is hostile_early: 0.3 s after it starts
 # it leaves the process group and a helper kills that group, which takes `timeout` and the launcher
 # with it. A runner that starts before it is named is therefore lost: the finder finds no chain, the
@@ -9129,15 +9129,16 @@ PRT_TEST_MODEL_BUDGET_SECONDS=""
 # with status 137) and nothing of the runner is left. The flag file proves that the first poll did
 # miss the chain, which is what makes the case a race and not a pass by luck.
 rm -f "$PRT_TEST_RUNNER_LOG".*
-mkdir -p "$prt_ar_dir/bin-slowpoll"
 rm -f "$prt_ar_dir/slowpoll.flag"
-# shellcheck disable=SC2016 # script text for the wrapper, not an expansion
-printf '#!/bin/bash\nif [ "$1" = 0.05 ] && [ ! -e "%s" ]; then : > "%s"; exec %s 1.5; fi\nexec %s "$@"\n' \
-  "$prt_ar_dir/slowpoll.flag" "$prt_ar_dir/slowpoll.flag" "$(type -P sleep)" "$(type -P sleep)" > "$prt_ar_dir/bin-slowpoll/sleep"
-chmod 755 "$prt_ar_dir/bin-slowpoll/sleep"
+# A shell function named `sleep`, loaded into the orchestrator through BASH_ENV, stretches only the
+# sleep that the finder itself calls (FUNCNAME names it), so the cleanup's own `sleep 0.05` in
+# _prt_runner_pid1_end can never set the flag.
+# shellcheck disable=SC2016 # script text for the file, not an expansion
+printf 'sleep() {\n  if [ "${FUNCNAME[1]:-}" = _prt_runner_pid1_record ] && [ "$1" = 0.05 ] && [ ! -e "%s" ]; then\n    : > "%s"\n    command sleep 1.5\n    return\n  fi\n  command sleep "$@"\n}\n' \
+  "$prt_ar_dir/slowpoll.flag" "$prt_ar_dir/slowpoll.flag" > "$prt_ar_dir/slowpoll.env"
 PRT_TEST_RUNNER_MODE=hostile_early
 PRT_TEST_MODEL_BUDGET_SECONDS=$prt_ar_budget
-rc="$(PATH="$prt_ar_dir/bin-slowpoll:$PATH" PRT_RUNNER_PID1_POLLS=8 PRT_MODEL_TIMEOUT_FLOOR=1 run_orchestrator advisory 0 0 0)"
+rc="$(BASH_ENV="$prt_ar_dir/slowpoll.env" PRT_RUNNER_PID1_POLLS=8 PRT_MODEL_TIMEOUT_FLOOR=1 run_orchestrator advisory 0 0 0)"
 PRT_TEST_MODEL_BUDGET_SECONDS=""
 assert_eq "assess runner, hostile from its first instant, first poll late: the first poll did miss the chain" \
   "true" "$([ -e "$prt_ar_dir/slowpoll.flag" ] && echo true || echo false)"
