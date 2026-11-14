@@ -502,7 +502,7 @@ jobs:
           echo "findings file $out/findings.json; base $BASE_SHA; material digest $digest"
 
       - name: Run PR review threads
-        uses: go-kure/.github/.github/actions/pr-review-threads@f39deb21d60c6da0ac005112d60a2e7a326b3d8d # placeholder pending the final re-pin to the merge of the comment wording fixes (go-kure/.github#375) — base-ref tip, see docs/standards.md "GitHub Actions pinning"
+        uses: go-kure/.github/.github/actions/pr-review-threads@cee686de501096965e9cc152444c3be8659fa897 # the merge of go-kure/.github#454, which carries the comment wording fixes (go-kure/.github#375) — see docs/standards.md "GitHub Actions pinning"
         with:
           # github-token / bot-login: GITHUB_TOKEN always gets viewerCanResolve:false
           # on threads it authors (GitHub rejects bot/App actors for
