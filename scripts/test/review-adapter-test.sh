@@ -257,12 +257,14 @@ STUB_DIR="$STUB_DIR" PRT_CURL="$WORK/curl-stub" PRT_PROXY_URL=http://stub PRT_AS
 assert_eq "runner backend, a listed variable that is not set: exit 2 before any call" "2" "$rc"
 assert_eq "runner backend, a listed variable that is not set: the error names it" "true" \
   "$(grep -qF 'PRT_AR_ADAPTER_UNSET' "$WORK/err" && echo true || echo false)"
+reset_stub
+printf '%s' "$REVIEW_JSON" > "$STUB_DIR/reply-1"
 rc=0
 PRT_AR_ADAPTER_SET=1 STUB_DIR="$STUB_DIR" PRT_CURL="$WORK/curl-stub" PRT_PROXY_URL=http://stub PRT_ASSESS_BACKEND=runner \
   PRT_ASSESS_RUNNER_ENV=PRT_AR_ADAPTER_SET bash "$ADAPTER" --diff "$WORK/sample.diff" --title "test PR" \
   > /dev/null 2>"$WORK/err" || rc=$?
-assert_eq "runner backend, control, the listed variable is set: the build does not refuse it" "true" \
-  "$(grep -qF 'PRT_AR_ADAPTER_SET' "$WORK/err" && echo false || echo true)"
+assert_eq "runner backend, control, the listed variable is set: startup passes, the run exits 0 and the review call is made" "0 true" \
+  "$rc $([ "$(cat "$STUB_DIR/calls" 2>/dev/null || echo 0)" -ge 1 ] && echo true || echo false)"
 
 # --- a local jq fault while assembling findings is a failed chunk, never a counted one ---
 # The fault is injected by a jq on PATH that fails when its program holds JQ_FAIL_MATCH and
