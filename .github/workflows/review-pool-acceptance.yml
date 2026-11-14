@@ -33,11 +33,12 @@
 # separately, so a fetch that created no trusted ref cannot read as nothing to object to.
 #
 # The image digest is not readable from inside the pod: a job has no Kubernetes credential, and the
-# scale set pulls the latest tag. So the identity step records two things in its place. The bundle
-# record is the deterministic record of /opt/review-runner, taken by the image's own
-# review-bundle-verify, and its sha256 identifies the bytes this review ran. The registry digest of
-# the latest tag is read over the network as a cross-check, and when that read fails the record says
-# "unavailable" with the reason. An unknown is never recorded as a success.
+# scale set pulls the latest tag. So the identity step records the bundle record in its place. It is
+# the deterministic record of /opt/review-runner, taken by the image's own review-bundle-verify, and
+# its sha256 identifies the bytes this review ran. It is the only identity the record carries. A
+# registry read for the digest of the latest tag was dropped: the package is private, so an
+# anonymous token was refused on every run and the field only ever said "unavailable". An unknown is
+# never recorded as a success.
 #
 # The workflow also runs when another workflow calls it (workflow_call), with the same four inputs
 # and the same steps. A caller passes `secrets: inherit`, so the credential step finds the backend
@@ -176,46 +177,16 @@ jobs:
           review-bundle-verify record /opt/review-runner > "$RECORD_DIR/bundle.record"
           bundle_sha="$(sha256sum "$RECORD_DIR/bundle.record" | cut -d' ' -f1)"
 
-          # The registry digest of the latest tag, as a cross-check only. The scale set pulls that
-          # tag on every pod start, so the two agree unless the tag moved during this job. A failed
-          # read is recorded as unavailable with its reason, never as empty or as a pass.
-          digest='unavailable: not attempted'
-          if token="$(curl -fsS --max-time 30 \
-                "https://ghcr.io/token?service=ghcr.io&scope=repository:ginsys/opsmaster/actions-runner-review:pull" \
-                | jq -er .token)"; then
-            if headers="$(curl -fsS --max-time 30 -o /dev/null -D - \
-                  -H "Authorization: Bearer $token" \
-                  -H 'Accept: application/vnd.oci.image.index.v1+json' \
-                  -H 'Accept: application/vnd.docker.distribution.manifest.list.v2+json' \
-                  -H 'Accept: application/vnd.oci.image.manifest.v1+json' \
-                  -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' \
-                  "https://ghcr.io/v2/ginsys/opsmaster/actions-runner-review/manifests/latest")"; then
-              found="$(printf '%s' "$headers" | tr -d '\r' \
-                | sed -n 's/^[Dd]ocker-[Cc]ontent-[Dd]igest: //p' | tail -1)"
-              if [ -n "$found" ]; then
-                digest="$found"
-              else
-                digest='unavailable: the manifest response carried no content digest header'
-              fi
-            else
-              digest='unavailable: the manifest read failed'
-            fi
-          else
-            digest='unavailable: the registry token read failed'
-          fi
-
           {
             printf 'pod_hostname=%s\n' "$(hostname)"
             printf 'uid=%s gid=%s\n' "$(id -u)" "$(id -g)"
             printf 'user_max_user_namespaces=%s\n' "$(cat /proc/sys/user/max_user_namespaces)"
             printf 'bundle_record_sha256=%s\n' "$bundle_sha"
-            printf 'registry_latest_digest=%s\n' "$digest"
             printf 'review_run_path=%s\n' "$(command -v review-run)"
             printf 'runner_scripts_pin=%s\n' "$(sha256sum /opt/review-runner/bin/runner.sha256 | cut -d' ' -f1)"
           } | tee "$record"
 
           printf 'BUNDLE_RECORD_SHA256=%s\n' "$bundle_sha" >> "$GITHUB_ENV"
-          printf 'REGISTRY_LATEST_DIGEST=%s\n' "$digest" >> "$GITHUB_ENV"
 
       - name: Check out the revision to review
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -655,7 +626,6 @@ jobs:
             --arg base "${REVIEW_BASE:-unknown}" \
             --arg rc "${REVIEW_RUN_RC:-unknown}" \
             --arg bundle "${BUNDLE_RECORD_SHA256:-unknown}" \
-            --arg digest "${REGISTRY_LATEST_DIGEST:-unknown}" \
             --arg namespaces "$(cat /proc/sys/user/max_user_namespaces)" \
             --arg review_md "$(file_sha "$OUT_DIR/review.md")" \
             --arg provider_json "$(file_sha "$OUT_DIR/provider.json")" \
@@ -663,7 +633,7 @@ jobs:
             --arg provider "$outcome" \
             '{repository: $repository, run_id: $run_id, backend: $backend, sandbox: $sandbox,
               revision: $revision, base: $base, review_run_rc: $rc,
-              bundle_record_sha256: $bundle, registry_latest_digest: $digest,
+              bundle_record_sha256: $bundle,
               user_max_user_namespaces: $namespaces,
               files: {"review.md": $review_md, "provider.json": $provider_json,
                       "findings.json": $findings_json},

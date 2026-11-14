@@ -22,8 +22,8 @@ jobs:
       # Which image this pod runs, as far as the pod can say. Same measurement as the identity step
       # of review-pool-acceptance.yml, same fields and same fallback text. Limit: the bundle record
       # covers /opt/review-runner only. It shows the review image family and the bundle bytes, not
-      # the base layer where the boundary runs, and the image digest needs a credential this pod does
-      # not have. A recorded sha is therefore not proof that the boundary holds.
+      # the base layer where the boundary runs, and the image digest is not readable from inside the
+      # pod. A recorded sha is therefore not proof that the boundary holds.
       - name: Record the image this probe runs in
         run: |
           set -euo pipefail
@@ -52,34 +52,6 @@ jobs:
           review-bundle-verify record /opt/review-runner > "$record_dir/bundle.record"
           read_field bundle_sha 'the bundle record was empty or could not be hashed' hash_of "$record_dir/bundle.record"
 
-          # The registry digest of the latest tag, as a cross-check only. The scale set pulls that
-          # tag on every pod start, so the two agree unless the tag moved during this job. A failed
-          # read is recorded as unavailable with its reason, never as empty or as a pass.
-          digest='unavailable: not attempted'
-          if token="$(curl -fsS --max-time 30 \
-                "https://ghcr.io/token?service=ghcr.io&scope=repository:ginsys/opsmaster/actions-runner-review:pull" \
-                | jq -er .token)"; then
-            if headers="$(curl -fsS --max-time 30 -o /dev/null -D - \
-                  -H "Authorization: Bearer $token" \
-                  -H 'Accept: application/vnd.oci.image.index.v1+json' \
-                  -H 'Accept: application/vnd.docker.distribution.manifest.list.v2+json' \
-                  -H 'Accept: application/vnd.oci.image.manifest.v1+json' \
-                  -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' \
-                  "https://ghcr.io/v2/ginsys/opsmaster/actions-runner-review/manifests/latest")"; then
-              found="$(printf '%s' "$headers" | tr -d '\r' \
-                | sed -n 's/^[Dd]ocker-[Cc]ontent-[Dd]igest: //p' | tail -1)"
-              if [ -n "$found" ]; then
-                digest="$found"
-              else
-                digest='unavailable: the manifest response carried no content digest header'
-              fi
-            else
-              digest='unavailable: the manifest read failed'
-            fi
-          else
-            digest='unavailable: the registry token read failed'
-          fi
-
           read_field pod_hostname 'hostname returned nothing' hostname
           read_field uid 'id -u returned nothing' id -u
           read_field gid 'id -g returned nothing' id -g
@@ -92,7 +64,6 @@ jobs:
             printf 'uid=%s gid=%s\n' "$uid" "$gid"
             printf 'user_max_user_namespaces=%s\n' "$namespaces"
             printf 'bundle_record_sha256=%s\n' "$bundle_sha"
-            printf 'registry_latest_digest=%s\n' "$digest"
             printf 'review_run_path=%s\n' "$review_run"
             printf 'runner_scripts_pin=%s\n' "$scripts_pin"
             printf 'identity_scope=bundle only (/opt/review-runner); not the base layer, not the image digest\n'
