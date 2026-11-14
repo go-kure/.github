@@ -841,8 +841,8 @@ the key up to the `go.mod` and `go.sum` hash, then any build cache for the same 
 job never saves a cache, so only `main` writes it. A miss builds and tests cold, and the job limit
 of 40 minutes covers that. The cache server keeps an entry for 7 days after its last use, so a tag
 pushed after a long quiet period also runs cold.
-`scripts/test/release-publish-build-cache-test.sh` asserts the restore, its key names and the
-absence of a save step.
+`scripts/test/release-publish-build-cache-test.sh` asserts that the steps before the tests are exactly
+the Go version read, setup-go with its cache off and this restore, and that the job saves no cache.
 
 ## What Stays the Same
 
