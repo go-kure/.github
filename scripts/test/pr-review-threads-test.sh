@@ -1821,8 +1821,23 @@ assert_eq "mode resolution: off passes through" "off" "$(resolve_mode off)"
 assert_eq "mode resolution: a typo degrades to advisory, never to enforce" "advisory" "$(resolve_mode enfroce)"
 assert_eq "mode resolution: empty string degrades to advisory" "advisory" "$(resolve_mode "")"
 
+# prt_gh_rest pipes a request body into $PRT_CURL (--data-binary @-) under pipefail, and the real
+# curl reads all of it before it connects. A stub that exits without reading makes that pipeline
+# fail whenever it exits before the writer is done, which reads as a curl transport failure
+# (go-kure/.github#425). Every fake_curl stub calls this first with its arguments: it drains stdin
+# only for a call that carries a body, and does nothing for a call that has none, so a stub reached
+# through a direct "$PRT_CURL" call never waits on the caller's stdin.
+prt_stub_drain_stdin() {
+  local a
+  for a in "$@"; do
+    [ "$a" = "@-" ] && { cat > /dev/null; return 0; }
+  done
+  return 0
+}
+
 # ============================================================ gh.sh: rate-limit-as-200 classification (mocked curl)
 fake_curl_ratelimited() {
+  prt_stub_drain_stdin "$@"
   # Emulates HTTP 200 with a GraphQL errors[] body — the documented trap
   # where status code alone is not a reliable failure signal.
   local out=""
@@ -1853,7 +1868,7 @@ unset gql_fault_out
 gql_sent="$(mktemp)"
 rm -f "$gql_sent"
 # shellcheck disable=SC2329,SC2317
-fake_curl_records_call() { : > "$gql_sent"; echo 200; }
+fake_curl_records_call() { prt_stub_drain_stdin "$@"; : > "$gql_sent"; echo 200; }
 PRT_CURL=fake_curl_records_call PRT_GH_TOKEN=x prt_gh_graphql 'query{x}' 'not json' >/dev/null 2>&1
 assert_eq "gh.sh: a variables argument that is not JSON fails the call and sends no request" \
   "1 false" "$? $([ -e "$gql_sent" ] && echo true || echo false)"
@@ -1862,6 +1877,7 @@ unset gql_sent
 # go-kure/.github#256: a rate-limited isResolved re-read inside a lift's
 # prt_retry must leave its Retry-After where prt_retry reads it.
 fake_curl_graphql_429() {
+  prt_stub_drain_stdin "$@"
   local out="" hdrs=""
   local args=("$@")
   for ((ai = 0; ai < ${#args[@]}; ai++)); do
@@ -1875,9 +1891,22 @@ fake_curl_graphql_429() {
 assert_eq "gh.sh: a rate-limited resolved-state re-read returns 5 and keeps its Retry-After" \
   "5 17" "$(PRT_LAST_RETRY_AFTER=""; PRT_CURL=fake_curl_graphql_429 PRT_GH_TOKEN=x \
     prt_gh_rest_fresh_open T1 PATCH o/r 1 sha /x '{}' 2>/dev/null; echo "$? $PRT_LAST_RETRY_AFTER")"
+# go-kure/.github#425: a request body larger than the pipe buffer (64 KiB) fills the pipe, so the
+# writer is still blocked when a stub that never reads exits. The call must still reach its 429 and
+# keep the Retry-After, not read as a transport failure with an empty status.
+prt_big_body="$(head -c 200000 /dev/zero | tr '\0' 'a')"
+assert_eq "gh.sh: a 200 KB request body to a stub reaches the 429 and keeps its Retry-After" \
+  "1 429 17" "$(PRT_LAST_RETRY_AFTER=""; PRT_CURL=fake_curl_graphql_429 PRT_GH_TOKEN=x \
+    prt_gh_rest POST /x "$prt_big_body" > /dev/null 2>&1; echo "$? $PRT_LAST_HTTP_STATUS $PRT_LAST_RETRY_AFTER")"
+unset prt_big_body
+# Every stub drains its body, so the race cannot come back through a new stub: count the stubs
+# whose definition line or the line after it lacks the call.
+assert_eq "gh.sh: every fake_curl stub drains the request body it is piped" "0" \
+  "$(awk '/^[[:space:]]*fake_curl[A-Za-z0-9_]*\(\)/ { n++; if ($0 ~ /prt_stub_drain_stdin/) next; getline nxt; if (nxt !~ /prt_stub_drain_stdin/) bad++ } END { print bad + 0 }' "${BASH_SOURCE[0]}")"
 
 # ============================================================ gh.sh: prt_freshness_check names which failure happened (C4, dot-github#61 Step 2)
 fake_curl_freshness_moved() {
+  prt_stub_drain_stdin "$@"
   local out=""
   local args=("$@")
   for ((ai = 0; ai < ${#args[@]}; ai++)); do
@@ -1897,6 +1926,7 @@ assert_eq "prt_freshness_check: a genuinely moved head names expected -> live" \
 assert_eq "prt_freshness_check: genuinely-moved head returns 1 (the degradable case)" "1" "$rc"
 
 fake_curl_freshness_500() {
+  prt_stub_drain_stdin "$@"
   local out=""
   local args=("$@")
   for ((ai = 0; ai < ${#args[@]}; ai++)); do
@@ -1916,6 +1946,7 @@ assert_eq "prt_freshness_check: read failure gets its own diagnostic, distinct f
   "true" "$(grep -qF 'failed to read PR' <<< "$fresh_err" && echo true || echo false)"
 
 fake_curl_freshness_malformed() {
+  prt_stub_drain_stdin "$@"
   local out=""
   local args=("$@")
   for ((ai = 0; ai < ${#args[@]}; ai++)); do
@@ -1938,6 +1969,7 @@ assert_eq "prt_freshness_check: malformed-response diagnostic names the missing 
 # be misread as "genuinely moved" — it carries no guarantee a superseding
 # run is actually queued, so it must return 2 (fatal), same as an empty one.
 fake_curl_freshness_nonhex() {
+  prt_stub_drain_stdin "$@"
   local out=""
   local args=("$@")
   for ((ai = 0; ai < ${#args[@]}; ai++)); do
@@ -1955,6 +1987,7 @@ assert_eq "prt_freshness_check: non-40-hex diagnostic names the malformed value"
 
 # ============================================================ gh.sh: prt_gh_rest_fresh propagates a 4-way status (go-kure/.github#99)
 fake_curl_fresh_write_fail() {
+  prt_stub_drain_stdin "$@"
   # Freshness check passes (returns the expected SHA), but the wrapped
   # write itself (the PATCH) fails with a 500 — must surface as status 3,
   # distinct from either freshness outcome.
@@ -1988,6 +2021,7 @@ assert_eq "prt_gh_rest_fresh: freshness read failure short-circuits with status 
 
 # ============================================================ gh.sh: prt_find_marked_comment (mocked curl, clean-verdict comment, 2026-08-22)
 fake_curl_find_marked_single_page() {
+  prt_stub_drain_stdin "$@"
   local out="" url=""
   local args=("$@")
   for ((ai = 0; ai < ${#args[@]}; ai++)); do
@@ -2034,6 +2068,7 @@ assert_eq "prt_find_marked_comment #153: the other login's marked comment is lis
 # must not hide a foreign one on page 2. A superseded foreign comment is not
 # listed; an unmarked one never is.
 fake_curl_find_marked_foreign_pages() {
+  prt_stub_drain_stdin "$@"
   local out="" url=""
   local args=("$@")
   for ((ai = 0; ai < ${#args[@]}; ai++)); do
@@ -2068,6 +2103,7 @@ assert_eq "prt_find_marked_comment #153: own match on page 1 is returned, the li
 # foreign filter (jq shim), then into the write (the out path a directory),
 # then into the page itself (not JSON).
 fake_curl_find_marked_own_and_foreign() {
+  prt_stub_drain_stdin "$@"
   local out=""
   local args=("$@")
   for ((ai = 0; ai < ${#args[@]}; ai++)); do
@@ -2108,6 +2144,7 @@ unset find_foreign_dir
 rm -f "$find_foreign_out"
 
 fake_curl_find_marked_none() {
+  prt_stub_drain_stdin "$@"
   local out=""
   local args=("$@")
   for ((ai = 0; ai < ${#args[@]}; ai++)); do
@@ -2126,6 +2163,7 @@ assert_eq "prt_find_marked_comment: an empty comment list yields an empty id" ""
 # Pagination: a full 100-row first page with no match must not stop the scan —
 # the match lands on page 2.
 fake_curl_find_marked_paginated() {
+  prt_stub_drain_stdin "$@"
   local out="" url=""
   local args=("$@")
   for ((ai = 0; ai < ${#args[@]}; ai++)); do
@@ -2157,6 +2195,7 @@ assert_eq "prt_find_marked_comment: a full 100-row non-matching first page advan
   "999" "$found_id"
 
 fake_curl_find_marked_fail() {
+  prt_stub_drain_stdin "$@"
   local out=""
   local args=("$@")
   for ((ai = 0; ai < ${#args[@]}; ai++)); do
@@ -2173,6 +2212,7 @@ assert_eq "prt_find_marked_comment: a failed paginated GET returns 1, distinct f
 # ============================================================ gh.sh: prt_upsert_issue_comment (mocked curl, clean-verdict comment, 2026-08-22)
 upsert_log="$(mktemp)"
 fake_curl_upsert() {
+  prt_stub_drain_stdin "$@"
   local out="" method="" url=""
   local args=("$@")
   for ((ai = 0; ai < ${#args[@]}; ai++)); do
@@ -3415,6 +3455,7 @@ _prt_test_payload_ok() {
 }
 
 fake_curl_orchestrator() {
+  prt_stub_drain_stdin "$@"
   local args=("$@") out="" accept="" url="" method="" data="" h req_body=""
   local i n=${#args[@]}
   for ((i = 0; i < n; i++)); do
