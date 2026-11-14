@@ -6,10 +6,11 @@
 # entry for good and never saved a larger one. The job now turns that cache off and restores the
 # source-aware build cache that the CI test jobs of kure and launcher save on main.
 #
-# The contract is one equality: the steps of the Test job from "Read Go version from mise.toml" up
-# to "Run tests" are exactly EXPECTED below. That fixes the Go version read, setup-go with its own
+# The contract is one equality: the steps of the Test job from "Read Go version from mise.toml" to the
+# end of the job, "Run tests" included, are exactly EXPECTED below. That fixes the Go version read, setup-go with its own
 # cache off, one restore of ~/.cache/go-build with the three keys that CI saves under, no other
-# input on the restore, no condition, and the order. One more fact is read beside it: the job holds
+# input on the restore, no condition, the order, and the test step with its environment (a GOCACHE
+# there would bypass the restored cache). One more fact is read beside it: the job holds
 # no other cache step, because only main writes the shared cache. Comments, blank lines and the
 # action pins (a Renovate bump) are not compared.
 #
@@ -55,6 +56,10 @@ EXPECTED="$(
           echo "cache-hit=${{ steps.gocache.outputs.cache-hit }}"
           echo "primary-key=${{ steps.gocache.outputs.cache-primary-key }}"
           echo "matched-key=${{ steps.gocache.outputs.cache-matched-key }}"
+      - name: Run tests
+        env:
+          CGO_ENABLED: "1"
+        run: go test -v -race -timeout 25m ./...
 EOF
 )"
 
@@ -80,14 +85,10 @@ contract() {
     echo "FAIL: no test job in $f"
     return 1
   fi
-  block="$(awk '/^      - name: Read Go version from mise.toml$/ { p = 1 } /^      - name: Run tests$/ { p = 0 } p' <<<"$job")"
+  block="$(awk '/^      - name: Read Go version from mise.toml$/ { p = 1 } p' <<<"$job")"
   if [ "$block" != "$EXPECTED" ]; then
-    echo "FAIL: the steps before Run tests are not the expected Go version read, setup-go and cache restore"
+    echo "FAIL: the steps from the Go version read to the end of the job are not the expected ones"
     diff <(printf '%s\n' "$EXPECTED") <(printf '%s\n' "$block") | head -n 6
-    rc=1
-  fi
-  if ! grep -qE '^ +- name: Run tests$' <<<"$job" || ! grep -qE '^ +run: go test ' <<<"$job"; then
-    echo "FAIL: the test job has no Run tests step that runs go test"
     rc=1
   fi
   if [ "$(grep -cE '^ +(- )?uses: actions/cache(/[a-z]+)?@' <<<"$job")" != 1 ]; then
@@ -127,7 +128,7 @@ expect_fail() {
   fi
 }
 
-STEPS="the steps before Run tests are not the expected"
+STEPS="the steps from the Go version read to the end of the job are not the expected"
 CACHE="has a cache step besides the one restore"
 
 expect_pass "release-publish.yml restores the build cache in the test job" "$WF"
@@ -192,7 +193,7 @@ awk '
 ' "$WF" > "$tmp/restore-before-version"
 expect_fail "a restore that runs before the Go version is read" "$STEPS" "$tmp/restore-before-version"
 
-# A save step after the tests is outside the compared block, so it has its own case.
+# A save step after the tests also trips the equality; the cache-step count names the reason.
 awk '
   /^  validate:$/ && !done {
     print "      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6"
@@ -205,6 +206,10 @@ awk '
   { print }
 ' "$WF" > "$tmp/with-save"
 expect_fail "a save step after the tests" "$CACHE" "$tmp/with-save"
+
+# The test step gets its own Go cache directory.
+sed 's/^\( *\)CGO_ENABLED: "1"$/&\n\1GOCACHE: ${{ runner.temp }}\/go-build/' "$WF" > "$tmp/gocache-env"
+expect_fail "a GOCACHE in the test step" "$STEPS" "$tmp/gocache-env"
 
 # The restore moves into a later job, whose header carries a comment.
 awk '
