@@ -20,10 +20,13 @@ PROBE="$ROOT/scripts/pr-review-runner-boundary-probe.sh"
 failures=0
 pass_count=0
 
+# With PRT_TEST_VERBOSE set to a non-empty value, a passing case prints its description, so a
+# verify run can name the case it relies on (the same switch as pr-review-threads-test.sh).
 assert_eq() {
   local desc="$1" expected="$2" actual="$3"
   if [ "$expected" = "$actual" ]; then
     pass_count=$((pass_count + 1))
+    [ -z "${PRT_TEST_VERBOSE:-}" ] || echo "PASS: $desc"
   else
     echo "FAIL: $desc — expected '$expected', got '$actual'" >&2
     failures=$((failures + 1))
