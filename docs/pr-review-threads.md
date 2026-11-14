@@ -677,8 +677,7 @@ the boundary needs. A result therefore applies to that pool only. The review job
 on `autops-kube-kure`, so the runner backend stays unaccepted there until that job moves to a pool
 where this probe passes. The workflow's first step records which image the pod runs, with the same
 fields and fallback text as the identity step of `review-pool-acceptance.yml`: the sha256 of the
-bundle record of `/opt/review-runner`, the registry digest of the `latest` tag (a cross-check that
-reads `unavailable: <reason>` when it fails), the uid and the pod hostname. Every other read of
+bundle record of `/opt/review-runner`, the uid and the pod hostname. Every other read of
 the record (the user-namespace limit, the `review-run` path, the runner script pin, the hostname
 and the uid and gid) also reads `unavailable: <reason>` when it fails, never an empty value. A
 hash of an empty file is a valid sha256 and reads as a real identity, so the bundle record and the
@@ -686,7 +685,7 @@ runner script pin read `unavailable: <reason>` when their file is empty too. The
 `review-bundle-verify` is absent or fails to write its record, because a pod that is not the review
 image says nothing about it.
 The record covers the review image family and the bundle bytes only. It does not cover the base
-layer where the boundary runs, and the image digest needs a credential the pod does not have, so a
+layer where the boundary runs, and the image digest is not readable from inside the pod, so a
 recorded sha is never proof that the boundary holds. The workflow runs the probe step after a failed suite
 step too (a failed suite step still fails the job), so a lane that cannot build the boundary still
 reports why. A step right after the checkout reads the workspace `.git/config` and fails if it holds

@@ -391,8 +391,9 @@ so an `opencode:anthropic/...` dispatch refuses at that step until someone provi
 than as an unknown backend.
 The pool pods run with `hostUsers: false`, so the job records `user.max_user_namespaces` read
 inside the pod. A pod cannot read its own image digest, so the job records the deterministic record
-of `/opt/review-runner` taken by the image's own `review-bundle-verify`, plus the registry digest
-of the `latest` tag as a cross-check, and writes `unavailable` with a reason when that read fails.
+of `/opt/review-runner` taken by the image's own `review-bundle-verify`. That bundle record is the
+only identity the record carries. A registry read for the digest of the `latest` tag was dropped,
+because the package is private and the anonymous token read was refused on every run.
 Every run uploads `review.md`, `provider.json`, `findings.json` and its own `acceptance.json` as
 one artifact, and the run fails unless the review completed and all three files exist.
 

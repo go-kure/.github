@@ -488,9 +488,8 @@ printf '#!/bin/sh\ncase "$1" in -u) f=uid; v=1001 ;; *) f=gid; v=1002 ;; esac\ni
 printf '#!/bin/sh\nif [ "$1" = /proc/sys/user/max_user_namespaces ]; then\n%s\necho 31337; exit 0; fi\nexec %s "$@"\n' \
   "${stub_head//@FIELD@/namespaces}" "$REAL_CAT" > "$dir/ib/cat"
 mkstub review-bundle-verify bundle 'echo stub-record'
-printf '#!/bin/sh\nexit 22\n' > "$dir/ib/curl"
 printf '#!/bin/sh\nexit 0\n' > "$dir/rr/review-run"
-chmod 755 "$dir/ib/id" "$dir/ib/cat" "$dir/ib/curl" "$dir/rr/review-run"
+chmod 755 "$dir/ib/id" "$dir/ib/cat" "$dir/rr/review-run"
 
 identity_value() { # identity_value KEY OUTPUT -> the value of one field of the record
   local key="$1" out="$2" line
@@ -530,6 +529,13 @@ assert_eq "identity step: the healthy runner script pin is recorded (control)" "
   "$(identity_value runner_scripts_pin "$ok_out")"
 assert_eq "identity step: the healthy bundle record hash is recorded (control)" "$(printf 'stub-record\n' | sha256sum | cut -d' ' -f1)" \
   "$(identity_value bundle_record_sha256 "$ok_out")"
+# The anonymous registry read never succeeded, so the record carried a field that was always
+# "unavailable". The bundle record is the one identity: the step reads no registry and carries no
+# registry digest field.
+assert_eq "identity step: the step text reads no registry" "false" \
+  "$(grep -qE 'ghcr\.io|curl' "$step" && echo true || echo false)"
+assert_eq "identity step: the record carries no registry digest field" "false" \
+  "$(printf '%s\n' "$ok_out" | grep -q '^registry_latest_digest=' && echo true || echo false)"
 # A record the tool fails to write stops the step: the identity is then not recorded at all.
 bundle_fail="$(run_identity bundle fail)"
 assert_eq "identity step: bundle fail: the step stops with a failure" "true" \

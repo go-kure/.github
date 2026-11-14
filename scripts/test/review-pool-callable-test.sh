@@ -87,6 +87,13 @@ violations() {
   secrets=$(q "$f" '.on.workflow_call.secrets | keys | sort | join(",")') || return 2
   [ "$secrets" = '"ANTHROPIC_API_KEY,CLAUDE_CODE_OAUTH_TOKEN,OPENAI_API_KEY"' ] \
     || echo "secrets: a call must declare the three backend credentials"
+
+  # The anonymous registry read never succeeded, so the record carried a field that was always
+  # "unavailable". The bundle record is the one identity. A read of the registry, or a field for its
+  # digest, is not allowed back.
+  if grep -qE 'registry_latest_digest|REGISTRY_LATEST_DIGEST|ghcr\.io/(token|v2)' "$f"; then
+    echo "identity: the record must not read the registry or carry a registry digest field"
+  fi
 }
 
 # expect LABEL WANT FILE: WANT is empty for a workflow that must pass, else text one violation line
@@ -144,6 +151,16 @@ expect 'a call that declares fewer than the three credentials is refused' \
 mutant no-effort-input '0,/^      effort:$/s|^      effort:$|      effortx:|'
 expect 'a call whose inputs differ from the dispatch inputs is refused' \
   'the same four inputs' "$WORK/no-effort-input.yml"
+
+mutant registry-field-back \
+  's|^\( *\)printf .bundle_record_sha256=.*$|&\n\1printf registry_latest_digest=x|'
+expect 'a record that carries a registry digest field again is refused' \
+  'must not read the registry or carry a registry digest field' "$WORK/registry-field-back.yml"
+
+mutant registry-read-back \
+  's|^\( *\)bundle_sha=.*$|&\n\1curl -fsS https://ghcr.io/token|'
+expect 'a step that reads the registry token again is refused' \
+  'must not read the registry or carry a registry digest field' "$WORK/registry-read-back.yml"
 
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
