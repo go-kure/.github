@@ -1378,6 +1378,16 @@ _prt_call_runner() {
     _prt_set_model_failure "local-tempdir"
     return 1
   fi
+  # The start gate (go-kure/.github#319): an empty file the runner's reader waits on, on descriptor
+  # 9, until the orchestrator has named the runner's first process and writes a line to it. It is a
+  # plain file and not a pipe on purpose: a line written to it stays there whenever the reader
+  # opens it, so the release never depends on which of the two comes first, and neither side can
+  # block on the other.
+  if ! : > "$tmp/go"; then
+    rm -rf "$tmp"
+    _prt_set_model_failure "local-tempdir"
+    return 1
+  fi
   # The digest of what was sent is taken here, from the request itself, before the runner
   # starts. The runner shares this user and learns $tmp from --out: a digest read back from
   # the file afterwards would be one it could replace, and vouch for in its own record. A
@@ -1455,6 +1465,15 @@ _prt_call_runner() {
     # checked: under `env -i` it has nothing to fail on. An empty list is refused here,
     # before anything is written: `printf '%s\0'` with no arguments still prints one NUL, which
     # the reader would take for one empty word. The reader's own length check is the second guard.
+    # Last, the reader waits for the start gate on descriptor 9 (a plain file opened for reading,
+    # read again every 20 ms until a line is there): the orchestrator writes one line to it once it
+    # has named the namespace's first process, and until then nothing of the runner runs, so a
+    # runner cannot leave its process group or end `timeout` and the launcher before it has been
+    # named (go-kure/.github#319). The reader closes it before it executes the runner, so the runner
+    # never holds it. It has no wait bound of its own: `timeout` bounds it, and a call abandoned
+    # before the release ends it with the group kill. A boundary that does not hand descriptor 9
+    # over fails closed: the check of the descriptor fails and the reader exits 125. A read that
+    # fails for any other reason would repeat until the bound, and the runner would not start.
     local prt_reader
     IFS= read -r -d '' prt_reader <<'READER' || true
 _n=$1
@@ -1469,6 +1488,9 @@ done
 mapfile -t _e < <(compgen -e) || exit 125
 unset -v "${_e[@]}" || exit 125
 export "${_w[@]}" || exit 125
+{ : <&9; } 2> /dev/null || exit 125
+until read -r _g <&9; do sleep 0.02; done
+exec 9<&-
 shopt -s execfail
 exec "$@"
 exit 125
@@ -1482,6 +1504,7 @@ READER
     ( umask 077; printf '%s\0' "${PRT_RUNNER_ENV_ARGS[@]}" > "$tmp/env" ) || exit 125
     exec 8< "$tmp/env" || exit 125
     rm -f "$tmp/env"
+    exec 9< "$tmp/go" || exit 125
     exec env -i "PATH=$PATH" timeout --kill-after=5 "$outer" "${PRT_RUNNER_BOUNDARY_ARGS[@]}" \
       env -i "PATH=$PATH" bash -c "$prt_reader" reader "${#PRT_RUNNER_ENV_ARGS[@]}" \
       "$runner" --backend "$backend" --root "$root" --base "$PRT_REVIEW_BASE_SHA" \
@@ -1525,6 +1548,21 @@ READER
       fi
       return 1
     fi
+  fi
+  # Released only once the first process is named (or for a form that has none to name): the
+  # runner starts now and not before. A launched process that went before it was named (rc 3) leaves
+  # the reader unreleased; the group kill below ends it if it is still there. The line is appended
+  # to a plain file, so it does not matter whether the reader has opened it yet. If the write fails
+  # the call is abandoned, since the runner would otherwise never start and the call would run to
+  # its bound for nothing.
+  if [ "${pid1_rc:-0}" -eq 0 ] && ! printf 'go\n' >> "$tmp/go" 2> /dev/null; then
+    echo "prt_model: the runner's start gate cannot be released — abandoning call" >&2
+    kill -KILL -- "-$runner_pid" 2>/dev/null || true
+    kill -KILL "$runner_pid" 2>/dev/null || true
+    wait "$runner_pid" 2>/dev/null || true
+    rm -rf "$tmp"
+    _prt_set_model_failure "local-tempdir"
+    return 1
   fi
   # The wait ends when `timeout` ends, and a runner can stop `timeout` (SIGSTOP to the group it
   # leads), which then never sends its TERM or its KILL (go-kure/.github#319). So the orchestrator
