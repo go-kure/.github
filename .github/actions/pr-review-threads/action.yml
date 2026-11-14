@@ -69,7 +69,8 @@ inputs:
       typically the metered model key the calling step sets in its env. The
       runner starts under env -i with only PATH, HOME, TMPDIR, LANG, LC_ALL and
       these names; a token name (PRT_GH_TOKEN, GITHUB_TOKEN, GH_TOKEN, the
-      enterprise and Actions runtime tokens) here fails the run.
+      enterprise and Actions runtime tokens) here fails the run, and so does
+      a name whose value is the whole value of one of those tokens.
     required: false
     default: ""
   assess-runner-boundary:
