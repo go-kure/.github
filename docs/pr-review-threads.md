@@ -531,6 +531,9 @@ Limits:
   caller's pin of the action, so the two can differ for a while. A standards file that is missing
   (HTTP 404) makes the producer warn and review without it. A fetch that failed (any other status, or no
   answer) is not a missing file: the producer fails and the `pr-review` job refuses.
+- The producer names `AGENTS.md` and `.claude/CLAUDE.md` in the prompt only when each resolves to a regular
+  file inside the checkout. A reviewed head can make one a symlink, and the reviewer is told to read what
+  is named, so one that leaves the checkout is skipped with a warning.
 - The producer is skipped, not run, for an empty net diff, so its own behaviour on one is not tested.
 
 ## Skipping assessment (`PRT_ASSESS_ENABLED`, action input `assess-enabled`)

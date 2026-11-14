@@ -447,9 +447,21 @@ jobs:
           fi
 
           # The files the proxy path injects as project notes, named when they exist.
+          # The reviewed head can make one a symlink, and the reviewer is told to read what is named,
+          # so each is resolved and named only when it is a regular file inside the checkout.
+          notes_root="$(realpath "$GITHUB_WORKSPACE")"
           for notes in AGENTS.md .claude/CLAUDE.md; do
-            if [ -f "$GITHUB_WORKSPACE/$notes" ]; then
-              printf '\nPROJECT NOTES: the repository holds %s. Read it and apply what it says about this code.\n' "$notes" >> "$section"
+            if notes_resolved="$(realpath -e "$GITHUB_WORKSPACE/$notes" 2> /dev/null)"; then
+              case "$notes_resolved" in
+                "$notes_root"/*)
+                  if [ -f "$notes_resolved" ]; then
+                    printf '\nPROJECT NOTES: the repository holds %s. Read it and apply what it says about this code.\n' "$notes" >> "$section"
+                  fi
+                  ;;
+                *)
+                  echo "::warning::$notes resolves to $notes_resolved, outside the checkout; it is not named in the review prompt"
+                  ;;
+              esac
             fi
           done
           if [ -s "$section" ]; then
