@@ -284,5 +284,49 @@ assert_rc "a step under an anchored steps: &shared key is still a step" 1 \
 assert_rc "a step whose uses: follows a nested list in the same item is still a step" 1 \
   "$(FIRST_PARTY_WORKFLOW_RE='^acme/' run_fixture "$(printf 'jobs:\n  a:\n    steps:\n      - name: helper\n        with:\n          things:\n            - one\n        uses: acme/tools/.github/workflows/helper.yml@main')")"
 
+# Each SHA-pinned ref the checker accepts is named on stdout, so a PR that only
+# moves a pin has a line in the verify output that is about its own change
+# (go-kure/.github#389). The totals line alone names no pin.
+run_fixture_out() {
+  local dir out
+  dir="$(mktemp -d)"
+  mkdir -p "$dir/.github/workflows"
+  printf '%s\n' "$1" > "$dir/.github/workflows/fixture.yml"
+  out="$(bash "$CHECKER" "$dir" 2>/dev/null)"
+  rm -rf "$dir"
+  printf '%s\n' "$out"
+}
+
+assert_has_line() {
+  local desc="$1" want="$2" out="$3"
+  if printf '%s\n' "$out" | grep -qxF -- "$want"; then
+    pass_count=$((pass_count + 1))
+  else
+    echo "FAIL: $desc — no line '$want' in: $out" >&2
+    failures=$((failures + 1))
+  fi
+}
+
+assert_no_line() {
+  local desc="$1" unwanted="$2" out="$3"
+  if printf '%s\n' "$out" | grep -qF -- "$unwanted"; then
+    echo "FAIL: $desc — found '$unwanted' in: $out" >&2
+    failures=$((failures + 1))
+  else
+    pass_count=$((pass_count + 1))
+  fi
+}
+
+out_pinned="$(run_fixture_out "$(fixture_pinned)")"
+assert_has_line "a SHA-pinned ref is named on stdout" \
+  "check-action-pins: pinned fixture.yml: actions/checkout@$SHA" "$out_pinned"
+
+out_two="$(run_fixture_out "$(printf 'jobs:\n  a:\n    steps:\n      - uses: actions/checkout@%s # v7\n      - uses: actions/cache/restore@%s' "$SHA" "$SHA")")"
+assert_has_line "a second pinned ref gets its own line" \
+  "check-action-pins: pinned fixture.yml: actions/cache/restore@$SHA" "$out_two"
+
+out_bad="$(run_fixture_out "$(fixture_bare_tag)")"
+assert_no_line "an unpinned ref is never reported as pinned" "check-action-pins: pinned" "$out_bad"
+
 echo "passed: $pass_count, failed: $failures"
 [ "$failures" -eq 0 ]

@@ -28,7 +28,8 @@
 # inside a sequence item is always an action, whatever path it names.
 #
 # Usage: check-action-pins.sh [REPO_ROOT]
-# Exits non-zero and lists every unpinned reference.
+# Exits non-zero and lists every unpinned reference. On stdout it names each
+# SHA-pinned ref it accepted (`pinned <file>: <ref>`), then a totals line.
 
 set -euo pipefail
 
@@ -91,6 +92,10 @@ while IFS= read -r -d '' file; do
     if [ "$kind" = job ] && [[ "$ref" =~ $REUSABLE_WORKFLOW_SHAPE ]] && [[ "$ref" =~ $FIRST_PARTY_WORKFLOW_RE ]]; then continue; fi
     if [[ ! "$ref" =~ @[0-9a-f]{40}$ ]]; then
       fail "$(basename "$file"): unpinned action ref '$ref' (pin to a 40-char commit SHA, keep the tag as a trailing comment)"
+    else
+      # Name each accepted pin, so a PR that only moves one has a line of its
+      # own in the output; the totals line below names none.
+      echo "check-action-pins: pinned $(basename "$file"): $ref"
     fi
   done < <(
     awk '

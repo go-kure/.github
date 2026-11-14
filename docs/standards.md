@@ -367,7 +367,10 @@ A tag is a mutable pointer. In March 2025 (CVE-2025-30066) an attacker moved the
 tags of `tj-actions/changed-files` onto a poisoned commit and ~23,000 repositories
 executed it. `scripts/check-action-pins.sh` fails CI on any unpinned ref;
 `actions.sha_pinning_required` in `governance/repository-settings-policy.yaml`
-enforces the same rule at the org level, independently.
+enforces the same rule at the org level, independently. The script prints one
+`check-action-pins: pinned <file>: <ref>` line for each SHA-pinned ref it
+accepts, before its totals line, so a PR that only moves a pin has a line about
+its own change in the verify output.
 
 Exempt: `./local-action` paths, `docker://` refs, and first-party *reusable
 workflow* refs (`go-kure/*/.github/workflows/x.yml@main`), which are governed
