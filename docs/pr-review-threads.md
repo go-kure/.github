@@ -515,6 +515,14 @@ would let the pull request through unreviewed. The job therefore runs after a fa
 without regard to case and the shell does not. `scripts/test/pr-review-producer-gate-test.sh` runs the
 step body out of the workflow for each result and checks the job structure.
 
+**A review that `review-run` did not complete ends the producer red and leaves no `findings.json`.**
+This covers a refusal for using a tool the reviewer may not use (write, shell, network). The review step
+records the exit code, the extract step writes no findings after a nonzero code, and the last step fails
+the job on the code or on a missing result file, so the posting job never reads a refused review.
+`scripts/test/review-pool-capability-test.sh` runs those three step bodies against a stand-in
+`review-run` for each case and checks the call: `--sandbox none`, no `--add-dir`, a non-empty diff on
+stdin. What a real backend does with an injected prompt is not shown by it.
+
 Limits:
 
 - A range that holds an exact rename is reviewed with `-M100%` by the producer and digested with
