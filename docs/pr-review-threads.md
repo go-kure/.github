@@ -728,6 +728,13 @@ Setting `PRT_TEST_REQUIRE_NAMESPACE=1` turns that skip into a failure, so a lane
 run them cannot pass by skipping. The probe's own fixture suite has the same switch for its
 full-run cases, and the acceptance workflow sets it for both suites.
 
+The skip note and the failing case say why. The note names the exit code and the first 200 bytes of
+what the raw `unshare` printed. The case "raw unshare works here, so the production prefix must
+start too" prints the same two facts for the production prefix when it fails. The suite also prints
+one `NOTE: slow:` line when the work before an assertion took 20 seconds or more
+(`PRT_TEST_GAP_NOTE_SECONDS` changes the limit), and a final `suite time:` line. A job that hits its
+time limit then shows which case followed the slow work.
+
 **Acceptance run.** `scripts/pr-review-runner-boundary-probe.sh`, started by the manual workflow
 `PR Review Runner Boundary Probe` shows whether the default boundary holds on the lane it runs on.
 The workflow targets the review pool (`autops-kube-review`), whose nodes allow the user namespaces

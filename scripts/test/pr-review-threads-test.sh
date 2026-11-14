@@ -57,8 +57,22 @@ prt_test_failure_context() {
 
 # With PRT_TEST_VERBOSE set to a non-empty value, a passing case prints its description, so a verify run can
 # show that a named case ran. Unset or empty, the output is unchanged: a pass prints nothing.
+#
+# The suite prints nothing while a section runs, so a job that hit its time limit named no slow
+# section (go-kure/.github#425). prt_note_gap prints one NOTE when the work since the previous assertion
+# took PRT_TEST_GAP_NOTE_SECONDS (default 20) or more, naming the assertion that follows it, its line
+# and the seconds since the suite started. A suite that runs in time prints no extra line.
+prt_gap_last=$SECONDS
+prt_note_gap() {
+  local now=$SECONDS
+  if [ $((now - prt_gap_last)) -ge "${PRT_TEST_GAP_NOTE_SECONDS:-20}" ]; then
+    echo "NOTE: slow: $((now - prt_gap_last))s of work before the case \"$1\" (line ${BASH_LINENO[1]:-0}, ${now}s into the suite)"
+  fi
+  prt_gap_last=$now
+}
 assert_eq() {
   local desc="$1" expected="$2" actual="$3"
+  prt_note_gap "$desc"
   if [ "$expected" = "$actual" ]; then
     pass_count=$((pass_count + 1))
     [ -z "${PRT_TEST_VERBOSE:-}" ] || echo "PASS: $desc"
@@ -7977,12 +7991,46 @@ chmod 755 "$prt_ar_dir/review-run"
 # acceptance: PRT_TEST_REQUIRE_NAMESPACE=1 turns a skip into a failure.
 # The availability probe is a literal raw `unshare`, never the production builder, so a broken
 # builder cannot pass for an unavailable host; where raw unshare works the production prefix must too.
-prt_ar_ns_raw() { unshare --user --map-current-user --pid --fork --mount-proc true > /dev/null 2>&1; }
-# The production prefix (for root and non-root alike), started.
-prt_ar_pidns_ok() {
-  ( unset PRT_ASSESS_RUNNER_BOUNDARY PRT_ASSESS_RUNNER_BOUNDARY_CMD
-    _prt_runner_boundary_build && "${PRT_RUNNER_BOUNDARY_ARGS[@]}" true ) > /dev/null 2>&1
+# Both probes keep what the start printed (prt_ar_ns_err, prt_ar_pidns_err) and its exit code, so a
+# host that refuses the namespace says why in the skip NOTE and in the failing case (go-kure/.github#425).
+# They run in the calling shell, never in a command substitution, or the two variables would be lost.
+prt_ar_ns_err=""
+prt_ar_ns_rc=0
+prt_ar_ns_raw() {
+  prt_ar_ns_rc=0
+  prt_ar_ns_err="$(unshare --user --map-current-user --pid --fork --mount-proc true 2>&1 > /dev/null)" || prt_ar_ns_rc=$?
+  return "$prt_ar_ns_rc"
 }
+# The production prefix (for root and non-root alike), started.
+prt_ar_pidns_err=""
+prt_ar_pidns_rc=0
+prt_ar_pidns_ok() {
+  prt_ar_pidns_rc=0
+  prt_ar_pidns_err="$( ( unset PRT_ASSESS_RUNNER_BOUNDARY PRT_ASSESS_RUNNER_BOUNDARY_CMD
+    _prt_runner_boundary_build && "${PRT_RUNNER_BOUNDARY_ARGS[@]}" true ) 2>&1 > /dev/null )" || prt_ar_pidns_rc=$?
+  return "$prt_ar_pidns_rc"
+}
+# prt_ar_why EXIT_CODE OUTPUT — the exit code and the first 200 bytes of what a failed start printed, on one line.
+prt_ar_why() { printf 'exit %s, output: [%s]' "$1" "$(printf '%s' "$2" | tr '\n' ' ' | cut -c1-200)"; }
+# The diagnostics themselves (go-kure/.github#425). A stand-in `unshare` function shadows the real command
+# inside each command substitution, so the probe is driven through a refusal and a success without
+# a host that refuses.
+assert_eq "namespace probe: a refused unshare leaves its exit code and its message" \
+  "1|unshare: write failed /proc/self/uid_map: Operation not permitted" \
+  "$(unshare() { echo 'unshare: write failed /proc/self/uid_map: Operation not permitted' >&2; return 1; }; prt_ar_ns_raw || true; echo "$prt_ar_ns_rc|$prt_ar_ns_err")"
+assert_eq "namespace probe: a working unshare leaves exit code 0 and no message" \
+  "0|" "$(unshare() { return 0; }; prt_ar_ns_raw || true; echo "$prt_ar_ns_rc|$prt_ar_ns_err")"
+assert_eq "namespace probe: the reason text is one line of at most 200 bytes of output" \
+  "exit 3, output: [a b $(printf 'x%.0s' $(seq 1 196))]" \
+  "$(prt_ar_why 3 "$(printf 'a\nb\n'; printf 'x%.0s' $(seq 1 300))")"
+assert_eq "gap note: a gap over the limit names the case, the line and the seconds into the suite (digits dropped, as the clock moves)" \
+  'NOTE: slow: s of work before the case "x" (line , s into the suite)' \
+  "$(PRT_TEST_GAP_NOTE_SECONDS=5; prt_gap_last=$((SECONDS - 7)); prt_note_gap x | tr -d '0-9')"
+assert_eq "gap note: a call with no enclosing function frame, under set -u, still prints the note (line 0)" \
+  'NOTE: slow: s of work before the case "x" (line , s into the suite)' \
+  "$(bash -u -c "$(declare -f prt_note_gap); prt_gap_last=0; PRT_TEST_GAP_NOTE_SECONDS=0; prt_note_gap x" 2>&1 | tr -d '0-9')"
+assert_eq "gap note: a gap under the limit prints nothing" \
+  "" "$(PRT_TEST_GAP_NOTE_SECONDS=9999; prt_gap_last=$SECONDS; prt_note_gap x)"
 # The production prefix as words, for a cmd fixture that must be as strict as the default.
 prt_ar_prod_prefix() {
   ( unset PRT_ASSESS_RUNNER_BOUNDARY PRT_ASSESS_RUNNER_BOUNDARY_CMD
@@ -8027,7 +8075,8 @@ prt_ar_ns=true
 # that need none still run there.
 if [ -n "${PRT_TEST_FORCE_NO_NAMESPACE:-}" ] || ! prt_ar_ns_raw; then
   prt_ar_ns=false
-  prt_skip_notice "this host forbids the PID namespace the default boundary needs: the cases that need one are skipped; a CI lane that can run them is required for acceptance"
+  if [ -n "${PRT_TEST_FORCE_NO_NAMESPACE:-}" ]; then prt_ar_ns_why="forced by PRT_TEST_FORCE_NO_NAMESPACE"; else prt_ar_ns_why="raw unshare: $(prt_ar_why "$prt_ar_ns_rc" "$prt_ar_ns_err")"; fi
+  prt_skip_notice "this host forbids the PID namespace the default boundary needs ($prt_ar_ns_why): the cases that need one are skipped; a CI lane that can run them is required for acceptance"
   assert_eq "no PID namespace here: PRT_TEST_REQUIRE_NAMESPACE is not set (acceptance needs a lane that runs the positive isolation cases)" \
     "" "${PRT_TEST_REQUIRE_NAMESPACE:-}"
   # Only a host that really lacks the namespace can show the refusal; the forced switch cannot.
@@ -8038,7 +8087,9 @@ if [ -n "${PRT_TEST_FORCE_NO_NAMESPACE:-}" ] || ! prt_ar_ns_raw; then
       "0 0 true" "$rc $(prt_ar_calls) $(grep -qF '[runner-boundary]' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
   fi
 else
-  assert_eq "raw unshare works here, so the production prefix must start too" "true" "$(prt_ar_pidns_ok && echo true || echo false)"
+  prt_ar_pidns_ok || true
+  assert_eq "raw unshare works here, so the production prefix must start too" "0" "$prt_ar_pidns_rc"
+  [ "$prt_ar_pidns_rc" -eq 0 ] || echo "  the production prefix start: $(prt_ar_why "$prt_ar_pidns_rc" "$prt_ar_pidns_err")" >&2
 fi
 if $prt_ar_ns; then
 # A VALID verdict from the runner: the finding gets its thread, the proxy never assesses.
@@ -10627,5 +10678,6 @@ assert_eq "e2e #374: the same hunk with one added line -> exits 1, REVIEW_INCOMP
 unset PRT_TEST_DIFF_PATH PRT_TEST_ISSUE_COMMENT_LOG PRT_TEST_MODEL_REQUEST_LOG
 rm -rf "$xf_dir"
 
+echo "suite time: ${SECONDS}s"
 echo "passed: $pass_count, failed: $failures"
 [ "$failures" -eq 0 ]
