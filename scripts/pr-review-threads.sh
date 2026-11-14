@@ -32,8 +32,9 @@
 #                               Each call runs behind a process boundary (a PID
 #                               namespace by default; PRT_ASSESS_RUNNER_BOUNDARY,
 #                               PRT_ASSESS_RUNNER_BOUNDARY_CMD) or is refused.
-#                               Refused in enforce mode until that boundary is
-#                               shown to hold on the runner image.
+#                               Allowed in every mode, enforce included; the
+#                               probe's evidence and its limits are in
+#                               docs/pr-review-threads.md ("Process boundary").
 #   PRT_MODEL                   default: claude-opus-5-5
 #   PRT_MAX_TOKENS               default: 1500
 #   PRT_ASSESS_MODEL             default: claude-sonnet-4-6
@@ -236,15 +237,11 @@ case "${PRT_ASSESS_BACKEND:-}" in
 esac
 # The runner starts with no sandbox of its own, as the same user as this script,
 # so without a boundary it could read this process's environment (the posting
-# token). Every call now runs behind a PID namespace of its own (or an operator
-# supplied command) that is checked first and refuses the call if it fails. Enforce
-# stays refused until a test on the runner image has shown that boundary to hold
-# there: that is the manual probe run on the review runner image (go-kure/.github#308), and
-# nothing on a development host proves it.
-if [ "${PRT_ASSESS_BACKEND:-}" = runner ] && [ "$PRT_MODE" = enforce ]; then
-  echo "ERROR: PRT_ASSESS_BACKEND=runner is not allowed in enforce mode: the runner's process boundary has not been shown to hold on the runner image yet" >&2
-  exit 1
-fi
+# token). Every call runs behind a PID namespace of its own (or an operator
+# supplied command) that is checked first and refuses the call if it fails, in every
+# mode. The manual probe on the review runner image (go-kure/.github#308) showed that
+# boundary holding there (limits: docs/pr-review-threads.md), so enforce accepts the
+# runner backend too.
 if [ "${PRT_ASSESS_BACKEND:-}" = runner ] && [ -z "${PRT_ASSESS_RUNNER_BACKEND:-}" ]; then
   echo "ERROR: PRT_ASSESS_RUNNER_BACKEND is required when PRT_ASSESS_BACKEND=runner" >&2
   exit 1
