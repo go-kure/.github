@@ -41,9 +41,20 @@ test_job() {
   ' "$1"
 }
 
+# restore_step — read a job on stdin, print the step that uses actions/cache/restore: from its "- "
+# line up to the next step at the same indent.
+restore_step() {
+  awk '
+    /^      - / { if (found) exit; step = "" }
+    { step = step $0 "\n" }
+    /^ +(- )?uses: actions\/cache\/restore@/ { found = 1 }
+    END { if (found) printf "%s", step }
+  '
+}
+
 # contract FILE — print one FAIL line per broken fact, return 1 if any.
 contract() {
-  local f="$1" rc=0 job trimmed
+  local f="$1" rc=0 job trimmed want_tiers have_tiers
   if [ ! -s "$f" ]; then
     echo "FAIL: $f is missing or empty"
     return 1
@@ -65,22 +76,23 @@ contract() {
     echo "FAIL: the test job has no actions/cache/restore step"
     rc=1
   fi
-  if ! grep -qE '^ +path: ~/\.cache/go-build$' <<<"$job"; then
-    echo "FAIL: the test job does not restore ~/.cache/go-build"
+  # The inputs below are read from the restore step's own lines: the action ignores a
+  # misspelled input, and a matching line elsewhere in the job proves nothing.
+  # shellcheck disable=SC2001  # the substitution must run on every line, which ${var//} cannot do
+  trimmed="$(restore_step <<<"$job" | sed 's/^ *//')"
+  if ! grep -Fxq 'path: ~/.cache/go-build' <<<"$trimmed"; then
+    echo "FAIL: the restore step does not restore ~/.cache/go-build"
     rc=1
   fi
-  # shellcheck disable=SC2001  # the substitution must run on every line, which ${var//} cannot do
-  trimmed="$(sed 's/^ *//' <<<"$job")"
   if ! grep -Fxq "key: ${KEY_EXACT}" <<<"$trimmed"; then
     echo "FAIL: the restore key is not the key the CI test jobs save (OS, architecture, Go version, dependency hash and source hash)"
     rc=1
   fi
-  if ! grep -Fxq "${KEY_DEPS}" <<<"$trimmed"; then
-    echo "FAIL: no restore key ends at the dependency hash"
-    rc=1
-  fi
-  if ! grep -Fxq "${KEY_NAME}" <<<"$trimmed"; then
-    echo "FAIL: no restore key ends at the cache name"
+  # The lines after "restore-keys: |" must be exactly the two tiers, in that order.
+  want_tiers="$(printf '%s\n%s' "${KEY_DEPS}" "${KEY_NAME}")"
+  have_tiers="$(awk '/^restore-keys: \|$/ { in_keys = 1; next } in_keys && NF { print }' <<<"$trimmed")"
+  if [ "$have_tiers" != "$want_tiers" ]; then
+    echo "FAIL: the restore-keys input of the restore step is not the dependency tier followed by the cache name tier"
     rc=1
   fi
   if grep -qE '^ +(- )?uses: actions/cache(/save)?@' <<<"$job"; then
@@ -140,11 +152,11 @@ expect_fail "a key that names another cache" "restore key is not the key the CI 
 
 # The dependency tier of the restore keys goes.
 awk '/-gocache-test-race-cover-deps-.*-$/ && !/key:/ { next } { print }' "$WF" > "$tmp/no-deps-tier"
-expect_fail "no restore key at the dependency hash" "no restore key ends at the dependency hash" "$tmp/no-deps-tier"
+expect_fail "no restore key at the dependency hash" "restore-keys input of the restore step" "$tmp/no-deps-tier"
 
 # The name tier of the restore keys goes.
 awk '/-gocache-test-race-cover-$/ { next } { print }' "$WF" > "$tmp/no-name-tier"
-expect_fail "no restore key at the cache name" "no restore key ends at the cache name" "$tmp/no-name-tier"
+expect_fail "no restore key at the cache name" "restore-keys input of the restore step" "$tmp/no-name-tier"
 
 # The job gains a save step.
 awk '
@@ -188,6 +200,17 @@ sed 's/^  extra2:$/  extra2: # later job/' "$tmp/other-job" > "$tmp/other-job-co
 expect_fail "a restore in a job whose header has a comment" "no actions/cache/restore step" "$tmp/other-job-comment"
 sed 's/^  extra2:$/  extra2:   /' "$tmp/other-job" > "$tmp/other-job-spaces"
 expect_fail "a restore in a job whose header has trailing spaces" "no actions/cache/restore step" "$tmp/other-job-spaces"
+
+# The restore-keys input is misspelled, so the action ignores it.
+sed 's/^\( *\)restore-keys: |$/\1restore-key: |/' "$WF" > "$tmp/misspelled-restore-keys"
+expect_fail "a misspelled restore-keys input" "restore-keys input of the restore step" "$tmp/misspelled-restore-keys"
+
+# The key lines sit in a step that is not the restore step.
+awk '
+  /^ +restore-keys: \|$/ && !done { print "      - name: Other"; print "        run: true"; done = 1 }
+  { print }
+' "$WF" > "$tmp/keys-in-other-step"
+expect_fail "restore keys that sit in another step" "restore-keys input of the restore step" "$tmp/keys-in-other-step"
 
 : > "$tmp/empty"
 expect_fail "an empty workflow file" "missing or empty" "$tmp/empty"
