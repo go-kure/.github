@@ -742,7 +742,8 @@ The workflow `pr-review-threads-namespace.yml` is the per-pull-request lane that
 the suite with the switch set on the review pool, for a same-repository pull request that changes
 `scripts/lib/prt/**`, `scripts/pr-review-threads.sh`, `scripts/test/pr-review-threads-test.sh`,
 `.github/actions/pr-review-threads/**` or the workflow file itself, within a 20-minute limit, and a
-newer push replaces a run still in progress. It is not a required check. A required check that a path filter leaves out stays
+newer push replaces a run still in progress. It is not a required check. A required check that a
+path filter leaves out stays
 pending, and the review pool is shared, so a loaded pool can fail the process-timing cases of the
 suite. A red run is a result to read, and it can be merged over. Making it a required check is a
 later step, taken once it has run clean on several pull requests. Until then, a change to the
