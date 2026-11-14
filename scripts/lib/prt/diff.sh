@@ -381,6 +381,23 @@ prt_generated_paths() {
   return "$rc"
 }
 
+# prt_decode_diff_path PATH VAR — sets VAR to the file name PATH stands for. PATH is a path as
+# prt_diff_files prints it: plain, or in git's C-quoting, which it keeps for a path holding a
+# control character or starting with a double quote. The escapes (\t \n \" \\ \ooo ...) are
+# printf's own and git escapes every backslash, so printf decodes the quoted form exactly once
+# `%` is doubled. Assigned through VAR, not printed, so a name ending in a newline keeps it.
+prt_decode_diff_path() {
+  local path="$1" inner
+  local -n _prt_decoded="$2"
+  _prt_decoded="$path"
+  if [ "${#path}" -ge 2 ] && [ "${path:0:1}" = '"' ] && [ "${path: -1}" = '"' ]; then
+    inner="${path:1:${#path}-2}"
+    inner="${inner//%/%%}"
+    # shellcheck disable=SC2059 # the format IS the quoted path; see above
+    printf -v _prt_decoded -- "$inner"
+  fi
+}
+
 # prt_exclude_files DIFF_FILE ATTR_FILE OUT_DIFF — writes DIFF_FILE to
 # OUT_DIFF without the records of excluded files, and prints the excluded
 # files as a JSON array of {path, added, removed, reason} in diff order
@@ -414,21 +431,12 @@ prt_exclude_files() {
   mapfile -d $'\0' -t records < "$work/records"
 
   : > "$work/paths" || rc=1
-  local match inner
+  local match
   for ((i = 0; i < ${#records[@]}; i++)); do
     printf '%s' "${records[$i]}" > "$work/rec" || rc=1
     path="$(prt_diff_files "$work/rec" | head -n 1)"
     paths[i]="$path"
-    match="$path"
-    if [ "${#path}" -ge 2 ] && [ "${path:0:1}" = '"' ] && [ "${path: -1}" = '"' ]; then
-      # prt_diff_files keeps git's C-quoting only for a path holding a control
-      # character. Its escapes (\t \n \" \\ \ooo ...) are printf's own, and git
-      # escapes every backslash, so printf decodes it exactly once `%` is doubled.
-      inner="${path:1:${#path}-2}"
-      inner="${inner//%/%%}"
-      # shellcheck disable=SC2059 # the format IS the quoted path; see above
-      printf -v match -- "$inner"
-    fi
+    prt_decode_diff_path "$path" match
     matches[i]="$match"
     [ -n "$match" ] && { printf '%s\0' "$match" >> "$work/paths" || rc=1; }
   done

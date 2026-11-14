@@ -432,6 +432,7 @@ Inputs, all from the environment:
 | `PRT_FINDINGS_FILE` | The findings file: `{"format":"review-findings-v1","findings":[{file,line,severity,category,issue,fix,klass,claim}]}`. `line` may be `null` (a file-level finding). |
 | `PRT_HEAD_SHA` | The reviewed head. Already an input of the orchestrator. |
 | `PRT_REVIEW_BASE_SHA` | The base commit the review diffed against. Derive it from the PR's base, not from the record. |
+| `PRT_EXCLUDED_PATHS_FILE` | Optional. A JSON array of paths the run excluded whole from the review (a lockfile, a generated file). The orchestrator writes it, listing a path as the diff spells it and, where git quoted it (a control character, or a name starting with `"`), also as the file name it stands for, because a producer names a file as it is on disk. A finding on one of those paths is dropped and logged, because the reviewer was given a diff without that file. Unset, or a missing file, drops nothing. A file that is not exactly one JSON array of strings (an object, a non-string member, or several values such as `null` followed by an array) refuses the run with `payload-build`. |
 | `PRT_REVIEW_MATERIAL_SHA256` | The sha256 of the canonical diff bytes between that base and the head: `git diff` run with fixed flags that make the bytes independent of any user git configuration (`-c core.quotePath=false -c diff.suppressBlankEmpty=false`, `--no-color --no-ext-diff --no-textconv --no-renames --full-index --binary --src-prefix=a/ --dst-prefix=b/ --unified=3 --inter-hunk-context=0 --diff-algorithm=myers --indent-heuristic --no-relative --submodule=short --ignore-submodules=none -O/dev/null`, `base head --`). A plain `git diff` gives different bytes and a `provenance-mismatch`. |
 
 The record next to the findings file, `provider.json` in the same directory, is the provenance:
@@ -454,6 +455,10 @@ chunk, first match in this order:
 2. the first chunk whose diff touches its file (this is also where a file-level finding goes, and
    a line the diff does not show);
 3. chunk 0, so a finding naming a file the reviewed diff does not contain is never dropped.
+
+The one exception is a path in `PRT_EXCLUDED_PATHS_FILE`. The run itself kept that file out of the
+review, so a finding on it describes a file the reviewer never saw. It is dropped before the
+assignment, and the log says how many were dropped and on which files.
 
 The assess call skips a finding served by rule 3: chunk 0's diff is not the code it names, so an
 assessor handed both would judge it against the wrong code. The finding is reported with no
@@ -493,8 +498,8 @@ job runs exactly as before. Set to `file`, three jobs run, for same-repository p
 
 | Job | What it does |
 |---|---|
-| `plan` | Reads the merge base of the pull request's base and head from the compare API. The base comes from the pull request, never from the producer's record. |
-| `review-producer` | Calls `review-pool-acceptance.yml` at `main` (as `pr-review-caller.yml` calls `pr-review.yml`, so there is no second pin) with `secrets: inherit`. It reviews the head with the backend in `PR_REVIEW_PRODUCER_BACKEND` (default `claude`) and uploads `review.md`, `provider.json` and `findings.json`. |
+| `plan` | Reads the merge base of the pull request's base and head from the compare API, and whether the net diff is empty (`empty` output). The base comes from the pull request, never from the producer's record. |
+| `review-producer` | Skipped when the net diff is empty. Calls `review-pool-acceptance.yml` at `main` (as `pr-review-caller.yml` calls `pr-review.yml`, so there is no second pin) with `secrets: inherit`, and forwards the caller's `pr_review_context`, `standards-file` and `standards-source` as `context`, `standards_file` and `standards_source`. The producer adds the context to the prompt and names the standards file in it; the reviewer reads the file. It reviews the head with the backend in `PR_REVIEW_PRODUCER_BACKEND` (default `claude`) and uploads `review.md`, `provider.json` and `findings.json`. |
 | `pr-review` | The job whose check is `pr-review / AI Code Review`. It downloads the three files, recomputes the material digest from its own checkout with the flags in "Review from a findings file", and sets `PRT_REVIEW_BACKEND=file`, `PRT_FINDINGS_FILE`, `PRT_REVIEW_BASE_SHA` and `PRT_REVIEW_MATERIAL_SHA256` for the action. |
 
 The assessment stays on the proxy. `PRT_ASSESS_ENABLED=false` and `PRT_ASSESS_BACKEND=runner` are both
@@ -505,7 +510,8 @@ depends on a process boundary that is not yet shown to hold.
 skipped required check counts as passing, so a producer that failed, was cancelled or never started
 would let the pull request through unreviewed. The job therefore runs after a failed producer
 (`!cancelled()`), and its first step refuses unless the switch is unset with both new jobs skipped, or
-`file` with both succeeded. Any other value of the switch is refused, because the jobs compare it
+`file` with both succeeded, or with the producer skipped because the plan reported an empty net diff
+(there is nothing to review, and the job goes on to reconcile old threads). Any other value of the switch is refused, because the jobs compare it
 without regard to case and the shell does not. `scripts/test/pr-review-producer-gate-test.sh` runs the
 step body out of the workflow for each result and checks the job structure.
 
@@ -521,6 +527,11 @@ Limits:
   queues behind it.
 - Whether `secrets: inherit` reaches the producer through two levels of reusable workflow, and whether
   a repository's runners can use the review pool, are not shown until the first run.
+- A standards file from `standards-source: action` is read from this repository's `main`, not from the
+  caller's pin of the action, so the two can differ for a while. A standards file that is missing
+  (HTTP 404) makes the producer warn and review without it. A fetch that failed (any other status, or no
+  answer) is not a missing file: the producer fails and the `pr-review` job refuses.
+- The producer is skipped, not run, for an empty net diff, so its own behaviour on one is not tested.
 
 ## Skipping assessment (`PRT_ASSESS_ENABLED`, action input `assess-enabled`)
 

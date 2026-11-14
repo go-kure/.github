@@ -317,6 +317,8 @@ unset json_big_payload json_out
 #               diff.sh:dropped_lines is a line count)
 #   config      operator configuration (a model name, a token budget, the severity rank map)
 #   file        a repository path: dropped at ingress above 4096 bytes (prt_normalize_findings)
+#               (pr-review-threads.sh:excl_name is one file name from the diff's own header, so a path git
+#               itself holds, at most PATH_MAX 4096 bytes)
 #   severity    a severity word: a value past 64 characters is reset before use
 prt_guard_allow=" \
 pr-review-threads.sh:chunk_idx pr-review-threads.sh:ci pr-review-threads.sh:ti pr-review-threads.sh:tpi \
@@ -331,7 +333,7 @@ pr-review-threads.sh:PRT_HEAD_SHA \
 pr-review-threads.sh:cursor pr-review-threads.sh:tcursor pr-review-threads.sh:thread_id \
 pr-review-threads.sh:tid_pg pr-review-threads.sh:foreign_login pr-review-threads.sh:OWNER \
 pr-review-threads.sh:REPO_NAME pr-review-threads.sh:PRT_BOT_LOGIN_GQL \
-pr-review-threads.sh:file pr-review-threads.sh:owned_severity \
+pr-review-threads.sh:file pr-review-threads.sh:owned_severity pr-review-threads.sh:excl_name \
 diff.sh:added diff.sh:removed diff.sh:path diff.sh:reason diff.sh:dropped_lines \
 finding.sh:cat finding.sh:fp_base finding.sh:outside_marker \
 gh.sh:bot_login gh.sh:ci gh.sh:cursor gh.sh:marker gh.sh:query gh.sh:superseded \
@@ -7283,6 +7285,30 @@ assert_eq "file backend refusal: a line index that cannot be built: reason" "pay
 assert_eq "file backend refusal: a failed build leaves no record file behind" "0" \
   "$(find "$prt_fb_dir/chunks" -name '.file-backend-chunks*' | wc -l | tr -d ' ')"
 
+# The list of files the run excluded whole must be exactly one array of strings: `jq -e` reports only
+# the last value's status, so `null` followed by an array used to pass and read as "no exclusions"
+# (go-kure/.github#429 review).
+prt_fb_excl_refuse() { # DESC CONTENT
+  local rc
+  printf '%b' "$2" > "$prt_fb_dir/excluded.json"
+  : > "$prt_fb_dir/failure"
+  PRT_EXCLUDED_PATHS_FILE="$prt_fb_dir/excluded.json" PRT_REVIEW_BACKEND="file" prt_fb_review 0 >/dev/null 2>&1; rc=$?
+  assert_eq "file backend, exclusion list $1: rc" "1" "$rc"
+  assert_eq "file backend, exclusion list $1: reason" "payload-build" "$(cat "$prt_fb_dir/failure")"
+}
+prt_fb_excl_refuse "is not JSON" 'not json'
+prt_fb_excl_refuse "is an object" '{"a":1}'
+prt_fb_excl_refuse "holds a non-string" '["go.sum", 1]'
+prt_fb_excl_refuse "is empty" ''
+prt_fb_excl_refuse "is null then an array" 'null\n["go.sum"]\n'
+prt_fb_excl_refuse "is an array then null" '["go.sum"]\nnull\n'
+prt_fb_excl_refuse "is two arrays" '["go.sum"]\n["go.mod"]\n'
+printf '["go.sum"]\n' > "$prt_fb_dir/excluded.json"
+: > "$prt_fb_dir/failure"
+PRT_EXCLUDED_PATHS_FILE="$prt_fb_dir/excluded.json" PRT_REVIEW_BACKEND="file" prt_fb_review 0 >/dev/null 2>&1; prt_fb_rc=$?
+assert_eq "file backend, exclusion list of one array: served (rc)" "0" "$prt_fb_rc"
+rm -f "$prt_fb_dir/excluded.json"
+
 # Misconfiguration fails closed too, and says so.
 : > "$prt_fb_dir/failure"
 PRT_REVIEW_BACKEND=carrier-pigeon prt_fb_review 0 >/dev/null 2>&1; prt_fb_rc=$?
@@ -10351,6 +10377,68 @@ assert_eq "e2e #293: the model saw x.go and none of the lockfile" \
   "true false" "$(grep -qF '+++ b/x.go' "$PRT_TEST_MODEL_REQUEST_LOG" && echo true || echo false) $(grep -qF 'package-lock.json' "$PRT_TEST_MODEL_REQUEST_LOG" && echo true || echo false)"
 assert_eq "e2e #293: the clean verdict reviews 1 chunk and names the lockfile as not reviewed" \
   "true true true" "$(grep -qxF '  | | chunks | 1 |' "$PRT_TEST_ISSUE_COMMENT_LOG" && echo true || echo false) $(grep -qxF '  | | excluded | 1 |' "$PRT_TEST_ISSUE_COMMENT_LOG" && echo true || echo false) $(grep -qxF '  | | `web/package-lock.json` | +1 | -1 | not reviewed | lockfile |' "$PRT_TEST_ISSUE_COMMENT_LOG" && echo true || echo false)"
+
+# 1b. The file backend (PRT_REVIEW_BACKEND=file): the producer reviewed the whole range, so its
+#    findings can name a file this run excluded. Such a finding is dropped, with the drop logged;
+#    left in, it would land in chunk 0 unassessed and stay a gating candidate
+#    (go-kure/.github#432). A finding in an ordinary file still becomes a thread.
+{ xf_rec go.sum new-sum; xf_rec x.go new; } > "$xf_dir/sum-and-code.diff"
+cat > "$xf_dir/fb-findings.json" <<'XFFINDINGS'
+{"format":"review-findings-v1","findings":[
+ {"file":"x.go","line":1,"severity":"high","category":"logic-error","issue":"issue-for-x","fix":"fix-x","klass":"blocking","claim":"cx"},
+ {"file":"go.sum","line":1,"severity":"high","category":"other","issue":"issue-for-sum","fix":"fix-sum","klass":"blocking","claim":"cs"}
+]}
+XFFINDINGS
+jq -n '{format:"review-run-v1", outcome:"completed", backend:"x", identity:{root:"/r", head:"1111111111111111111111111111111111111111", base:"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", material_sha256:"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", input_sha256:"d", add_dirs:[]}}' \
+  > "$xf_dir/provider.json"
+PRT_TEST_DIFF_PATH="$xf_dir/sum-and-code.diff"
+PRT_TEST_REVIEW_BACKEND="file"
+PRT_TEST_FINDINGS_FILE="$xf_dir/fb-findings.json"
+PRT_TEST_REVIEW_BASE_SHA="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+PRT_TEST_REVIEW_MATERIAL_SHA256="cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+PRT_TEST_CREATE_BODY_LOG="$xf_dir/create-bodies.log"
+: > "$PRT_TEST_CREATE_BODY_LOG"; : > "$PRT_TEST_MODEL_REQUEST_LOG"
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "e2e file backend: a finding on an excluded lockfile beside code -> exits 0" "0" "$rc"
+assert_eq "e2e file backend: the finding in the ordinary file still becomes a thread" \
+  "true" "$(grep -qF 'issue-for-x' "$PRT_TEST_CREATE_BODY_LOG" && echo true || echo false)"
+assert_eq "e2e file backend: the finding on the excluded lockfile opens no thread" \
+  "false" "$(grep -qF 'issue-for-sum' "$PRT_TEST_CREATE_BODY_LOG" && echo true || echo false)"
+assert_eq "e2e file backend: the finding on the excluded lockfile is never sent to an assess call" \
+  "false" "$(grep -qF 'issue-for-sum' "$PRT_TEST_MODEL_REQUEST_LOG" && echo true || echo false)"
+assert_eq "e2e file backend: the drop is logged, naming the file" \
+  "true" "$(grep -qF 'dropped 1 finding(s) on files this run excluded from review: go.sum' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+
+# 1c. The same for a lockfile under a directory whose name starts with a double quote. The diff
+#    carries it in git's quoted form and the exclusion record keeps that spelling, while the
+#    producer names the file as it is on disk; the two spellings must meet in the exclusion
+#    (go-kure/.github#429 review).
+{
+  printf 'diff --git "a/\\"vendor/go.sum" "b/\\"vendor/go.sum"\nindex 1111111..2222222 100644\n--- "a/\\"vendor/go.sum"\n+++ "b/\\"vendor/go.sum"\n@@ -1,1 +1,1 @@\n-old\n+new-sum\n'
+  xf_rec x.go new
+} > "$xf_dir/quoted-sum-and-code.diff"
+cat > "$xf_dir/fb-findings.json" <<'XFFINDINGS'
+{"format":"review-findings-v1","findings":[
+ {"file":"x.go","line":1,"severity":"high","category":"logic-error","issue":"issue-for-x","fix":"fix-x","klass":"blocking","claim":"cx"},
+ {"file":"\"vendor/go.sum","line":1,"severity":"high","category":"other","issue":"issue-for-quoted-sum","fix":"fix-sum","klass":"blocking","claim":"cs"}
+]}
+XFFINDINGS
+PRT_TEST_DIFF_PATH="$xf_dir/quoted-sum-and-code.diff"
+PRT_TEST_REVIEW_BACKEND="file"
+PRT_TEST_FINDINGS_FILE="$xf_dir/fb-findings.json"
+PRT_TEST_REVIEW_BASE_SHA="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+PRT_TEST_REVIEW_MATERIAL_SHA256="cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+PRT_TEST_CREATE_BODY_LOG="$xf_dir/create-bodies.log"
+: > "$PRT_TEST_CREATE_BODY_LOG"; : > "$PRT_TEST_MODEL_REQUEST_LOG"
+rc="$(run_orchestrator enforce 0 0 0)"
+assert_eq "e2e file backend, quoted path: a finding on an excluded lockfile beside code -> exits 0" "0" "$rc"
+assert_eq "e2e file backend, quoted path: the finding in the ordinary file still becomes a thread" \
+  "true" "$(grep -qF 'issue-for-x' "$PRT_TEST_CREATE_BODY_LOG" && echo true || echo false)"
+assert_eq "e2e file backend, quoted path: the finding on the excluded lockfile opens no thread" \
+  "false" "$(grep -qF 'issue-for-quoted-sum' "$PRT_TEST_CREATE_BODY_LOG" && echo true || echo false)"
+assert_eq "e2e file backend, quoted path: the finding on the excluded lockfile is never sent to an assess call" \
+  "false" "$(grep -qF 'issue-for-quoted-sum' "$PRT_TEST_MODEL_REQUEST_LOG" && echo true || echo false)"
+unset PRT_TEST_REVIEW_BACKEND PRT_TEST_FINDINGS_FILE PRT_TEST_REVIEW_BASE_SHA PRT_TEST_REVIEW_MATERIAL_SHA256 PRT_TEST_CREATE_BODY_LOG
 
 # 2. A lockfile-only over-ceiling change passes and is listed, with no chunk
 #    reviewed and the run degraded: a consumer must not read it as reviewed.

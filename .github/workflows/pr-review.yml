@@ -240,7 +240,11 @@ jobs:
       contents: read
     outputs:
       base: ${{ steps.base.outputs.base }}
+      empty: ${{ steps.base.outputs.empty }}
     steps:
+      # `empty` is true when the pull request's net diff is nothing, for example after a push that
+      # reverts every change. The review then has no material, so the producer is skipped and the
+      # threads job takes its default path, which reconciles the old threads against zero findings.
       - name: Read the merge base of the pull request
         id: base
         env:
@@ -253,16 +257,26 @@ jobs:
           for cmd in curl jq; do
             command -v "$cmd" > /dev/null || { echo "::error title=pr-review plan::$cmd is not installed on this runner."; exit 1; }
           done
-          base=$(curl -fsS --max-time 30 \
+          compare=$(curl -fsS --max-time 30 \
             -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' \
-            "https://api.github.com/repos/$REPO/compare/$BASE_SHA...$HEAD_SHA" \
-            | jq -er '.merge_base_commit.sha')
+            "https://api.github.com/repos/$REPO/compare/$BASE_SHA...$HEAD_SHA")
+          base=$(jq -er '.merge_base_commit.sha' <<< "$compare")
+          files=$(jq -er '.files | length' <<< "$compare")
           if ! [[ "$base" =~ ^[0-9a-f]{40}$ ]]; then
             echo "::error title=pr-review plan::the compare API returned '$base', not a commit id."
             exit 1
           fi
-          echo "merge base of $BASE_SHA and $HEAD_SHA is $base"
+          if ! [[ "$files" =~ ^[0-9]+$ ]]; then
+            echo "::error title=pr-review plan::the compare API returned '$files' for the number of changed files."
+            exit 1
+          fi
+          empty=false
+          if [ "$files" = 0 ]; then
+            empty=true
+          fi
+          echo "merge base of $BASE_SHA and $HEAD_SHA is $base; $files changed file(s); empty=$empty"
           echo "base=$base" >> "$GITHUB_OUTPUT"
+          echo "empty=$empty" >> "$GITHUB_OUTPUT"
 
   # The review itself, on the review pool, by the callable acceptance workflow. It holds the backend
   # credential and no sandbox, so it reviews only code this repository carries (its own reachability
@@ -274,7 +288,8 @@ jobs:
     if: >-
       github.event.pull_request.head.repo.full_name == github.repository &&
       vars.PR_REVIEW_THREADS_MODE != 'off' &&
-      vars.PR_REVIEW_BACKEND == 'file'
+      vars.PR_REVIEW_BACKEND == 'file' &&
+      needs.plan.outputs.empty != 'true'
     permissions:
       contents: read
     uses: go-kure/.github/.github/workflows/review-pool-acceptance.yml@main
@@ -282,6 +297,10 @@ jobs:
       backend: ${{ vars.PR_REVIEW_PRODUCER_BACKEND || 'claude' }}
       revision: ${{ github.event.pull_request.head.sha }}
       base: ${{ needs.plan.outputs.base }}
+      # The same three inputs the proxy review reads, so the pool review is told what it is told.
+      context: ${{ inputs.pr_review_context }}
+      standards_file: ${{ inputs.standards-file }}
+      standards_source: ${{ inputs.standards-source }}
     secrets: inherit
 
   pr-review:
@@ -320,18 +339,28 @@ jobs:
     steps:
       # The gate for the pool path, and the first step on purpose: nothing below it runs on a review
       # that was asked for and not delivered. With the switch unset, plan and review-producer are
-      # both skipped and this passes. With it `file`, both must have succeeded. Any other value is
-      # refused, because the jobs above compare it without regard to case and the shell does not.
+      # both skipped and this passes. With it `file`, both must have succeeded, except for a net diff
+      # of nothing, where the plan job succeeded and the producer was skipped on purpose. Any other
+      # value is refused, because the jobs above compare it without regard to case and the shell
+      # does not.
       - name: Refuse to continue when the review producer did not succeed
         env:
           BACKEND: ${{ vars.PR_REVIEW_BACKEND }}
           PLAN_RESULT: ${{ needs.plan.result }}
           PRODUCER_RESULT: ${{ needs.review-producer.result }}
+          EMPTY: ${{ needs.plan.outputs.empty }}
         run: |
           case "$BACKEND" in
             file)
-              if [ "$PLAN_RESULT" != success ] || [ "$PRODUCER_RESULT" != success ]; then
-                echo "::error title=pr-review producer::PR_REVIEW_BACKEND is file, but plan ended '$PLAN_RESULT' and review-producer ended '$PRODUCER_RESULT'. The review was asked for and not delivered, so this check fails rather than passing unreviewed."
+              want=success
+              if [ "$EMPTY" = true ]; then
+                want=skipped
+              elif [ "$EMPTY" != false ]; then
+                echo "::error title=pr-review producer::PR_REVIEW_BACKEND is file, but the plan job did not say whether the net diff is empty (it said '$EMPTY'; plan ended '$PLAN_RESULT')."
+                exit 1
+              fi
+              if [ "$PLAN_RESULT" != success ] || [ "$PRODUCER_RESULT" != "$want" ]; then
+                echo "::error title=pr-review producer::PR_REVIEW_BACKEND is file, but plan ended '$PLAN_RESULT' and review-producer ended '$PRODUCER_RESULT' (wanted '$want', net diff empty: $EMPTY). The review was asked for and not delivered, so this check fails rather than passing unreviewed."
                 exit 1
               fi
               ;;
@@ -420,7 +449,7 @@ jobs:
       # The pool path only: fetch what the producer wrote and name it to the action. Nothing here runs
       # with the switch unset, so the default path's environment is exactly what it was.
       - name: Download the producer's result files
-        if: vars.PR_REVIEW_BACKEND == 'file'
+        if: vars.PR_REVIEW_BACKEND == 'file' && needs.plan.outputs.empty != 'true'
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ${{ needs.review-producer.outputs.artifact }}
@@ -432,7 +461,7 @@ jobs:
       # this checkout with the flags the guide names, never copied from provider.json: a value copied
       # out of the record would make the importer's comparison read the record against itself.
       - name: Name the findings file and the identity it must carry
-        if: vars.PR_REVIEW_BACKEND == 'file'
+        if: vars.PR_REVIEW_BACKEND == 'file' && needs.plan.outputs.empty != 'true'
         env:
           ARTIFACT_DIR: ${{ runner.temp }}/review-artifact
           BASE_SHA: ${{ needs.plan.outputs.base }}
@@ -473,7 +502,7 @@ jobs:
           echo "findings file $out/findings.json; base $BASE_SHA; material digest $digest"
 
       - name: Run PR review threads
-        uses: go-kure/.github/.github/actions/pr-review-threads@24896c034cf7cc32737b5f5a72d0e263132ae1a7 # placeholder pending the final re-pin to the merge of the change that lists suppressed findings in the advisory comment (go-kure/.github#296), which also covers go-kure/.github#306 and go-kure/.github#372 — base-ref tip, see docs/standards.md "GitHub Actions pinning"
+        uses: go-kure/.github/.github/actions/pr-review-threads@a30a3a7abc3cf2256d588918c4ae095ac8ca7152 # placeholder pending the final re-pin to the merge of go-kure/.github#429, which also covers go-kure/.github#296, go-kure/.github#306, go-kure/.github#372 and go-kure/.github#109 — base-ref tip, see docs/standards.md "GitHub Actions pinning"
         with:
           # github-token / bot-login: GITHUB_TOKEN always gets viewerCanResolve:false
           # on threads it authors (GitHub rejects bot/App actors for
