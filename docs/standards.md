@@ -312,6 +312,45 @@ string. The entry sets `extractVersion: "^v(?<version>.*)$"` for
 `goreleaser/goreleaser`, so a bump writes the bare version (`2.19.0`). Without it each GoReleaser bump needs a hand edit to remove the
 `v`.
 
+#### A Renovate PR that stays out of the merge queue
+
+kure-bot enables auto-merge on each automerge-lane Renovate PR when it opens. In `go-kure/kure`
+and `go-kure/launcher`, auto-merge then adds the PR to the merge queue when the required checks
+(`lint`, `test`, `build` and `pr-review / AI Code Review`) pass. Across 37 merged bot PRs in the two
+repositories, 30 were queued by kure-bot alone. In one case, `go-kure/launcher#1561`, the PR stayed
+out of the queue with all four checks green, and a person queued it by hand. The cause of that case
+is not proven. Tracker: `go-kure/.github#398`.
+
+A failed `build` check from a cancelled duplicate run is not the cause. Every bot PR gets its
+labels after it opens, each label event starts a CI run, and `cancel-in-progress` cancels the older
+runs. The `build` job has `if: always()`, so each cancelled run reports a failed `build`. 12 PRs that
+queued without a person carry both a failed and a passing `build`.
+
+The one open lead is the run order. In `go-kure/launcher#1561` three runs started within two
+seconds (43440263429, 43440265522 and 43440265819). Concurrency kept the middle run, which
+passed, and cancelled the newest. In every other sampled PR where concurrency cancelled a run,
+the surviving run was the newest. The
+hypothesis, not proven, is that auto-merge follows the newest check suite. A real fix belongs in
+the `ci.yml` of `go-kure/kure` and `go-kure/launcher`: the `labeled` and `unlabeled` triggers
+together with `cancel-in-progress: true` create the race. This repository does not hold that file.
+
+**Check before you act.** Treat a Renovate PR as this case only when all of these hold, 10 minutes
+after the last required check passed:
+
+1. Auto-merge is enabled and the PR is not in the merge queue (`isInMergeQueue` is false).
+2. The four required checks are green at the head commit.
+3. No review thread is unresolved. An unresolved thread blocks the PR for a known reason.
+4. The newest `CI` run for the head commit (`gh api "repos/<owner>/<repo>/actions/runs?head_sha=<sha>"`,
+   highest run id) is `cancelled`, and an older `CI` run passed.
+
+If a PR meets 1 to 3 but not 4, the cause is a different one. Record `mergeStateStatus`, the
+thread count and the check runs of the four required names on `go-kure/.github#398`.
+
+**Recovery.** A disable and re-enable of auto-merge did not queue `go-kure/launcher#1561`,
+twice. What worked was a new head: Renovate force-pushed a rebased head, one fresh run went green,
+and `gh pr merge --rebase <number>` queued the PR within seconds. To get a new head, ask Renovate
+to rebase the PR with the rebase box in its PR body. That exact route is not tested here.
+
 ### GitHub Actions pinning
 
 Every third-party action is pinned to a full 40-character commit SHA, with the
