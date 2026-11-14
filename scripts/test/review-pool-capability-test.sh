@@ -303,20 +303,54 @@ run_final 0
 expect 'last step alone, code 0 and all three files: exits 0' 0 "$FINAL_EXIT"
 
 # --- the review-run call -------------------------------------------------------------------------
-# flag_value NAME: the argument after that option in the recorded call.
+# The recorded call is read by structure, not by pattern: every argument but the last (the prompt) sits
+# in a pair, an option and its value. An option in the `--name=value` form, a stray word or any other
+# shape breaks the pairing, so it shows up as an unexpected option name or an odd argument count. A
+# pattern that kept only well-formed option names let `--add-dir=/tmp` pass unseen.
+#
+# flag_value NAME: the value paired with that option in the recorded call.
 flag_value() {
   local i
-  for ((i = 0; i < ${#ARGV[@]} - 1; i++)); do
-    [ "${ARGV[i]}" = "$1" ] && { printf '%s' "${ARGV[i + 1]}"; return; }
+  for ((i = 0; i < ${#ARGV[@]} - 1; i += 2)); do
+    if [ "${ARGV[i]}" = "$1" ]; then
+      printf '%s' "${ARGV[i + 1]}"
+      return
+    fi
   done
 }
-# call_flags: the sorted option names of the recorded call, comma-separated.
+# call_flags: the sorted option positions of the recorded call, verbatim, comma-separated.
 call_flags() {
-  local a
-  for a in "${ARGV[@]}"; do
-    [[ "$a" =~ ^--[a-z][a-z-]*$ ]] && printf '%s\n' "$a"
+  local i
+  for ((i = 0; i < ${#ARGV[@]} - 1; i += 2)); do
+    printf '%s\n' "${ARGV[i]}"
   done | sort | tr '\n' ','
 }
+# call_paired: 0 when the arguments before the prompt come in pairs, 1 when they do not.
+call_paired() {
+  echo $(((${#ARGV[@]} - 1) % 2))
+}
+# call_mentions_add_dir: yes when any argument is --add-dir, alone or as --add-dir=value.
+call_mentions_add_dir() {
+  local a
+  for a in "${ARGV[@]}"; do
+    case "$a" in --add-dir | --add-dir=*) echo yes; return ;; esac
+  done
+  echo no
+}
+
+# The reader itself: a call carrying --add-dir in the equals form must be seen. A mutant of the workflow
+# cannot reach this, so the checks are run on a constructed argument list, with an ordinary call beside
+# it as the control.
+ARGV=(--backend claude --root /w --base b --sandbox none --seconds 1500 --out /o prompt)
+expect 'reader: an ordinary call is paired' 0 "$(call_paired)"
+expect 'reader: an ordinary call has no --add-dir' no "$(call_mentions_add_dir)"
+ARGV=(--backend claude --root /w --base b --sandbox none --seconds 1500 --out /o --add-dir=/tmp prompt)
+expect 'reader: --add-dir=/tmp is seen' yes "$(call_mentions_add_dir)"
+expect 'reader: --add-dir=/tmp breaks the pairing' 1 "$(call_paired)"
+ARGV=(--backend claude --root /w --base b --sandbox none --seconds 1500 --out /o --add-dir /tmp prompt)
+expect 'reader: --add-dir /tmp is seen' yes "$(call_mentions_add_dir)"
+ARGV=(--backend claude --root /w --base b --sandbox none --seconds 1500 --out /o stray prompt)
+expect 'reader: a stray word breaks the pairing' 1 "$(call_paired)"
 
 new_case
 run_review complete ""
@@ -326,10 +360,8 @@ expect 'call: exactly the intended options, no effort set' \
 expect 'call: --sandbox none' none "$(flag_value --sandbox)"
 expect 'call: --root is the checkout' "$WS" "$(flag_value --root)"
 expect 'call: --backend is the input' claude "$(flag_value --backend)"
-case " ${ARGV[*]} " in
-  *' --add-dir '*) bad 'call: no --add-dir' ;;
-  *) ok 'call: no --add-dir' ;;
-esac
+expect 'call: no --add-dir, in either form' no "$(call_mentions_add_dir)"
+expect 'call: every option has a value, then the prompt' 0 "$(call_paired)"
 stdin_bytes="$(cat "$CASE/argv.stdin-bytes" 2> /dev/null || echo 0)"
 if [ "$stdin_bytes" -gt 0 ]; then ok 'call: the diff reaches stdin'; else bad 'call: the diff reaches stdin'; fi
 
