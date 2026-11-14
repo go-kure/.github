@@ -344,8 +344,8 @@ uses: go-kure/.github/.github/workflows/<name>.yml@main
 secrets: inherit
 ```
 
-`ci.yml`, `renovate-cache-seed.yml`, `settings.yml`, `pr-ci-health.yml`, `pr-review-digest.yml` and
-`pr-review-runner-boundary-probe.yml` are **not** reusable —
+`ci.yml`, `renovate-cache-seed.yml`, `settings.yml`, `pr-ci-health.yml`, `pr-review-digest.yml`,
+`pr-review-runner-boundary-probe.yml` and `pr-review-threads-namespace.yml` are **not** reusable —
 `ci.yml` is this repo's own self-CI (`pull_request` + `workflow_dispatch`),
 `renovate-cache-seed.yml` saves, on the default branch, the Renovate install cache that the `test`
 job of `ci.yml` restores (push of the pin or of the workflow, daily schedule and
@@ -361,7 +361,11 @@ manual acceptance run (`workflow_dispatch` only) of the runner's process boundar
 pool and records the bundle record of the image it ran in (bundle only, not the base layer); see
 `docs/pr-review-threads.md` § Process boundary. `review-pool-acceptance.yml` is the
 second run on that pool: a hand dispatch, and also callable by another workflow (`workflow_call`,
-see below); no workflow calls it yet. None of the six is consumed by kure/launcher.
+see below); no workflow calls it yet. `pr-review-threads-namespace.yml` is this repo's own
+per-pull-request lane for the `pr-review-threads` suite on the review pool, with the namespace cases
+required (`pull_request` on the code under test, same-repository pull requests only, not a required
+check); see `docs/pr-review-threads.md` § Process boundary. None of the seven is consumed by
+kure/launcher.
 
 `review-pool-acceptance.yml` is the only workflow in the org that calls a real review backend on
 the review pool: it completes one `review-run` review of a commit range in this repository and

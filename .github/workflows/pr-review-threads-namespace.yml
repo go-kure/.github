@@ -1,0 +1,43 @@
+name: PR Review Threads Namespace Cases
+
+# Runs the pr-review-threads suite where the PID and user namespaces exist, with the skip turned
+# into a failure. The suite job of ci.yml runs on the general CI pool, which forbids the namespace,
+# so that job skips the cases that need one and still passes (go-kure/.github#388). Only the review
+# pool's nodes allow it. This workflow gives every pull request that touches the code under test a
+# run of those cases. It is not a required check yet: a path-filtered required check stays pending
+# when its paths are untouched, and the review pool is shared, so a loaded pool can fail the
+# process-timing cases. Promoting it to required is a later step.
+on:
+  pull_request:
+    paths:
+      - "scripts/lib/prt/**"
+      - "scripts/pr-review-threads.sh"
+      - "scripts/test/pr-review-threads-test.sh"
+      - ".github/actions/pr-review-threads/**"
+
+permissions:
+  contents: read
+
+# A newer push replaces the run, so a superseded head does not hold the shared pool.
+concurrency:
+  group: pr-review-threads-namespace-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  namespace-cases:
+    name: namespace-cases
+    # Same-repository pull requests only: a fork head is code this repository does not carry, and
+    # it would run on the review pool.
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: autops-kube-review
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: pr-review-threads.sh suite, namespace cases required
+        env:
+          PRT_TEST_REQUIRE_NAMESPACE: "1"
+        run: bash scripts/test/pr-review-threads-test.sh .
