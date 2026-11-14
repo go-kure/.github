@@ -6,13 +6,14 @@
 # entry for good and never saved a larger one. The job now turns that cache off and restores the
 # source-aware build cache that the CI test jobs of kure and launcher save on main.
 #
-# The contract is one equality: the steps of the Test job from "Read Go version from mise.toml" to the
-# end of the job, "Run tests" included, are exactly EXPECTED below. That fixes the Go version read, setup-go with its own
-# cache off, one restore of ~/.cache/go-build with the three keys that CI saves under, no other
-# input on the restore, no condition, the order, and the test step with its environment (a GOCACHE
-# there would bypass the restored cache). One more fact is read beside it: the job holds
-# no other cache step, because only main writes the shared cache. Comments, blank lines and the
-# action pins (a Renovate bump) are not compared.
+# The contract is one equality: the whole Test job is exactly EXPECTED below. That fixes the job
+# keys (an env there, such as GOCACHE, would bypass the restored cache), the Go version read,
+# setup-go with its own cache off, one restore of ~/.cache/go-build with the three keys that CI
+# saves under, no other input on the restore, no condition, the order, and the test step with its
+# environment. Two facts are read beside it: the job holds no other cache step, because only main
+# writes the shared cache, and the workflow has no top-level key besides name, on, concurrency
+# and jobs (an env there reaches every step). Comments, blank lines and the action pins (a Renovate
+# bump) are not compared.
 #
 # Each case below changes one thing in a copy of the workflow and must fail.
 #
@@ -32,6 +33,16 @@ trap 'rm -rf "$tmp"' EXIT
 
 EXPECTED="$(
   cat <<'EOF'
+    name: Test
+    runs-on: autops-kube-kure
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    steps:
+      - name: Check out code
+        uses: actions/checkout@PIN
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends build-essential
       - name: Read Go version from mise.toml
         id: go-version
         run: |
@@ -85,10 +96,14 @@ contract() {
     echo "FAIL: no test job in $f"
     return 1
   fi
-  block="$(awk '/^      - name: Read Go version from mise.toml$/ { p = 1 } p' <<<"$job")"
+  block="$job"
   if [ "$block" != "$EXPECTED" ]; then
-    echo "FAIL: the steps from the Go version read to the end of the job are not the expected ones"
+    echo "FAIL: the test job is not the expected one"
     diff <(printf '%s\n' "$EXPECTED") <(printf '%s\n' "$block") | head -n 6
+    rc=1
+  fi
+  if [ "$(grep -E '^[a-z]' "$f" | cut -d: -f1 | paste -sd' ')" != "name on concurrency jobs" ]; then
+    echo "FAIL: the workflow has a top-level key besides name, on, concurrency and jobs (an env there reaches every step)"
     rc=1
   fi
   if [ "$(grep -cE '^ +(- )?uses: actions/cache(/[a-z]+)?@' <<<"$job")" != 1 ]; then
@@ -128,7 +143,8 @@ expect_fail() {
   fi
 }
 
-STEPS="the steps from the Go version read to the end of the job are not the expected"
+STEPS="the test job is not the expected one"
+TOP="has a top-level key besides name, on, concurrency and jobs"
 CACHE="has a cache step besides the one restore"
 
 expect_pass "release-publish.yml restores the build cache in the test job" "$WF"
@@ -206,6 +222,14 @@ awk '
   { print }
 ' "$WF" > "$tmp/with-save"
 expect_fail "a save step after the tests" "$CACHE" "$tmp/with-save"
+
+# The job gets its own Go cache directory.
+sed 's/^    timeout-minutes: 40$/&\n    env:\n      GOCACHE: ${{ runner.temp }}\/go-build/' "$WF" > "$tmp/job-gocache-env"
+expect_fail "a GOCACHE in the job environment" "$STEPS" "$tmp/job-gocache-env"
+
+# The workflow gets an environment of its own.
+sed 's/^jobs:$/env:\n  GOCACHE: \/tmp\/x\n\n&/' "$WF" > "$tmp/workflow-env"
+expect_fail "a GOCACHE in the workflow environment" "$TOP" "$tmp/workflow-env"
 
 # The test step gets its own Go cache directory.
 sed 's/^\( *\)CGO_ENABLED: "1"$/&\n\1GOCACHE: ${{ runner.temp }}\/go-build/' "$WF" > "$tmp/gocache-env"
