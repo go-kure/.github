@@ -1900,9 +1900,11 @@ assert_eq "gh.sh: a 200 KB request body to a stub reaches the 429 and keeps its 
     prt_gh_rest POST /x "$prt_big_body" > /dev/null 2>&1; echo "$? $PRT_LAST_HTTP_STATUS $PRT_LAST_RETRY_AFTER")"
 unset prt_big_body
 # Every stub drains its body, so the race cannot come back through a new stub: count the stubs
-# whose definition line or the line after it lacks the call.
+# whose definition line or the line after it lacks the call. fake_curl_orchestrator is the one
+# exception: it reads its own body (data="$(cat)"), so a drain would discard the payload it needs.
+# A scan that matched no stub reads "none matched", never 0.
 assert_eq "gh.sh: every fake_curl stub drains the request body it is piped" "0" \
-  "$(awk '/^[[:space:]]*fake_curl[A-Za-z0-9_]*\(\)/ { n++; if ($0 ~ /prt_stub_drain_stdin/) next; getline nxt; if (nxt !~ /prt_stub_drain_stdin/) bad++ } END { print bad + 0 }' "${BASH_SOURCE[0]}")"
+  "$(awk '/^[[:space:]]*fake_curl[A-Za-z0-9_]*\(\)/ { if ($0 ~ /fake_curl_orchestrator/) next; n++; if ($0 ~ /prt_stub_drain_stdin/) next; getline nxt; if (nxt !~ /prt_stub_drain_stdin/) bad++ } END { if (n == 0) print "none matched"; else print bad + 0 }' "${BASH_SOURCE[0]}")"
 
 # ============================================================ gh.sh: prt_freshness_check names which failure happened (C4, dot-github#61 Step 2)
 fake_curl_freshness_moved() {
@@ -3455,7 +3457,6 @@ _prt_test_payload_ok() {
 }
 
 fake_curl_orchestrator() {
-  prt_stub_drain_stdin "$@"
   local args=("$@") out="" accept="" url="" method="" data="" h req_body=""
   local i n=${#args[@]}
   for ((i = 0; i < n; i++)); do
