@@ -770,11 +770,16 @@ the capability
 sets and whether the `procfs` mount was denied. The boundary must show no canary, no readable
 ancestor, no descriptor, no capability and a denied mount. The run without it must show the canary
 through an ancestor, with numeric counts of at least 1: a missing, empty or malformed control report
-voids the result, and so does a count of more than 9 digits. For a stub that is not root, the `mount`
-tool refuses (`must be superuser`) before it asks the kernel, so a denial there says nothing about the
-kernel: that user's verdict rests on the effective capability set, which must be empty. Only a refusal by `mount` itself is a
-denial. A mount that could not be tried (no `mount` command, one that cannot be executed, an
-unreadable or shared mount namespace, no directory) is not. Inside the boundary the scan must also
+voids the result, and so does a count of more than 9 digits. The stub makes the mount attempt as one
+direct `mount(2)` call through `python3` (`ctypes`), so a refusal is the kernel's: errno `EPERM` or
+`EACCES` is the denial, and the report records the route in `proc_mount_via` (`syscall`, `mount` or
+`none`). For a stub that is not root, the `mount` tool refuses (`must be superuser`) before it asks the
+kernel, so a denial from the tool says nothing about the kernel. The tool is only a fallback, used when
+`python3` is missing or gives no answer, and for a stub that is not root its denial leaves the result
+inconclusive, never a pass; the verdict also rests on the effective capability set, which must be
+empty. For root the tool reaches the kernel, so its refusal stands. A mount that could not be tried (no
+`python3` and no `mount` command, one that cannot be executed, an unreadable or shared mount
+namespace, no directory) is not a denial. Inside the boundary the scan must also
 be able to find something. One scan of the process table produces the canary count: for each
 `environ` it lists, it looks for the canary, and for the stub's own entry it also looks for a known,
 non-secret value (the head SHA). The scan reads those files itself and runs no `grep` or `tr`, whose
