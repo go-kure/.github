@@ -246,6 +246,24 @@ assert_eq "no chunks: exit 2 (setup fault, not an exclusion)" "2" "$rc"
 assert_eq "no chunks: prints no findings document" "" "$nochunk"
 assert_eq "no chunks: made no proxy call" "0" "$(cat "$STUB_DIR/calls" 2>/dev/null || echo 0)"
 
+# --- the runner assessment backend builds its pass-through environment at startup ---
+# A list that names a variable that is not set is a setup fault (exit 2) before any call; the
+# control, with the variable set, is not refused by that check.
+reset_stub
+rc=0
+STUB_DIR="$STUB_DIR" PRT_CURL="$WORK/curl-stub" PRT_PROXY_URL=http://stub PRT_ASSESS_BACKEND=runner \
+  PRT_ASSESS_RUNNER_ENV=PRT_AR_ADAPTER_UNSET bash "$ADAPTER" --diff "$WORK/sample.diff" --title "test PR" \
+  > /dev/null 2>"$WORK/err" || rc=$?
+assert_eq "runner backend, a listed variable that is not set: exit 2 before any call" "2" "$rc"
+assert_eq "runner backend, a listed variable that is not set: the error names it" "true" \
+  "$(grep -qF 'PRT_AR_ADAPTER_UNSET' "$WORK/err" && echo true || echo false)"
+rc=0
+PRT_AR_ADAPTER_SET=1 STUB_DIR="$STUB_DIR" PRT_CURL="$WORK/curl-stub" PRT_PROXY_URL=http://stub PRT_ASSESS_BACKEND=runner \
+  PRT_ASSESS_RUNNER_ENV=PRT_AR_ADAPTER_SET bash "$ADAPTER" --diff "$WORK/sample.diff" --title "test PR" \
+  > /dev/null 2>"$WORK/err" || rc=$?
+assert_eq "runner backend, control, the listed variable is set: the build does not refuse it" "true" \
+  "$(grep -qF 'PRT_AR_ADAPTER_SET' "$WORK/err" && echo false || echo true)"
+
 # --- a local jq fault while assembling findings is a failed chunk, never a counted one ---
 # The fault is injected by a jq on PATH that fails when its program holds JQ_FAIL_MATCH and
 # otherwise runs the real jq. Each case matches the error text of one stdin helper, so the

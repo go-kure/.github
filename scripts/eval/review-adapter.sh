@@ -125,6 +125,13 @@ done
 PRT_MODEL_DEADLINE_EPOCH=$(( $(date +%s) + PRT_MODEL_BUDGET_SECONDS ))
 export PRT_MODEL_DEADLINE_EPOCH
 
+# The runner assessment backend reuses a pass-through environment that is built once, here, outside
+# the call chain, as the orchestrator does at start (go-kure/.github#441): a call that finds none
+# built is refused as backend-config.
+if [ "${PRT_ASSESS_BACKEND:-}" = runner ]; then
+    _prt_runner_env_build || die "$PRT_RUNNER_ENV_ERROR"
+fi
+
 # The three context files are validated HERE, not inside the command substitutions below.
 # `die` called from inside `$(...)` exits only the subshell: with `set -uo pipefail` and no
 # `-e`, the failed assignment's status goes unchecked and the run continues with an empty
