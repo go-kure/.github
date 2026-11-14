@@ -15,6 +15,10 @@
 # and jobs (an env there reaches every step). Comments, blank lines and the action pins (a Renovate
 # bump) are not compared.
 #
+# This test pins the reviewed shape of the Test job and cannot stop every future edit that defeats
+# the cache; the proof that the cache works is the Release / Publish run log, which shows a restored
+# cache of real size.
+#
 # Each case below changes one thing in a copy of the workflow and must fail.
 #
 # Usage: release-publish-build-cache-test.sh [REPO_ROOT]
