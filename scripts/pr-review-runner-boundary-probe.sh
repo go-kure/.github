@@ -100,7 +100,7 @@ probe_stub() {
   local out="" req canary a p st f s n e mnt msg rc own_ns pid_ns nspid key canary_state=ok
   local pid_ns_differs=unknown
   local anc_environ=0 anc_mem=0 hits=0 fd_above2=0 fd_std=0 mount_result=skipped own_open=0 own_marker=0
-  local entries=0 own_listed=0
+  local entries=0 own_listed=0 mount_via=none errno
   while [ $# -gt 0 ]; do
     case "$1" in
       --out) out="$2"; shift 2 ;;
@@ -181,21 +181,47 @@ probe_stub() {
       mount_result=untried:mount-namespace-unreadable
     elif [ "$own_ns" = "$PRT_PROBE_PARENT_MNT_NS" ]; then
       mount_result=untried:shares-mount-namespace
-    elif ! command -v mount > /dev/null 2>&1; then
+    elif ! command -v python3 > /dev/null 2>&1 && ! command -v mount > /dev/null 2>&1; then
       mount_result=untried:no-mount-command
     elif ! mnt="$(mktemp -d)"; then
       mount_result=untried:no-directory
     else
-      msg="$(LC_ALL=C mount -t proc proc "$mnt" 2>&1)"; rc=$?
-      if [ "$rc" -eq 0 ]; then
-        mount_result=succeeded
-        umount "$mnt" > /dev/null 2>&1 || true
-      elif { [ "$rc" -eq 32 ] || [ "$rc" -eq 1 ]; } &&
-        grep -qiE 'permission denied|not permitted|must be superuser|must be root' <<< "$msg"; then
-        # Only mount's own refusal (status 1 or 32) is a denial; 126 and 127 mean it never ran.
-        mount_result=denied
+      # One mount(2) call of its own, so a refusal is the kernel's. The `mount` tool refuses a
+      # non-root caller in user space before it reaches the kernel, which says nothing about the
+      # boundary. The result is the errno, and only digits count: any other answer (no python3,
+      # no ctypes, a crash) falls back to the tool, and the report says which route answered.
+      errno=""
+      if command -v python3 > /dev/null 2>&1; then
+        errno="$(python3 -c 'import ctypes, sys
+libc = ctypes.CDLL(None, use_errno=True)
+r = libc.mount(b"proc", sys.argv[1].encode(), b"proc", 0, None)
+print(0 if r == 0 else ctypes.get_errno())' "$mnt" 2> /dev/null)" || errno=""
+      fi
+      if [[ "$errno" =~ ^[0-9]{1,4}$ ]]; then
+        mount_via=syscall
+        if [ "$errno" -eq 0 ]; then
+          mount_result=succeeded
+          umount "$mnt" > /dev/null 2>&1 || true
+        elif [ "$errno" -eq 1 ] || [ "$errno" -eq 13 ]; then
+          mount_result=denied # EPERM or EACCES
+        else
+          mount_result="failed:errno$errno"
+        fi
+      elif ! command -v mount > /dev/null 2>&1; then
+        mount_result=untried:no-mount-command
       else
-        mount_result="failed:$rc"
+        mount_via=mount
+        msg="$(LC_ALL=C mount -t proc proc "$mnt" 2>&1)"; rc=$?
+        if [ "$rc" -eq 0 ]; then
+          mount_result=succeeded
+          umount "$mnt" > /dev/null 2>&1 || true
+        elif { [ "$rc" -eq 32 ] || [ "$rc" -eq 1 ]; } &&
+          grep -qiE 'permission denied|not permitted|must be superuser|must be root' <<< "$msg"; then
+          # Only mount's own refusal (status 1 or 32) is a denial; 126 and 127 mean it never ran.
+          mount_result=denied
+        else
+          mount_result="failed:$rc"
+        fi
       fi
       rmdir "$mnt" 2> /dev/null || true
     fi
@@ -210,6 +236,7 @@ probe_stub() {
     echo "cap_bnd=$(status_field CapBnd)"
     echo "no_new_privs=$(status_field NoNewPrivs)"
     echo "proc_mount=$mount_result"
+    echo "proc_mount_via=$mount_via"
     echo "canary_state=$canary_state"
     echo "nspid=${nspid:-n/a}"
     echo "pid_ns_differs=$pid_ns_differs"
@@ -287,7 +314,13 @@ probe_judge() {
     fi
     v="$(get "$b" proc_mount)"
     case "$v" in
-      denied) ;;
+      denied)
+        # Only the kernel's refusal counts. The `mount` tool refuses a non-root caller in user
+        # space, so there a denial from the tool (or a report without the field) shows nothing.
+        # For root the tool does reach the kernel, so its denial stands.
+        if [ "$(get "$b" proc_mount_via)" != syscall ] && ! { is_uid "$uid" && [ "$((10#$uid))" -eq 0 ]; }; then
+          unusable+=("boundary: the mount refusal came from the mount tool, not the kernel, for a non-root stub")
+        fi ;;
       succeeded) leaks+=("boundary: a procfs could be mounted") ;;
       *) unusable+=("boundary: the mount experiment gave '${v:-nothing}', not a denial") ;;
     esac
