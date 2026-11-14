@@ -7930,8 +7930,8 @@ chmod 755 "$prt_ar_dir/review-run"
 # Every case below runs the stub behind the boundary a consumer gets: the default, a PID namespace
 # of its own. No case switches the boundary check off. A host that forbids that namespace cannot
 # establish the boundary: the cases that need one are skipped there (with a NOTE) and the cases
-# that do not (invalid configuration, a prefix that isolates nothing, the preflight deadline, the
-# enforce refusal) still run. A CI lane that can run the positive isolation cases is required for
+# that do not (invalid configuration, a prefix that isolates nothing, the preflight deadline)
+# still run. A CI lane that can run the positive isolation cases is required for
 # acceptance: PRT_TEST_REQUIRE_NAMESPACE=1 turns a skip into a failure.
 # The availability probe is a literal raw `unshare`, never the production builder, so a broken
 # builder cannot pass for an unavailable host; where raw unshare works the production prefix must too.
@@ -7973,8 +7973,8 @@ prt_ar_calls() { cat "$PRT_TEST_RUNNER_LOG.count" 2>/dev/null || echo 0; }
 # allows, with its 5 s of kill grace and cleanup.
 prt_ar_budget=12
 prt_ar_backstop=60
-# Enforce refuses the runner (see below), so these cases run in advisory and read the
-# comment it posts: the number of findings it reports, 0 when none survive.
+# The cases below run in advisory and read the comment it posts: the number of findings it
+# reports, 0 when none survive. The enforce counterparts count the threads created instead.
 prt_ar_found() { local n; n="$(sed -n "s/.*advisory mode — \([0-9]*\) finding.*/\1/p" "$PRT_TEST_ISSUE_COMMENT_BODY_FILE" | head -1)"; echo "${n:-0}"; }
 
 PRT_TEST_ASSESS_BACKEND="runner"
@@ -8024,6 +8024,40 @@ rc="$(run_orchestrator advisory 0 0 0)"
 assert_eq "assess runner, FALSE_POSITIVE: exits 0, no finding reported" \
   "0 0" "$rc $(prt_ar_found)"
 assert_eq "assess runner, FALSE_POSITIVE: still no proxy assess call" "1 0" "$(prt_ar_calls) $(cat "$PRT_TEST_ASSESS_COUNTFILE")"
+
+# The same runner assessment in enforce (srgvg/claude-dotfiles#179), which gates on verdicts: the
+# verdict reaches the reconcile step unchanged, and any failure leaves the finding unverdicted, so it
+# is still posted as a thread. PRT_TEST_CREATE_COUNTFILE counts the threads created in the run.
+prt_ar_enforce_case() { # label runner-mode prov-mode expected "rc runner-calls threads-created proxy-assess-calls"
+  rm -f "$PRT_TEST_RUNNER_LOG".*
+  PRT_TEST_RUNNER_MODE="$2"
+  PRT_TEST_RUNNER_PROV="$3"
+  rc="$(run_orchestrator enforce 0 0 0)"
+  assert_eq "enforce, runner assess, $1: rc, runner calls, threads created, proxy assess calls" \
+    "$4" "$rc $(prt_ar_calls) $(cat "$PRT_TEST_CREATE_COUNTFILE") $(cat "$PRT_TEST_ASSESS_COUNTFILE")"
+}
+export PRT_TEST_RUNNER_PROV
+prt_ar_enforce_case "VALID verdict: the finding gets its thread" clean "" "0 1 1 0"
+assert_eq "enforce, runner assess, VALID verdict: coverage says review+assess ok, not degraded" \
+  "true false" "$(grep -qE 'coverage: 1/1 chunks review\+assess ok' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(grep -qF 'REVIEW_DEGRADED:' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+prt_ar_enforce_case "FALSE_POSITIVE verdict: the filter works, no thread" false_positive "" "0 1 0 0"
+prt_ar_enforce_case "quota (exit 3): degraded, the unverdicted finding is still posted" exit3 "" "0 1 1 0"
+assert_eq "enforce, runner assess, quota: degraded as runner-quota, not an incomplete review" \
+  "true false" "$(grep -qF '[runner-quota]' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(grep -qF 'REVIEW_INCOMPLETE' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+prt_ar_enforce_case "launch failure (exit 4): degraded, still posted" exit4 "" "0 1 1 0"
+assert_eq "enforce, runner assess, launch failure: degraded as runner-launch" \
+  "true" "$(grep -qF '[runner-launch]' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+prt_ar_enforce_case "usage/over-limit (exit 64): degraded, still posted" exit64 "" "0 1 1 0"
+assert_eq "enforce, runner assess, over-limit: degraded as runner-usage" \
+  "true" "$(grep -qF '[runner-usage]' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+prt_ar_enforce_case "malformed answer twice: degraded after one retry, still posted" garbage "" "0 2 1 0"
+assert_eq "enforce, runner assess, malformed answer: degraded as not valid JSON after retry" \
+  "true" "$(grep -qF 'assessment response was not valid JSON after retry=true' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+prt_ar_enforce_case "provenance mismatch (other head): the verdicts are not used, still posted" clean head "0 1 1 0"
+assert_eq "enforce, runner assess, provenance mismatch: refused as provenance-mismatch" \
+  "true" "$(grep -qF '[provenance-mismatch]' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+PRT_TEST_RUNNER_MODE=clean
+PRT_TEST_RUNNER_PROV=""
 fi
 
 # Invalid configuration is caught at start and needs no namespace: these run on every host.
@@ -8580,6 +8614,14 @@ assert_eq "advisory, file review, runner assess, no proxy URL: one runner call p
   "2 0 0" "$(prt_ar_calls) $(cat "$PRT_TEST_MODEL_COUNTFILE") $(cat "$PRT_TEST_ASSESS_COUNTFILE")"
 assert_eq "advisory, file review, runner assess, no proxy URL: coverage says review+assess ok" \
   "true" "$(grep -qE 'coverage: 2/2 chunks review\+assess ok' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
+
+# Acceptance of srgvg/claude-dotfiles#179: enforce runs with the assessment on and no proxy URL.
+rm -f "$PRT_TEST_RUNNER_LOG".*
+rc="$(run_orchestrator enforce 0 0 0 150)"
+assert_eq "enforce, file review, runner assess, no proxy URL: exits 0, one runner call per chunk, no proxy call" \
+  "0 2 0 0" "$rc $(prt_ar_calls) $(cat "$PRT_TEST_MODEL_COUNTFILE") $(cat "$PRT_TEST_ASSESS_COUNTFILE")"
+assert_eq "enforce, file review, runner assess, no proxy URL: coverage says review+assess ok, both findings get threads" \
+  "true 2" "$(grep -qE 'coverage: 2/2 chunks review\+assess ok' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(cat "$PRT_TEST_CREATE_COUNTFILE")"
 
 # The runner call shares the run's model deadline with the proxy calls: it is
 # clamped to what is left, and refused when too little is left, so slow chunks
@@ -10051,18 +10093,18 @@ assert_eq "advisory, proxy review, runner assess, no proxy URL: fails closed on 
 assert_eq "advisory, proxy review, runner assess, no proxy URL: the error names PRT_PROXY_URL" \
   "true" "$(grep -qF 'PRT_PROXY_URL is required' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 
-# Every runner call runs behind a process boundary that is checked first, but that boundary has not
-# been shown to hold on the runner image (the manual probe, go-kure/.github#308), so enforce refuses
-# the runner assess at start, whatever else is configured.
+# Enforce accepts the runner assess (srgvg/claude-dotfiles#179): the process boundary held on the
+# review runner image (the manual probe, go-kure/.github#308). The boundary is still checked first
+# on every call, in every mode, so a host that cannot establish one degrades the chunk.
 rm -f "$PRT_TEST_RUNNER_LOG".*
 PRT_TEST_REVIEW_BACKEND="file"
 PRT_TEST_PROXY_URL="http://proxy.invalid"
-rc="$(run_orchestrator enforce 0 0 0 150)"
-assert_eq "enforce with the runner assess: refused at start, before any call" \
-  "1 0 0 0" "$rc $(cat "$PRT_TEST_MODEL_COUNTFILE") $(cat "$PRT_TEST_ASSESS_COUNTFILE") $(prt_ar_calls)"
-assert_eq "enforce with the runner assess: the error names the missing process boundary" \
-  "true" "$(grep -qF 'PRT_ASSESS_BACKEND=runner is not allowed in enforce mode' "$PRT_TEST_STDERR_FILE" && grep -qF 'process boundary' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 if $prt_ar_ns; then
+rc="$(run_orchestrator enforce 0 0 0 150)"
+assert_eq "enforce, file review, runner assess, a proxy URL: runs, one runner call per chunk, no proxy call" \
+  "0 2 0 0" "$rc $(prt_ar_calls) $(cat "$PRT_TEST_MODEL_COUNTFILE") $(cat "$PRT_TEST_ASSESS_COUNTFILE")"
+assert_eq "enforce, file review, runner assess: not refused for the runner backend" \
+  "false" "$(grep -qF 'is not allowed in enforce mode' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 rm -f "$PRT_TEST_RUNNER_LOG".*
 rc="$(run_orchestrator advisory 0 0 0 150)"
 assert_eq "advisory with the runner assess and a proxy URL: still runs" "0 2" "$rc $(prt_ar_calls)"

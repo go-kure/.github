@@ -578,7 +578,7 @@ made inside the orchestrator, per chunk, because a finding's fingerprint is assi
 every chunk is reviewed and the answer must echo it, so it cannot be a pre-built file. Everything
 after the call (salvage, one retry, join by fingerprint, degrade) is the proxy path's own code.
 
-The default stays the proxy, and nothing in this repository sets the runner backend for a caller. Every runner call runs behind a process boundary (see "Process boundary") or is refused. Do not enable the backend on any consumer, in any mode, until that boundary has been shown to hold on the runner image (see "What it does not solve" below): `advisory` has the same exposure, and `enforce` refuses it at start.
+The default stays the proxy, and nothing in this repository sets the runner backend for a caller. Every runner call runs behind a process boundary (see "Process boundary") or is refused. The boundary has been shown to hold on the review runner pool's image (see "In `enforce`" and "What it does not solve" below), so `advisory` and `enforce` both accept the backend. Enable it only on a consumer that runs on that pool.
 
 Inputs, all from the environment:
 
@@ -721,8 +721,7 @@ that this repository does not build.
 
 Acceptance needs a CI lane that can run the positive isolation cases. On a host without a PID
 namespace the test suite skips the cases that need one (and says so) but still runs the ones that do
-not: invalid configuration, a prefix that isolates nothing, the check's deadline and the enforce
-refusal. In GitHub Actions the skip also shows as a warning annotation on the run and a line in the
+not: invalid configuration, a prefix that isolates nothing and the check's deadline. In GitHub Actions the skip also shows as a warning annotation on the run and a line in the
 job summary, so a green job that skipped them says so. The per-pull-request job runs on the general
 CI pool, which forbids the namespace, so it shows that warning today and does not run those cases.
 Setting `PRT_TEST_REQUIRE_NAMESPACE=1` turns that skip into a failure, so a lane that must
@@ -860,15 +859,21 @@ credential.
 
 - **Proxy URL.** With the review also from a findings file, the run needs no `PRT_PROXY_URL`
   when assessment is on. With the proxy review, the URL is still required.
-- **Not in `enforce`.** `PRT_ASSESS_BACKEND=runner` is refused at start in `enforce` mode, whatever
-  else is set, until a test on the runner image shows that the process boundary holds there and
-  the runner cannot read the posting token. `advisory` accepts it only behind the boundary, and no
-  consumer should enable it there either before that test (see the first paragraph of this section).
+- **In `enforce`.** `PRT_ASSESS_BACKEND=runner` is accepted in every mode, `enforce` included, and the
+  boundary is still checked first on every call. The boundary probe on the review runner pool
+  passed (run 43530791463, 2026-11-13, bundle record sha256
+  `d17efd58cec3444207365487025886f0c9a9ca1e2a52178daa1d75c941aadc9d`): behind the boundary the
+  ancestors' environments could not be opened (`canary_hits=0`, `ancestor_environ_open=0`), and
+  without it they could (`canary_hits=1`, `ancestor_environ_open=6`). That is evidence for that
+  pool's image and nothing wider (see "What it does not solve"). Nothing here sets the backend for
+  a caller: a repository still opts in, and should do so only on the review pool.
 - **What it does not solve.** The scrub and the boundary are checked here with a stub runner, on the
   host the tests run on. That the posting token is unreadable to the runner on the real runner
   host and image (its kernel, its container's namespace and seccomp rules, its checkout and
   credential files) can only be shown by the acceptance run on that image; nothing on a
-  development host proves it. The check shows that the ancestors' environments cannot be opened
+  development host proves it. The probe that did show it uses a made-up canary and a stub
+  runner, not the real posting token, and its image identity covers the bundle bytes of the
+  review image, not the base layer where the boundary lives. The check shows that the ancestors' environments cannot be opened
   from behind the boundary and that no capability is held, not that nothing else of the
   orchestrator's user is reachable. A descendant that escapes the namespace through a kernel flaw is out of scope.
   No measurement yet of any backend as an assessor, or of per-chunk latency and

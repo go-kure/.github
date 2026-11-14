@@ -47,9 +47,10 @@ inputs:
       Who answers the assessment call. Empty (default) is the proxy. "runner"
       runs a review-run process per chunk instead, so the run needs no proxy
       URL when the review also comes from a findings file. Every call runs
-      behind a process boundary (assess-runner-boundary) or is refused. Do not
-      enable it on a consumer, in any mode, until that boundary has been shown
-      to hold on the runner image; enforce refuses it. Needs
+      behind a process boundary (assess-runner-boundary) or is refused, in
+      every mode. The boundary has been shown to hold on the review runner
+      pool's image, so enforce accepts it too; enable it only on a consumer that
+      runs on that pool. Needs
       assess-runner-backend, and PRT_REVIEW_BASE_SHA and
       PRT_REVIEW_MATERIAL_SHA256 in the calling step's env, as for a findings
       file. Any other value fails the run.
