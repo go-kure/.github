@@ -8002,32 +8002,43 @@ assert_eq "assess runner, FALSE_POSITIVE: still no proxy assess call" "1 0" "$(p
 # The same runner assessment in enforce (srgvg/claude-dotfiles#179), which gates on verdicts: the
 # verdict reaches the reconcile step unchanged, and any failure leaves the finding unverdicted, so it
 # is still posted as a thread. PRT_TEST_CREATE_COUNTFILE counts the threads created in the run.
-prt_ar_enforce_case() { # label runner-mode prov-mode expected "rc runner-calls threads-created proxy-assess-calls"
+prt_ar_enforce_case() { # label runner-mode prov-mode expected "rc runner-calls threads-created proxy-assess-calls" expected-verdicts
+  local summary_copy
+  summary_copy="$(mktemp)"
   rm -f "$PRT_TEST_RUNNER_LOG".*
   PRT_TEST_RUNNER_MODE="$2"
   PRT_TEST_RUNNER_PROV="$3"
+  PRT_TEST_SUMMARY_COPY="$summary_copy"
   rc="$(run_orchestrator enforce 0 0 0)"
+  unset PRT_TEST_SUMMARY_COPY
   assert_eq "enforce, runner assess, $1: rc, runner calls, threads created, proxy assess calls" \
     "$4" "$rc $(prt_ar_calls) $(cat "$PRT_TEST_CREATE_COUNTFILE") $(cat "$PRT_TEST_ASSESS_COUNTFILE")"
+  # The verdict column of the job summary's findings table is the finding's verdict as the reconcile
+  # step saw it: VALID or FALSE_POSITIVE only when the runner's answer was used, n/a (null) after any
+  # degradation. A thread is created for both VALID and null, so the thread count alone cannot tell
+  # a kept verdict from a dropped one.
+  assert_eq "enforce, runner assess, $1: verdict of each reported finding" \
+    "$5" "$(awk -F'|' '/^\| fp \| Severity \| Category \|/ { t = 1; next } t && /^\| `/ { v = $(NF-1); gsub(/ /, "", v); print v; next } t && !/^\|/ { t = 0 }' "$summary_copy" | sort | paste -sd, - | sed 's/^$/none/')"
+  rm -f "$summary_copy"
 }
 export PRT_TEST_RUNNER_PROV
-prt_ar_enforce_case "VALID verdict: the finding gets its thread" clean "" "0 1 1 0"
+prt_ar_enforce_case "VALID verdict: the finding gets its thread" clean "" "0 1 1 0" VALID
 assert_eq "enforce, runner assess, VALID verdict: coverage says review+assess ok, not degraded" \
   "true false" "$(grep -qE 'coverage: 1/1 chunks review\+assess ok' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(grep -qF 'REVIEW_DEGRADED:' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
-prt_ar_enforce_case "FALSE_POSITIVE verdict: the filter works, no thread" false_positive "" "0 1 0 0"
-prt_ar_enforce_case "quota (exit 3): degraded, the unverdicted finding is still posted" exit3 "" "0 1 1 0"
+prt_ar_enforce_case "FALSE_POSITIVE verdict: the filter works, no thread" false_positive "" "0 1 0 0" FALSE_POSITIVE
+prt_ar_enforce_case "quota (exit 3): degraded, the unverdicted finding is still posted" exit3 "" "0 1 1 0" n/a
 assert_eq "enforce, runner assess, quota: degraded as runner-quota, not an incomplete review" \
   "true false" "$(grep -qF '[runner-quota]' "$PRT_TEST_STDERR_FILE" && echo true || echo false) $(grep -qF 'REVIEW_INCOMPLETE' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
-prt_ar_enforce_case "launch failure (exit 4): degraded, still posted" exit4 "" "0 1 1 0"
+prt_ar_enforce_case "launch failure (exit 4): degraded, still posted" exit4 "" "0 1 1 0" n/a
 assert_eq "enforce, runner assess, launch failure: degraded as runner-launch" \
   "true" "$(grep -qF '[runner-launch]' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
-prt_ar_enforce_case "usage/over-limit (exit 64): degraded, still posted" exit64 "" "0 1 1 0"
+prt_ar_enforce_case "usage/over-limit (exit 64): degraded, still posted" exit64 "" "0 1 1 0" n/a
 assert_eq "enforce, runner assess, over-limit: degraded as runner-usage" \
   "true" "$(grep -qF '[runner-usage]' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
-prt_ar_enforce_case "malformed answer twice: degraded after one retry, still posted" garbage "" "0 2 1 0"
+prt_ar_enforce_case "malformed answer twice: degraded after one retry, still posted" garbage "" "0 2 1 0" n/a
 assert_eq "enforce, runner assess, malformed answer: degraded as not valid JSON after retry" \
   "true" "$(grep -qF 'assessment response was not valid JSON after retry=true' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
-prt_ar_enforce_case "provenance mismatch (other head): the verdicts are not used, still posted" clean head "0 1 1 0"
+prt_ar_enforce_case "provenance mismatch (other head): the verdicts are not used, still posted" clean head "0 1 1 0" n/a
 assert_eq "enforce, runner assess, provenance mismatch: refused as provenance-mismatch" \
   "true" "$(grep -qF '[provenance-mismatch]' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 PRT_TEST_RUNNER_MODE=clean
