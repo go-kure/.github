@@ -688,9 +688,10 @@ prt_render_advisory_comment() {
 #
 # EXCLUDED_JSON (optional, go-kure/.github#293) is prt_exclude_files' list.
 # When it is non-empty the table gains an `excluded` row and the comment the
-# file list, so "ran to completion" reads as every hunk outside those files.
-# Neither adds a second `commit` or `chunks` row, the advisory footer or a
-# banner, which a consumer parsing this verdict would read as malformed.
+# file list, so "ran to completion" reads as every hunk outside the excluded
+# files and hunks. Neither adds a second `commit` or `chunks` row, the advisory
+# footer or a banner, which a consumer parsing this verdict would read as
+# malformed.
 prt_render_clean_comment() {
   local sha="$1" model="$2" chunk_count="$3" excluded="${4:-[]}" excluded_count excluded_row="" excluded_section=""
   excluded_count="$(jq 'length' <<< "$excluded" 2>/dev/null)" || return 1
