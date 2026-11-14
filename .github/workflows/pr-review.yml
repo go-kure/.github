@@ -502,7 +502,7 @@ jobs:
           echo "findings file $out/findings.json; base $BASE_SHA; material digest $digest"
 
       - name: Run PR review threads
-        uses: go-kure/.github/.github/actions/pr-review-threads@c7329c47dbb527ae4718ca7a3873162e40cc8deb # placeholder pending the final re-pin to the merge of the runner follow-ups (go-kure/.github#441) and the start gate (go-kure/.github#319) — base-ref tip, see docs/standards.md "GitHub Actions pinning"
+        uses: go-kure/.github/.github/actions/pr-review-threads@cb8b415d4038b9cd303d3afa91552084010fe428 # placeholder pending the final re-pin to the merge of the runner follow-ups (go-kure/.github#441) and the start gate (go-kure/.github#319) — base-ref tip, see docs/standards.md "GitHub Actions pinning"
         with:
           # github-token / bot-login: GITHUB_TOKEN always gets viewerCanResolve:false
           # on threads it authors (GitHub rejects bot/App actors for
