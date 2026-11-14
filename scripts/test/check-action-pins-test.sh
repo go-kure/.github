@@ -286,7 +286,7 @@ assert_rc "a step whose uses: follows a nested list in the same item is still a 
 
 # Each SHA-pinned ref the checker accepts is named on stdout, so a PR that only
 # moves a pin has a line in the verify output that is about its own change
-# (go-kure/.github#389). The totals line alone names no pin.
+# (#440, #453). The totals line alone names no pin.
 run_fixture_out() {
   local dir out
   dir="$(mktemp -d)"
