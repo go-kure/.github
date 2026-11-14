@@ -10,7 +10,7 @@
 #   2. one actions/cache/restore step restores ~/.cache/go-build,
 #   3. its key and its restore keys use the name that the CI test jobs save under,
 #   4. the job never saves a cache (only main writes the shared cache),
-#   5. the restore downloads the cache (no lookup-only) and has no condition,
+#   5. the restore has no input beyond path, key and restore-keys (so it downloads, never fails on a miss) and no condition,
 #   6. the restore comes before the step that runs the tests.
 # Each assertion also runs against a mutated copy that must fail, so a check that agrees with
 # everything is caught.
@@ -109,9 +109,12 @@ contract() {
     echo "FAIL: the restore step does not come before the step that runs the tests"
     rc=1
   fi
-  # A lookup-only restore checks that an entry exists and downloads nothing, so the tests would run cold.
-  if grep -E "^lookup-only:" <<<"$trimmed" | grep -qvE "^lookup-only: (false|.false.)$"; then
-    echo "FAIL: the restore step sets lookup-only, so it downloads nothing"
+  # The step has no input beyond path, key and restore-keys. Any other input changes what a restore
+  # does: lookup-only downloads nothing, fail-on-cache-miss fails the job on a miss (no cold-run
+  # fallback), and each of the others is a change nobody reviewed against this contract.
+  extra_lines="$(grep -vE '^(#.*|- name: .*|id: [a-z]+|uses: actions/cache/restore@.*|with:|path: .*|key: .*|restore-keys: \||\$\{\{ .*)$' <<<"$trimmed" | grep -v '^$' | head -n 3)"
+  if [ -n "$extra_lines" ]; then
+    echo "FAIL: the restore step sets an input other than path, key and restore-keys: $extra_lines"
     rc=1
   fi
   if grep -qE '^ +(- )?uses: actions/cache(/save)?@' <<<"$job"; then
@@ -240,7 +243,11 @@ expect_fail "a restore that runs after the tests" "does not come before the step
 
 # The restore only looks the entry up.
 sed 's/^\( *\)path: ~\/.cache\/go-build$/\1lookup-only: true\n&/' "$WF" > "$tmp/lookup-only"
-expect_fail "a lookup-only restore" "restore step sets lookup-only" "$tmp/lookup-only"
+expect_fail "a lookup-only restore" "sets an input other than path, key and restore-keys" "$tmp/lookup-only"
+
+# The restore fails the job on a miss.
+sed 's/^\( *\)path: ~\/.cache\/go-build$/\1fail-on-cache-miss: true\n&/' "$WF" > "$tmp/fail-on-miss"
+expect_fail "a restore that fails on a cache miss" "sets an input other than path, key and restore-keys" "$tmp/fail-on-miss"
 
 # The key lines sit in a step that is not the restore step.
 awk '
