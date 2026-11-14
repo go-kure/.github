@@ -256,7 +256,7 @@ if [ "${PRT_ASSESS_BACKEND:-}" = runner ]; then
     fi
   done
   if ! _prt_runner_env_build; then
-    echo "ERROR: $PRT_RUNNER_ENV_ERROR (names are plain variable names, set in this step, and never a posting token: PRT_GH_TOKEN, GITHUB_TOKEN, GH_TOKEN)" >&2
+    echo "ERROR: $PRT_RUNNER_ENV_ERROR" >&2
     exit 1
   fi
   # The form of the boundary is a start check; whether it can be established on this
