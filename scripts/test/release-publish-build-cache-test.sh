@@ -9,7 +9,8 @@
 #   1. setup-go has its own cache off,
 #   2. one actions/cache/restore step restores ~/.cache/go-build,
 #   3. its key and its restore keys use the name that the CI test jobs save under,
-#   4. the job never saves a cache (only main writes the shared cache).
+#   4. the job never saves a cache (only main writes the shared cache),
+#   5. the restore downloads the cache (no lookup-only).
 # Each assertion also runs against a mutated copy that must fail, so a check that agrees with
 # everything is caught.
 #
@@ -93,6 +94,11 @@ contract() {
   have_tiers="$(awk '/^restore-keys: \|$/ { in_keys = 1; next } in_keys && NF { print }' <<<"$trimmed")"
   if [ "$have_tiers" != "$want_tiers" ]; then
     echo "FAIL: the restore-keys input of the restore step is not the dependency tier followed by the cache name tier"
+    rc=1
+  fi
+  # A lookup-only restore checks that an entry exists and downloads nothing, so the tests would run cold.
+  if grep -E "^lookup-only:" <<<"$trimmed" | grep -qvE "^lookup-only: (false|.false.)$"; then
+    echo "FAIL: the restore step sets lookup-only, so it downloads nothing"
     rc=1
   fi
   if grep -qE '^ +(- )?uses: actions/cache(/save)?@' <<<"$job"; then
@@ -204,6 +210,10 @@ expect_fail "a restore in a job whose header has trailing spaces" "no actions/ca
 # The restore-keys input is misspelled, so the action ignores it.
 sed 's/^\( *\)restore-keys: |$/\1restore-key: |/' "$WF" > "$tmp/misspelled-restore-keys"
 expect_fail "a misspelled restore-keys input" "restore-keys input of the restore step" "$tmp/misspelled-restore-keys"
+
+# The restore only looks the entry up.
+sed 's/^\( *\)path: ~\/.cache\/go-build$/\1lookup-only: true\n&/' "$WF" > "$tmp/lookup-only"
+expect_fail "a lookup-only restore" "restore step sets lookup-only" "$tmp/lookup-only"
 
 # The key lines sit in a step that is not the restore step.
 awk '
