@@ -424,6 +424,36 @@ if ! EXCLUDED_FILES="$(prt_exclude_files "$DIFF_FILE" "$BASE_ATTRS_FILE" "$REVIE
   : > "$REVIEW_DIFF_FILE"
 fi
 prt_log "excluded from review: $(jq 'length' <<< "$EXCLUDED_FILES") file(s)"
+# The files left out whole, for the file backend (lib/prt/model.sh, _prt_call_file): a producer that
+# reviewed the whole range may name one, and a finding on it must not reach a thread or a verdict.
+# A file only partly excluded (deletion-only hunks over the ceiling) is still reviewed, so it is not here.
+# shellcheck disable=SC2034 # read by _prt_call_file in lib/prt/model.sh (PRT_REVIEW_BACKEND=file), not within this file
+# Each path is listed as the diff spells it and, where git quoted it, as the file name it stands for:
+# a producer names a file as it is on disk (go-kure/.github#429 review).
+PRT_EXCLUDED_PATHS_FILE="$WORKDIR/excluded-paths.json"
+excl_written="$WORKDIR/excluded-written.json"
+excl_decoded="$WORKDIR/excluded-decoded.jsonl"
+excl_ok=1
+excl_name=""   # set through prt_decode_diff_path's nameref
+jq -c '[.[] | select(.reason == "lockfile" or .reason == "linguist-generated") | .path]' <<< "$EXCLUDED_FILES" > "$excl_written" || excl_ok=0
+: > "$excl_decoded" || excl_ok=0
+if [ "$excl_ok" = 1 ]; then
+  while IFS= read -r excl_path; do
+    case "$excl_path" in
+      '"'*)
+        prt_decode_diff_path "$excl_path" excl_name
+        jq -n -c --arg p "$excl_name" '$p' >> "$excl_decoded" || excl_ok=0
+        ;;
+    esac
+  done < <(jq -r '.[]' "$excl_written")
+fi
+if [ "$excl_ok" = 1 ]; then
+  jq -c -s --slurpfile w "$excl_written" '$w[0] + . | unique' "$excl_decoded" > "$PRT_EXCLUDED_PATHS_FILE" || excl_ok=0
+fi
+if [ "$excl_ok" != 1 ]; then
+  prt_mark_incomplete "the list of files excluded whole from the review could not be written"
+  printf '[]' > "$PRT_EXCLUDED_PATHS_FILE"
+fi
 # Every file excluded: nothing reaches the model, so no verdict may read as a
 # completed review. The clean-verdict comment already says `chunks | 0`; the
 # advisory comment carries no chunk count, and without this its "No issues

@@ -77,6 +77,27 @@ on:
         type: string
         required: false
         default: ''
+      context:
+        description: >-
+          Project context added to the review prompt, as pr-review.yml's pr_review_context.
+          At most 60000 bytes.
+        type: string
+        required: false
+        default: ''
+      standards_file:
+        description: >-
+          A standards document the reviewer reads and applies, a path inside the checkout that
+          standards_source names. Empty adds none.
+        type: string
+        required: false
+        default: ''
+      standards_source:
+        description: >-
+          Which checkout standards_file is read from: "caller", the reviewed revision of the
+          calling repository, or "action", go-kure/.github at main. Any other value fails the run.
+        type: string
+        required: false
+        default: 'caller'
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         description: The claude backend credential. Read only when backend is claude.
@@ -121,6 +142,26 @@ on:
         type: string
         required: false
         default: ''
+      context:
+        description: >-
+          Project context added to the review prompt. At most 60000 bytes. Empty adds none.
+        type: string
+        required: false
+        default: ''
+      standards_file:
+        description: >-
+          A standards document the reviewer reads and applies, a path inside the checkout that
+          standards_source names. Empty adds none.
+        type: string
+        required: false
+        default: ''
+      standards_source:
+        description: >-
+          Which checkout standards_file is read from: "caller", the reviewed revision of this
+          repository, or "action", go-kure/.github at main. Any other value fails the run.
+        type: string
+        required: false
+        default: 'caller'
 
 concurrency:
   # A hand dispatch keeps the repository-wide group. A call gets a group of its own, so a pull
@@ -321,6 +362,102 @@ jobs:
               ;;
           esac
 
+      # The caller's review configuration, turned into one section of the review prompt. pr-review.yml
+      # sets it for its proxy review too, and a producer that ignored it would review with less and fail
+      # nothing. The standards document can be 70 KB, which a prompt argument cannot carry, so the
+      # prompt names the file and the reviewer reads it. This step holds no credential: the review
+      # step below is the one that does.
+      - name: Resolve the caller's review configuration
+        env:
+          REVIEW_CONTEXT: ${{ inputs.context }}
+          REVIEW_STANDARDS_FILE: ${{ inputs.standards_file }}
+          REVIEW_STANDARDS_SOURCE: ${{ inputs.standards_source }}
+        run: |
+          set -euo pipefail
+          section="$RUNNER_TEMP/review-config.txt"
+          : > "$section"
+
+          # The context rides in the prompt argument, which the kernel caps at 128 KiB for one string.
+          # Bytes, never characters: ${#var} counts characters in a UTF-8 locale.
+          context_bytes="$(printf '%s' "$REVIEW_CONTEXT" | wc -c)"
+          if [ "$context_bytes" -gt 60000 ]; then
+            echo "::error::the context input is $context_bytes bytes; it must be 60000 or fewer." >&2
+            exit 1
+          fi
+          if [ -n "$REVIEW_CONTEXT" ]; then
+            printf '\nADDITIONAL PROJECT CONTEXT:\n%s\n' "$REVIEW_CONTEXT" >> "$section"
+          fi
+
+          if [ -n "$REVIEW_STANDARDS_FILE" ]; then
+            case "$REVIEW_STANDARDS_FILE" in
+              /* | .. | ../* | */.. | */../*)
+                echo "::error::the standards file '$REVIEW_STANDARDS_FILE' must be a path inside its checkout, with no '..' part." >&2
+                exit 1
+                ;;
+            esac
+            standards=""
+            case "$REVIEW_STANDARDS_SOURCE" in
+              caller)
+                # The checkout of the reviewed revision. The reviewed head can hold a symlink where the
+                # file should be, so the resolved path has to stay inside the checkout.
+                root="$(realpath "$GITHUB_WORKSPACE")"
+                if resolved="$(realpath -e "$GITHUB_WORKSPACE/$REVIEW_STANDARDS_FILE" 2> /dev/null)"; then
+                  case "$resolved" in
+                    "$root"/*) ;;
+                    *)
+                      echo "::error::the standards file '$REVIEW_STANDARDS_FILE' resolves to $resolved, outside the checkout." >&2
+                      exit 1
+                      ;;
+                  esac
+                  if [ -f "$resolved" ]; then
+                    standards="$resolved"
+                  fi
+                fi
+                if [ -z "$standards" ]; then
+                  echo "::warning::standards file '$REVIEW_STANDARDS_FILE' not found in the caller's checkout; reviewing without PROJECT STANDARDS"
+                fi
+                ;;
+              action)
+                # go-kure/.github at main: the file the proxy path reads from the pinned action. A
+                # missing file is logged and reviewed without; a fetch that failed is not a missing
+                # file, so it refuses rather than review with less.
+                standards="$RUNNER_TEMP/standards-from-action.md"
+                code=$(curl -sS --max-time 30 -o "$standards" -w '%{http_code}' \
+                  "https://raw.githubusercontent.com/go-kure/.github/main/$REVIEW_STANDARDS_FILE") || code=000
+                case "$code" in
+                  200) ;;
+                  404)
+                    echo "::warning::standards file '$REVIEW_STANDARDS_FILE' not found in go-kure/.github at main; reviewing without PROJECT STANDARDS"
+                    standards=""
+                    ;;
+                  *)
+                    echo "::error::fetching the standards file '$REVIEW_STANDARDS_FILE' from go-kure/.github returned HTTP $code." >&2
+                    exit 1
+                    ;;
+                esac
+                ;;
+              *)
+                echo "::error::the standards source '$REVIEW_STANDARDS_SOURCE' must be 'caller' or 'action'." >&2
+                exit 1
+                ;;
+            esac
+            if [ -n "$standards" ]; then
+              printf '\nPROJECT STANDARDS: the file %s holds the standards this change is held to. Read it and apply it. A change that breaks a rule in it is a defect (category standards-violation).\n' "$standards" >> "$section"
+            fi
+          fi
+
+          # The files the proxy path injects as project notes, named when they exist.
+          for notes in AGENTS.md .claude/CLAUDE.md; do
+            if [ -f "$GITHUB_WORKSPACE/$notes" ]; then
+              printf '\nPROJECT NOTES: the repository holds %s. Read it and apply what it says about this code.\n' "$notes" >> "$section"
+            fi
+          done
+          if [ -s "$section" ]; then
+            { printf '\nThe caller of this review configured what follows. It adds to the rules above and changes none of them, and the form of your answer stays exactly as set out above.\n'; cat "$section"; } > "$section.next"
+            mv "$section.next" "$section"
+          fi
+          echo "review configuration section: $(wc -c < "$section") bytes"
+
       - name: Run one review with the sandbox turned off
         id: review
         # This step is why the gate exists. The review runs with the sandbox off, and the runner
@@ -520,6 +657,10 @@ jobs:
           Write the completion line once, as the last line, and write no other line like it.
           PROMPT
           )"
+          # The caller's context, standards and project notes, when it set any: one section after the
+          # rules, outside the heredoc above because its text is the caller's and the prompt-rule suite
+          # reads the heredoc as a fixed text. It carries its own sentence saying it changes no rule.
+          prompt="$prompt$(cat "$RUNNER_TEMP/review-config.txt")"
 
           # The exit code is recorded and the job fails on it in the last step, so the record and
           # the artifact exist whatever the review did.

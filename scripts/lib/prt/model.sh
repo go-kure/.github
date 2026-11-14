@@ -522,6 +522,9 @@ prt_chunk_scope() {
 #   PRT_CHUNK_DIR                the chunk files the orchestrator split
 #   PRT_HEAD_SHA, PRT_REVIEW_BASE_SHA, PRT_REVIEW_MATERIAL_SHA256
 #                                what the record must say it reviewed
+#   PRT_EXCLUDED_PATHS_FILE      optional: a JSON array of the paths this run excluded whole
+#                                from the review (lockfiles, linguist-generated). A finding
+#                        naming one is dropped, and chunk 0's call logs the drop.
 # Every refusal returns 1 with a closed-vocabulary reason in the failure file,
 # like _prt_call_proxy's: backend-config (an input this mode needs is not
 # set), local-tempdir (no scratch directory), payload-build (the selection
@@ -533,11 +536,12 @@ prt_chunk_scope() {
 # A finding goes to exactly one chunk, first match in this order: the first
 # chunk whose commentable new-file lines hold (file, line); else the first
 # chunk whose diff touches the file; else chunk 0, so a finding is never
-# dropped for naming a file this review does not show. A file-level finding
+# dropped for naming a file this review does not show, except one the run excluded on purpose
+# (PRT_EXCLUDED_PATHS_FILE). A file-level finding
 # (null line) takes the second rule.
 _prt_call_file() {
   local idx="$1" findings_file="${PRT_FINDINGS_FILE:-}" chunk_dir="${PRT_CHUNK_DIR:-}" \
-        provider chunk_file tmp records staged n=0
+        provider chunk_file tmp records staged excluded dropped n=0
   _prt_set_model_failure ""
   _prt_set_model_calls 0
   if [ -z "$findings_file" ] || [ -z "$chunk_dir" ] || ! [[ "$idx" =~ ^[0-9]+$ ]] \
@@ -611,8 +615,31 @@ _prt_call_file() {
       return 1
     fi
   fi
-  jq -c --argjson want "$idx" --slurpfile chunks "$records" '
+  # The files this run took out of the reviewed diff whole (lockfiles, linguist-generated): the
+  # producer reviewed the whole range, so it can name one, and the consumer's exclusion has to
+  # hold for an imported finding as it does for one the proxy returns (go-kure/.github#432).
+  # Unset or absent means none were excluded (/dev/null slurps to no value); a file that is
+  # there but is not an array of strings refuses. Read through --slurpfile, never argv.
+  excluded=/dev/null
+  if [ -n "${PRT_EXCLUDED_PATHS_FILE:-}" ] && [ -f "$PRT_EXCLUDED_PATHS_FILE" ]; then
+    # Slurped: `jq -e` reports the status of the last value only, so exactly one value is asserted.
+    if ! jq -e -s 'length == 1 and (.[0] | type == "array" and all(.[]; type == "string"))' "$PRT_EXCLUDED_PATHS_FILE" > /dev/null 2>&1; then
+      _prt_set_model_failure "payload-build"
+      return 1
+    fi
+    excluded="$PRT_EXCLUDED_PATHS_FILE"
+  fi
+  if [ "$idx" = 0 ]; then
+    dropped="$(jq -r --slurpfile ex "$excluded" \
+      '[.findings[] | select(.file as $f | ($ex[0] // []) | index($f))] | "\(length) \(map(.file) | unique | join(", "))"' \
+      "$findings_file")" || dropped=""
+    if [ -n "$dropped" ] && [ "${dropped%% *}" != 0 ] && declare -F prt_log > /dev/null; then
+      prt_log "file backend: dropped ${dropped%% *} finding(s) on files this run excluded from review: ${dropped#* }"
+    fi
+  fi
+  jq -c --argjson want "$idx" --slurpfile chunks "$records" --slurpfile ex "$excluded" '
     {findings: [.findings[] | . as $f
+      | select(($ex[0] // []) | index($f.file) | not)
       | (([$chunks[] | select($f.line != null and ((.index[$f.file] // []) | any(. == $f.line))) | .idx] | .[0])
          // ([$chunks[] | select(.files | any(. == $f.file)) | .idx] | .[0])
          // 0) as $at
