@@ -14,6 +14,8 @@ on:
       - "scripts/pr-review-threads.sh"
       - "scripts/test/pr-review-threads-test.sh"
       - ".github/actions/pr-review-threads/**"
+      # Its own file, so a change to this lane is proven by a run of this lane.
+      - ".github/workflows/pr-review-threads-namespace.yml"
 
 permissions:
   contents: read
