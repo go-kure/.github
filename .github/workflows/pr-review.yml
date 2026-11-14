@@ -313,7 +313,7 @@ jobs:
           done
 
       - name: Run PR review threads
-        uses: go-kure/.github/.github/actions/pr-review-threads@24896c034cf7cc32737b5f5a72d0e263132ae1a7 # placeholder pending the final re-pin to the merge of the change that lists suppressed findings in the advisory comment (go-kure/.github#296), which also covers go-kure/.github#306 and go-kure/.github#372 — base-ref tip, see docs/standards.md "GitHub Actions pinning"
+        uses: go-kure/.github/.github/actions/pr-review-threads@a30a3a7abc3cf2256d588918c4ae095ac8ca7152 # placeholder pending the final re-pin to the merge of the change that lists suppressed findings in the advisory comment (go-kure/.github#296, which also covers go-kure/.github#306 and go-kure/.github#372) and to the commit that lets enforce accept the runner assessment (srgvg/claude-dotfiles#179) — base-ref tip, see docs/standards.md "GitHub Actions pinning"
         with:
           # github-token / bot-login: GITHUB_TOKEN always gets viewerCanResolve:false
           # on threads it authors (GitHub rejects bot/App actors for
