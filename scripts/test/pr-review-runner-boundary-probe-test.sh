@@ -122,6 +122,8 @@ write_report "$dir/v1" boundary proc_mount_via=mount
 assert_eq "judge: a non-root mount refusal from the mount tool is inconclusive, not a pass" 3 "$(judge_rc "$dir/v1" "$dir/c")"
 write_report "$dir/v2" boundary proc_mount_via=@
 assert_eq "judge: a non-root report without the route field is inconclusive" 3 "$(judge_rc "$dir/v2" "$dir/c")"
+write_report "$dir/v5" boundary proc_mount_via=none
+assert_eq "judge: a non-root report whose route is none is inconclusive" 3 "$(judge_rc "$dir/v5" "$dir/c")"
 write_report "$dir/v3" boundary uid=0 cap_bnd=0000000000000000 proc_mount_via=mount
 assert_eq "judge: for root the mount tool reaches the kernel, so its refusal stands" 0 "$(judge_rc "$dir/v3" "$dir/c")"
 write_report "$dir/v4" boundary proc_mount=succeeded proc_mount_via=mount
@@ -204,6 +206,7 @@ cat > "$dir/fakebin/python3" <<'EOF'
 #!/bin/sh
 [ -n "${FAKE_ERRNO:-}" ] || exit 127
 echo "$FAKE_ERRNO"
+exit "${FAKE_PY_RC:-0}"
 EOF
 chmod 755 "$dir/fakebin/mount" "$dir/fakebin/readlink-empty" "$dir/fakebin/python3"
 mount_case() { # mount_case REPORT RC MESSAGE
@@ -214,13 +217,15 @@ mount_case() { # mount_case REPORT RC MESSAGE
 # go-kure/.github#328: the answer of the direct mount(2) call is the kernel's errno.
 errno_case() { # errno_case REPORT ERRNO -> "<proc_mount> <proc_mount_via>"
   stub_run "$1" PATH="$dir/fakebin:$PATH" PRT_PROBE_MOUNT=try PRT_PROBE_PARENT_MNT_NS=mnt:[1] \
-    FAKE_ERRNO="$2" FAKE_MOUNT_RC=0 FAKE_MOUNT_MSG=""
+    FAKE_ERRNO="$2" FAKE_PY_RC="${FAKE_PY_RC:-0}" FAKE_MOUNT_RC=0 FAKE_MOUNT_MSG=""
   echo "$(field "$1" proc_mount) $(field "$1" proc_mount_via)"
 }
 assert_eq "stub: EPERM from mount(2) is a kernel denial" "denied syscall" "$(errno_case "$dir/e1" 1)"
 assert_eq "stub: EACCES from mount(2) is a kernel denial" "denied syscall" "$(errno_case "$dir/e2" 13)"
 assert_eq "stub: a mount(2) that returned 0 is a success" "succeeded syscall" "$(errno_case "$dir/e3" 0)"
 assert_eq "stub: another errno is not a denial" "failed:errno22 syscall" "$(errno_case "$dir/e4" 22)"
+assert_eq "stub: a helper that printed an errno but failed is not an answer, so the tool route answers" "succeeded mount" \
+  "$(FAKE_PY_RC=1 errno_case "$dir/e6" 1)"
 assert_eq "stub: a helper answer that is not a number falls back to the mount tool" "succeeded mount" \
   "$(errno_case "$dir/e5" oops)"
 assert_eq "stub: the tool route reports itself as the mount tool" mount "$(mount_case "$dir/t0" 32 'mount: /x: must be superuser to use mount.' > /dev/null; field "$dir/t0" proc_mount_via)"
