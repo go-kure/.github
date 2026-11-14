@@ -627,7 +627,8 @@ is therefore these words plus the `SHLVL` that bash sets. Each of these ends the
 starting the runner (it is degraded as `runner-failed`): an empty list of words, an environment file
 that cannot be written, a file that cannot be read (a boundary command that closed descriptor 8), an
 empty script for the step, a word that is not `NAME=value`, a number of words read that differs
-from the number written, a variable that cannot be unset or exported. The calling workflow's checkout also has to leave no credentials in
+from the number written, a variable that cannot be unset or exported, a start gate that cannot be
+read (see "Known limit" below). The calling workflow's checkout also has to leave no credentials in
 `.git/config` (`persist-credentials: false`, as `pr-review.yml` sets), because the runner reads the
 checkout.
 
@@ -658,10 +659,10 @@ holds (a credential file, a pipe) would be readable to the runner.
   probe does not make an arbitrary one trustworthy: it shows that ancestors are hidden and that no
   capability is held, nothing about what else the command does. The command itself is started under
   `env -i` with only `PATH` (no `HOME`, no token), so a wrapper that stays resident while it waits
-  for the runner does not keep the posting token in its own environment. It must leave descriptor 8
-  open to the command it starts (the runner's environment arrives on it): a command that closes it
-  leaves the runner nothing to start with, and the call fails as `runner-failed` instead of
-  running the runner without its environment. Whether the runner then has `no_new_privs` is the
+  for the runner does not keep the posting token in its own environment. It must leave descriptors 8
+  and 9 open to the command it starts (the runner's environment arrives on 8, the start gate on
+  9): a command that closes either leaves the runner nothing to start with, and the call fails as
+  `runner-failed` instead of running the runner without its environment or before its gate. Whether the runner then has `no_new_privs` is the
   operator's responsibility for this form: the runtime does not judge it, because requiring it
   would refuse commands that work today. Add `setpriv --no-new-privs` to the command to get what
   `pidns` gives.
@@ -705,21 +706,27 @@ outer time bound ends it when the call overruns. If the orchestrator itself is k
 runner's tree is not signalled by it and a cooperative runner runs until that outer bound fires (at
 most the call's seconds plus 30, within the run's deadline).
 
-Known limit: a hostile runner can outlive its call in narrow windows. The runner is PID 1 of its
-namespace, so it can clear its parent-death signal and start a new session; killing the launcher or
-the `timeout` process group then does not stop it. The orchestrator therefore names the namespace's
-first process right after the launch and sends it SIGKILL when the call ends, which ends every
-member of the namespace. If that process cannot be named, if the process launched for the call
+Known limit: a hostile runner could outlive its call. The runner is PID 1 of its namespace, so it
+can clear its parent-death signal and start a new session; killing the launcher or the `timeout`
+process group then does not stop it. The orchestrator therefore names the namespace's first process
+right after the launch and sends it SIGKILL when the call ends, which ends every member of the
+namespace. The runner does not start until it has been named: the step in front of it waits on a
+start gate (a file on descriptor 9) that the orchestrator releases only after naming, so nothing
+the runner does can come before the naming, such as ending the process group that `timeout` and the
+launcher share. If that process cannot be named, if the process launched for the call
 (it becomes `timeout`) is gone with the status of an expired bound or of a signal before it was
 named, or if the end of the process cannot be confirmed (its state cannot be read, before or after
-the kill, or it is still there after it), the call is abandoned as `runner-lifetime` and its answer is not read. The window before the
-first process is named stays open and is tracked in go-kure/.github#319. A stop signal sent to
+the kill, or it is still there after it), the call is abandoned as `runner-lifetime` and its answer is not read. An
+abandoned call that was never named has not started the runner, and the group kill ends the step
+that waits. A stop signal sent to
 `timeout` from inside the namespace (SIGSTOP to the process group it leads) is closed: `timeout`
 then never sends its TERM or its KILL, so the orchestrator keeps a deadline of its own, 5 seconds
 after the outer bound, and when that passes with `timeout` still there it kills the process group
 itself and the call ends as `runner-timeout`. Also not covered: the `cmd`
-boundary (it has no such process to name), a SIGKILL of the orchestrator itself (nothing is left to
-send the kill), and what a surviving runner does while it is still running.
+boundary (it has no such process to name, so its gate is opened at once), a SIGKILL of the
+orchestrator itself (nothing is left to send the kill), a first process that is still there 2
+seconds after the kill (the call is abandoned, the signal was sent), and what a runner does while
+it is running.
 
 Hosts that forbid an unprivileged user namespace (for example Ubuntu 24.04 with its AppArmor
 restriction, or a container whose seccomp profile blocks `unshare`) cannot establish `pidns`,

@@ -7932,6 +7932,27 @@ while time.time() < end and not os.path.exists(stop):
     os.replace(hb + ".tmp", hb)
     time.sleep(0.1)
 ' "$log.hb" "$log.stop" ;;
+  # hostile_early (go-kure/.github#319): the same escape, made at the first instant. A helper stays in
+  # the old process group and kills it 0.3 s after the runner has left it, which takes `timeout` and
+  # the launcher with it, so nothing connects the runner to the host's process tree any more. A
+  # first process that is named only after the runner is running (the finder's poll is late) is lost.
+  hostile_early)
+    exec "${PRT_TEST_PYTHON:-python3}" -I -c '
+import ctypes, os, signal, sys, time
+ctypes.CDLL(None).prctl(1, 0, 0, 0, 0)  # PR_SET_PDEATHSIG, 0
+if os.fork() == 0:
+    time.sleep(0.3)
+    os.kill(0, signal.SIGKILL)  # the old process group: timeout, the launcher and this helper
+    os._exit(0)
+os.setsid()
+hb, stop = sys.argv[1], sys.argv[2]
+end = time.time() + 120
+while time.time() < end and not os.path.exists(stop):
+    with open(hb + ".tmp", "w") as f:
+        f.write(str(time.time_ns()))
+    os.replace(hb + ".tmp", hb)
+    time.sleep(0.1)
+' "$log.hb" "$log.stop" ;;
   garbage_then_exit4) if [ "$n" -ge 2 ]; then exit 4; fi; mode=garbage ;;
   garbage_then_clean) if [ "$n" -ge 2 ]; then mode=clean; else mode=garbage; fi ;;
 esac
@@ -9098,6 +9119,35 @@ assert_eq "assess runner, hostile PID 1: the runner was seen running, and nothin
 prt_ar_hostile_reap
 PRT_TEST_MODEL_BUDGET_SECONDS=""
 
+# The window before the first process is named (go-kure/.github#319). The finder's first poll is
+# late (a `sleep` wrapper stretches the first `sleep 0.05` to 1.5 s, so the poll finds the chain
+# 1.5 s after the launch, not within 50 ms), and the runner is hostile_early: 0.3 s after it starts
+# it leaves the process group and a helper kills that group, which takes `timeout` and the launcher
+# with it. A runner that starts before it is named is therefore lost: the finder finds no chain, the
+# call is abandoned as runner-lifetime and the runner lives on. With the start gate the runner does
+# not start until it is named, so the call ends as runner-timeout (the group kill ends `timeout`
+# with status 137) and nothing of the runner is left. The flag file proves that the first poll did
+# miss the chain, which is what makes the case a race and not a pass by luck.
+rm -f "$PRT_TEST_RUNNER_LOG".*
+mkdir -p "$prt_ar_dir/bin-slowpoll"
+rm -f "$prt_ar_dir/slowpoll.flag"
+# shellcheck disable=SC2016 # script text for the wrapper, not an expansion
+printf '#!/bin/bash\nif [ "$1" = 0.05 ] && [ ! -e "%s" ]; then : > "%s"; exec %s 1.5; fi\nexec %s "$@"\n' \
+  "$prt_ar_dir/slowpoll.flag" "$prt_ar_dir/slowpoll.flag" "$(type -P sleep)" "$(type -P sleep)" > "$prt_ar_dir/bin-slowpoll/sleep"
+chmod 755 "$prt_ar_dir/bin-slowpoll/sleep"
+PRT_TEST_RUNNER_MODE=hostile_early
+PRT_TEST_MODEL_BUDGET_SECONDS=$prt_ar_budget
+rc="$(PATH="$prt_ar_dir/bin-slowpoll:$PATH" PRT_RUNNER_PID1_POLLS=8 PRT_MODEL_TIMEOUT_FLOOR=1 run_orchestrator advisory 0 0 0)"
+PRT_TEST_MODEL_BUDGET_SECONDS=""
+assert_eq "assess runner, hostile from its first instant, first poll late: the first poll did miss the chain" \
+  "true" "$([ -e "$prt_ar_dir/slowpoll.flag" ] && echo true || echo false)"
+assert_eq "assess runner, hostile from its first instant, first poll late: one call, degraded as runner-timeout and not abandoned as runner-lifetime" \
+  "0 1 true false" "$rc $(prt_ar_calls) $(prt_ar_reason runner-timeout) $(prt_ar_reason runner-lifetime)"
+assert_eq "assess runner, hostile from its first instant, first poll late: the runner was seen running, and nothing of it is left once the call has returned" \
+  "true" "$(prt_ar_hb_stopped)"
+prt_ar_hostile_reap
+PRT_TEST_RUNNER_MODE=probe
+
 # The end of the first process failing inside the call: the message the caller prints, the closed
 # reason and the order of the two signals. The shims are defined from strings and exported into the
 # orchestrator, and act only for the helper that names them: `kill` records which signal it is
@@ -9196,6 +9246,21 @@ rc="$(PATH="$prt_ar_dir/bin-twokids:$PATH" run_orchestrator advisory 0 0 0)"
 assert_eq "assess runner, the launcher has two children: degraded as runner-lifetime, the run still exits 0, the message names the cause" \
   "0 true true" "$rc $(prt_ar_reason runner-lifetime) $(grep -qE 'namespace launcher has more than one child|not the first process of a namespace' "$PRT_TEST_STDERR_FILE" && echo true || echo false)"
 assert_eq "assess runner, the launcher has two children: the abandoned runner's tree is stopped" "true" "$(prt_ar_hb_not_running)"
+# The step in front of the runner waits on the start gate until the first process is named. A call
+# abandoned before that must not leave it waiting (go-kure/.github#319): the group kill ends it. The
+# step is found by its command line ("reader <number of words> <runner>"), and the control is a
+# process of that shape, so a pattern that matched nothing would show.
+prt_ar_gate_waiters() { pgrep -fc -- "reader [0-9]+ $prt_ar_dir/review-run" || true; }
+bash -c 'sleep 30; :' reader 1 "$prt_ar_dir/review-run" &
+prt_ar_ctl_pid=$!
+sleep 0.2
+prt_ar_ctl_seen="$(prt_ar_gate_waiters)"
+kill -KILL "$prt_ar_ctl_pid" 2> /dev/null || true
+wait "$prt_ar_ctl_pid" 2> /dev/null || true
+prt_ar_gw_tries=20
+while [ "$prt_ar_gw_tries" -gt 0 ] && [ "$(prt_ar_gate_waiters)" != 0 ]; do sleep 0.1; prt_ar_gw_tries=$((prt_ar_gw_tries - 1)); done
+assert_eq "assess runner, the launcher has two children: no step is left waiting for the start gate (control saw one: $prt_ar_ctl_seen)" \
+  "1 0" "$prt_ar_ctl_seen $(prt_ar_gate_waiters)"
 prt_ar_reap_sleepers
 PRT_TEST_RUNNER_MODE=probe
 
@@ -9965,6 +10030,16 @@ PRT_TEST_RUNNER_MODE=clean
 rm -f "$PRT_TEST_RUNNER_LOG".*
 rc="$(run_orchestrator advisory 0 0 0)"
 assert_eq "assess runner, boundary prefix that closes the environment descriptor: the runner is not started, degraded as runner-failed" \
+  "0 0 true" "$rc $(prt_ar_calls) $(prt_ar_reason runner-failed)"
+# The same for the start gate on descriptor 9 (go-kure/.github#319): a prefix that does not hand it
+# over cannot be released, so the step in front of the runner fails closed and the runner never
+# starts before it has been named.
+printf '#!/bin/sh\nexec 9<&-\nexec "$@"\n' > "$prt_ar_dir/boundary-closegate"
+chmod 755 "$prt_ar_dir/boundary-closegate"
+PRT_TEST_ASSESS_RUNNER_BOUNDARY_CMD="$prt_ar_dir/boundary-closegate $(prt_ar_prod_prefix)"
+rm -f "$PRT_TEST_RUNNER_LOG".*
+rc="$(run_orchestrator advisory 0 0 0)"
+assert_eq "assess runner, boundary prefix that closes the start gate descriptor: the runner is not started, degraded as runner-failed" \
   "0 0 true" "$rc $(prt_ar_calls) $(prt_ar_reason runner-failed)"
 
 # Each refusal of the hand-over ends the call before the runner starts: exit 125, degraded as
