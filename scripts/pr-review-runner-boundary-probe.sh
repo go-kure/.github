@@ -414,6 +414,12 @@ probe_run() {
   # and bash marks its own script descriptor close-on-exec), and "no descriptor" would pass with
   # the closing broken. A descriptor opened with `exec` is inherited by every child.
   local plant
+  # The call reuses the list the orchestrator builds at start (go-kure/.github#441), so it is built
+  # here, with the names and values the call needs set above.
+  if ! _prt_runner_env_build; then
+    echo "boundary: the runner environment cannot be built: $PRT_RUNNER_ENV_ERROR"
+    return 4
+  fi
   exec {plant}< "$work/canary" || { echo "probe: cannot open the planted descriptor" >&2; return 4; }
   _prt_call_runner "request for the boundary probe" > "$work/answer" 2> "$work/call.stderr" || call_rc=$?
   exec {plant}<&-
