@@ -17,7 +17,9 @@ jobs:
     # The review pool, not the general CI pool: only the review pool's nodes allow the user
     # namespaces the boundary needs, so a run elsewhere would report nothing about it.
     runs-on: autops-kube-review
-    timeout-minutes: 15
+    # 30 minutes: the suite step below may take 25, every other step takes under 15 seconds,
+    # and the rest is room for the pod to start.
+    timeout-minutes: 30
     steps:
       # Which image this pod runs, as far as the pod can say. Same measurement as the identity step
       # of review-pool-acceptance.yml, same fields and same fallback text. Limit: the bundle record
@@ -85,7 +87,13 @@ jobs:
           echo "credential entries (extraheader, includeIf) in .git/config: ${leaked}"
           [ "${leaked}" -eq 0 ] || { echo "FAIL: the checkout left credential configuration in the workspace"; exit 1; }
 
+      # This step takes between 7m43s and over 15 minutes on the same pool within one day (runs
+      # 43393947477, 43530791463, 43464430431 and 43396096095 in go-kure/.github), and the cause is
+      # not known. The step has its own limit, so a slow or hung suite fails this step only. A job
+      # limit would cancel the whole job, and the two steps below, which take seconds, would not
+      # run: the run would give no verdict at all.
       - name: Positive isolation cases of the suite
+        timeout-minutes: 25
         env:
           PRT_TEST_REQUIRE_NAMESPACE: "1"
         run: bash scripts/test/pr-review-threads-test.sh .
