@@ -10,7 +10,8 @@
 #   2. one actions/cache/restore step restores ~/.cache/go-build,
 #   3. its key and its restore keys use the name that the CI test jobs save under,
 #   4. the job never saves a cache (only main writes the shared cache),
-#   5. the restore downloads the cache (no lookup-only).
+#   5. the restore downloads the cache (no lookup-only) and has no condition,
+#   6. the restore comes before the step that runs the tests.
 # Each assertion also runs against a mutated copy that must fail, so a check that agrees with
 # everything is caught.
 #
@@ -94,6 +95,18 @@ contract() {
   have_tiers="$(awk '/^restore-keys: \|$/ { in_keys = 1; next } in_keys && NF { print }' <<<"$trimmed")"
   if [ "$have_tiers" != "$want_tiers" ]; then
     echo "FAIL: the restore-keys input of the restore step is not the dependency tier followed by the cache name tier"
+    rc=1
+  fi
+  # A condition on the restore step can skip the download on tag runs.
+  if grep -qE '^(- )?if:' <<<"$trimmed"; then
+    echo "FAIL: the restore step has a condition, so it can skip the download"
+    rc=1
+  fi
+  # The tests must start after the restore, or they run cold and the download comes too late.
+  restore_line="$(grep -nE '^ +(- )?uses: actions/cache/restore@' <<<"$job" | head -n 1 | cut -d: -f1)"
+  tests_line="$(grep -nE '^ +run: go test' <<<"$job" | head -n 1 | cut -d: -f1)"
+  if [ -z "$restore_line" ] || [ -z "$tests_line" ] || [ "$restore_line" -ge "$tests_line" ]; then
+    echo "FAIL: the restore step does not come before the step that runs the tests"
     rc=1
   fi
   # A lookup-only restore checks that an entry exists and downloads nothing, so the tests would run cold.
@@ -210,6 +223,20 @@ expect_fail "a restore in a job whose header has trailing spaces" "no actions/ca
 # The restore-keys input is misspelled, so the action ignores it.
 sed 's/^\( *\)restore-keys: |$/\1restore-key: |/' "$WF" > "$tmp/misspelled-restore-keys"
 expect_fail "a misspelled restore-keys input" "restore-keys input of the restore step" "$tmp/misspelled-restore-keys"
+
+# The restore runs on the default branch only, as the CI save does.
+sed "s/^\( *\)id: gocache\$/&\n\1if: github.ref == 'refs\/heads\/main'/" "$WF" > "$tmp/restore-if"
+expect_fail "a restore with a branch condition" "restore step has a condition" "$tmp/restore-if"
+
+# The restore and its log step move below the step that runs the tests.
+awk '
+  /^      # setup-go.s own cache is off/ { hold = 1 }
+  /^      # -timeout applies to each test binary/ { hold = 0 }
+  hold { block = block $0 "\n"; next }
+  { print }
+  /run: go test/ { printf "\n%s", block }
+' "$WF" > "$tmp/restore-after-tests"
+expect_fail "a restore that runs after the tests" "does not come before the step that runs the tests" "$tmp/restore-after-tests"
 
 # The restore only looks the entry up.
 sed 's/^\( *\)path: ~\/.cache\/go-build$/\1lookup-only: true\n&/' "$WF" > "$tmp/lookup-only"
