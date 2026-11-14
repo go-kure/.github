@@ -171,6 +171,16 @@ printf 'c\n' > "$WORK/agents/workspace/.claude/CLAUDE.md"
 assert_eq "convention files: the step goes on" "0" "$(run_step agents '' '' caller)"
 assert_eq "convention files: AGENTS.md is named" "true" "$(has 'AGENTS.md' "$(section agents)")"
 assert_eq "convention files: .claude/CLAUDE.md is named" "true" "$(has '.claude/CLAUDE.md' "$(section agents)")"
+# The reviewed head can turn a convention file into a symlink. One that leaves the checkout is not
+# named, because the reviewer is told to read what is named (go-kure/.github#429 review); one that
+# stays inside it is a file of the checkout like any other.
+mkdir -p "$WORK/agentslink/workspace/.claude"
+ln -s /etc/hostname "$WORK/agentslink/workspace/AGENTS.md"
+printf 'c\n' > "$WORK/agentslink/workspace/real-notes.md"
+ln -s ../real-notes.md "$WORK/agentslink/workspace/.claude/CLAUDE.md"
+assert_eq "convention files: a symlink that leaves the checkout does not stop the step" "0" "$(run_step agentslink '' '' caller)"
+assert_eq "convention files: AGENTS.md as a symlink out of the checkout is not named" "false" "$(has 'AGENTS.md' "$(section agentslink)")"
+assert_eq "convention files: a symlink that stays inside the checkout is named" "true" "$(has '.claude/CLAUDE.md' "$(section agentslink)")"
 
 # Structure: the inputs exist in both modes, and the review step reads the section after this step ran.
 for input in context standards_file standards_source; do
