@@ -9131,10 +9131,12 @@ PRT_TEST_MODEL_BUDGET_SECONDS=""
 rm -f "$PRT_TEST_RUNNER_LOG".*
 rm -f "$prt_ar_dir/slowpoll.flag"
 # A shell function named `sleep`, loaded into the orchestrator through BASH_ENV, stretches only the
-# sleep that the finder itself calls (FUNCNAME names it), so the cleanup's own `sleep 0.05` in
-# _prt_runner_pid1_end can never set the flag.
+# finder's own poll sleep: FUNCNAME names the finder, so the cleanup's `sleep 0.05` in
+# _prt_runner_pid1_end cannot set the flag, and the finder's local `pid1` is still empty, so the
+# retry sleep after a first process was found cannot set it either. The function reads `pid1` by
+# dynamic scope: a rename of that local in the finder silently widens the match, so rename it here too.
 # shellcheck disable=SC2016 # script text for the file, not an expansion
-printf 'sleep() {\n  if [ "${FUNCNAME[1]:-}" = _prt_runner_pid1_record ] && [ "$1" = 0.05 ] && [ ! -e "%s" ]; then\n    : > "%s"\n    command sleep 1.5\n    return\n  fi\n  command sleep "$@"\n}\n' \
+printf 'sleep() {\n  if [ "${FUNCNAME[1]:-}" = _prt_runner_pid1_record ] && [ -z "${pid1:-}" ] && [ "$1" = 0.05 ] && [ ! -e "%s" ]; then\n    : > "%s"\n    command sleep 1.5\n    return\n  fi\n  command sleep "$@"\n}\n' \
   "$prt_ar_dir/slowpoll.flag" "$prt_ar_dir/slowpoll.flag" > "$prt_ar_dir/slowpoll.env"
 PRT_TEST_RUNNER_MODE=hostile_early
 PRT_TEST_MODEL_BUDGET_SECONDS=$prt_ar_budget
