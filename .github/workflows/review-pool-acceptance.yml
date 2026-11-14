@@ -693,10 +693,21 @@ jobs:
 
       - name: Extract the findings
         if: always()
+        env:
+          REVIEW_RUN_RC: ${{ steps.review.outputs.rc }}
         run: |
           set -euo pipefail
           # The default covers the case where the first step failed before it set the variable.
           OUT_DIR="${OUT_DIR:-$RUNNER_TEMP/acceptance/out}"
+          # A review that review-run did not complete yields no findings. review-run writes review.md
+          # only for a completed run, so this guard is not what usually keeps a refused review out of
+          # findings.json: it is what keeps one out if that ever changes, and the last step fails the
+          # job on the same code. An unrecorded code counts as zero here, since the review step never
+          # ran review-run and left no review.md.
+          if [ "${REVIEW_RUN_RC:-0}" != "0" ]; then
+            echo "review-run exited ${REVIEW_RUN_RC}, so no findings.json is written"
+            exit 0
+          fi
           # The material the reviewer read must be the range the record names. review-run hashes
           # the stdin bytes as input_sha256 and its own canonical diff of base..head as
           # material_sha256, so a disagreement means the diff options the review step copied have
