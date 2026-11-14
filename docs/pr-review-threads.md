@@ -723,11 +723,12 @@ that this repository does not build.
 
 Acceptance needs a CI lane that can run the positive isolation cases. On a host without a PID
 namespace the test suite skips the cases that need one (and says so) but still runs the ones that do
-not: invalid configuration, a prefix that isolates nothing and the check's deadline. In GitHub Actions the skip also shows as a warning annotation on the run and a line in the
-job summary, so a green job that skipped them says so. The per-pull-request job runs on the general
-CI pool, which forbids the namespace, so it shows that warning today and does not run those cases.
-Setting `PRT_TEST_REQUIRE_NAMESPACE=1` turns that skip into a failure, so a lane that must
-run them cannot pass by skipping. The probe's own fixture suite has the same switch for its
+not: invalid configuration, a prefix that isolates nothing and the check's deadline. In GitHub
+Actions the skip also shows as a warning annotation on the run and a line in the
+job summary, so a green job that skipped them says so. The `pr-review-threads-test` job of `ci.yml`
+runs on the general CI pool, which forbids the namespace, so it shows that warning and does not run
+those cases. Setting `PRT_TEST_REQUIRE_NAMESPACE=1` turns that skip into a failure, so a lane that
+must run them cannot pass by skipping. The probe's own fixture suite has the same switch for its
 full-run cases, and the acceptance workflow sets it for both suites.
 
 The skip note and the failing case say why. The note names the exit code and the first 200 bytes of
@@ -736,6 +737,17 @@ start too" prints the same two facts for the production prefix when it fails. Th
 one `NOTE: slow:` line when the work before an assertion took 20 seconds or more
 (`PRT_TEST_GAP_NOTE_SECONDS` changes the limit), and a final `suite time:` line. A job that hits its
 time limit then shows which case followed the slow work.
+
+The workflow `pr-review-threads-namespace.yml` is the per-pull-request lane that runs them. It runs
+the suite with the switch set on the review pool, for a same-repository pull request that changes
+`scripts/lib/prt/**`, `scripts/pr-review-threads.sh`, `scripts/test/pr-review-threads-test.sh`,
+`.github/actions/pr-review-threads/**` or the workflow file itself, within a 20-minute limit, and a
+newer push replaces a run still in progress. It is not a required check. A required check that a path filter leaves out stays
+pending, and the review pool is shared, so a loaded pool can fail the process-timing cases of the
+suite. A red run is a result to read, and it can be merged over. Making it a required check is a
+later step, taken once it has run clean on several pull requests. Until then, a change to the
+process boundary or the runner's process-lifetime code needs that run green, or a green manual
+acceptance run, before it merges.
 
 **Acceptance run.** `scripts/pr-review-runner-boundary-probe.sh`, started by the manual workflow
 `PR Review Runner Boundary Probe` shows whether the default boundary holds on the lane it runs on.
