@@ -716,7 +716,9 @@ send the kill), and what a surviving runner does while it is still running.
 Hosts that forbid an unprivileged user namespace (for example Ubuntu 24.04 with its AppArmor
 restriction, or a container whose seccomp profile blocks `unshare`) cannot establish `pidns`,
 for root too; those calls are refused until the
-operator supplies a `cmd` or relaxes the host. Separate-user isolation is a documented follow-up
+operator supplies a `cmd` or relaxes the host. The default boundary also needs `unshare` with
+`--map-current-user`, which arrived in util-linux 2.35 (upstream release notes), and `setpriv`. On an
+older host `pidns` can never be established, and its calls are refused the same way. Separate-user isolation is a documented follow-up
 that this repository does not build.
 
 Acceptance needs a CI lane that can run the positive isolation cases. On a host without a PID
@@ -858,7 +860,7 @@ verdict like `VALID`), with the cause in brackets: `runner-boundary` (the proces
 be established or failed its check, with the check's cause on the log line; the runner was not started), `runner-lifetime` (the namespace's first
 process could not be named after the launch, or its end could not be confirmed (its state cannot be read, before or after the attempt to send SIGKILL, or it is still there after it); the answer is not read), `runner-pid1-unread` (the launcher's child was found but its namespace process ids still read empty after five reads, 0.05 s apart, which a first process that is going away and a live one that cannot be identified both do; the call is abandoned like `runner-lifetime`, and the boundary probe reports it as inconclusive), `runner-incomplete` (exit 2), `runner-quota`
 (3), `runner-launch` (4), `runner-usage` (64, which includes an input over the runner's size
-limit), `runner-timeout` (the outer bound below fired), `runner-failed` (any other non-zero exit), `runner-no-output` (no `review.md`, or one that cannot be read),
+limit), `runner-timeout` (the outer bound described above fired), `runner-failed` (any other non-zero exit), `runner-no-output` (no `review.md`, or one that cannot be read),
 `runner-empty`, `provenance-mismatch`, `deadline-exhausted`, `backend-config` (a required
 variable is unset or `PRT_ASSESS_RUNNER_SECONDS` is not a whole number; the start checks catch the
 usual cases first) and `local-tempdir`. A malformed answer is salvaged and retried once like a proxy answer.
