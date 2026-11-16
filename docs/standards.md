@@ -92,6 +92,14 @@ What it encodes:
   pulled yet and fails the job that uses it with `ImagePullBackOff`. The hold lets the
   image appear first. It sets no automerge and no group, so the automerge rules still
   decide the lane.
+- **Renovate opens a PR only where it will merge it, or where a person asked for it.** A class
+  nobody may automerge carries `dependencyDashboardApproval: true`, so Renovate lists it on the
+  Dependency Dashboard and opens the PR only when someone ticks its box: every gomod minor (the
+  `kubernetes`, `sigs.k8s.io`, `fluxcd` and `cloudnative-pg` groups only rename the group and
+  inherit the gate), the first-party group, `go` itself and the `golang` image, and every major.
+  A ticked PR keeps `needs-human`, because the person who asked for it merges it. The gate applies
+  only to a branch that does not exist yet (Renovate's `processBranch` tests `!branchExists`
+  before `dependencyDashboardApproval`), so a PR already open stays open and keeps being rebased.
 - **Automerge** for mise minor/patch/digest, gomod patch/digest, and the trusted
   GitHub Actions lane described below — never for `github.com/go-kure/**` gomod
   deps, since cross-repo bumps carry release-ordering constraints (launcher must
@@ -115,9 +123,15 @@ What it encodes:
   repo must check before relying on this.
 - **Vulnerability alerts** — `vulnerabilityAlerts.enabled: true` raises a PR for a known-CVE
   dependency immediately, bypassing `minimumReleaseAge`/schedule/`dependencyDashboardApproval`
-  gates (Renovate's own default for the block already does this; nothing here restates it).
-  `addLabels: ["security"]` marks the PR without disturbing whichever automerge lane it lands
-  in. `osvVulnerabilityAlerts: true` additionally consults the offline osv.dev database — the
+  gates. Renovate's option text reads "Config to apply when a PR is needed due to a vulnerability
+  in the existing package version", and its default object sets
+  `dependencyDashboardApproval: false` and `prCreation: "immediate"`, forced over every rule, so
+  an alert opens even where a rule gates the class. The block is the security lane:
+  `automerge: true` with `labels: ["dependencies", "security", "unattended"]`, so a security fix
+  merges itself on a green pipeline, minor and major included. Because the block is forced over
+  whatever rule matched, and no `packageRules` entry can tell an alert apart, an advisory on a
+  first-party module would automerge as well; the policy test pins that case.
+  `osvVulnerabilityAlerts: true` additionally consults the offline osv.dev database — the
   only alert source for GitLab-hosted consumer repos, since GitHub's own Dependabot-alert
   integration this preset also benefits from is platform-specific to repos hosted here. OSV
   covers gomod/npm/pypi/maven/… datasources; it does not cover `docker`, `dockerfile`,
@@ -154,7 +168,9 @@ What it encodes:
   `labels`, never `addLabels`: `labels` is a scalar that the last matching rule overwrites, while
   `addLabels` unions across every matching rule and can never be removed by a later one — building
   this on `addLabels` would let a rule advertise "this will automerge" and a later
-  `automerge: false` rule leave the label in place regardless. See [Labels](../standards/labels.md)
+  `automerge: false` rule leave the label in place regardless. The one `labels` outside
+  `packageRules` is the `vulnerabilityAlerts` block, which sets the `unattended` lane together with
+  `automerge: true` for a security fix. See [Labels](../standards/labels.md)
   for the label definitions.
 
 Repos add repo-specific rules (e.g. `postUpgradeTasks` running the repo's own
@@ -222,7 +238,9 @@ lane via `addLabels`, that every `automerge: false` rule sets `needs-human`, and
 `automerge: true` rule sets `unattended`. A `packageRules` entry with no matrix case exercising it
 is a hard failure, so a new rule cannot go unverified by omission. A separate matrix covers the
 `vulnerabilityAlerts` path, which bypasses `packageRules` entirely via a synthetic rule Renovate
-injects at fetch time.
+injects at fetch time: the block may set `labels` only as the complete security-lane pair
+(`automerge: true`, labels with `unattended` and no `needs-human`), and the matrix pins that an
+alert resolves to that lane on a gated minor, a gated major and a first-party module.
 
 The test runs against the installed `renovate` package's own rule resolver, not a reimplementation
 of Renovate's semantics — pinned in `scripts/test/renovate-version`, read by both `mise run test`
@@ -689,7 +707,7 @@ org-wide default. A repo-only ruleset applies solely to the repo(s) that declare
 remaining Dependabot repo (see [Dependency Management](#dependency-management)) — it has no
 `renovate.json` and no other source of vulnerability alerts. The three repos that extend the
 shared Renovate preset override it to `disabled`: Renovate's `vulnerabilityAlerts` lane
-(`osvVulnerabilityAlerts` + `addLabels: ["security"]`) already covers them, proven duplicate by
+(`osvVulnerabilityAlerts` + the `security` label of the `vulnerabilityAlerts` block) already covers them, proven duplicate by
 go-kure/kure#742 (Dependabot) and go-kure/kure#743 (Renovate `[security]`) opening for the same
 grpc bump within hours of each other.
 

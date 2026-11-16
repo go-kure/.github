@@ -71,8 +71,8 @@ the listed repos, and flags it as extra if it appears on any other repo. Labels 
 **Renovate labels** (no category prefix): `needs-human`, `unattended`, `security` — applied by
 the shared Renovate preset ([`renovate/shared.json`](../renovate/shared.json)). `needs-human`/
 `unattended` flag whether an update needs human review or is eligible for automerge; `security`
-is added on top of either verdict by `vulnerabilityAlerts.addLabels` when the update fixes a
-known vulnerability (go-kure/kure#743 is the first live example — go-kure/kure#742 was the
+is carried next to `unattended` by the `vulnerabilityAlerts` block (a security fix merges itself
+on a green pipeline) when the update fixes a known vulnerability (go-kure/kure#743 is the first live example — go-kure/kure#742 was the
 Dependabot PR for the same bump it superseded). `security` is
 distinct from the `type/security` issue-classification label above: that one is a manually-applied
 `type/` value for issues, this one is bot-applied to PRs and never chosen by a person. All three
