@@ -60,12 +60,13 @@ prt_test_failure_context() {
 #
 # The suite prints nothing while a section runs, so a job that hit its time limit named no slow
 # section (go-kure/.github#425). prt_note_gap prints one NOTE when the work since the previous assertion
-# took PRT_TEST_GAP_NOTE_SECONDS (default 20) or more, naming the assertion that follows it, its line
-# and the seconds since the suite started. A suite that runs in time prints no extra line.
+# took PRT_TEST_GAP_NOTE_SECONDS (default 5) or more, naming the assertion that follows it, its line
+# and the seconds since the suite started. The default was 20; a CI log then showed two notes that
+# covered 91 of 516 seconds and left the other 425 in gaps under the limit (go-kure/.github#425).
 prt_gap_last=$SECONDS
 prt_note_gap() {
   local now=$SECONDS
-  if [ $((now - prt_gap_last)) -ge "${PRT_TEST_GAP_NOTE_SECONDS:-20}" ]; then
+  if [ $((now - prt_gap_last)) -ge "${PRT_TEST_GAP_NOTE_SECONDS:-5}" ]; then
     echo "NOTE: slow: $((now - prt_gap_last))s of work before the case \"$1\" (line ${BASH_LINENO[1]:-0}, ${now}s into the suite)"
   fi
   prt_gap_last=$now
