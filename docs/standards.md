@@ -99,8 +99,8 @@ What it encodes:
   inherit the gate), the first-party group, `go` itself and the `golang` image, and every major
   of the managers the major gate lists (gomod, mise, dockerfile, github-actions, npm and custom
   managers). A security fix is the exception: it opens unasked (see Vulnerability alerts below).
-  The gate is not yet complete: other classes that need a person (an untrusted GitHub Action, a
-  Docker or npm minor or patch) still open unasked. A ticked PR keeps `needs-human`, because the person who asked for it merges it. The gate applies
+  The gate is not yet complete: other classes that need a person (a minor, patch or digest bump of
+  an untrusted GitHub Action, and a Docker or npm minor or patch) still open unasked. A ticked PR keeps `needs-human`, because the person who asked for it merges it. The gate applies
   only to a branch that does not exist yet (Renovate's `processBranch` tests `!branchExists`
   before `dependencyDashboardApproval`), so a PR already open stays open and keeps being rebased.
 - **Automerge** for mise minor/patch/digest, gomod patch/digest, and the trusted
