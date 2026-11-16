@@ -43,7 +43,7 @@ github_defaults:
     # extend the shared Renovate preset (.github, kure, launcher) override it
     # to disabled below, since Renovate's vulnerabilityAlerts lane
     # (renovate/shared.json: osvVulnerabilityAlerts +
-    # vulnerabilityAlerts.addLabels: ["security"]) duplicates it for them.
+    # the vulnerabilityAlerts block's "security" label) duplicates it for them.
     # Proof it's a real duplicate, not just config-level overlap:
     # go-kure/kure#742 (Dependabot) and go-kure/kure#743 (Renovate
     # [security]) opened as the same grpc bump within hours of each other;

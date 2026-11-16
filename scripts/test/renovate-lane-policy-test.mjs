@@ -218,8 +218,17 @@ const MATRIX = [
   { name: "go itself via mise (dashboard-gated, never automerged)", ruleIndices: [9], input: { manager: "mise", updateType: "minor", depName: "go" }, expect: "needs-human", expectSeparateMinorPatch: true },
   { name: "go itself via gomod (dashboard-gated, never automerged)", ruleIndices: [9], input: { manager: "gomod", updateType: "patch", depName: "go", packageName: "go" }, expect: "needs-human", expectSeparateMinorPatch: true },
   { name: "golang dockerfile tag (dashboard-gated, never automerged)", ruleIndices: [10], input: { manager: "dockerfile", updateType: "minor", depName: "golang", packageName: "golang" }, expect: "needs-human", expectSeparateMinorPatch: true },
-  { name: "gomod minor, kubernetes (no automerge rule matches minor)", ruleIndices: [1, 3], input: { manager: "gomod", updateType: "minor", depName: "k8s.io/api", packageName: "k8s.io/api" }, expect: "needs-human" },
-  { name: "gomod patch, kubernetes (automerges)", ruleIndices: [2, 3, 16], input: { manager: "gomod", updateType: "patch", depName: "k8s.io/api", packageName: "k8s.io/api" }, expect: "unattended" },
+  // Every gomod minor is dashboard-gated by rule 1 (nobody automerges a minor, so Renovate opens
+  // one only when its box is ticked); the group rules below only rename the group and inherit the
+  // gate, which is why each group gets its own minor case. The patch cases pin the other side:
+  // a patch is not gated.
+  { name: "gomod minor, ungrouped (dashboard-gated, never automerged)", ruleIndices: [1], input: { manager: "gomod", updateType: "minor", depName: "github.com/some/other", packageName: "github.com/some/other" }, expect: "needs-human", expectDashboardApproval: true, expectGroupName: "go-minor" },
+  { name: "gomod minor, kubernetes (dashboard-gated, never automerged)", ruleIndices: [1, 3], input: { manager: "gomod", updateType: "minor", depName: "k8s.io/api", packageName: "k8s.io/api" }, expect: "needs-human", expectDashboardApproval: true, expectGroupName: "kubernetes" },
+  { name: "gomod minor, sigs.k8s.io (dashboard-gated, never automerged)", ruleIndices: [1, 4], input: { manager: "gomod", updateType: "minor", depName: "sigs.k8s.io/controller-runtime", packageName: "sigs.k8s.io/controller-runtime" }, expect: "needs-human", expectDashboardApproval: true, expectGroupName: "sigs.k8s.io" },
+  { name: "gomod minor, fluxcd (dashboard-gated, never automerged)", ruleIndices: [1, 5], input: { manager: "gomod", updateType: "minor", depName: "github.com/fluxcd/pkg/oci", packageName: "github.com/fluxcd/pkg/oci" }, expect: "needs-human", expectDashboardApproval: true, expectGroupName: "fluxcd" },
+  { name: "gomod minor, cloudnative-pg (dashboard-gated, never automerged)", ruleIndices: [1, 6], input: { manager: "gomod", updateType: "minor", depName: "github.com/cloudnative-pg/machinery", packageName: "github.com/cloudnative-pg/machinery" }, expect: "needs-human", expectDashboardApproval: true, expectGroupName: "cloudnative-pg" },
+  { name: "gomod minor, first-party go-kure (dashboard-gated, never automerged)", ruleIndices: [1, 7], input: { manager: "gomod", updateType: "minor", depName: "github.com/go-kure/kure", packageName: "github.com/go-kure/kure" }, expect: "needs-human", expectDashboardApproval: true, expectGroupName: "internal" },
+  { name: "gomod patch, kubernetes (automerges, not gated)", ruleIndices: [2, 3, 16], input: { manager: "gomod", updateType: "patch", depName: "k8s.io/api", packageName: "k8s.io/api" }, expect: "unattended", expectDashboardApproval: false },
   { name: "gomod digest, sigs.k8s.io (automerges)", ruleIndices: [2, 4, 16], input: { manager: "gomod", updateType: "digest", depName: "sigs.k8s.io/controller-runtime", packageName: "sigs.k8s.io/controller-runtime" }, expect: "unattended" },
   { name: "gomod patch, fluxcd (automerges)", ruleIndices: [2, 5, 16], input: { manager: "gomod", updateType: "patch", depName: "github.com/fluxcd/pkg/oci", packageName: "github.com/fluxcd/pkg/oci" }, expect: "unattended" },
   { name: "gomod patch, cloudnative-pg (automerges)", ruleIndices: [2, 6, 16], input: { manager: "gomod", updateType: "patch", depName: "github.com/cloudnative-pg/machinery", packageName: "github.com/cloudnative-pg/machinery" }, expect: "unattended" },
@@ -227,7 +236,7 @@ const MATRIX = [
   // github.com/go-kure/**, so it never matches this case — that exclusion is the point being
   // proven (needs-human survives despite sitting right next to the automerge rule). Rule 16's
   // coverage comes from the four automerge cases above that it actually matches.
-  { name: "gomod patch, first-party go-kure (never automerged)", ruleIndices: [2, 7], input: { manager: "gomod", updateType: "patch", depName: "github.com/go-kure/kure", packageName: "github.com/go-kure/kure" }, expect: "needs-human" },
+  { name: "gomod patch, first-party go-kure (dashboard-gated, never automerged)", ruleIndices: [2, 7], input: { manager: "gomod", updateType: "patch", depName: "github.com/go-kure/kure", packageName: "github.com/go-kure/kure" }, expect: "needs-human", expectDashboardApproval: true },
   { name: "gomod major, any dep (dashboard-gated, never automerged)", ruleIndices: [11], input: { manager: "gomod", updateType: "major", depName: "github.com/some/other", packageName: "github.com/some/other" }, expect: "needs-human", expectDashboardApproval: true },
   // The trusted GitHub Actions lane (go-kure/kure#813's dependency; go-kure/.github#217): tier 1
   // (go-kure/.github itself) and tier 2 (the five listed GitHub-maintained actions) automerge on
@@ -303,7 +312,17 @@ const MATRIX = [
 // that a lane survived.
 const VULN_MATRIX = [
   { name: "vulnerability alert on an automerging gomod patch (lane survives, still automerges)", ruleIndices: [2, 3, 16], input: { manager: "gomod", datasource: "go", updateType: "patch", depName: "k8s.io/api", packageName: "k8s.io/api" }, expect: "unattended", expectAutomerge: true },
-  { name: "vulnerability alert on a dashboard-gated major (gate bypassed, lane still needs-human)", ruleIndices: [11], input: { manager: "gomod", datasource: "go", updateType: "major", depName: "github.com/some/other", packageName: "github.com/some/other" }, expect: "needs-human", expectDashboardApproval: false },
+  // The security lane: the vulnerabilityAlerts block forces automerge:true and the unattended lane
+  // over whatever the authored rules resolved, and the alert defaults force
+  // dependencyDashboardApproval:false, so a CVE fix opens unasked on a path that is otherwise
+  // gated (minor, major) and merges on a green pipeline. The first-party case is the residual:
+  // force wins over the internal group's automerge:false and no packageRule can tell an alert
+  // apart, so an advisory on a first-party module would automerge too. Pinned as it is, so a
+  // change in Renovate's force precedence fails here instead of going unnoticed.
+  { name: "vulnerability alert on a dashboard-gated gomod minor (gate bypassed, security lane automerges)", ruleIndices: [1], input: { manager: "gomod", datasource: "go", updateType: "minor", depName: "golang.org/x/net", packageName: "golang.org/x/net" }, expect: "unattended", expectAutomerge: true, expectDashboardApproval: false },
+  { name: "vulnerability alert on a kubernetes gomod minor (gate bypassed, security lane automerges)", ruleIndices: [1, 3], input: { manager: "gomod", datasource: "go", updateType: "minor", depName: "k8s.io/api", packageName: "k8s.io/api" }, expect: "unattended", expectAutomerge: true, expectDashboardApproval: false },
+  { name: "vulnerability alert on a dashboard-gated major (gate bypassed, security lane automerges on a green pipeline)", ruleIndices: [11], input: { manager: "gomod", datasource: "go", updateType: "major", depName: "github.com/some/other", packageName: "github.com/some/other" }, expect: "unattended", expectAutomerge: true, expectDashboardApproval: false },
+  { name: "vulnerability alert on a first-party minor (residual: force wins over automerge:false)", ruleIndices: [1, 7], input: { manager: "gomod", datasource: "go", updateType: "minor", depName: "github.com/go-kure/kure", packageName: "github.com/go-kure/kure" }, expect: "unattended", expectAutomerge: true, expectDashboardApproval: false },
   // Rule 12's enabled:false does NOT survive the synthetic rule: force.enabled:true clears the
   // skipReason rule 12 set and overwrites enabled (verified on 44.14.10, 44.42.0 and 44.65.3,
   // both the OSV and the GitHub-alert rule shapes). `expectEnabled: true` pins exactly that, so
@@ -602,15 +621,24 @@ if ((preset.addLabels ?? []).some((l) => LANES.includes(l))) {
   failures++;
 }
 // vulnerabilityAlerts is force-merged (renovate/lib/util/package-rules/
-// index.ts) over whichever rule already matched, so `labels` here would
-// silently replace the resolved lane rather than add to it — only
-// addLabels is safe, and it may not itself carry a lane term.
+// index.ts) over whichever rule already matched, so `labels` here silently
+// replaces the resolved lane. That is the security lane's whole mechanism
+// (an alert merges unattended), so it is allowed only as a complete pair:
+// automerge:true with labels that carry unattended and never needs-human.
+// Either half alone would split the lane from the merge behaviour.
+// addLabels may not carry a lane term.
 if (preset.vulnerabilityAlerts) {
-  if ("labels" in preset.vulnerabilityAlerts) {
-    console.error("FAIL [structural] vulnerabilityAlerts sets `labels`, which force-replaces the resolved lane — use addLabels instead");
+  const va = preset.vulnerabilityAlerts;
+  const vaLabels = va.labels ?? [];
+  if ("labels" in va && (va.automerge !== true || !vaLabels.includes("unattended") || vaLabels.includes("needs-human"))) {
+    console.error("FAIL [structural] vulnerabilityAlerts sets `labels` without the complete security-lane pair (automerge:true, labels with unattended and no needs-human), which force-replaces the resolved lane");
     failures++;
   }
-  if ((preset.vulnerabilityAlerts.addLabels ?? []).some((l) => LANES.includes(l))) {
+  if (va.automerge === true && !vaLabels.includes("unattended")) {
+    console.error("FAIL [structural] vulnerabilityAlerts has automerge:true but no unattended label");
+    failures++;
+  }
+  if ((va.addLabels ?? []).some((l) => LANES.includes(l))) {
     console.error("FAIL [structural] vulnerabilityAlerts.addLabels sets a lane label");
     failures++;
   }

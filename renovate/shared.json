@@ -37,7 +37,8 @@
   "osvVulnerabilityAlerts": true,
   "vulnerabilityAlerts": {
     "enabled": true,
-    "addLabels": ["security"]
+    "automerge": true,
+    "labels": ["dependencies", "security", "unattended"]
   },
   "packageRules": [
     {
@@ -48,11 +49,12 @@
       "matchDepNames": ["!go"]
     },
     {
-      "description": "Go module minor bumps not already claimed by a package-name group below. Split from patch/digest (see go-patch below) because Renovate ANDs automerge across every member of one grouped branch — a single minor bump riding along with patch/digest deps on one branch was blocking that branch's automerge entirely. MUST stay before the package-name rules: Renovate applies packageRules in order and a later match overwrites an earlier scalar groupName, so this generic rule would silently absorb kubernetes/sigs.k8s.io/fluxcd/cloudnative-pg/internal updates if it came after them. Excludes go: keep standalone so a Go bump can't red the whole group.",
+      "description": "Go module minor bumps not already claimed by a package-name group below. Split from patch/digest (see go-patch below) because Renovate ANDs automerge across every member of one grouped branch — a single minor bump riding along with patch/digest deps on one branch was blocking that branch's automerge entirely. MUST stay before the package-name rules: Renovate applies packageRules in order and a later match overwrites an earlier scalar groupName, so this generic rule would silently absorb kubernetes/sigs.k8s.io/fluxcd/cloudnative-pg/internal updates if it came after them. Excludes go: keep standalone so a Go bump can't red the whole group. Dashboard-gated: no automerge rule matches a minor, so each one used to open as a needs-human PR and wait for a person to merge it. Renovate now opens one only when someone ticks its box on the Dependency Dashboard, and the kubernetes, sigs.k8s.io, fluxcd and cloudnative-pg groups below inherit the gate, since they only rename the group. A security fix still opens unasked: vulnerabilityAlerts forces dependencyDashboardApproval to false, and the top-level vulnerabilityAlerts block merges it.",
       "groupName": "go-minor",
       "matchManagers": ["gomod"],
       "matchUpdateTypes": ["minor"],
-      "matchDepNames": ["!go"]
+      "matchDepNames": ["!go"],
+      "dependencyDashboardApproval": true
     },
     {
       "description": "Go module patch/digest bumps not already claimed by a package-name group below. Split from minor (see go-minor above) so this group never carries a minor member and stays automerge-eligible on its own via the automerge rule near the end of this array. MUST stay before the package-name rules, same reason as go-minor. Excludes go: keep standalone.",
@@ -85,12 +87,13 @@
       "matchPackageNames": ["github.com/cloudnative-pg/**"]
     },
     {
-      "description": "First-party libraries. Never automerged: a go-kure/kure bump in a consumer repo carries release-ordering constraints (see the consumer's own guards). Downstream consumers add their own matchers for their own modules in their own config; this preset is public and stays upstream-only.",
+      "description": "First-party libraries. Never automerged: a go-kure/kure bump in a consumer repo carries release-ordering constraints (see the consumer's own guards). Downstream consumers add their own matchers for their own modules in their own config; this preset is public and stays upstream-only. Dashboard-gated as well: a bump nobody may automerge is hand work, so Renovate opens it only when someone ticks its box on the Dependency Dashboard (the label stays needs-human because a person merges it). A security fix still opens unasked and carries the top-level vulnerabilityAlerts block, so an advisory on a first-party module would automerge: force wins over automerge:false here, and no rule can tell an alert apart.",
       "groupName": "internal",
       "matchPackageNames": [
         "github.com/go-kure/**"
       ],
       "automerge": false,
+      "dependencyDashboardApproval": true,
       "labels": ["dependencies", "needs-human"]
     },
     {
