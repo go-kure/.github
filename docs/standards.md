@@ -92,17 +92,19 @@ What it encodes:
   pulled yet and fails the job that uses it with `ImagePullBackOff`. The hold lets the
   image appear first. It sets no automerge and no group, so the automerge rules still
   decide the lane.
-- **Renovate opens a PR only where it will merge it, or where a person asked for it.** A class
-  nobody may automerge carries `dependencyDashboardApproval: true`, so Renovate lists it on the
-  Dependency Dashboard and opens the PR only when someone ticks its box: every gomod minor (the
+- **Classes nobody may automerge wait for a tick on the Dependency Dashboard.** These classes
+  carry `dependencyDashboardApproval: true`, so Renovate lists them there and opens the PR only
+  when someone ticks the box: every gomod minor (the
   `kubernetes`, `sigs.k8s.io`, `fluxcd` and `cloudnative-pg` groups only rename the group and
   inherit the gate), the first-party group, `go` itself and the `golang` image, and every major.
-  A ticked PR keeps `needs-human`, because the person who asked for it merges it. The gate applies
+  The gate is not yet complete: other classes that need a person (an untrusted GitHub Action, a
+  Docker or npm minor or patch, a mise bump the automerge rule does not cover) still open
+  unasked. A ticked PR keeps `needs-human`, because the person who asked for it merges it. The gate applies
   only to a branch that does not exist yet (Renovate's `processBranch` tests `!branchExists`
   before `dependencyDashboardApproval`), so a PR already open stays open and keeps being rebased.
 - **Automerge** for mise minor/patch/digest, gomod patch/digest, and the trusted
   GitHub Actions lane described below — never for `github.com/go-kure/**` gomod
-  deps, since cross-repo bumps carry release-ordering constraints (launcher must
+  deps (a security fix is the one exception, see Vulnerability alerts below), since cross-repo bumps carry release-ordering constraints (launcher must
   not lead the kure release it imports; see launcher's `check-kure-dep-sync`
   guard). `automergeStrategy: "rebase"` makes an automerged PR request the same
   rebase method the merge queue uses, never squash.
