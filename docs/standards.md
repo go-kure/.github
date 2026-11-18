@@ -110,11 +110,18 @@ What it encodes:
   guard). `automergeStrategy: "rebase"` makes an automerged PR request the same
   rebase method the merge queue uses, never squash.
 - **Trusted GitHub Actions lane** (`groupName: "github-actions-trusted"`) — a
-  small, deliberately short allowlist of low-blast-radius actions (`go-kure/.github`
-  itself, plus `actions/checkout`, `actions/cache`, `actions/setup-go`,
-  `actions/download-artifact`, `actions/upload-artifact`) automerges on
-  digest/minor/patch; every other GitHub Action, trusted or not, stays in the
-  plain `github-actions` group and needs human review (`needs-human`). A major on
+  small, deliberately short allowlist (`go-kure/.github` itself, plus `actions/checkout`,
+  `actions/cache`, `actions/setup-go`, `actions/download-artifact`,
+  `actions/upload-artifact`, and `anthropics/claude-code-action`) automerges on
+  digest/minor/patch; every other GitHub Action stays in the
+  plain `github-actions` group and needs human review (`needs-human`). The lane is not
+  only GitHub-maintained actions. The `actions/*` entries are there because they are
+  small, widely used and low in blast radius. `anthropics/claude-code-action` is
+  third-party and does not meet that test: the `claude.yml` workflow runs it with the
+  `CLAUDE_CODE_OAUTH_TOKEN` secret, read access to contents, pull requests, issues and
+  actions, and `id-token: write`. It is on the list by the repository owner's decision, and
+  that decision covers digest, minor and patch bumps only. A sibling action of the same
+  publisher is not covered, because the list matches exact names. A major on
   a trusted-lane action is excluded from automerge by this rule's own
   `matchUpdateTypes`, not merely by the dashboard-approval gate above — that gate
   blocks branch/PR creation, not merging a branch a human already approved. The
@@ -188,7 +195,9 @@ inheriting the preset is not the whole job. Before relying on it:
 1. **Know what's inherited.** The trusted allowlist, its `digest`/`minor`/`patch`
    restriction, the `github-actions-trusted` grouping, and the `unattended` /
    `needs-human` lane labels all come from this preset unchanged. A consumer does
-   not repeat any of this in its own `renovate.json`.
+   not repeat any of this in its own `renovate.json`. The allowlist matches by
+   dependency name, so a consumer that pins one of the listed actions itself,
+   `anthropics/claude-code-action` included, gets the same automerge for that pin.
 2. **Check for a consumer override that would undo the split.** A `packageRules`
    entry in the consumer's own `renovate.json` matching one of the trusted
    `matchDepNames` can re-fold it into a different group or turn off its
