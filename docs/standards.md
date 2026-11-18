@@ -69,9 +69,30 @@ extend it with:
 
 What it encodes:
 
+- **Lanes by dependency class** — what a bump of each class does:
+
+  | Class | Patch | Minor | Major |
+  |---|---|---|---|
+  | Core libraries we code against (`k8s.io/**`, `sigs.k8s.io/**`, fluxcd and controlplaneio-fluxcd including the flux-operator chart pin and the flux2 tool, cloudnative-pg, external-secrets, helm.sh) | automerges | dashboard | dashboard |
+  | First-party Go modules (`github.com/go-kure/**`) | opens a PR, never automerges | dashboard | dashboard |
+  | Other Go modules | automerges | dashboard | dashboard |
+  | Everything else (npm, container and CI images, compose files, regex pins, GitHub Actions) | automerges | opens a PR for a hand merge | dashboard |
+
+  Digest bumps keep their earlier behaviour: a Go digest of a non-first-party module
+  automerges (several core modules are pseudo-version modules), a first-party digest waits on
+  the dashboard, any other digest opens a PR. Renovate classifies a bump inside one
+  pre-release line (`v0.2.0-rc.2` to `v0.2.0-rc.3`) and the step from the last pre-release to the
+  final release as a patch, so a core library that sits on a pre-release automerges its
+  pre-release bumps; Renovate proposes pre-releases only to a dependency that is already on one.
+  The lane-policy test pins that classification.
 - **Grouping** — mise toolchain, Go minors and patches split (so patch groups stay
   automerge-eligible), and ecosystem groups (kubernetes, sigs.k8s.io, fluxcd,
-  cloudnative-pg) that follow upstream release cadence.
+  cloudnative-pg) that follow upstream release cadence. Renovate ANDs automerge and the
+  dashboard gate across every member of one grouped branch, so every group where a patch
+  automerges and a minor does not (the ecosystem groups, the first-party group, the
+  GitHub Actions groups) keeps the two apart: `separateMinorPatch` for the Go groups, a
+  `ci-patch` group for Actions patches. Without that split one minor holds every patch of its
+  group.
 - **Every major update requires dependency-dashboard approval**, across every manager
   currently in use (`gomod`, `mise`, `dockerfile`, `github-actions`, `npm`) plus
   `customManagers` regex/jsonata entries (matched via `custom.*`) — not a blanket
@@ -96,14 +117,17 @@ What it encodes:
   carry `dependencyDashboardApproval: true`, so Renovate lists them there and opens the PR only
   when someone ticks the box: every gomod minor (the
   `kubernetes`, `sigs.k8s.io`, `fluxcd` and `cloudnative-pg` groups only rename the group and
-  inherit the gate), the first-party group, `go` itself and the `golang` image, and every major
+  inherit the gate), the first-party group except its patches, a minor of a core library pin
+  that is not a Go module (the flux-operator chart pin, the `flux2` tool), `go` itself and the
+  `golang` image, and every major
   of the managers the major gate lists (gomod, mise, dockerfile, github-actions, npm and custom
   managers). A security fix is the exception: it opens unasked (see Vulnerability alerts below).
-  The gate is not yet complete: other classes that need a person (a minor, patch or digest bump of
-  an untrusted GitHub Action, and a Docker or npm minor or patch) still open unasked. A ticked PR keeps `needs-human`, because the person who asked for it merges it. The gate applies
+  Classes that need a person but are not gated (a minor of an untrusted GitHub Action, a Docker or
+  npm minor, a first-party patch, a digest of a non-Go pin) still open unasked, as a PR for a hand merge. A ticked PR keeps `needs-human`, because the person who asked for it merges it. The gate applies
   only to a branch that does not exist yet (Renovate's `processBranch` tests `!branchExists`
   before `dependencyDashboardApproval`), so a PR already open stays open and keeps being rebased.
-- **Automerge** for mise minor/patch/digest, gomod patch/digest, and the trusted
+- **Automerge** for mise patch/digest and minor (minor except `flux2`, a core library), gomod
+  patch/digest, a patch of everything else (see the lanes above), and the trusted
   GitHub Actions lane described below — never for `github.com/go-kure/**` gomod
   deps (a security fix is the one exception, see Vulnerability alerts below), since cross-repo bumps carry release-ordering constraints (launcher must
   not lead the kure release it imports; see launcher's `check-kure-dep-sync`
