@@ -42,11 +42,11 @@
   },
   "packageRules": [
     {
-      "description": "mise-managed toolchain tools, minor/patch/digest only — majors (e.g. node 24) need human review and must not join this group. Excludes go: also gomod-relevant, must stay standalone.",
+      "description": "mise-managed toolchain tools, minor/patch/digest only — majors (e.g. node 24) need human review and must not join this group. Excludes go: also gomod-relevant, must stay standalone. Excludes flux2: a core library whose minor waits on the Dependency Dashboard (rule 'core pins' below), so it must not share a branch with tools whose minors automerge.",
       "groupName": "toolchain",
       "matchManagers": ["mise"],
       "matchUpdateTypes": ["minor", "patch", "digest"],
-      "matchDepNames": ["!go"]
+      "matchDepNames": ["!go", "!flux2"]
     },
     {
       "description": "Go module minor bumps not already claimed by a package-name group below. Split from patch/digest (see go-patch below) because Renovate ANDs automerge across every member of one grouped branch — a single minor bump riding along with patch/digest deps on one branch was blocking that branch's automerge entirely. MUST stay before the package-name rules: Renovate applies packageRules in order and a later match overwrites an earlier scalar groupName, so this generic rule would silently absorb kubernetes/sigs.k8s.io/fluxcd/cloudnative-pg/internal updates if it came after them. Excludes go: keep standalone so a Go bump can't red the whole group. Dashboard-gated: no automerge rule matches a minor, so each one used to open as a needs-human PR and wait for a person to merge it. Renovate now opens one only when someone ticks its box on the Dependency Dashboard, and the kubernetes, sigs.k8s.io, fluxcd and cloudnative-pg groups below inherit the gate, since they only rename the group. A security fix still opens unasked: vulnerabilityAlerts forces dependencyDashboardApproval to false, and the top-level vulnerabilityAlerts block merges it.",
@@ -64,37 +64,89 @@
       "matchDepNames": ["!go"]
     },
     {
-      "description": "Kubernetes core. Grouping follows upstream release cadence.",
+      "description": "Kubernetes core. Grouping follows upstream release cadence. Core library lane: a patch automerges (tail rules), a minor and a major wait on the Dependency Dashboard. separateMinorPatch (read at lookup, so it must sit in a rule with no update-type matcher) keeps a patch from being hidden behind an available minor and puts the patch on its own branch 'patch-kubernetes': Renovate ANDs automerge and the dashboard gate across every member of one grouped branch, so without it one minor bump would hold every patch of the group.",
       "groupName": "kubernetes",
-      "matchPackageNames": ["k8s.io/**"]
+      "matchPackageNames": ["k8s.io/**"],
+      "separateMinorPatch": true
     },
     {
-      "description": "sigs.k8s.io. Grouping follows upstream release cadence.",
+      "description": "sigs.k8s.io. Grouping follows upstream release cadence. Core library lane, separateMinorPatch for the same reason as kubernetes above.",
       "groupName": "sigs.k8s.io",
-      "matchPackageNames": ["sigs.k8s.io/**"]
+      "matchPackageNames": ["sigs.k8s.io/**"],
+      "separateMinorPatch": true
     },
     {
-      "description": "Flux controller APIs are released together and imported as one surface — never bump piecemeal.",
+      "description": "Flux controller APIs are released together and imported as one surface — never bump piecemeal. Core library lane, separateMinorPatch for the same reason as kubernetes above.",
       "groupName": "fluxcd",
       "matchPackageNames": [
         "github.com/fluxcd/**",
         "github.com/controlplaneio-fluxcd/**"
-      ]
+      ],
+      "separateMinorPatch": true
     },
     {
-      "description": "CloudNativePG — the operator, machinery, barman-cloud and the plugin move together upstream.",
+      "description": "CloudNativePG — the operator, machinery, barman-cloud and the plugin move together upstream. Core library lane, separateMinorPatch for the same reason as kubernetes above.",
       "groupName": "cloudnative-pg",
-      "matchPackageNames": ["github.com/cloudnative-pg/**"]
+      "matchPackageNames": ["github.com/cloudnative-pg/**"],
+      "separateMinorPatch": true
     },
     {
-      "description": "First-party libraries. Never automerged: a go-kure/kure bump in a consumer repo carries release-ordering constraints (see the consumer's own guards). Downstream consumers add their own matchers for their own modules in their own config; this preset is public and stays upstream-only. Dashboard-gated as well: a bump nobody may automerge is hand work, so Renovate opens it only when someone ticks its box on the Dependency Dashboard (the label stays needs-human because a person merges it). A security fix still opens unasked and carries the top-level vulnerabilityAlerts block, so an advisory on a first-party module would automerge: force wins over automerge:false here, and no rule can tell an alert apart.",
+      "description": "Core library Go modules with no group of their own (their releases are independent): external-secrets and helm. No groupName, so each stays a branch of its own; this rule exists for separateMinorPatch alone, which is read at lookup and so cannot sit in the typed rules below. Same lane as the groups above: patch automerges, minor and major wait on the dashboard (rules go-minor and the major gate).",
+      "matchPackageNames": ["github.com/external-secrets/**", "helm.sh/**"],
+      "separateMinorPatch": true
+    },
+    {
+      "description": "First-party libraries. Never automerged: a go-kure/kure bump in a consumer repo carries release-ordering constraints (see the consumer's own guards). Downstream consumers add their own matchers for their own modules in their own config; this preset is public and stays upstream-only. Minor, major and digest wait for a tick on the Dependency Dashboard (a bump nobody may automerge is hand work; the label stays needs-human because a person merges it); a patch opens as a pull request without a tick, see the next rule. separateMinorPatch keeps the patch branch ('patch-internal') apart from the gated one and is read at lookup, so it lives here, in the rule with no update-type matcher. A security fix still opens unasked and carries the top-level vulnerabilityAlerts block, so an advisory on a first-party module would automerge: force wins over automerge:false here, and no rule can tell an alert apart.",
       "groupName": "internal",
       "matchPackageNames": [
         "github.com/go-kure/**"
       ],
+      "separateMinorPatch": true,
       "automerge": false,
       "dependencyDashboardApproval": true,
       "labels": ["dependencies", "needs-human"]
+    },
+    {
+      "description": "First-party patch: opens a pull request without a dashboard tick and is never automerged (the rule above sets automerge false and the lane label). A later rule overwrites the gate the previous rule set for every update type.",
+      "matchPackageNames": [
+        "github.com/go-kure/**"
+      ],
+      "matchUpdateTypes": ["patch"],
+      "dependencyDashboardApproval": false
+    },
+    {
+      "description": "Core library pins read by a manager other than gomod (a chart or image pin kept by a custom regex manager, the flux2 tool under mise, release pins of the operators): same lane as the Go modules. Minor and major wait on the dashboard; the patch override below lifts the gate for a patch, and the tail rules automerge it. separateMinorPatch for the same reason as the kubernetes group. matchDepNames, because a custom manager reports the name it extracts. Extend this list when a consumer adds a core pin of its own.",
+      "matchManagers": ["!gomod"],
+      "matchDepNames": [
+        "flux2",
+        "flux-operator",
+        "fluxcd/flux2",
+        "ghcr.io/controlplaneio-fluxcd/**",
+        "ghcr.io/fluxcd/**",
+        "ghcr.io/cloudnative-pg/**",
+        "cloudnative-pg/cloudnative-pg",
+        "ghcr.io/external-secrets/**",
+        "external-secrets/external-secrets"
+      ],
+      "separateMinorPatch": true,
+      "dependencyDashboardApproval": true
+    },
+    {
+      "description": "Core library pin patch and digest (non-gomod): not gated (a digest of these pins opened a pull request before, unchanged); a patch is automerged by the tail rules. Same matcher as the rule above.",
+      "matchManagers": ["!gomod"],
+      "matchUpdateTypes": ["patch", "digest"],
+      "matchDepNames": [
+        "flux2",
+        "flux-operator",
+        "fluxcd/flux2",
+        "ghcr.io/controlplaneio-fluxcd/**",
+        "ghcr.io/fluxcd/**",
+        "ghcr.io/cloudnative-pg/**",
+        "cloudnative-pg/cloudnative-pg",
+        "ghcr.io/external-secrets/**",
+        "external-secrets/external-secrets"
+      ],
+      "dependencyDashboardApproval": false
     },
     {
       "description": "GitHub Actions bumps land as chore(ci), matching the commit convention the previous Dependabot config used.",
@@ -102,6 +154,12 @@
       "groupName": "github-actions",
       "semanticCommitType": "chore",
       "semanticCommitScope": "ci"
+    },
+    {
+      "description": "GitHub Actions patches get a group of their own: a patch automerges (tail rules) and a minor does not, and Renovate ANDs automerge across every member of one grouped branch, so a minor in the plain group above would hold every patch riding with it.",
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["patch"],
+      "groupName": "ci-patch"
     },
     {
       "description": "Go itself is excluded from the groups above but must not land unreviewed — a bare Go bump fails each repo's version-consistency checks unless the repo's own sync tooling (scripts/sync-versions.sh) runs alongside it. Dashboard-gate rather than disable, so a security-relevant Go patch stays visible; ticking it still requires the manual sync. allowedVersions admits the 1.27 line, which the repos are moving to, so a repo on 1.27 keeps seeing its patches; it keeps 1.28 unproposed, because moving to the next minor is a coordinated change across the repos, not a bot bump — raise the ceiling with that move. separateMinorPatch keeps a repo still on the previous minor seeing that minor's patches too: without it Renovate puts a 1.26.x patch and the 1.27 move in one non-major bucket and offers only the higher, so the security backports a 1.26 repo needs would vanish from its dashboard. Includes custom.*: the all-managers major gate below has no depName exclusion any more, so it already dashboard-gates a custom-managed go major too — but only this rule carries the allowedVersions ceiling and gates go's minor/patch bumps, which the major gate never sees. A customManagers entry that ever extracted a dependency literally named go needs this rule for that, not just the two built-in managers that track Go's own version today.",
@@ -148,10 +206,18 @@
       "labels": ["dependencies", "unattended"]
     },
     {
-      "description": "Automerge: mise toolchain minor/patch/digest, excl. go. Kept as its own rule, not bolted onto the go-version gate rule, because automerge follows the same later-overwrites-earlier merge order as groupName — bolting it on would leak onto every matchPackageNames group above.",
+      "description": "Automerge: mise toolchain patch/digest, excl. go. Includes flux2: a patch of a core library automerges. Kept as its own rule, not bolted onto the go-version gate rule, because automerge follows the same later-overwrites-earlier merge order as groupName — bolting it on would leak onto every matchPackageNames group above.",
       "matchManagers": ["mise"],
-      "matchUpdateTypes": ["minor", "patch", "digest"],
+      "matchUpdateTypes": ["patch", "digest"],
       "matchDepNames": ["!go"],
+      "automerge": true,
+      "labels": ["dependencies", "unattended"]
+    },
+    {
+      "description": "Automerge: mise toolchain minor, excl. go and flux2. A flux2 minor is a core library minor and waits on the dashboard (core pins rule), so it is excluded here.",
+      "matchManagers": ["mise"],
+      "matchUpdateTypes": ["minor"],
+      "matchDepNames": ["!go", "!flux2"],
       "automerge": true,
       "labels": ["dependencies", "unattended"]
     },
@@ -162,10 +228,19 @@
       "minimumReleaseAge": "3 days"
     },
     {
-      "description": "Automerge: gomod patch/digest, excl. go and the first-party group — matches only the go-patch group above (never go-minor, since that group never contains a patch/digest member). Must be the array's last rule in THIS preset — nothing after it can re-enable automerge for a group meant to stay manual. A downstream consumer that adds its own first-party matchers must exclude them here too, by appending a rule that sets automerge false for them (later rules overwrite earlier scalars).",
+      "description": "Automerge: gomod patch/digest, excl. go and the first-party group — matches only the go-patch group above (never go-minor, since that group never contains a patch/digest member). Includes the core library modules (k8s.io, sigs.k8s.io, fluxcd, cloudnative-pg, external-secrets, helm): a core digest stays automerged, as before, because several core modules are pseudo-version modules. The automerge rules are the tail of this array and each excludes explicitly what it must not take, so none depends on rule order. A downstream consumer that adds its own first-party matchers must exclude them here too, by appending a rule that sets automerge false for them (later rules overwrite earlier scalars).",
       "matchManagers": ["gomod"],
       "matchUpdateTypes": ["patch", "digest"],
       "matchDepNames": ["!go"],
+      "matchPackageNames": ["!github.com/go-kure/**"],
+      "automerge": true,
+      "labels": ["dependencies", "unattended"]
+    },
+    {
+      "description": "Automerge: a patch of everything else — npm, CI and container images, compose files, custom regex pins, GitHub Actions — and of the core library pins a custom manager reads. Not gomod (the rule above) and not mise (the two rules above), not go or golang (dashboard-gated by their own rules), not the first-party modules. A minor of the same dependencies opens a pull request for a hand merge, a major waits on the dashboard. Must stay a tail rule: it relies on its own exclusions, not on order.",
+      "matchManagers": ["!gomod", "!mise"],
+      "matchUpdateTypes": ["patch"],
+      "matchDepNames": ["!go", "!golang"],
       "matchPackageNames": ["!github.com/go-kure/**"],
       "automerge": true,
       "labels": ["dependencies", "unattended"]
