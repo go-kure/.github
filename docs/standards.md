@@ -173,7 +173,10 @@ What it encodes:
   gates. Renovate's option text reads "Config to apply when a PR is needed due to a vulnerability
   in the existing package version", and its default object sets
   `dependencyDashboardApproval: false` and `prCreation: "immediate"`, forced over every rule, so
-  an alert opens even where a rule gates the class. The block is the security lane:
+  an alert opens even where a rule gates the class. The block's own `enabled: true` is forced
+  the same way, so a module that a `packageRules` entry disables with `enabled: false` still
+  gets its CVE fix; the one limit is a file `ignorePaths` drops (the `**/testdata/**` rule
+  below), which is never extracted, so no alert reaches it. The block is the security lane:
   `automerge: true` with `labels: ["dependencies", "security", "unattended"]`, so a security fix
   merges itself on a green pipeline, minor and major included. Because the block is forced over
   whatever rule matched, and no `packageRules` entry can tell an alert apart, an advisory on a
