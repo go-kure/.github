@@ -76,11 +76,13 @@ What it encodes:
   | Core libraries we code against (`k8s.io/**`, `sigs.k8s.io/**`, fluxcd and controlplaneio-fluxcd including the flux-operator chart pin and the flux2 tool, cloudnative-pg, external-secrets, helm.sh) | automerges | dashboard | dashboard |
   | First-party Go modules (`github.com/go-kure/**`) | opens a PR, never automerges | dashboard | dashboard |
   | Other Go modules | automerges | dashboard | dashboard |
-  | Everything else (npm, container and CI images, compose files, regex pins, GitHub Actions) | automerges | opens a PR for a hand merge | dashboard, for the managers the major gate lists below; any other manager's major opens a PR |
+  | Everything else (npm, container images, compose files, regex pins) | automerges | opens a PR for a hand merge | dashboard, for the managers the major gate lists below; any other manager's major opens a PR |
+  | GitHub Actions | trusted lane automerges (see below); any other Action opens a PR for a hand merge | same | dashboard |
 
-  Two exceptions are kept as they were: a minor of a trusted GitHub Action (see the trusted lane
-  below) automerges, and a docker-compose major opens a PR, because the major gate does not list
-  that manager.
+  Two exceptions are kept as they were: a docker-compose major opens a PR, because the major gate
+  does not list that manager, and a GitHub Action outside the trusted lane never automerges, a
+  patch included. An untrusted Action runs with the repository's token and a patch tag can be
+  retargeted (the tj-actions incident), so only the short trusted allowlist automerges.
 
   Digest bumps keep their earlier behaviour: a Go digest of a non-first-party module
   automerges (several core modules are pseudo-version modules), a first-party digest waits on
@@ -97,8 +99,7 @@ What it encodes:
   patch and a minor of one dependency share one candidate bucket: only the minor is offered, and
   a dashboard-gated minor would hide every patch behind it. It also puts a group's patch on its
   own branch, which matters because Renovate ANDs automerge and the dashboard gate across every
-  member of one grouped branch: a minor on the patch's branch would hold it. GitHub Actions
-  patches also get a `ci-patch` group of their own, for the same reason.
+  member of one grouped branch: a minor on the patch's branch would hold it.
 - **Every major update requires dependency-dashboard approval**, across every manager
   currently in use (`gomod`, `mise`, `dockerfile`, `github-actions`, `npm`) plus
   `customManagers` regex/jsonata entries (matched via `custom.*`) — not a blanket
@@ -128,7 +129,7 @@ What it encodes:
   `golang` image, and every major
   of the managers the major gate lists (gomod, mise, dockerfile, github-actions, npm and custom
   managers). A security fix is the exception: it opens unasked (see Vulnerability alerts below).
-  Classes that need a person but are not gated (a minor of an untrusted GitHub Action, a Docker or
+  Classes that need a person but are not gated (a patch or minor of an untrusted GitHub Action, a Docker or
   npm minor, a first-party patch, a digest of a non-Go pin) still open unasked, as a PR for a hand merge. A ticked PR keeps `needs-human`, because the person who asked for it merges it. The gate applies
   only to a branch that does not exist yet (Renovate's `processBranch` tests `!branchExists`
   before `dependencyDashboardApproval`), so a PR already open stays open and keeps being rebased.

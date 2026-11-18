@@ -146,12 +146,6 @@
       "semanticCommitScope": "ci"
     },
     {
-      "description": "GitHub Actions patches get a group of their own: a patch automerges (tail rules) and a minor does not, and Renovate ANDs automerge across every member of one grouped branch, so a minor in the plain group above would hold every patch riding with it.",
-      "matchManagers": ["github-actions"],
-      "matchUpdateTypes": ["patch"],
-      "groupName": "ci-patch"
-    },
-    {
       "description": "Go itself is excluded from the groups above but must not land unreviewed — a bare Go bump fails each repo's version-consistency checks unless the repo's own sync tooling (scripts/sync-versions.sh) runs alongside it. Dashboard-gate rather than disable, so a security-relevant Go patch stays visible; ticking it still requires the manual sync. allowedVersions admits the 1.27 line, which the repos are moving to, so a repo on 1.27 keeps seeing its patches; it keeps 1.28 unproposed, because moving to the next minor is a coordinated change across the repos, not a bot bump — raise the ceiling with that move. separateMinorPatch keeps a repo still on the previous minor seeing that minor's patches too: without it Renovate puts a 1.26.x patch and the 1.27 move in one non-major bucket and offers only the higher, so the security backports a 1.26 repo needs would vanish from its dashboard. Includes custom.*: the all-managers major gate below has no depName exclusion any more, so it already dashboard-gates a custom-managed go major too — but only this rule carries the allowedVersions ceiling and gates go's minor/patch bumps, which the major gate never sees. A customManagers entry that ever extracted a dependency literally named go needs this rule for that, not just the two built-in managers that track Go's own version today.",
       "matchManagers": ["mise", "gomod", "custom.*"],
       "matchDepNames": ["go"],
@@ -227,8 +221,8 @@
       "labels": ["dependencies", "unattended"]
     },
     {
-      "description": "Automerge: a patch of everything else — npm, CI and container images, compose files, custom regex pins, GitHub Actions — and of the core library pins a custom manager reads. Not gomod (the rule above) and not mise (the two rules above), not go or golang (dashboard-gated by their own rules), not the first-party modules. A minor of the same dependencies opens a pull request for a hand merge, a major waits on the dashboard. Must stay a tail rule: it relies on its own exclusions, not on order.",
-      "matchManagers": ["!gomod", "!mise"],
+      "description": "Automerge: a patch of everything else — npm, container images, compose files, custom regex pins — and of the core library pins a custom manager reads. Not gomod (the rule above) and not mise (the two rules above), not GitHub Actions (only the trusted lane automerges an Action, because an untrusted Action runs with the repository's token and a patch tag can be retargeted: the tj-actions incident), not go or golang (dashboard-gated by their own rules), not the first-party modules. A minor of the same dependencies opens a pull request for a hand merge, a major waits on the dashboard. Must stay a tail rule: it relies on its own exclusions, not on order.",
+      "matchManagers": ["!gomod", "!mise", "!github-actions"],
       "matchUpdateTypes": ["patch"],
       "matchDepNames": ["!go", "!golang"],
       "matchPackageNames": ["!github.com/go-kure/**"],
