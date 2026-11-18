@@ -84,8 +84,8 @@
 //     updateType, so a Renovate upgrade that reclassifies fails here.
 //  7. Branch partition — for every group where a patch automerges and a minor
 //     does not, Renovate's own generateBranchName must put the two on different
-//     branches (it ANDs automerge and the dashboard gate across one grouped
-//     branch), with a control that strips separateMinorPatch and must see one.
+//     branches (a grouped branch automerges only when every member does, and is
+//     held when any member needs dashboard approval), with a control that strips separateMinorPatch and must see one.
 //  8. Candidate selection — Renovate's own getBucket must put a patch and a
 //     minor release of one dependency in different buckets for every manager
 //     the lanes route (separateMinorPatch is read at lookup, before any
@@ -707,7 +707,13 @@ for (const u of UPDATE_TYPE_CASES) {
 // The condition AND the assignment it guards: a source that keeps the condition and assigns
 // another type would pass a condition-only pin, so the assignment is part of the pattern, and the
 // control runs the same pattern over a copy with the assignment changed, which must not match.
-const PSEUDO_DIGEST_PIN = /config\.manager === "gomod" && compareValue\?\.startsWith\("v0\.0\.0-"\) && update\.newValue\?\.startsWith\("v0\.0\.0-"\) && config\.currentDigest !== update\.newDigest\) \{\s*update\.updateType = "digest";/;
+// Renovate writes the pseudo-version test in two forms: up to 44.101.2 `<value>?.startsWith("v0.0.0-")`
+// on both values, from 44.251.0 `isPseudoVersion(<value>)` on both. Each side accepts either form, so
+// the pin holds at every pin the harness runs against and still fails when the condition goes away.
+const PSEUDO_SIDE = String.raw`(?:XX\?\.startsWith\("v0\.0\.0-"\)|isPseudoVersion\(XX\))`;
+const PSEUDO_DIGEST_PIN = new RegExp(
+  String.raw`config\.manager === "gomod" && ` + PSEUDO_SIDE.replaceAll("XX", "compareValue") + String.raw` && ` +
+  PSEUDO_SIDE.replaceAll("XX", "update\\.newValue") + String.raw` && config\.currentDigest !== update\.newDigest\) \{\s*update\.updateType = "digest";`);
 // A bare package specifier (no module entry argument) is not a URL: resolve it the way import()
 // does before reading the file; an explicit entry is already a file URL.
 const lookupUrl = lookupModuleSpecifier.startsWith("file:") ? lookupModuleSpecifier : import.meta.resolve(lookupModuleSpecifier);
@@ -755,8 +761,9 @@ for (const b of BUCKET_CASES) {
     failures++;
   }
 }
-// Check 7 — branch partition. Renovate puts every update of one group on one branch and ANDs
-// automerge and the dashboard gate across its members, so a patch (automerge) sharing a branch
+// Check 7 — branch partition. Renovate puts every update of one group on one branch, automerges
+// the branch only when every member automerges (generate.ts: `every`) and holds it for
+// dashboard approval when any member needs it (`some`), so a patch (automerge) sharing a branch
 // with a minor (gate) is held by the minor. Resolve a patch and a minor of one group through the
 // preset, run Renovate's own generateBranchName on each, and require two different branches. The
 // control strips separateMinorPatch from the resolved config and must see ONE branch, so this
