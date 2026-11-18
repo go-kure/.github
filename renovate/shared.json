@@ -34,6 +34,7 @@
   "postUpdateOptions": ["gomodTidy"],
   "rebaseWhen": "behind-base-branch",
   "automergeStrategy": "rebase",
+  "separateMinorPatch": true,
   "osvVulnerabilityAlerts": true,
   "vulnerabilityAlerts": {
     "enabled": true,
@@ -64,44 +65,34 @@
       "matchDepNames": ["!go"]
     },
     {
-      "description": "Kubernetes core. Grouping follows upstream release cadence. Core library lane: a patch automerges (tail rules), a minor and a major wait on the Dependency Dashboard. separateMinorPatch (read at lookup, so it must sit in a rule with no update-type matcher) keeps a patch from being hidden behind an available minor and puts the patch on its own branch 'patch-kubernetes': Renovate ANDs automerge and the dashboard gate across every member of one grouped branch, so without it one minor bump would hold every patch of the group.",
+      "description": "Kubernetes core. Grouping follows upstream release cadence. Core library lane: a patch automerges (tail rules), a minor and a major wait on the Dependency Dashboard. The same lane holds for the sigs.k8s.io, fluxcd, cloudnative-pg, external-secrets and helm.sh modules, which need no rule of their own beyond a group. The top-level separateMinorPatch is what makes this lane work: Renovate reads it at lookup, before any update-type rule, and without it a patch and a minor of one dependency share one bucket, so only the minor is offered and the patch never appears; it also puts a group's patch on its own branch ('patch-kubernetes'), because Renovate ANDs automerge and the dashboard gate across every member of one grouped branch.",
       "groupName": "kubernetes",
-      "matchPackageNames": ["k8s.io/**"],
-      "separateMinorPatch": true
+      "matchPackageNames": ["k8s.io/**"]
     },
     {
-      "description": "sigs.k8s.io. Grouping follows upstream release cadence. Core library lane, separateMinorPatch for the same reason as kubernetes above.",
+      "description": "sigs.k8s.io. Grouping follows upstream release cadence. Core library lane, see the kubernetes group above.",
       "groupName": "sigs.k8s.io",
-      "matchPackageNames": ["sigs.k8s.io/**"],
-      "separateMinorPatch": true
+      "matchPackageNames": ["sigs.k8s.io/**"]
     },
     {
-      "description": "Flux controller APIs are released together and imported as one surface — never bump piecemeal. Core library lane, separateMinorPatch for the same reason as kubernetes above.",
+      "description": "Flux controller APIs are released together and imported as one surface — never bump piecemeal. Core library lane, see the kubernetes group above.",
       "groupName": "fluxcd",
       "matchPackageNames": [
         "github.com/fluxcd/**",
         "github.com/controlplaneio-fluxcd/**"
-      ],
-      "separateMinorPatch": true
+      ]
     },
     {
-      "description": "CloudNativePG — the operator, machinery, barman-cloud and the plugin move together upstream. Core library lane, separateMinorPatch for the same reason as kubernetes above.",
+      "description": "CloudNativePG — the operator, machinery, barman-cloud and the plugin move together upstream. Core library lane, see the kubernetes group above.",
       "groupName": "cloudnative-pg",
-      "matchPackageNames": ["github.com/cloudnative-pg/**"],
-      "separateMinorPatch": true
+      "matchPackageNames": ["github.com/cloudnative-pg/**"]
     },
     {
-      "description": "Core library Go modules with no group of their own (their releases are independent): external-secrets and helm. No groupName, so each stays a branch of its own; this rule exists for separateMinorPatch alone, which is read at lookup and so cannot sit in the typed rules below. Same lane as the groups above: patch automerges, minor and major wait on the dashboard (rules go-minor and the major gate).",
-      "matchPackageNames": ["github.com/external-secrets/**", "helm.sh/**"],
-      "separateMinorPatch": true
-    },
-    {
-      "description": "First-party libraries. Never automerged: a go-kure/kure bump in a consumer repo carries release-ordering constraints (see the consumer's own guards). Downstream consumers add their own matchers for their own modules in their own config; this preset is public and stays upstream-only. Minor, major and digest wait for a tick on the Dependency Dashboard (a bump nobody may automerge is hand work; the label stays needs-human because a person merges it); a patch opens as a pull request without a tick, see the next rule. separateMinorPatch keeps the patch branch ('patch-internal') apart from the gated one and is read at lookup, so it lives here, in the rule with no update-type matcher. A security fix still opens unasked and carries the top-level vulnerabilityAlerts block, so an advisory on a first-party module would automerge: force wins over automerge:false here, and no rule can tell an alert apart.",
+      "description": "First-party libraries. Never automerged: a go-kure/kure bump in a consumer repo carries release-ordering constraints (see the consumer's own guards). Downstream consumers add their own matchers for their own modules in their own config; this preset is public and stays upstream-only. Minor, major and digest wait for a tick on the Dependency Dashboard (a bump nobody may automerge is hand work; the label stays needs-human because a person merges it); a patch opens as a pull request without a tick, see the next rule. The top-level separateMinorPatch keeps the patch branch ('patch-internal') apart from the gated one. A security fix still opens unasked and carries the top-level vulnerabilityAlerts block, so an advisory on a first-party module would automerge: force wins over automerge:false here, and no rule can tell an alert apart.",
       "groupName": "internal",
       "matchPackageNames": [
         "github.com/go-kure/**"
       ],
-      "separateMinorPatch": true,
       "automerge": false,
       "dependencyDashboardApproval": true,
       "labels": ["dependencies", "needs-human"]
@@ -115,7 +106,7 @@
       "dependencyDashboardApproval": false
     },
     {
-      "description": "Core library pins read by a manager other than gomod (a chart or image pin kept by a custom regex manager, the flux2 tool under mise, release pins of the operators): same lane as the Go modules. Minor and major wait on the dashboard; the patch override below lifts the gate for a patch, and the tail rules automerge it. separateMinorPatch for the same reason as the kubernetes group. matchDepNames, because a custom manager reports the name it extracts. Extend this list when a consumer adds a core pin of its own.",
+      "description": "Core library pins read by a manager other than gomod (a chart or image pin kept by a custom regex manager, the flux2 tool under mise, release pins of the operators): same lane as the Go modules. Minor and major wait on the dashboard; the patch override below lifts the gate for a patch, and the tail rules automerge it. matchDepNames, because a custom manager reports the name it extracts. Extend this list when a consumer adds a core pin of its own.",
       "matchManagers": ["!gomod"],
       "matchDepNames": [
         "flux2",
@@ -128,7 +119,6 @@
         "ghcr.io/external-secrets/**",
         "external-secrets/external-secrets"
       ],
-      "separateMinorPatch": true,
       "dependencyDashboardApproval": true
     },
     {

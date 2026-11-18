@@ -76,7 +76,11 @@ What it encodes:
   | Core libraries we code against (`k8s.io/**`, `sigs.k8s.io/**`, fluxcd and controlplaneio-fluxcd including the flux-operator chart pin and the flux2 tool, cloudnative-pg, external-secrets, helm.sh) | automerges | dashboard | dashboard |
   | First-party Go modules (`github.com/go-kure/**`) | opens a PR, never automerges | dashboard | dashboard |
   | Other Go modules | automerges | dashboard | dashboard |
-  | Everything else (npm, container and CI images, compose files, regex pins, GitHub Actions) | automerges | opens a PR for a hand merge | dashboard |
+  | Everything else (npm, container and CI images, compose files, regex pins, GitHub Actions) | automerges | opens a PR for a hand merge | dashboard, for the managers the major gate lists below; any other manager's major opens a PR |
+
+  Two exceptions are kept as they were: a minor of a trusted GitHub Action (see the trusted lane
+  below) automerges, and a docker-compose major opens a PR, because the major gate does not list
+  that manager.
 
   Digest bumps keep their earlier behaviour: a Go digest of a non-first-party module
   automerges (several core modules are pseudo-version modules), a first-party digest waits on
@@ -87,12 +91,14 @@ What it encodes:
   The lane-policy test pins that classification.
 - **Grouping** — mise toolchain, Go minors and patches split (so patch groups stay
   automerge-eligible), and ecosystem groups (kubernetes, sigs.k8s.io, fluxcd,
-  cloudnative-pg) that follow upstream release cadence. Renovate ANDs automerge and the
-  dashboard gate across every member of one grouped branch, so every group where a patch
-  automerges and a minor does not (the ecosystem groups, the first-party group, the
-  GitHub Actions groups) keeps the two apart: `separateMinorPatch` for the Go groups, a
-  `ci-patch` group for Actions patches. Without that split one minor holds every patch of its
-  group.
+  cloudnative-pg) that follow upstream release cadence.
+- **Patches and minors are offered separately** (`separateMinorPatch: true`, top level).
+  Renovate reads it at lookup, before any rule that matches an update type, and without it a
+  patch and a minor of one dependency share one candidate bucket: only the minor is offered, and
+  a dashboard-gated minor would hide every patch behind it. It also puts a group's patch on its
+  own branch, which matters because Renovate ANDs automerge and the dashboard gate across every
+  member of one grouped branch: a minor on the patch's branch would hold it. GitHub Actions
+  patches also get a `ci-patch` group of their own, for the same reason.
 - **Every major update requires dependency-dashboard approval**, across every manager
   currently in use (`gomod`, `mise`, `dockerfile`, `github-actions`, `npm`) plus
   `customManagers` regex/jsonata entries (matched via `custom.*`) — not a blanket
