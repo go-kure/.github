@@ -86,6 +86,11 @@
 //     does not, Renovate's own generateBranchName must put the two on different
 //     branches (it ANDs automerge and the dashboard gate across one grouped
 //     branch), with a control that strips separateMinorPatch and must see one.
+//  8. Candidate selection — Renovate's own getBucket must put a patch and a
+//     minor release of one dependency in different buckets for every manager
+//     the lanes route (separateMinorPatch is read at lookup, before any
+//     update-type rule; with it off only the minor is offered and the patch
+//     lane never sees a patch), with a control that strips the flag.
 //
 // Usage: node scripts/test/renovate-lane-policy-test.mjs [presetPath] [renovateModuleEntry]
 //   presetPath           default: renovate/shared.json
@@ -231,22 +236,22 @@ const LANES = ["unattended", "needs-human"];
 // resolution in a real run. Omitting that default would silently skip every
 // matchPackageNames rule and pass for the wrong reason.
 const MATRIX = [
-  { name: "mise toolchain minor (e.g. hugo)", ruleIndices: [0, 20], input: { manager: "mise", updateType: "minor", depName: "hugo" }, expect: "unattended" },
-  { name: "mise toolchain patch", ruleIndices: [0, 19], input: { manager: "mise", updateType: "patch", depName: "yq" }, expect: "unattended" },
-  { name: "mise toolchain digest", ruleIndices: [0, 19], input: { manager: "mise", updateType: "digest", depName: "hugo" }, expect: "unattended" },
-  { name: "mise toolchain major (excluded from the automerge group)", ruleIndices: [16], input: { manager: "mise", updateType: "major", depName: "hugo" }, expect: "needs-human" },
+  { name: "mise toolchain minor (e.g. hugo)", ruleIndices: [0, 19], input: { manager: "mise", updateType: "minor", depName: "hugo" }, expect: "unattended" },
+  { name: "mise toolchain patch", ruleIndices: [0, 18], input: { manager: "mise", updateType: "patch", depName: "yq" }, expect: "unattended" },
+  { name: "mise toolchain digest", ruleIndices: [0, 18], input: { manager: "mise", updateType: "digest", depName: "hugo" }, expect: "unattended" },
+  { name: "mise toolchain major (excluded from the automerge group)", ruleIndices: [15], input: { manager: "mise", updateType: "major", depName: "hugo" }, expect: "needs-human" },
   // expectMinimumReleaseAge: node from the mise datasource is published before its Docker Hub
   // image, so rule 15 holds a node bump for three days. A mise tool other than node, and node
   // under another manager, must not pick it up (strict comparison, key-presence opt-in).
-  { name: "node via mise patch (held three days, still automerges)", ruleIndices: [0, 19, 21], input: { manager: "mise", updateType: "patch", depName: "node" }, expect: "unattended", expectMinimumReleaseAge: "3 days" },
-  { name: "node via mise minor (held three days)", ruleIndices: [0, 20, 21], input: { manager: "mise", updateType: "minor", depName: "node" }, expect: "unattended", expectMinimumReleaseAge: "3 days" },
-  { name: "other mise tool (no release-age hold)", ruleIndices: [0, 19], input: { manager: "mise", updateType: "patch", depName: "yq" }, expect: "unattended", expectMinimumReleaseAge: undefined },
-  { name: "node dockerfile tag (no release-age hold, reads the image tags themselves; a patch automerges, everything-else lane)", ruleIndices: [23], input: { manager: "dockerfile", updateType: "patch", depName: "node" }, expect: "unattended", expectMinimumReleaseAge: undefined },
+  { name: "node via mise patch (held three days, still automerges)", ruleIndices: [0, 18, 20], input: { manager: "mise", updateType: "patch", depName: "node" }, expect: "unattended", expectMinimumReleaseAge: "3 days" },
+  { name: "node via mise minor (held three days)", ruleIndices: [0, 19, 20], input: { manager: "mise", updateType: "minor", depName: "node" }, expect: "unattended", expectMinimumReleaseAge: "3 days" },
+  { name: "other mise tool (no release-age hold)", ruleIndices: [0, 18], input: { manager: "mise", updateType: "patch", depName: "yq" }, expect: "unattended", expectMinimumReleaseAge: undefined },
+  { name: "node dockerfile tag (no release-age hold, reads the image tags themselves; a patch automerges, everything-else lane)", ruleIndices: [22], input: { manager: "dockerfile", updateType: "patch", depName: "node" }, expect: "unattended", expectMinimumReleaseAge: undefined },
   // expectSeparateMinorPatch: the two Go rules split a previous-minor patch from the next-minor
   // move, so a repo one minor behind still sees its patches (renovate/shared.json, rule 9).
-  { name: "go itself via mise (dashboard-gated, never automerged)", ruleIndices: [14], input: { manager: "mise", updateType: "minor", depName: "go" }, expect: "needs-human", expectSeparateMinorPatch: true },
-  { name: "go itself via gomod (dashboard-gated, never automerged)", ruleIndices: [14], input: { manager: "gomod", updateType: "patch", depName: "go", packageName: "go" }, expect: "needs-human", expectSeparateMinorPatch: true },
-  { name: "golang dockerfile tag (dashboard-gated, never automerged)", ruleIndices: [15], input: { manager: "dockerfile", updateType: "minor", depName: "golang", packageName: "golang" }, expect: "needs-human", expectSeparateMinorPatch: true },
+  { name: "go itself via mise (dashboard-gated, never automerged)", ruleIndices: [13], input: { manager: "mise", updateType: "minor", depName: "go" }, expect: "needs-human", expectSeparateMinorPatch: true },
+  { name: "go itself via gomod (dashboard-gated, never automerged)", ruleIndices: [13], input: { manager: "gomod", updateType: "patch", depName: "go", packageName: "go" }, expect: "needs-human", expectSeparateMinorPatch: true },
+  { name: "golang dockerfile tag (dashboard-gated, never automerged)", ruleIndices: [14], input: { manager: "dockerfile", updateType: "minor", depName: "golang", packageName: "golang" }, expect: "needs-human", expectSeparateMinorPatch: true },
   // Every gomod minor is dashboard-gated by rule 1 (nobody automerges a minor, so Renovate opens
   // one only when its box is ticked); the group rules below only rename the group and inherit the
   // gate, which is why each group gets its own minor case. The patch cases pin the other side:
@@ -256,71 +261,71 @@ const MATRIX = [
   { name: "gomod minor, sigs.k8s.io (dashboard-gated, never automerged)", ruleIndices: [1, 4], input: { manager: "gomod", updateType: "minor", depName: "sigs.k8s.io/controller-runtime", packageName: "sigs.k8s.io/controller-runtime" }, expect: "needs-human", expectDashboardApproval: true, expectGroupName: "sigs.k8s.io" },
   { name: "gomod minor, fluxcd (dashboard-gated, never automerged)", ruleIndices: [1, 5], input: { manager: "gomod", updateType: "minor", depName: "github.com/fluxcd/pkg/oci", packageName: "github.com/fluxcd/pkg/oci" }, expect: "needs-human", expectDashboardApproval: true, expectGroupName: "fluxcd" },
   { name: "gomod minor, cloudnative-pg (dashboard-gated, never automerged)", ruleIndices: [1, 6], input: { manager: "gomod", updateType: "minor", depName: "github.com/cloudnative-pg/machinery", packageName: "github.com/cloudnative-pg/machinery" }, expect: "needs-human", expectDashboardApproval: true, expectGroupName: "cloudnative-pg" },
-  { name: "gomod minor, first-party go-kure (dashboard-gated, never automerged)", ruleIndices: [1, 8], input: { manager: "gomod", updateType: "minor", depName: "github.com/go-kure/kure", packageName: "github.com/go-kure/kure" }, expect: "needs-human", expectDashboardApproval: true, expectGroupName: "internal" },
-  { name: "gomod patch, kubernetes (automerges, not gated)", ruleIndices: [2, 3, 22], input: { manager: "gomod", updateType: "patch", depName: "k8s.io/api", packageName: "k8s.io/api" }, expect: "unattended", expectDashboardApproval: false },
-  { name: "gomod digest, sigs.k8s.io (automerges)", ruleIndices: [2, 4, 22], input: { manager: "gomod", updateType: "digest", depName: "sigs.k8s.io/controller-runtime", packageName: "sigs.k8s.io/controller-runtime" }, expect: "unattended" },
-  { name: "gomod patch, fluxcd (automerges)", ruleIndices: [2, 5, 22], input: { manager: "gomod", updateType: "patch", depName: "github.com/fluxcd/pkg/oci", packageName: "github.com/fluxcd/pkg/oci" }, expect: "unattended" },
-  { name: "gomod patch, cloudnative-pg (automerges)", ruleIndices: [2, 6, 22], input: { manager: "gomod", updateType: "patch", depName: "github.com/cloudnative-pg/machinery", packageName: "github.com/cloudnative-pg/machinery" }, expect: "unattended" },
+  { name: "gomod minor, first-party go-kure (dashboard-gated, never automerged)", ruleIndices: [1, 7], input: { manager: "gomod", updateType: "minor", depName: "github.com/go-kure/kure", packageName: "github.com/go-kure/kure" }, expect: "needs-human", expectDashboardApproval: true, expectGroupName: "internal" },
+  { name: "gomod patch, kubernetes (automerges, not gated)", ruleIndices: [2, 3, 21], input: { manager: "gomod", updateType: "patch", depName: "k8s.io/api", packageName: "k8s.io/api" }, expect: "unattended", expectDashboardApproval: false },
+  { name: "gomod digest, sigs.k8s.io (automerges)", ruleIndices: [2, 4, 21], input: { manager: "gomod", updateType: "digest", depName: "sigs.k8s.io/controller-runtime", packageName: "sigs.k8s.io/controller-runtime" }, expect: "unattended" },
+  { name: "gomod patch, fluxcd (automerges)", ruleIndices: [2, 5, 21], input: { manager: "gomod", updateType: "patch", depName: "github.com/fluxcd/pkg/oci", packageName: "github.com/fluxcd/pkg/oci" }, expect: "unattended" },
+  { name: "gomod patch, cloudnative-pg (automerges)", ruleIndices: [2, 6, 21], input: { manager: "gomod", updateType: "patch", depName: "github.com/cloudnative-pg/machinery", packageName: "github.com/cloudnative-pg/machinery" }, expect: "unattended" },
   // Deliberately does NOT declare 16 here: rule 16's own matchPackageNames excludes
   // github.com/go-kure/**, so it never matches this case — that exclusion is the point being
   // proven (needs-human survives despite sitting right next to the automerge rule). Rule 16's
   // coverage comes from the four automerge cases above that it actually matches.
-  { name: "gomod patch, first-party go-kure (opens a pull request without a tick, never automerged)", ruleIndices: [2, 8, 9], input: { manager: "gomod", updateType: "patch", depName: "github.com/go-kure/kure", packageName: "github.com/go-kure/kure" }, expect: "needs-human", expectDashboardApproval: false, expectGroupName: "internal", expectSeparateMinorPatch: true },
-  { name: "gomod digest, first-party go-kure (dashboard-gated, never automerged)", ruleIndices: [2, 8], input: { manager: "gomod", updateType: "digest", depName: "github.com/go-kure/kure", packageName: "github.com/go-kure/kure" }, expect: "needs-human", expectDashboardApproval: true, expectGroupName: "internal" },
-  { name: "gomod major, first-party go-kure (dashboard-gated, never automerged)", ruleIndices: [8, 16], input: { manager: "gomod", updateType: "major", depName: "github.com/go-kure/kure", packageName: "github.com/go-kure/kure" }, expect: "needs-human", expectDashboardApproval: true, expectGroupName: "internal" },
-  { name: "gomod major, any dep (dashboard-gated, never automerged)", ruleIndices: [16], input: { manager: "gomod", updateType: "major", depName: "github.com/some/other", packageName: "github.com/some/other" }, expect: "needs-human", expectDashboardApproval: true },
+  { name: "gomod patch, first-party go-kure (opens a pull request without a tick, never automerged)", ruleIndices: [2, 7, 8], input: { manager: "gomod", updateType: "patch", depName: "github.com/go-kure/kure", packageName: "github.com/go-kure/kure" }, expect: "needs-human", expectDashboardApproval: false, expectGroupName: "internal", expectSeparateMinorPatch: true },
+  { name: "gomod digest, first-party go-kure (dashboard-gated, never automerged)", ruleIndices: [2, 7], input: { manager: "gomod", updateType: "digest", depName: "github.com/go-kure/kure", packageName: "github.com/go-kure/kure" }, expect: "needs-human", expectDashboardApproval: true, expectGroupName: "internal" },
+  { name: "gomod major, first-party go-kure (dashboard-gated, never automerged)", ruleIndices: [7, 15], input: { manager: "gomod", updateType: "major", depName: "github.com/go-kure/kure", packageName: "github.com/go-kure/kure" }, expect: "needs-human", expectDashboardApproval: true, expectGroupName: "internal" },
+  { name: "gomod major, any dep (dashboard-gated, never automerged)", ruleIndices: [15], input: { manager: "gomod", updateType: "major", depName: "github.com/some/other", packageName: "github.com/some/other" }, expect: "needs-human", expectDashboardApproval: true },
   // The trusted GitHub Actions lane (go-kure/kure#813's dependency; go-kure/.github#217): tier 1
   // (go-kure/.github itself) and tier 2 (the five listed GitHub-maintained actions) automerge on
   // digest/minor/patch via rule 13's own groupName, separate from rule 8's plain github-actions
   // group that every OTHER action still resolves into. expectGroupName pins the split itself, not
   // just the label: a regression that dropped rule 13's matchDepNames but left automerge:true
   // would still flip these two lanes correctly while silently merging the branch back with tier 3.
-  { name: "github-actions tier 1 (go-kure/.github, automerges via its own group)", ruleIndices: [12, 18], input: { manager: "github-actions", updateType: "digest", depName: "go-kure/.github", packageName: "go-kure/.github" }, expect: "unattended", expectGroupName: "github-actions-trusted" },
-  { name: "github-actions tier 2 (actions/checkout, automerges via its own group)", ruleIndices: [12, 18], input: { manager: "github-actions", updateType: "minor", depName: "actions/checkout", packageName: "actions/checkout" }, expect: "unattended", expectGroupName: "github-actions-trusted" },
+  { name: "github-actions tier 1 (go-kure/.github, automerges via its own group)", ruleIndices: [11, 17], input: { manager: "github-actions", updateType: "digest", depName: "go-kure/.github", packageName: "go-kure/.github" }, expect: "unattended", expectGroupName: "github-actions-trusted" },
+  { name: "github-actions tier 2 (actions/checkout, automerges via its own group)", ruleIndices: [11, 17], input: { manager: "github-actions", updateType: "minor", depName: "actions/checkout", packageName: "actions/checkout" }, expect: "unattended", expectGroupName: "github-actions-trusted" },
   // The one third-party action the owner accepted into the trusted lane by decision, not by the
   // low-blast-radius test the actions/* names meet: anthropics/claude-code-action. It joins rule 13
   // by exact depName, so digest, minor and patch automerge in the trusted group, a major does not
   // (the second-to-last case below), and a sibling action of the same owner does not ride along
   // (the last case).
-  { name: "github-actions owner-accepted action (anthropics/claude-code-action digest, automerges via the trusted group)", ruleIndices: [12, 18], input: { manager: "github-actions", updateType: "digest", depName: "anthropics/claude-code-action", packageName: "anthropics/claude-code-action" }, expect: "unattended", expectGroupName: "github-actions-trusted" },
-  { name: "github-actions owner-accepted action (anthropics/claude-code-action minor, automerges via the trusted group)", ruleIndices: [12, 18], input: { manager: "github-actions", updateType: "minor", depName: "anthropics/claude-code-action", packageName: "anthropics/claude-code-action" }, expect: "unattended", expectGroupName: "github-actions-trusted" },
-  { name: "github-actions owner-accepted action (anthropics/claude-code-action patch, automerges via the trusted group)", ruleIndices: [12, 18], input: { manager: "github-actions", updateType: "patch", depName: "anthropics/claude-code-action", packageName: "anthropics/claude-code-action" }, expect: "unattended", expectGroupName: "github-actions-trusted" },
-  { name: "github-actions owner-accepted action, major (anthropics/claude-code-action, dashboard-gated, excluded from the trusted lane by update type)", ruleIndices: [12, 16], input: { manager: "github-actions", updateType: "major", depName: "anthropics/claude-code-action", packageName: "anthropics/claude-code-action" }, expect: "needs-human", expectDashboardApproval: true, expectGroupName: "github-actions" },
-  { name: "github-actions sibling of the owner-accepted action (anthropics/claude-code-base-action, never automerged, stays in the plain group)", ruleIndices: [12], input: { manager: "github-actions", updateType: "minor", depName: "anthropics/claude-code-base-action", packageName: "anthropics/claude-code-base-action" }, expect: "needs-human", expectGroupName: "github-actions" },
-  { name: "github-actions tier 3 (third-party action, never automerged, stays in the plain group)", ruleIndices: [12], input: { manager: "github-actions", updateType: "minor", depName: "codecov/codecov-action", packageName: "codecov/codecov-action" }, expect: "needs-human", expectGroupName: "github-actions" },
+  { name: "github-actions owner-accepted action (anthropics/claude-code-action digest, automerges via the trusted group)", ruleIndices: [11, 17], input: { manager: "github-actions", updateType: "digest", depName: "anthropics/claude-code-action", packageName: "anthropics/claude-code-action" }, expect: "unattended", expectGroupName: "github-actions-trusted" },
+  { name: "github-actions owner-accepted action (anthropics/claude-code-action minor, automerges via the trusted group)", ruleIndices: [11, 17], input: { manager: "github-actions", updateType: "minor", depName: "anthropics/claude-code-action", packageName: "anthropics/claude-code-action" }, expect: "unattended", expectGroupName: "github-actions-trusted" },
+  { name: "github-actions owner-accepted action (anthropics/claude-code-action patch, automerges via the trusted group)", ruleIndices: [11, 17], input: { manager: "github-actions", updateType: "patch", depName: "anthropics/claude-code-action", packageName: "anthropics/claude-code-action" }, expect: "unattended", expectGroupName: "github-actions-trusted" },
+  { name: "github-actions owner-accepted action, major (anthropics/claude-code-action, dashboard-gated, excluded from the trusted lane by update type)", ruleIndices: [11, 15], input: { manager: "github-actions", updateType: "major", depName: "anthropics/claude-code-action", packageName: "anthropics/claude-code-action" }, expect: "needs-human", expectDashboardApproval: true, expectGroupName: "github-actions" },
+  { name: "github-actions sibling of the owner-accepted action (anthropics/claude-code-base-action, never automerged, stays in the plain group)", ruleIndices: [11], input: { manager: "github-actions", updateType: "minor", depName: "anthropics/claude-code-base-action", packageName: "anthropics/claude-code-base-action" }, expect: "needs-human", expectGroupName: "github-actions" },
+  { name: "github-actions tier 3 (third-party action, never automerged, stays in the plain group)", ruleIndices: [11], input: { manager: "github-actions", updateType: "minor", depName: "codecov/codecov-action", packageName: "codecov/codecov-action" }, expect: "needs-human", expectGroupName: "github-actions" },
   // Everything-else lane for CI: a patch of an unlisted action automerges, from its own group
   // (ci-patch) so a minor in the plain group above cannot hold it; the minor case above stays in
   // the plain group and needs a person.
-  { name: "github-actions unlisted/unknown action, patch (everything-else lane: automerges from its own group)", ruleIndices: [12, 13, 23], input: { manager: "github-actions", updateType: "patch", depName: "some-org/some-action", packageName: "some-org/some-action" }, expect: "unattended", expectGroupName: "ci-patch" },
-  { name: "github-actions unlisted/unknown action, minor (opens a pull request for a hand merge, plain group)", ruleIndices: [12], input: { manager: "github-actions", updateType: "minor", depName: "some-org/some-action", packageName: "some-org/some-action" }, expect: "needs-human", expectDashboardApproval: false, expectGroupName: "github-actions" },
+  { name: "github-actions unlisted/unknown action, patch (everything-else lane: automerges from its own group)", ruleIndices: [11, 12, 22], input: { manager: "github-actions", updateType: "patch", depName: "some-org/some-action", packageName: "some-org/some-action" }, expect: "unattended", expectGroupName: "ci-patch" },
+  { name: "github-actions unlisted/unknown action, minor (opens a pull request for a hand merge, plain group)", ruleIndices: [11], input: { manager: "github-actions", updateType: "minor", depName: "some-org/some-action", packageName: "some-org/some-action" }, expect: "needs-human", expectDashboardApproval: false, expectGroupName: "github-actions" },
   // Core library Go modules: patch automerges, minor and major wait on the dashboard, and each
   // group splits patch from minor (separateMinorPatch) so they never share a branch.
-  { name: "gomod patch, external-secrets (core library, automerges)", ruleIndices: [2, 7, 22], input: { manager: "gomod", updateType: "patch", depName: "github.com/external-secrets/external-secrets", packageName: "github.com/external-secrets/external-secrets" }, expect: "unattended", expectDashboardApproval: false, expectSeparateMinorPatch: true },
-  { name: "gomod minor, helm (core library, dashboard-gated)", ruleIndices: [1, 7], input: { manager: "gomod", updateType: "minor", depName: "helm.sh/helm/v4", packageName: "helm.sh/helm/v4" }, expect: "needs-human", expectDashboardApproval: true, expectSeparateMinorPatch: true },
-  { name: "gomod patch, kubernetes keeps patch and minor on separate branches", ruleIndices: [2, 3, 22], input: { manager: "gomod", updateType: "patch", depName: "k8s.io/client-go", packageName: "k8s.io/client-go" }, expect: "unattended", expectDashboardApproval: false, expectSeparateMinorPatch: true, expectGroupName: "kubernetes" },
+  { name: "gomod patch, external-secrets (core library, automerges)", ruleIndices: [2, 21], input: { manager: "gomod", updateType: "patch", depName: "github.com/external-secrets/external-secrets", packageName: "github.com/external-secrets/external-secrets" }, expect: "unattended", expectDashboardApproval: false, expectSeparateMinorPatch: true },
+  { name: "gomod minor, helm (core library, dashboard-gated)", ruleIndices: [1], input: { manager: "gomod", updateType: "minor", depName: "helm.sh/helm/v4", packageName: "helm.sh/helm/v4" }, expect: "needs-human", expectDashboardApproval: true, expectSeparateMinorPatch: true },
+  { name: "gomod patch, kubernetes keeps patch and minor on separate branches", ruleIndices: [2, 3, 21], input: { manager: "gomod", updateType: "patch", depName: "k8s.io/client-go", packageName: "k8s.io/client-go" }, expect: "unattended", expectDashboardApproval: false, expectSeparateMinorPatch: true, expectGroupName: "kubernetes" },
   // Core library pins a manager other than gomod reads: the flux2 tool (mise), the flux-operator
   // chart pin and release pins (custom regex, docker datasource).
-  { name: "flux2 via mise, patch (core library: automerges)", ruleIndices: [10, 11, 19], input: { manager: "mise", updateType: "patch", depName: "flux2" }, expect: "unattended", expectDashboardApproval: false, expectSeparateMinorPatch: true },
-  { name: "flux2 via mise, minor (core library: dashboard-gated, out of the toolchain group and the mise minor automerge)", ruleIndices: [10], input: { manager: "mise", updateType: "minor", depName: "flux2" }, expect: "needs-human", expectDashboardApproval: true, expectSeparateMinorPatch: true },
-  { name: "flux2 via mise, major (dashboard-gated)", ruleIndices: [10, 16], input: { manager: "mise", updateType: "major", depName: "flux2" }, expect: "needs-human", expectDashboardApproval: true },
-  { name: "flux-operator chart pin via regex, patch (core library: automerges)", ruleIndices: [10, 11, 23], input: { manager: "regex", updateType: "patch", depName: "ghcr.io/controlplaneio-fluxcd/charts/flux-operator", packageName: "ghcr.io/controlplaneio-fluxcd/charts/flux-operator" }, expect: "unattended", expectDashboardApproval: false },
-  { name: "flux-operator chart pin via regex, minor (core library: dashboard-gated)", ruleIndices: [10], input: { manager: "regex", updateType: "minor", depName: "ghcr.io/controlplaneio-fluxcd/charts/flux-operator", packageName: "ghcr.io/controlplaneio-fluxcd/charts/flux-operator" }, expect: "needs-human", expectDashboardApproval: true },
-  { name: "flux-operator chart pin via regex, digest (not gated, opens a pull request, as before)", ruleIndices: [10, 11], input: { manager: "regex", updateType: "digest", depName: "ghcr.io/controlplaneio-fluxcd/charts/flux-operator", packageName: "ghcr.io/controlplaneio-fluxcd/charts/flux-operator" }, expect: "needs-human", expectDashboardApproval: false },
-  { name: "external-secrets release pin via regex, minor (core library: dashboard-gated)", ruleIndices: [10], input: { manager: "regex", updateType: "minor", depName: "external-secrets/external-secrets", packageName: "external-secrets/external-secrets" }, expect: "needs-human", expectDashboardApproval: true },
+  { name: "flux2 via mise, patch (core library: automerges)", ruleIndices: [9, 10, 18], input: { manager: "mise", updateType: "patch", depName: "flux2" }, expect: "unattended", expectDashboardApproval: false, expectSeparateMinorPatch: true },
+  { name: "flux2 via mise, minor (core library: dashboard-gated, out of the toolchain group and the mise minor automerge)", ruleIndices: [9], input: { manager: "mise", updateType: "minor", depName: "flux2" }, expect: "needs-human", expectDashboardApproval: true, expectSeparateMinorPatch: true },
+  { name: "flux2 via mise, major (dashboard-gated)", ruleIndices: [9, 15], input: { manager: "mise", updateType: "major", depName: "flux2" }, expect: "needs-human", expectDashboardApproval: true },
+  { name: "flux-operator chart pin via regex, patch (core library: automerges)", ruleIndices: [9, 10, 22], input: { manager: "regex", updateType: "patch", depName: "ghcr.io/controlplaneio-fluxcd/charts/flux-operator", packageName: "ghcr.io/controlplaneio-fluxcd/charts/flux-operator" }, expect: "unattended", expectDashboardApproval: false },
+  { name: "flux-operator chart pin via regex, minor (core library: dashboard-gated)", ruleIndices: [9], input: { manager: "regex", updateType: "minor", depName: "ghcr.io/controlplaneio-fluxcd/charts/flux-operator", packageName: "ghcr.io/controlplaneio-fluxcd/charts/flux-operator" }, expect: "needs-human", expectDashboardApproval: true },
+  { name: "flux-operator chart pin via regex, digest (not gated, opens a pull request, as before)", ruleIndices: [9, 10], input: { manager: "regex", updateType: "digest", depName: "ghcr.io/controlplaneio-fluxcd/charts/flux-operator", packageName: "ghcr.io/controlplaneio-fluxcd/charts/flux-operator" }, expect: "needs-human", expectDashboardApproval: false },
+  { name: "external-secrets release pin via regex, minor (core library: dashboard-gated)", ruleIndices: [9], input: { manager: "regex", updateType: "minor", depName: "external-secrets/external-secrets", packageName: "external-secrets/external-secrets" }, expect: "needs-human", expectDashboardApproval: true },
   // Everything else: patch automerges, minor opens a pull request for a hand merge, major waits
   // on the dashboard (the major gate). go and golang stay gated by their own rules.
-  { name: "npm patch (everything else: automerges)", ruleIndices: [23], input: { manager: "npm", updateType: "patch", depName: "some-pkg", packageName: "some-pkg" }, expect: "unattended", expectDashboardApproval: false },
+  { name: "npm patch (everything else: automerges)", ruleIndices: [22], input: { manager: "npm", updateType: "patch", depName: "some-pkg", packageName: "some-pkg" }, expect: "unattended", expectDashboardApproval: false },
   { name: "npm minor (everything else: opens a pull request, not gated, not automerged)", ruleIndices: [], input: { manager: "npm", updateType: "minor", depName: "some-pkg", packageName: "some-pkg" }, expect: "needs-human", expectDashboardApproval: false },
-  { name: "docker-compose image patch (everything else: automerges)", ruleIndices: [23], input: { manager: "docker-compose", updateType: "patch", depName: "postgres", packageName: "postgres" }, expect: "unattended" },
-  { name: "gitlabci image patch (everything else: automerges)", ruleIndices: [23], input: { manager: "gitlabci", updateType: "patch", depName: "alpine", packageName: "alpine" }, expect: "unattended" },
-  { name: "custom regex pin patch (everything else: automerges)", ruleIndices: [23], input: { manager: "regex", updateType: "patch", depName: "git-cliff", packageName: "orhun/git-cliff" }, expect: "unattended" },
-  { name: "golang dockerfile patch (go lane stays gated: the everything-else rule excludes it)", ruleIndices: [15], input: { manager: "dockerfile", updateType: "patch", depName: "golang", packageName: "golang" }, expect: "needs-human", expectDashboardApproval: true },
+  { name: "docker-compose image patch (everything else: automerges)", ruleIndices: [22], input: { manager: "docker-compose", updateType: "patch", depName: "postgres", packageName: "postgres" }, expect: "unattended" },
+  { name: "gitlabci image patch (everything else: automerges)", ruleIndices: [22], input: { manager: "gitlabci", updateType: "patch", depName: "alpine", packageName: "alpine" }, expect: "unattended" },
+  { name: "custom regex pin patch (everything else: automerges)", ruleIndices: [22], input: { manager: "regex", updateType: "patch", depName: "git-cliff", packageName: "orhun/git-cliff" }, expect: "unattended" },
+  { name: "golang dockerfile patch (go lane stays gated: the everything-else rule excludes it)", ruleIndices: [14], input: { manager: "dockerfile", updateType: "patch", depName: "golang", packageName: "golang" }, expect: "needs-human", expectDashboardApproval: true },
   // Major excluded by rule 13's own matchUpdateTypes, not merely by rule 11's dashboard gate
   // (which only blocks branch/PR creation, not merging one already open) — proven by using a
   // tier-2 depName that WOULD automerge on a non-major update (the case just above).
-  { name: "github-actions tier-2 dep, major (dashboard-gated, excluded from the trusted lane by update type)", ruleIndices: [12, 16], input: { manager: "github-actions", updateType: "major", depName: "actions/checkout", packageName: "actions/checkout" }, expect: "needs-human", expectDashboardApproval: true, expectGroupName: "github-actions" },
-  { name: "npm major (dashboard-gated, never automerged)", ruleIndices: [16], input: { manager: "npm", updateType: "major", depName: "some-pkg", packageName: "some-pkg" }, expect: "needs-human" },
-  { name: "dockerfile dep matching no groupRule at all (top-level default)", ruleIndices: [], input: { manager: "dockerfile", updateType: "minor", depName: "alpine", packageName: "alpine" }, expect: "needs-human", expectDashboardApproval: false, expectSeparateMinorPatch: false },
+  { name: "github-actions tier-2 dep, major (dashboard-gated, excluded from the trusted lane by update type)", ruleIndices: [11, 15], input: { manager: "github-actions", updateType: "major", depName: "actions/checkout", packageName: "actions/checkout" }, expect: "needs-human", expectDashboardApproval: true, expectGroupName: "github-actions" },
+  { name: "npm major (dashboard-gated, never automerged)", ruleIndices: [15], input: { manager: "npm", updateType: "major", depName: "some-pkg", packageName: "some-pkg" }, expect: "needs-human" },
+  { name: "dockerfile dep matching no groupRule at all (top-level default)", ruleIndices: [], input: { manager: "dockerfile", updateType: "minor", depName: "alpine", packageName: "alpine" }, expect: "needs-human", expectDashboardApproval: false, expectSeparateMinorPatch: true },
   // customManagers (regex/jsonata) entries report here as "custom.<customType>" (renovate's
   // ManagersMatcher qualifies the config.manager value at match time), never the bare type name
   // the entry's own config carries. These three cases prove the fix (go-kure/.github#87's own
@@ -328,14 +333,14 @@ const MATRIX = [
   // custom-managed non-major hits neither gate; and a custom-managed dependency literally named
   // "go" is caught by the dedicated Go rule (rule 9), not the general gate, since that rule alone
   // still carries the allowedVersions ceiling and gates go's non-major bumps too.
-  { name: "custom-manager major (dashboard-gated)", ruleIndices: [16], input: { manager: "regex", updateType: "major", depName: "golangci-lint", packageName: "golangci/golangci-lint" }, expect: "needs-human", expectDashboardApproval: true },
+  { name: "custom-manager major (dashboard-gated)", ruleIndices: [15], input: { manager: "regex", updateType: "major", depName: "golangci-lint", packageName: "golangci/golangci-lint" }, expect: "needs-human", expectDashboardApproval: true },
   { name: "custom-manager minor (no gate, no automerge)", ruleIndices: [], input: { manager: "regex", updateType: "minor", depName: "git-cliff", packageName: "orhun/git-cliff" }, expect: "needs-human", expectDashboardApproval: false },
   // updateType is "minor", not "major": on a major this case would pass even with rule 9's
   // custom.* left unfixed, since rule 11 (the general gate, matchUpdateTypes:["major"]) already
   // covers a custom-managed go major once its own !go exclusion is dropped. A minor isolates
   // rule 9 — rule 11 never matches a non-major update at all — so this case actually requires
   // rule 9's own matchManagers widening, not just rule 11's.
-  { name: "custom-manager depName go, minor (dedicated Go rule only — general gate never matches non-major)", ruleIndices: [14], input: { manager: "regex", updateType: "minor", depName: "go", packageName: "golang.org/dl" }, expect: "needs-human", expectDashboardApproval: true },
+  { name: "custom-manager depName go, minor (dedicated Go rule only — general gate never matches non-major)", ruleIndices: [13], input: { manager: "regex", updateType: "minor", depName: "go", packageName: "golang.org/dl" }, expect: "needs-human", expectDashboardApproval: true },
   // Rule 12 (Go testdata fixtures are out of scope) matches on packageFile via matchFileNames —
   // renovate's FileNamesMatcher reads `packageFile` (then `lockFiles`, absent here). `**/testdata/**`
   // alone matches both shapes on Renovate 44 (a leading `**` matches zero segments; verified on
@@ -348,8 +353,8 @@ const MATRIX = [
   // ignorePaths replaced the preset's list — so these two cases pin the fallback, and check 4
   // pins the guarantee. Origin: a placeholder image in a values.yaml fixture drew a permanent
   // "Package lookup failures" block on a consumer's Dependency Dashboard (go-kure/launcher#301).
-  { name: "helm-values placeholder image in a nested Go testdata fixture (disabled, never looked up)", ruleIndices: [17], input: { manager: "helm-values", updateType: "minor", depName: "myregistry/app", packageName: "myregistry/app", packageFile: "pkg/cmd/tool/testdata/params/values.yaml" }, expect: "needs-human", expectEnabled: false, expectExtracted: false },
-  { name: "helm-values placeholder image in a root-level testdata fixture (disabled, never looked up)", ruleIndices: [17], input: { manager: "helm-values", updateType: "minor", depName: "myregistry/app", packageName: "myregistry/app", packageFile: "testdata/values.yaml" }, expect: "needs-human", expectEnabled: false, expectExtracted: false },
+  { name: "helm-values placeholder image in a nested Go testdata fixture (disabled, never looked up)", ruleIndices: [16], input: { manager: "helm-values", updateType: "minor", depName: "myregistry/app", packageName: "myregistry/app", packageFile: "pkg/cmd/tool/testdata/params/values.yaml" }, expect: "needs-human", expectEnabled: false, expectExtracted: false },
+  { name: "helm-values placeholder image in a root-level testdata fixture (disabled, never looked up)", ruleIndices: [16], input: { manager: "helm-values", updateType: "minor", depName: "myregistry/app", packageName: "myregistry/app", packageFile: "testdata/values.yaml" }, expect: "needs-human", expectEnabled: false, expectExtracted: false },
   // Negative control for rule 12: the same dep outside any testdata tree must NOT be disabled.
   // `expectEnabled: undefined` with the key present opts into the assertion (key presence, same
   // convention as expectDashboardApproval) and pins the resolved value to "absent" — the preset
@@ -359,13 +364,13 @@ const MATRIX = [
   // A directory whose name merely contains "testdata" is not a testdata tree: both the rule's
   // globs and the ignorePaths entry are segment-anchored, and filterIgnoredFiles' substring
   // fallback (`file.includes(ignorePath)`) never matches a literal glob against a real path.
-  { name: "gomod dep in a directory merely named like testdata (neither disabled nor dropped)", ruleIndices: [2, 22], input: { manager: "gomod", updateType: "patch", depName: "github.com/some/other", packageName: "github.com/some/other", packageFile: "pkg/testdata_helper/go.mod" }, expect: "unattended", expectEnabled: undefined, expectExtracted: true },
+  { name: "gomod dep in a directory merely named like testdata (neither disabled nor dropped)", ruleIndices: [2, 21], input: { manager: "gomod", updateType: "patch", depName: "github.com/some/other", packageName: "github.com/some/other", packageFile: "pkg/testdata_helper/go.mod" }, expect: "unattended", expectEnabled: undefined, expectExtracted: true },
   // nuget is the one manager :ignoreModulesAndTests overrides (nuget.ignorePaths, which keeps
   // test/ and tests/ in scope), and getManagerConfig merges that override OVER the top-level
   // list, so the top-level **/testdata/** never reaches nuget on its own — the preset restates
   // nuget's list with the entry added. First case pins that; second pins that the restated copy
   // kept renovate's own nuget exception (test/ still extracted) instead of silently widening it.
-  { name: "nuget project file in a root-level testdata fixture (dropped via the restated nuget override)", ruleIndices: [17], input: { manager: "nuget", updateType: "minor", depName: "Newtonsoft.Json", packageName: "Newtonsoft.Json", packageFile: "testdata/Fixture.csproj" }, expect: "needs-human", expectEnabled: false, expectExtracted: false },
+  { name: "nuget project file in a root-level testdata fixture (dropped via the restated nuget override)", ruleIndices: [16], input: { manager: "nuget", updateType: "minor", depName: "Newtonsoft.Json", packageName: "Newtonsoft.Json", packageFile: "testdata/Fixture.csproj" }, expect: "needs-human", expectEnabled: false, expectExtracted: false },
   { name: "nuget project file under test/ (renovate's own nuget exception, must survive)", ruleIndices: [], input: { manager: "nuget", updateType: "minor", depName: "Newtonsoft.Json", packageName: "Newtonsoft.Json", packageFile: "test/Foo.csproj" }, expect: "needs-human", expectEnabled: undefined, expectExtracted: true },
 ];
 
@@ -378,7 +383,7 @@ const MATRIX = [
 // major/toolchain-gate path proves the CVE bypasses that gate, not just
 // that a lane survived.
 const VULN_MATRIX = [
-  { name: "vulnerability alert on an automerging gomod patch (lane survives, still automerges)", ruleIndices: [2, 3, 22], input: { manager: "gomod", datasource: "go", updateType: "patch", depName: "k8s.io/api", packageName: "k8s.io/api" }, expect: "unattended", expectAutomerge: true },
+  { name: "vulnerability alert on an automerging gomod patch (lane survives, still automerges)", ruleIndices: [2, 3, 21], input: { manager: "gomod", datasource: "go", updateType: "patch", depName: "k8s.io/api", packageName: "k8s.io/api" }, expect: "unattended", expectAutomerge: true },
   // The security lane: the vulnerabilityAlerts block forces automerge:true and the unattended lane
   // over whatever the authored rules resolved, and the alert defaults force
   // dependencyDashboardApproval:false, so a CVE fix opens unasked on a path that is otherwise
@@ -388,15 +393,15 @@ const VULN_MATRIX = [
   // change in Renovate's force precedence fails here instead of going unnoticed.
   { name: "vulnerability alert on a dashboard-gated gomod minor (gate bypassed, security lane automerges)", ruleIndices: [1], input: { manager: "gomod", datasource: "go", updateType: "minor", depName: "golang.org/x/net", packageName: "golang.org/x/net" }, expect: "unattended", expectAutomerge: true, expectDashboardApproval: false },
   { name: "vulnerability alert on a kubernetes gomod minor (gate bypassed, security lane automerges)", ruleIndices: [1, 3], input: { manager: "gomod", datasource: "go", updateType: "minor", depName: "k8s.io/api", packageName: "k8s.io/api" }, expect: "unattended", expectAutomerge: true, expectDashboardApproval: false },
-  { name: "vulnerability alert on a dashboard-gated major (gate bypassed, security lane automerges on a green pipeline)", ruleIndices: [16], input: { manager: "gomod", datasource: "go", updateType: "major", depName: "github.com/some/other", packageName: "github.com/some/other" }, expect: "unattended", expectAutomerge: true, expectDashboardApproval: false },
-  { name: "vulnerability alert on a first-party minor (residual: force wins over automerge:false)", ruleIndices: [1, 8], input: { manager: "gomod", datasource: "go", updateType: "minor", depName: "github.com/go-kure/kure", packageName: "github.com/go-kure/kure" }, expect: "unattended", expectAutomerge: true, expectDashboardApproval: false },
+  { name: "vulnerability alert on a dashboard-gated major (gate bypassed, security lane automerges on a green pipeline)", ruleIndices: [15], input: { manager: "gomod", datasource: "go", updateType: "major", depName: "github.com/some/other", packageName: "github.com/some/other" }, expect: "unattended", expectAutomerge: true, expectDashboardApproval: false },
+  { name: "vulnerability alert on a first-party minor (residual: force wins over automerge:false)", ruleIndices: [1, 7], input: { manager: "gomod", datasource: "go", updateType: "minor", depName: "github.com/go-kure/kure", packageName: "github.com/go-kure/kure" }, expect: "unattended", expectAutomerge: true, expectDashboardApproval: false },
   // Rule 12's enabled:false does NOT survive the synthetic rule: force.enabled:true clears the
   // skipReason rule 12 set and overwrites enabled (verified on 44.14.10, 44.42.0 and 44.65.3,
   // both the OSV and the GitHub-alert rule shapes). `expectEnabled: true` pins exactly that, so
   // the reason ignorePaths carries the guarantee stays a tested fact rather than a comment — if
   // this ever fails, renovate changed force precedence and the rule-12 description is stale.
   // `expectExtracted: false` is the guarantee itself: the file never reaches package rules.
-  { name: "vulnerability alert on a gomod dep inside a testdata tree (force re-enables rule 12; extraction is what keeps it out)", ruleIndices: [2, 17, 22], input: { manager: "gomod", datasource: "go", updateType: "patch", depName: "github.com/some/vulnerable", packageName: "github.com/some/vulnerable", packageFile: "pkg/foo/testdata/mod/go.mod" }, expect: "unattended", expectEnabled: true, expectExtracted: false },
+  { name: "vulnerability alert on a gomod dep inside a testdata tree (force re-enables rule 12; extraction is what keeps it out)", ruleIndices: [2, 16, 21], input: { manager: "gomod", datasource: "go", updateType: "patch", depName: "github.com/some/vulnerable", packageName: "github.com/some/vulnerable", packageFile: "pkg/foo/testdata/mod/go.mod" }, expect: "unattended", expectEnabled: true, expectExtracted: false },
 ];
 
 // Consumer-effective cases (go-kure/.github#217, go-kure/kure#813): the checks above resolve the
@@ -700,10 +705,53 @@ for (const u of UPDATE_TYPE_CASES) {
     failures++;
   }
 }
+// The condition AND the assignment it guards: a source that keeps the condition and assigns
+// another type would pass a condition-only pin, so the assignment is part of the pattern, and the
+// control runs the same pattern over a copy with the assignment changed, which must not match.
+const PSEUDO_DIGEST_PIN = /config\.manager === "gomod" && compareValue\?\.startsWith\("v0\.0\.0-"\) && update\.newValue\?\.startsWith\("v0\.0\.0-"\) && config\.currentDigest !== update\.newDigest\) \{\s*update\.updateType = "digest";/;
 const lookupSource = readFileSync(new URL(lookupModuleSpecifier), "utf8");
-if (!lookupSource.includes('config.manager === "gomod" && compareValue?.startsWith("v0.0.0-") && update.newValue?.startsWith("v0.0.0-") && config.currentDigest !== update.newDigest')) {
-  console.error('FAIL [update-type] lookup/index.js no longer reclassifies a gomod v0.0.0- pseudo-version bump as "digest" with that condition; re-read how a pseudo-version bump is classified and update this check and the preset descriptions');
+if (!PSEUDO_DIGEST_PIN.test(lookupSource)) {
+  console.error('FAIL [update-type] lookup/index.js no longer reclassifies a gomod v0.0.0- pseudo-version bump as "digest" with that condition and assignment; re-read how a pseudo-version bump is classified and update this check and the preset descriptions');
   failures++;
+}
+if (PSEUDO_DIGEST_PIN.test(lookupSource.replace('update.updateType = "digest";', 'update.updateType = "major";'))) {
+  console.error('FAIL [update-type-control] the pseudo-version pin still matches a source whose assignment was changed to "major"; the pin cannot fail');
+  failures++;
+}
+// Check 8 — candidate selection. Renovate reads separateMinorPatch at lookup, before any
+// update-type rule, and sorts the candidate releases into buckets: with it off, a patch and a
+// minor of one dependency share the "non-major" bucket and only the highest is offered, so the
+// patch lane would never see a patch while a minor exists (the dashboard-gated minor hides it).
+// Resolve the preset for a dependency WITHOUT an update type (the config lookup sees), run
+// Renovate's own getBucket for a patch and a minor release, and require two buckets, for each
+// manager the lanes route. The control drops the flag from the resolved config and must see one.
+const { getBucket } = await import(distRoot("workers/repository/process/lookup/bucket.js"));
+const BUCKET_CASES = [
+  { manager: "npm", depName: "some-pkg" },
+  { manager: "dockerfile", depName: "alpine" },
+  { manager: "gomod", depName: "github.com/some/other" },
+  { manager: "gomod", depName: "k8s.io/api" },
+  { manager: "gomod", depName: "github.com/go-kure/kure" },
+  { manager: "regex", depName: "git-cliff" },
+  { manager: "github-actions", depName: "some-org/some-action" },
+  { manager: "mise", depName: "yq" },
+];
+let bucketCases = 0;
+for (const b of BUCKET_CASES) {
+  bucketCases++;
+  const lookupConfig = await applyPackageRules({ ...preset, ...b, packageName: b.packageName ?? b.depName });
+  const bucket = (cfg, to) => getBucket({ separateMajorMinor: true, ...cfg }, "1.2.3", to, semverApi);
+  const patchBucket = bucket(lookupConfig, "1.2.4");
+  const minorBucket = bucket(lookupConfig, "1.3.0");
+  if (patchBucket === minorBucket) {
+    console.error(`FAIL [bucket] ${b.manager} ${b.depName}: a patch (1.2.4) and a minor (1.3.0) of 1.2.3 share the bucket "${patchBucket}"; only one is offered and the patch never reaches its lane`);
+    failures++;
+  }
+  const { separateMinorPatch: _dropped, ...without } = lookupConfig;
+  if (bucket(without, "1.2.4") !== bucket(without, "1.3.0")) {
+    console.error(`FAIL [bucket-control] ${b.manager} ${b.depName}: without separateMinorPatch the patch and the minor should share a bucket; the check cannot fail`);
+    failures++;
+  }
 }
 // Check 7 — branch partition. Renovate puts every update of one group on one branch and ANDs
 // automerge and the dashboard gate across its members, so a patch (automerge) sharing a branch
@@ -807,4 +855,4 @@ if (failures > 0) {
   console.error(`\n${failures} failure(s).`);
   process.exit(1);
 }
-console.log(`renovate-lane-policy-test: OK (${MATRIX.length} matrix cases, ${VULN_MATRIX.length} vuln cases, ${CONSUMER_MATRIX.length} consumer-effective cases, ${extractionCases} extraction cases, ${UPDATE_TYPE_CASES.length} update-type cases, ${partitionCases} branch-partition cases, ${ruleCount} packageRules all covered)`);
+console.log(`renovate-lane-policy-test: OK (${MATRIX.length} matrix cases, ${VULN_MATRIX.length} vuln cases, ${CONSUMER_MATRIX.length} consumer-effective cases, ${extractionCases} extraction cases, ${UPDATE_TYPE_CASES.length} update-type cases, ${partitionCases} branch-partition cases, ${bucketCases} candidate-bucket cases, ${ruleCount} packageRules all covered)`);
