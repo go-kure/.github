@@ -79,6 +79,8 @@ What it encodes:
   | Everything else (npm, container images, compose files, regex pins) | automerges | opens a PR for a hand merge | dashboard, for the managers the major gate lists below; any other manager's major opens a PR |
   | GitHub Actions | trusted lane automerges (see below); any other Action opens a PR for a hand merge | same | dashboard |
 
+  A repository that disables a module keeps it out of every lane; the go-deps sync moves those.
+
   Two exceptions are kept as they were: a docker-compose major opens a PR, because the major gate
   does not list that manager, and a GitHub Action outside the trusted lane never automerges, a
   patch included. An untrusted Action runs with the repository's token and a patch tag can be
@@ -98,8 +100,10 @@ What it encodes:
   Renovate reads it at lookup, before any rule that matches an update type, and without it a
   patch and a minor of one dependency share one candidate bucket: only the minor is offered, and
   a dashboard-gated minor would hide every patch behind it. It also puts a group's patch on its
-  own branch, which matters because Renovate ANDs automerge and the dashboard gate across every
-  member of one grouped branch: a minor on the patch's branch would hold it.
+  own branch, which matters because Renovate automerges a grouped branch only when every member
+  automerges (AND) and holds it back when any member needs dashboard approval (OR): a minor on the
+  patch's branch would hold it (`generate.ts` in Renovate takes `automerge` from `every` member
+  and `dependencyDashboardApproval` from `some` member).
 - **Every major update requires dependency-dashboard approval**, across every manager
   currently in use (`gomod`, `mise`, `dockerfile`, `github-actions`, `npm`) plus
   `customManagers` regex/jsonata entries (matched via `custom.*`) — not a blanket
