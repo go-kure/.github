@@ -79,7 +79,9 @@ What it encodes:
   | Everything else (npm, container images, compose files, regex pins) | automerges | opens a PR for a hand merge | dashboard, for the managers the major gate lists below; any other manager's major opens a PR |
   | GitHub Actions | trusted lane automerges (see below); any other Action opens a PR for a hand merge | same | dashboard |
 
-  A repository that disables a module keeps it out of every lane; the go-deps sync moves those.
+  A repository that disables a module keeps it out of every lane, a CVE fix excepted (it still
+  reaches the module in the security lane, see "Vulnerability alerts" below); the go-deps sync
+  moves those.
 
   Two exceptions are kept as they were: a docker-compose major opens a PR, because the major gate
   does not list that manager, and a GitHub Action outside the trusted lane never automerges, a
