@@ -57,6 +57,13 @@ cfg disable-true-spaced $'version: 2\nchangelog:\n  disable: " TRUE "\n'
 cfg disable-empty-string $'version: 2\nchangelog:\n  disable: ""\n'
 cfg disable-yes $'version: 2\nchangelog:\n  disable: yes\n'
 cfg disable-no-value $'version: 2\nchangelog:\n  disable:\n  sort: asc\n'
+# YAML spells true in ways this check does not decode (escapes, block scalars, tags, aliases), so
+# it refuses what it cannot read instead of passing it.
+cfg escaped-value $'version: 2\nchangelog:\n  disable: "\\u0074rue"\n'
+cfg block-scalar-value $'version: 2\nchangelog:\n  disable: |\n    true\n'
+cfg tagged-value $'version: 2\nchangelog:\n  disable: !!bool true\n'
+cfg escaped-key $'version: 2\nchangelog:\n  "\\u0064isable": true\n'
+cfg escaped-top-key $'version: 2\n"\\u0063hangelog":\n  disable: true\n'
 # `disable: true` under another key is not the changelog's.
 cfg other-key-true $'version: 2\nchangelog:\n  sort: asc\nsnapshot:\n  disable: true\nbrews:\n  - disable: true\n'
 cfg changelog-after-true $'version: 2\nsnapshot:\n  disable: true\nchangelog:\n  disable: true\n'
@@ -95,6 +102,11 @@ run "changelog.disable \" TRUE \" (GoReleaser trims and lower-cases)" 1 "changel
 run "changelog.disable empty string (GoReleaser reads false)" 0 "" -- "$tmp/notes.md" "$tmp/disable-empty-string"
 run "changelog.disable yes (GoReleaser reads false)" 0 "" -- "$tmp/notes.md" "$tmp/disable-yes"
 run "changelog.disable with no value" 0 "" -- "$tmp/notes.md" "$tmp/disable-no-value"
+run "changelog.disable \"\\u0074rue\" (YAML escape)" 1 "cannot be read" -- "$tmp/notes.md" "$tmp/escaped-value"
+run "changelog.disable as a block scalar" 1 "cannot be read" -- "$tmp/notes.md" "$tmp/block-scalar-value"
+run "changelog.disable with a !!bool tag" 1 "cannot be read" -- "$tmp/notes.md" "$tmp/tagged-value"
+run "an escaped key inside the changelog block" 1 "cannot be read" -- "$tmp/notes.md" "$tmp/escaped-key"
+run "an escaped top-level key" 1 "cannot be read" -- "$tmp/notes.md" "$tmp/escaped-top-key"
 # 5: a template cannot be read before the run, so the check refuses it.
 run "changelog.disable as a template" 1 "cannot be read" -- "$tmp/notes.md" "$tmp/disable-template"
 # 6-9: configs that keep the changelog pipe, so --release-notes is read.
