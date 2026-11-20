@@ -199,7 +199,8 @@ is started meanwhile, GitHub cancels the waiting one.
    before creating anything if the notes are empty, or if `.goreleaser.yml` sets
    `changelog.disable: true`: GoReleaser then never reads the notes file and publishes the release
    with an empty body. Do not set `changelog.disable` in a repository that publishes through this
-   workflow.
+   workflow: the check accepts no mention of it in the `changelog` block except the exact line
+   `disable: false`.
 4. **Start the versioned docs deploy** — stable tags only: the `vX.Y` slot of the docs site, and
    the site's `latest` only when this is the Latest release. A tag that has a newer stable tag of
    its own line (an older patch published again) deploys nothing, so the slot keeps the newer

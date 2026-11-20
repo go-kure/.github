@@ -438,9 +438,11 @@ one artifact, and the run fails unless the review completed and all three files 
   `changelog.disable: true`, so every step succeeds and the release body is a single newline. A caller
   therefore must not set `changelog.disable` (git-cliff, not GoReleaser, writes the notes; with
   `--release-notes` set GoReleaser generates no changelog of its own). The step fails the run, naming
-  the setting, when the config disables the changelog, holds a value it cannot read before the run (a
-  template, or a YAML escape, block scalar, tag or alias), or when `release-notes.md` is missing or
-  holds only whitespace. It runs before GoReleaser
+  the setting, when the config's `changelog` block mentions `disable` in any way other than the exact
+  line `disable: false` (it decodes no YAML, so a template, an escape, a value on the next line or any
+  other spelling is refused, whatever GoReleaser would make of it), or when `release-notes.md` is
+  missing or holds only whitespace. It is a best-effort line-by-line guard: it reads the config's
+  `changelog` block and nothing else, and does not read flow-style documents, aliases or merge keys. It runs before GoReleaser
   creates anything on GitHub. It reads two files and cannot prove that GitHub shows the body; the
   first real release after a caller drops the setting is that proof.
   `scripts/test/release-notes-contract-test.sh` tests it.
