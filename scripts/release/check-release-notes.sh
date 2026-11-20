@@ -8,8 +8,9 @@
 # pipe when the config sets `changelog.disable: true`. The file is then never read and the
 # release body is a single newline, with every step of the run green. This script exits 1 when
 #   - NOTES_FILE is missing, or holds only whitespace (git-cliff succeeded and wrote nothing), or
-#   - the config sets changelog.disable to true, or to anything it cannot read before the run
-#     (a template such as "{{ .Env.X }}").
+#   - the config sets changelog.disable to true (quoted or not, in any case), or to a template it
+#     cannot render before the run (such as "{{ .Env.X }}"). Any other value leaves the step on,
+#     as it does for GoReleaser.
 # It reports every fault it finds, not only the first. Exit 2 on a usage error.
 #
 # Without GORELEASER_CONFIG it reads the file GoReleaser itself would pick in the current
@@ -57,29 +58,30 @@ if [ -n "$config" ]; then
     else
         # The value of changelog.disable: the direct child `disable:` of the top-level `changelog:`
         # key, or the `disable:` inside an inline `changelog: {...}` map. Prints the value with
-        # comments and quotes removed, or "absent". Plain POSIX awk (no gawk features).
+        # comments and quotes removed, or "absent". Keys may be quoted (\047 is a single quote).
+        # Plain POSIX awk (no gawk features).
         value="$(awk '
             function trim(s) { sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s); return s }
             function unquote(s) {
                 if (s ~ /^".*"$/ || s ~ /^\047.*\047$/) s = substr(s, 2, length(s) - 2)
                 return s
             }
-            function scalar(s) { sub(/[[:space:]]+#.*$/, "", s); return unquote(trim(s)) }
+            function scalar(s) { sub(/[[:space:]]+#.*$/, "", s); return trim(unquote(trim(s))) }
             BEGIN { val = "absent" }
             /^[^[:space:]#]/ {
                 in_block = 0
-                if ($0 ~ /^changelog:/) {
+                if ($0 ~ /^["\047]?changelog["\047]?:/) {
                     rest = $0
-                    sub(/^changelog:/, "", rest)
+                    sub(/^["\047]?changelog["\047]?:/, "", rest)
                     sub(/[[:space:]]+#.*$/, "", rest)
                     rest = trim(rest)
                     if (rest == "") {
                         in_block = 1
                         base = -1
-                    } else if (match(rest, /disable:[[:space:]]*[^,}[:space:]]+/)) {
+                    } else if (match(rest, /["\047]?disable["\047]?:[[:space:]]*("[^"]*"|\047[^\047]*\047|[^,}[:space:]]+)/)) {
                         v = substr(rest, RSTART, RLENGTH)
-                        sub(/^disable:[[:space:]]*/, "", v)
-                        val = unquote(v)
+                        sub(/^["\047]?disable["\047]?:[[:space:]]*/, "", v)
+                        val = scalar(v)
                     }
                 }
                 next
@@ -87,24 +89,27 @@ if [ -n "$config" ]; then
             in_block && !/^[[:space:]]*(#.*)?$/ {
                 match($0, /^[[:space:]]*/)
                 if (base < 0) base = RLENGTH
-                if (RLENGTH == base && $0 ~ /^[[:space:]]+disable:/ && val == "absent") {
+                if (RLENGTH == base && $0 ~ /^[[:space:]]+["\047]?disable["\047]?:/ && val == "absent") {
                     v = $0
-                    sub(/^[[:space:]]+disable:/, "", v)
+                    sub(/^[[:space:]]+["\047]?disable["\047]?:/, "", v)
                     val = scalar(v)
                 }
             }
             END { print val }
         ' "$config")"
-        case "$value" in
-            absent | false | False | FALSE) ;;
-            true | True | TRUE)
-                echo "::error::$config sets changelog.disable to true. GoReleaser then skips its changelog step, the only step that reads --release-notes, and publishes the release with an empty body. Remove the changelog.disable setting from $config."
-                rc=1
-                ;;
-            *)
+        # GoReleaser (v2.20.3, tmpl.Bool) renders the value, trims and lower-cases it, and skips the
+        # changelog step only when the result is "true": "", false, yes and 0 all leave it on. A
+        # template ({{ ... }}) cannot be rendered here, so it is refused.
+        case "${value,,}" in
+            *"{{"*)
                 echo "::error::changelog.disable in $config is '$value', which cannot be read before the run. Set it to false or remove it: GoReleaser skips the step that reads --release-notes when it is true."
                 rc=1
                 ;;
+            true)
+                echo "::error::$config sets changelog.disable to true. GoReleaser then skips its changelog step, the only step that reads --release-notes, and publishes the release with an empty body. Remove the changelog.disable setting from $config."
+                rc=1
+                ;;
+            *) ;;
         esac
     fi
 fi
