@@ -63,26 +63,31 @@ if [ -n "$config" ]; then
         rc=1
     else
         # Prints "ok", or "<line number>: <the first line that is not acceptable>". Comments are
-        # dropped first. A top-level line whose key is changelog (quotes and spaces ignored) opens
-        # the block, which ends at the next top-level line. In the block, a line that mentions
+        # dropped first. The root mapping is the indent of the first line. A line at that indent
+        # whose key is changelog (quotes and spaces ignored) opens the block, which ends at the
+        # next line at that indent. In the block, a line that mentions
         # disable (any case) must be exactly `disable: false`, and a quoted key with an escape is
         # refused. On the key line itself, any mention of disable or an escape is refused.
         # \047 is a single quote. Plain POSIX awk (no gawk features).
         result="$(awk '
             function bare(s) { gsub(/["\047[:space:]]/, "", s); return s }
             function flag(why) { if (bad == "") bad = NR ": " why }
+            BEGIN { root = -1 }
             { text = $0; sub(/^[[:space:]]*#.*$/, "", text); sub(/[[:space:]]+#.*$/, "", text) }
             text ~ /^[[:space:]]*$/ { next }
-            $0 ~ /^[^[:space:]]/ {
+            { match($0, /^[[:space:]]*/); ind = RLENGTH; if (root < 0) root = ind }
+            ind <= root {
                 in_block = 0
-                i = index(text, ":")
-                key = (i > 0) ? substr(text, 1, i - 1) : text
-                if (text ~ /^["\047][^:]*\\/ && esc == "") esc = NR ": " text
+                top = text
+                sub(/^[[:space:]]+/, "", top)
+                i = index(top, ":")
+                key = (i > 0) ? substr(top, 1, i - 1) : top
+                if (top ~ /^["\047][^:]*\\/ && esc == "") esc = NR ": " top
                 if (bare(key) == "changelog") {
                     seen = 1
                     in_block = 1
-                    rest = (i > 0) ? substr(text, i + 1) : ""
-                    if (rest ~ /[^[:space:]]/ && (tolower(rest) ~ /disable/ || rest ~ /\\/)) flag(text)
+                    rest = (i > 0) ? substr(top, i + 1) : ""
+                    if (rest ~ /[^[:space:]]/ && (tolower(rest) ~ /disable/ || rest ~ /\\/)) flag(top)
                 }
                 next
             }

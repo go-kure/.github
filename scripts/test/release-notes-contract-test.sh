@@ -75,6 +75,10 @@ cfg false-with-trailing-comment $'version: 2\nchangelog:\n  disable: false # kee
 # A comment, and a filter regex with backslashes, inside the block are not the setting.
 cfg comment-mentions-disable $'version: 2\nchangelog:\n  # never disable this: the notes need it\n  sort: asc\n  filters:\n    exclude:\n      - \'^chore\\(deps\\)\'\n'
 cfg inline-no-disable $'version: 2\nchangelog: {sort: asc}\n'
+# A whole document indented under one common indent is the same mapping.
+cfg indented-root-true $'  version: 2\n  changelog:\n    disable: true\n'
+cfg indented-root-false $'  version: 2\n  changelog:\n    disable: false\n    sort: asc\n'
+cfg indented-root-absent $'  version: 2\n  project_name: x\n'
 # `disable: true` under another key is not the changelog's.
 cfg other-key-true $'version: 2\nchangelog:\n  sort: asc\nsnapshot:\n  disable: true\nbrews:\n  - disable: true\n'
 cfg changelog-after-true $'version: 2\nsnapshot:\n  disable: true\nchangelog:\n  disable: true\n'
@@ -121,6 +125,9 @@ run "the value of disable continued on the next line" 1 "cannot be read" -- "$tm
 run "disable: false with a trailing comment" 0 "" -- "$tmp/notes.md" "$tmp/false-with-trailing-comment"
 run "a comment and a filter regex inside the block" 0 "" -- "$tmp/notes.md" "$tmp/comment-mentions-disable"
 run "an inline changelog map without disable" 0 "" -- "$tmp/notes.md" "$tmp/inline-no-disable"
+run "a document indented under one common indent, disable true" 1 "cannot be read" -- "$tmp/notes.md" "$tmp/indented-root-true"
+run "a document indented under one common indent, disable false" 0 "" -- "$tmp/notes.md" "$tmp/indented-root-false"
+run "a document indented under one common indent, no changelog" 0 "" -- "$tmp/notes.md" "$tmp/indented-root-absent"
 run "changelog.disable \"\\u0074rue\" (YAML escape)" 1 "cannot be read" -- "$tmp/notes.md" "$tmp/escaped-value"
 run "changelog.disable as a block scalar" 1 "cannot be read" -- "$tmp/notes.md" "$tmp/block-scalar-value"
 run "changelog.disable with a !!bool tag" 1 "cannot be read" -- "$tmp/notes.md" "$tmp/tagged-value"
