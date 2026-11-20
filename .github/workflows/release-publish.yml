@@ -340,6 +340,9 @@ jobs:
           # upstream signature against the key pinned in the script before
           # installing (go-kure/.github#227).
           bash .git-cliff-installer/scripts/release/install-git-cliff.sh
+          # The release-notes check below runs from this checkout too; keep it
+          # outside the caller's tree before the checkout is deleted.
+          cp .git-cliff-installer/scripts/release/check-release-notes.sh "$RUNNER_TEMP/check-release-notes.sh"
           # GoReleaser refuses a dirty tree, and the installer checkout sits
           # inside the caller's one as an untracked directory.
           rm -rf .git-cliff-installer
@@ -350,6 +353,14 @@ jobs:
       # this exact command.
       - name: Extract release notes
         run: git-cliff --latest --use-branch-tags --strip header -o release-notes.md
+
+      # GoReleaser reads --release-notes only in its changelog step, and skips
+      # that step when the caller's .goreleaser.yml sets `changelog.disable:
+      # true`: every step then succeeds and the release body is empty
+      # (go-kure/.github#470). Refuse that, and an empty notes file, before
+      # GoReleaser creates anything on GitHub.
+      - name: Check the release notes reach GoReleaser
+        run: bash "$RUNNER_TEMP/check-release-notes.sh" release-notes.md
 
       # The callers' .goreleaser.yml sets `make_latest: "{{ .Env.MAKE_LATEST }}"`,
       # and GoReleaser fails on an unset variable, so it is set on every path.
