@@ -148,13 +148,21 @@ What it encodes:
   rebase method the merge queue uses, never squash.
 - **Trusted GitHub Actions lane** (`groupName: "github-actions-trusted"`) — a
   small, deliberately short allowlist (`go-kure/.github` itself, plus `actions/checkout`,
-  `actions/cache`, `actions/setup-go`, `actions/download-artifact`,
+  `actions/cache`, `actions/setup-go`, `actions/setup-node`,
+  `actions/create-github-app-token`, `actions/download-artifact`,
   `actions/upload-artifact`, `anthropics/claude-code-action`, and the GoReleaser pin
   `goreleaser/goreleaser`) automerges on
   digest/minor/patch; every other GitHub Action stays in the
   plain `github-actions` group and needs human review (`needs-human`). The lane is not
-  only GitHub-maintained actions. The `actions/*` entries are there because they are
-  small, widely used and low in blast radius. `anthropics/claude-code-action` is
+  only GitHub-maintained actions. Most `actions/*` entries are there because they are
+  small, widely used and low in blast radius; `actions/setup-node` is the same class as
+  `actions/setup-go` and was missing from the list. `actions/create-github-app-token`
+  is GitHub-maintained but fails that test: `release.yml` hands it the GitHub App
+  private key as its `private-key` input. It is on the list by the repository owner's
+  decision of 2026-11-20, for digest, minor and patch bumps only. The third-party
+  actions the workflows use besides `anthropics/claude-code-action`
+  (`sigstore/cosign-installer`, `peter-evans/rebase` and `anchore/sbom-action`) stay out
+  of the lane, and the policy test holds a case for each. `anthropics/claude-code-action` is
   third-party and does not meet that test: the `claude.yml` workflow runs it with the
   `CLAUDE_CODE_OAUTH_TOKEN` secret, read access to contents, pull requests, issues and
   actions, and `id-token: write`. It is on the list by the repository owner's decision, and

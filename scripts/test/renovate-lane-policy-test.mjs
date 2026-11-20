@@ -275,7 +275,7 @@ const MATRIX = [
   { name: "gomod major, first-party go-kure (dashboard-gated, never automerged)", ruleIndices: [7, 14], input: { manager: "gomod", updateType: "major", depName: "github.com/go-kure/kure", packageName: "github.com/go-kure/kure" }, expect: "needs-human", expectDashboardApproval: true, expectGroupName: "internal" },
   { name: "gomod major, any dep (dashboard-gated, never automerged)", ruleIndices: [14], input: { manager: "gomod", updateType: "major", depName: "github.com/some/other", packageName: "github.com/some/other" }, expect: "needs-human", expectDashboardApproval: true },
   // The trusted GitHub Actions lane (go-kure/kure#813's dependency; go-kure/.github#217): tier 1
-  // (go-kure/.github itself) and tier 2 (the five listed GitHub-maintained actions) automerge on
+  // (go-kure/.github itself) and tier 2 (the listed GitHub-maintained actions) automerge on
   // digest/minor/patch via rule 16's own groupName, separate from rule 11's plain github-actions
   // group that every OTHER action still resolves into. expectGroupName pins the split itself, not
   // just the label: a regression that dropped rule 16's matchDepNames but left automerge:true
@@ -300,6 +300,25 @@ const MATRIX = [
   { name: "github-actions owner-accepted pin (goreleaser/goreleaser minor, automerges via the trusted group)", ruleIndices: [11, 16], input: { manager: "github-actions", updateType: "minor", depName: "goreleaser/goreleaser", packageName: "goreleaser/goreleaser" }, expect: "unattended", expectGroupName: "github-actions-trusted" },
   { name: "github-actions owner-accepted pin (goreleaser/goreleaser patch, automerges via the trusted group)", ruleIndices: [11, 16], input: { manager: "github-actions", updateType: "patch", depName: "goreleaser/goreleaser", packageName: "goreleaser/goreleaser" }, expect: "unattended", expectGroupName: "github-actions-trusted" },
   { name: "github-actions owner-accepted pin, major (goreleaser/goreleaser, dashboard-gated, excluded from the trusted lane by update type)", ruleIndices: [11, 14], input: { manager: "github-actions", updateType: "major", depName: "goreleaser/goreleaser", packageName: "goreleaser/goreleaser" }, expect: "needs-human", expectDashboardApproval: true, expectGroupName: "github-actions" },
+  // Two more GitHub-maintained actions the owner added to the lane on 2026-11-20: actions/setup-node
+  // is the same class as actions/setup-go and was missing from the list, and
+  // actions/create-github-app-token takes a GitHub App private key as an input, accepted by the
+  // owner on that date although it is not a low-blast-radius action. Each joins rule 16 by exact
+  // depName: digest, minor and patch automerge in the trusted group, a major waits on the dashboard
+  // in the plain group.
+  ...["actions/setup-node", "actions/create-github-app-token"].flatMap((dep) => [
+    ...["digest", "minor", "patch"].map((updateType) => (
+      { name: `github-actions owner-accepted action (${dep} ${updateType}, automerges via the trusted group)`, ruleIndices: [11, 16], input: { manager: "github-actions", updateType, depName: dep, packageName: dep }, expect: "unattended", expectGroupName: "github-actions-trusted" }
+    )),
+    { name: `github-actions owner-accepted action, major (${dep}, dashboard-gated, excluded from the trusted lane by update type)`, ruleIndices: [11, 14], input: { manager: "github-actions", updateType: "major", depName: dep, packageName: dep }, expect: "needs-human", expectDashboardApproval: true, expectGroupName: "github-actions" },
+  ]),
+  // The three third-party actions this repository's workflows use stay out of the lane: the owner
+  // decided on 2026-11-20 to add the two actions above and not these. Each is a minor that opens a
+  // pull request for a hand merge in the plain group (anchore/sbom-action is read by its
+  // sub-action path, which is the depName Renovate reports for download-syft).
+  ...["sigstore/cosign-installer", "peter-evans/rebase", "anchore/sbom-action/download-syft"].map((dep) => (
+    { name: `github-actions third-party action not in the lane (${dep} minor, never automerged, stays in the plain group)`, ruleIndices: [11], input: { manager: "github-actions", updateType: "minor", depName: dep, packageName: dep }, expect: "needs-human", expectGroupName: "github-actions" }
+  )),
   { name: "github-actions tier 3 (third-party action, never automerged, stays in the plain group)", ruleIndices: [11], input: { manager: "github-actions", updateType: "minor", depName: "codecov/codecov-action", packageName: "codecov/codecov-action" }, expect: "needs-human", expectGroupName: "github-actions" },
   // An unlisted Action stays out of the everything-else lane: a patch needs a person, like its
   // minor, because only the trusted lane automerges an Action (the tail rule excludes the manager).
