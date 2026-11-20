@@ -47,6 +47,16 @@ cfg disable-template $'version: 2\nchangelog:\n  disable: "{{ .Env.NO_CHANGELOG 
 cfg absent $'version: 2\nproject_name: x\nrelease:\n  draft: false'
 cfg disable-false $'version: 2\nchangelog:\n  disable: false\n  sort: asc\n'
 cfg disable-false-quoted $'version: 2\nchangelog:\n  disable: "false"\n'
+# Quoted keys are the same YAML keys. GoReleaser (v2.20.3, tmpl.Bool) trims and lower-cases the
+# value and only "true" disables the step: "", "false", "yes" and "0" leave it on.
+cfg quoted-key-true $'version: 2\nchangelog:\n  "disable": true\n'
+cfg single-quoted-key-true $'version: 2\nchangelog:\n  \'disable\': \'true\'\n'
+cfg quoted-top-key-true $'version: 2\n"changelog":\n  disable: true\n'
+cfg quoted-inline-key-true $'version: 2\n\'changelog\': {"disable": true}\n'
+cfg disable-true-spaced $'version: 2\nchangelog:\n  disable: " TRUE "\n'
+cfg disable-empty-string $'version: 2\nchangelog:\n  disable: ""\n'
+cfg disable-yes $'version: 2\nchangelog:\n  disable: yes\n'
+cfg disable-no-value $'version: 2\nchangelog:\n  disable:\n  sort: asc\n'
 # `disable: true` under another key is not the changelog's.
 cfg other-key-true $'version: 2\nchangelog:\n  sort: asc\nsnapshot:\n  disable: true\nbrews:\n  - disable: true\n'
 cfg changelog-after-true $'version: 2\nsnapshot:\n  disable: true\nchangelog:\n  disable: true\n'
@@ -77,6 +87,14 @@ run "changelog.disable true" 1 "changelog.disable" -- "$tmp/notes.md" "$tmp/disa
 run "changelog.disable true, comments around it" 1 "changelog.disable" -- "$tmp/notes.md" "$tmp/disable-true-comment"
 run "changelog.disable \"true\" quoted" 1 "changelog.disable" -- "$tmp/notes.md" "$tmp/disable-true-quoted"
 run "changelog as an inline map with disable true" 1 "changelog.disable" -- "$tmp/notes.md" "$tmp/disable-true-inline"
+run "quoted key \"disable\"" 1 "changelog.disable" -- "$tmp/notes.md" "$tmp/quoted-key-true"
+run "single-quoted key and value" 1 "changelog.disable" -- "$tmp/notes.md" "$tmp/single-quoted-key-true"
+run "quoted top-level key \"changelog\"" 1 "changelog.disable" -- "$tmp/notes.md" "$tmp/quoted-top-key-true"
+run "quoted keys in an inline map" 1 "changelog.disable" -- "$tmp/notes.md" "$tmp/quoted-inline-key-true"
+run "changelog.disable \" TRUE \" (GoReleaser trims and lower-cases)" 1 "changelog.disable" -- "$tmp/notes.md" "$tmp/disable-true-spaced"
+run "changelog.disable empty string (GoReleaser reads false)" 0 "" -- "$tmp/notes.md" "$tmp/disable-empty-string"
+run "changelog.disable yes (GoReleaser reads false)" 0 "" -- "$tmp/notes.md" "$tmp/disable-yes"
+run "changelog.disable with no value" 0 "" -- "$tmp/notes.md" "$tmp/disable-no-value"
 # 5: a template cannot be read before the run, so the check refuses it.
 run "changelog.disable as a template" 1 "cannot be read" -- "$tmp/notes.md" "$tmp/disable-template"
 # 6-9: configs that keep the changelog pipe, so --release-notes is read.
