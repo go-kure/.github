@@ -77,7 +77,7 @@ What it encodes:
   | First-party Go modules (`github.com/go-kure/**`) | opens a PR, never automerges | dashboard | dashboard |
   | Other Go modules | automerges | dashboard | dashboard |
   | Everything else (npm, container images, compose files, regex pins) | automerges | opens a PR for a hand merge | dashboard, for the managers the major gate lists below; any other manager's major opens a PR |
-  | GitHub Actions | trusted lane automerges (see below); any other Action opens a PR for a hand merge | same | dashboard |
+  | GitHub Actions, and the GoReleaser pin that the same manager reads | trusted lane automerges (see below); any other Action opens a PR for a hand merge | same | dashboard |
 
   A repository that disables a module keeps it out of every lane, a CVE fix excepted (it still
   reaches the module in the security lane, see "Vulnerability alerts" below); the go-deps sync
@@ -149,7 +149,8 @@ What it encodes:
 - **Trusted GitHub Actions lane** (`groupName: "github-actions-trusted"`) — a
   small, deliberately short allowlist (`go-kure/.github` itself, plus `actions/checkout`,
   `actions/cache`, `actions/setup-go`, `actions/download-artifact`,
-  `actions/upload-artifact`, and `anthropics/claude-code-action`) automerges on
+  `actions/upload-artifact`, `anthropics/claude-code-action`, and the GoReleaser pin
+  `goreleaser/goreleaser`) automerges on
   digest/minor/patch; every other GitHub Action stays in the
   plain `github-actions` group and needs human review (`needs-human`). The lane is not
   only GitHub-maintained actions. The `actions/*` entries are there because they are
@@ -158,7 +159,16 @@ What it encodes:
   `CLAUDE_CODE_OAUTH_TOKEN` secret, read access to contents, pull requests, issues and
   actions, and `id-token: write`. It is on the list by the repository owner's decision, and
   that decision covers digest, minor and patch bumps only. A sibling action of the same
-  publisher is not covered, because the list matches exact names. A major on
+  publisher is not covered, because the list matches exact names.
+  `goreleaser/goreleaser` is not an action: it is the `version:` pin of
+  `goreleaser-action` in `release-publish.yml`, which the `github-actions` manager
+  reads as that dependency. It joins by the repository owner's decision of
+  2026-11-20, for digest, minor and patch bumps only. The pin must equal the
+  org-wide `REQUIRED_GORELEASER_VERSION`, whose own bump waits for a person on the
+  Dependency Dashboard and is never automerged, so an automerged bump here can lead
+  that authority until someone moves it. The authority's own consistency check
+  compares its version file with its own release template and reads no pin in this
+  repository, so that lead is drift in this pin, not a failure of that check. A major on
   a trusted-lane action is excluded from automerge by this rule's own
   `matchUpdateTypes`, not merely by the dashboard-approval gate above — that gate
   blocks branch/PR creation, not merging a branch a human already approved. The
@@ -238,6 +248,11 @@ inheriting the preset is not the whole job. Before relying on it:
    not repeat any of this in its own `renovate.json`. The allowlist matches by
    dependency name, so a consumer that pins one of the listed actions itself,
    `anthropics/claude-code-action` included, gets the same automerge for that pin.
+   The same holds for a consumer's own `goreleaser/goreleaser` pin, which the
+   `github-actions` manager reads from a `goreleaser-action` `version:` input. The
+   `extractVersion` entry that keeps that pin bare is not part of the preset, so a
+   consumer that wants a bare version adds its own (the GoReleaser paragraph under
+   "Policy test" below shows it).
 2. **Check for a consumer override that would undo the split.** A `packageRules`
    entry in the consumer's own `renovate.json` matching one of the trusted
    `matchDepNames` can re-fold it into a different group or turn off its
@@ -380,7 +395,10 @@ writes the release tag (for example `v2.19.0`); the org-wide
 `REQUIRED_GORELEASER_VERSION` is a bare version that its check compares as a
 string. The entry sets `extractVersion: "^v(?<version>.*)$"` for
 `goreleaser/goreleaser`, so a bump writes the bare version (`2.19.0`). Without it each GoReleaser bump needs a hand edit to remove the
-`v`.
+`v`. That pin is also a member of the trusted GitHub Actions lane in the shared preset
+(see "Trusted GitHub Actions lane" above): a digest, minor or patch bump automerges, a
+major waits on the dashboard. Only the lane rule comes from the preset; the
+`extractVersion` entry stays in this repository's own `renovate.json`.
 
 #### A Renovate PR that stays out of the merge queue
 
