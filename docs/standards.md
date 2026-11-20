@@ -163,12 +163,10 @@ What it encodes:
   `goreleaser/goreleaser` is not an action: it is the `version:` pin of
   `goreleaser-action` in `release-publish.yml`, which the `github-actions` manager
   reads as that dependency. It joins by the repository owner's decision of
-  2026-11-20, for digest, minor and patch bumps only. The pin must equal the
-  org-wide `REQUIRED_GORELEASER_VERSION`, whose own bump waits for a person on the
-  Dependency Dashboard and is never automerged, so an automerged bump here can lead
-  that authority until someone moves it. The authority's own consistency check
-  compares its version file with its own release template and reads no pin in this
-  repository, so that lead is drift in this pin, not a failure of that check. A major on
+  2026-11-20, for digest, minor and patch bumps only. The pin is meant to equal
+  the org-wide `REQUIRED_GORELEASER_VERSION` (the comment at the pin in
+  `release-publish.yml` says so). That version is kept outside this repository, so
+  an automerged bump here can lead it until it is moved separately. A major on
   a trusted-lane action is excluded from automerge by this rule's own
   `matchUpdateTypes`, not merely by the dashboard-approval gate above — that gate
   blocks branch/PR creation, not merging a branch a human already approved. The
