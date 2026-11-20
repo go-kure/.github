@@ -12,8 +12,10 @@
 #     (a template such as "{{ .Env.X }}").
 # It reports every fault it finds, not only the first. Exit 2 on a usage error.
 #
-# Without GORELEASER_CONFIG it reads .goreleaser.yaml, then .goreleaser.yml, in the current
-# directory; with neither, GoReleaser runs on its defaults, which keep the changelog pipe.
+# Without GORELEASER_CONFIG it reads the file GoReleaser itself would pick in the current
+# directory (.config/goreleaser.yml, .config/goreleaser.yaml, .goreleaser.yml, .goreleaser.yaml,
+# goreleaser.yml, goreleaser.yaml, in that order); with none of them, GoReleaser runs on its
+# defaults, which keep the changelog pipe.
 #
 # What it cannot prove: that GitHub shows the body. It reads two files. The first real release
 # after a caller drops `changelog.disable` is the end-to-end proof.
@@ -29,7 +31,8 @@ fi
 notes="$1"
 config="${2:-}"
 if [ -z "$config" ]; then
-    for candidate in .goreleaser.yaml .goreleaser.yml; do
+    # GoReleaser's own lookup order (cmd/config.go, v2.20.3): the first file that exists wins.
+    for candidate in .config/goreleaser.yml .config/goreleaser.yaml .goreleaser.yml .goreleaser.yaml goreleaser.yml goreleaser.yaml; do
         if [ -e "$candidate" ]; then
             config="$candidate"
             break
