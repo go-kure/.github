@@ -74,6 +74,7 @@ unattended run, set
 │   ├── release-state.sh                 # What a tag's publish run actually did (read-only; release-state.yml)
 │   ├── release/release.sh               # The release script release.yml runs in every caller — canonical
 │   ├── release/publish-policy.sh        # Publish's per-line progression and Latest decisions
+│   ├── release/check-release-notes.sh   # Publish refuses notes GoReleaser would drop (changelog.disable, empty file)
 │   ├── release/deploy-docs-push.sh      # The docs deploy's write and push (deploy-docs-push action)
 │   ├── lib/json-schema.sh               # Draft-07 subset validator in jq (both schemas above)
 │   └── lib/api.sh                       # Shared HTTP API utilities
@@ -431,6 +432,17 @@ one artifact, and the run fails unless the review completed and all three files 
   `make_latest: "{{ .Env.MAKE_LATEST }}"`) and `deploy-docs` as `set_latest`, so a backport or an
   older re-published tag moves neither GitHub's Latest release nor the docs site's `latest`. Both
   refuse an empty value rather than guess.
+- `goreleaser` also **refuses notes that GoReleaser would drop** (`scripts/release/check-release-notes.sh`,
+  a step between "Extract release notes" and "Run GoReleaser"). GoReleaser reads `--release-notes` only
+  in its changelog step and skips that step when the caller's `.goreleaser.yml` sets
+  `changelog.disable: true`, so every step succeeds and the release body is a single newline. A caller
+  therefore must not set `changelog.disable` (git-cliff, not GoReleaser, writes the notes; with
+  `--release-notes` set GoReleaser generates no changelog of its own). The step fails the run, naming
+  the setting, when the config disables the changelog, reads a template it cannot evaluate before the
+  run, or when `release-notes.md` is missing or holds only whitespace. It runs before GoReleaser
+  creates anything on GitHub. It reads two files and cannot prove that GitHub shows the body; the
+  first real release after a caller drops the setting is that proof.
+  `scripts/test/release-notes-contract-test.sh` tests it.
 - `release-publish.yml`'s `goreleaser` job **refuses to publish over a tag that already has a
   release**, as its first step, before checkout. The probe lives in the publishing job rather than
   a job of its own because `gh run rerun --failed` reschedules the failed `goreleaser` job but
