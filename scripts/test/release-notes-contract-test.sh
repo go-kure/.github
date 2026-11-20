@@ -8,9 +8,10 @@
 # check-release-notes.sh refuses that before anything is created on GitHub; the same check refuses
 # a notes file that is missing or holds only whitespace.
 #
-# Cases 1-17 run the script on temporary configs and notes. Cases 18-20 read release-publish.yml:
-# the check runs after the notes are written and before GoReleaser, and the script is copied out
-# of the sparse checkout that the git-cliff step deletes.
+# The first cases run the script on temporary configs and notes, including the six file names
+# GoReleaser looks for, in its order. The last three read release-publish.yml: the check runs
+# after the notes are written and before GoReleaser, and the script is copied out of the sparse
+# checkout that the git-cliff step deletes.
 #
 # What this cannot prove: that GitHub shows the body. The contract is read from files, so the only
 # end-to-end proof is the first real release after a caller drops `changelog.disable`.
@@ -101,19 +102,51 @@ else
 fi
 # 15: a config that is not there is a failure to read, never a pass.
 run "missing config file" 1 "missing" -- "$tmp/notes.md" "$tmp/nonexistent.yml"
-# 16-17: no config argument means the default names, .goreleaser.yaml before .goreleaser.yml.
-mkdir -p "$tmp/found" "$tmp/none"
-cp "$tmp/disable-true" "$tmp/found/.goreleaser.yml"
-out="$(cd "$tmp/found" && bash "$CHECK" "$tmp/notes.md" 2>&1)"
-rc=$?
-if [ "$rc" -eq 1 ] && grep -qF -- "changelog.disable" <<<"$out"; then
+# 16-22: no config argument means the file GoReleaser itself picks (cmd/config.go, v2.20.3): the
+# first existing of the six names, in its order. in_dir NAME WANT_RC FILE... — a directory that
+# holds the listed files (the first one carrying changelog.disable: true, the others a clean
+# config), checked with no config argument.
+in_dir() {
+  local name="$1" want_rc="$2" first=1 f d="$tmp/dir-$RANDOM" out rc
+  shift 2
+  mkdir -p "$d"
+  for f in "$@"; do
+    mkdir -p "$d/$(dirname "$f")"
+    if [ "$first" -eq 1 ] && [ "$want_rc" -eq 1 ]; then cp "$tmp/disable-true" "$d/$f"; else cp "$tmp/absent" "$d/$f"; fi
+    first=0
+  done
+  out="$(cd "$d" && bash "$CHECK" "$tmp/notes.md" 2>&1)"
+  rc=$?
+  if [ "$rc" -eq "$want_rc" ]; then
+    pass_count=$((pass_count + 1))
+    echo "PASS  $name"
+  else
+    echo "FAIL: $name: expected exit $want_rc, got $rc:"
+    echo "$out"
+    failures=$((failures + 1))
+  fi
+}
+in_dir "default config .goreleaser.yml is found" 1 .goreleaser.yml
+in_dir "default config .goreleaser.yaml is found" 1 .goreleaser.yaml
+in_dir "default config .config/goreleaser.yml is found" 1 .config/goreleaser.yml
+in_dir "default config .config/goreleaser.yaml is found" 1 .config/goreleaser.yaml
+in_dir "default config goreleaser.yml is found" 1 goreleaser.yml
+in_dir "default config goreleaser.yaml is found" 1 goreleaser.yaml
+# The first name in GoReleaser's order wins, so a disabled changelog in a later file is not read.
+in_dir "the first name in GoReleaser's order wins over a later one" 1 .config/goreleaser.yml .goreleaser.yml
+in_dir ".goreleaser.yml wins over .goreleaser.yaml" 1 .goreleaser.yml .goreleaser.yaml
+# The reverse: a clean config that GoReleaser reads first hides a later disabled one, as for GoReleaser.
+mkdir -p "$tmp/shadow"
+cp "$tmp/absent" "$tmp/shadow/.goreleaser.yml"
+cp "$tmp/disable-true" "$tmp/shadow/goreleaser.yml"
+if (cd "$tmp/shadow" && bash "$CHECK" "$tmp/notes.md" >/dev/null 2>&1); then
   pass_count=$((pass_count + 1))
-  echo "PASS  default config .goreleaser.yml is found"
+  echo "PASS  a clean config read first is the one that counts"
 else
-  echo "FAIL: default config .goreleaser.yml is found, exit $rc:"
-  echo "$out"
+  echo "FAIL: a clean config read first is the one that counts"
   failures=$((failures + 1))
 fi
+mkdir -p "$tmp/none"
 out="$(cd "$tmp/none" && bash "$CHECK" "$tmp/notes.md" 2>&1)"
 rc=$?
 if [ "$rc" -eq 0 ]; then
