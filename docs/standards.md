@@ -216,7 +216,9 @@ What it encodes:
   that reached package rules would be looked up and PR'd despite the rule (verified on Renovate
   44.14.10, 44.42.0 and 44.65.3; the lane-policy test pins it). `ignorePaths` is not mergeable —
   a value set in a preset or a consumer replaces the inherited list rather than extending it —
-  so the preset restates the inherited entries in full. `:ignoreModulesAndTests` also ships a
+  so the preset restates the inherited entries in full (Renovate 44.253.3 added
+  `**/.mise/locks/**` and `**/.config/mise/locks/**` to both inherited lists, so the preset
+  carries them too). `:ignoreModulesAndTests` also ships a
   manager-level override, `nuget.ignorePaths` (it keeps `test/` and `tests/` in scope for NuGet),
   and Renovate merges that over the top-level list for that manager, so the preset restates the
   NuGet list too, with the same entry added; the lane-policy test fails if the installed
