@@ -47,8 +47,10 @@ cfg disable-template $'version: 2\nchangelog:\n  disable: "{{ .Env.NO_CHANGELOG 
 cfg absent $'version: 2\nproject_name: x\nrelease:\n  draft: false'
 cfg disable-false $'version: 2\nchangelog:\n  disable: false\n  sort: asc\n'
 cfg disable-false-quoted $'version: 2\nchangelog:\n  disable: "false"\n'
-# Quoted keys are the same YAML keys. GoReleaser (v2.20.3, tmpl.Bool) trims and lower-cases the
-# value and only "true" disables the step: "", "false", "yes" and "0" leave it on.
+# The check decodes no YAML. Inside the changelog block it accepts a line that mentions disable
+# only when it is exactly `disable: false` (quotes around false allowed), and refuses every other
+# spelling, including some GoReleaser reads as false ("", yes, no value): a refusal costs one edit
+# of the caller's config, a pass on a spelling of true costs a release with an empty body.
 cfg quoted-key-true $'version: 2\nchangelog:\n  "disable": true\n'
 cfg single-quoted-key-true $'version: 2\nchangelog:\n  \'disable\': \'true\'\n'
 cfg quoted-top-key-true $'version: 2\n"changelog":\n  disable: true\n'
@@ -64,6 +66,15 @@ cfg block-scalar-value $'version: 2\nchangelog:\n  disable: |\n    true\n'
 cfg tagged-value $'version: 2\nchangelog:\n  disable: !!bool true\n'
 cfg escaped-key $'version: 2\nchangelog:\n  "\\u0064isable": true\n'
 cfg escaped-top-key $'version: 2\n"\\u0063hangelog":\n  disable: true\n'
+cfg space-before-colon $'version: 2\nchangelog:\n  disable : true\n'
+cfg space-before-top-colon $'version: 2\nchangelog :\n  disable: true\n'
+cfg quoted-space-top-key $'version: 2\n"changelog" :\n  disable: true\n'
+cfg value-on-next-line $'version: 2\nchangelog:\n  disable:\n    true\n'
+cfg value-continued $'version: 2\nchangelog:\n  disable: true\n    false\n'
+cfg false-with-trailing-comment $'version: 2\nchangelog:\n  disable: false # keep the notes\n  sort: asc\n'
+# A comment, and a filter regex with backslashes, inside the block are not the setting.
+cfg comment-mentions-disable $'version: 2\nchangelog:\n  # never disable this: the notes need it\n  sort: asc\n  filters:\n    exclude:\n      - \'^chore\\(deps\\)\'\n'
+cfg inline-no-disable $'version: 2\nchangelog: {sort: asc}\n'
 # `disable: true` under another key is not the changelog's.
 cfg other-key-true $'version: 2\nchangelog:\n  sort: asc\nsnapshot:\n  disable: true\nbrews:\n  - disable: true\n'
 cfg changelog-after-true $'version: 2\nsnapshot:\n  disable: true\nchangelog:\n  disable: true\n'
@@ -99,9 +110,17 @@ run "single-quoted key and value" 1 "changelog.disable" -- "$tmp/notes.md" "$tmp
 run "quoted top-level key \"changelog\"" 1 "changelog.disable" -- "$tmp/notes.md" "$tmp/quoted-top-key-true"
 run "quoted keys in an inline map" 1 "changelog.disable" -- "$tmp/notes.md" "$tmp/quoted-inline-key-true"
 run "changelog.disable \" TRUE \" (GoReleaser trims and lower-cases)" 1 "changelog.disable" -- "$tmp/notes.md" "$tmp/disable-true-spaced"
-run "changelog.disable empty string (GoReleaser reads false)" 0 "" -- "$tmp/notes.md" "$tmp/disable-empty-string"
-run "changelog.disable yes (GoReleaser reads false)" 0 "" -- "$tmp/notes.md" "$tmp/disable-yes"
-run "changelog.disable with no value" 0 "" -- "$tmp/notes.md" "$tmp/disable-no-value"
+run "changelog.disable empty string (refused: only false is accepted)" 1 "cannot be read" -- "$tmp/notes.md" "$tmp/disable-empty-string"
+run "changelog.disable yes (refused: only false is accepted)" 1 "cannot be read" -- "$tmp/notes.md" "$tmp/disable-yes"
+run "changelog.disable with no value (refused: only false is accepted)" 1 "cannot be read" -- "$tmp/notes.md" "$tmp/disable-no-value"
+run "whitespace before the colon of disable" 1 "cannot be read" -- "$tmp/notes.md" "$tmp/space-before-colon"
+run "whitespace before the colon of changelog" 1 "cannot be read" -- "$tmp/notes.md" "$tmp/space-before-top-colon"
+run "quoted changelog key with whitespace before the colon" 1 "cannot be read" -- "$tmp/notes.md" "$tmp/quoted-space-top-key"
+run "the value of disable on the next line" 1 "cannot be read" -- "$tmp/notes.md" "$tmp/value-on-next-line"
+run "the value of disable continued on the next line" 1 "cannot be read" -- "$tmp/notes.md" "$tmp/value-continued"
+run "disable: false with a trailing comment" 0 "" -- "$tmp/notes.md" "$tmp/false-with-trailing-comment"
+run "a comment and a filter regex inside the block" 0 "" -- "$tmp/notes.md" "$tmp/comment-mentions-disable"
+run "an inline changelog map without disable" 0 "" -- "$tmp/notes.md" "$tmp/inline-no-disable"
 run "changelog.disable \"\\u0074rue\" (YAML escape)" 1 "cannot be read" -- "$tmp/notes.md" "$tmp/escaped-value"
 run "changelog.disable as a block scalar" 1 "cannot be read" -- "$tmp/notes.md" "$tmp/block-scalar-value"
 run "changelog.disable with a !!bool tag" 1 "cannot be read" -- "$tmp/notes.md" "$tmp/tagged-value"
