@@ -9,8 +9,9 @@
 # release body is a single newline, with every step of the run green. This script exits 1 when
 #   - NOTES_FILE is missing, or holds only whitespace (git-cliff succeeded and wrote nothing), or
 #   - the config sets changelog.disable to true (quoted or not, in any case), or to a template it
-#     cannot render before the run (such as "{{ .Env.X }}"). Any other value leaves the step on,
-#     as it does for GoReleaser.
+#     cannot render before the run (such as "{{ .Env.X }}"), or to a value it does not decode (a
+#     YAML escape, block scalar, tag or alias). Any other plain value leaves the step on, as it
+#     does for GoReleaser.
 # It reports every fault it finds, not only the first. Exit 2 on a usage error.
 #
 # Without GORELEASER_CONFIG it reads the file GoReleaser itself would pick in the current
@@ -70,6 +71,7 @@ if [ -n "$config" ]; then
             BEGIN { val = "absent" }
             /^[^[:space:]#]/ {
                 in_block = 0
+                if ($0 ~ /^["\047][^:]*\\/) esc = 1
                 if ($0 ~ /^["\047]?changelog["\047]?:/) {
                     rest = $0
                     sub(/^["\047]?changelog["\047]?:/, "", rest)
@@ -89,19 +91,27 @@ if [ -n "$config" ]; then
             in_block && !/^[[:space:]]*(#.*)?$/ {
                 match($0, /^[[:space:]]*/)
                 if (base < 0) base = RLENGTH
+                if (RLENGTH == base && $0 ~ /^[[:space:]]+["\047][^:]*\\/) esc = 1
                 if (RLENGTH == base && $0 ~ /^[[:space:]]+["\047]?disable["\047]?:/ && val == "absent") {
                     v = $0
                     sub(/^[[:space:]]+["\047]?disable["\047]?:/, "", v)
                     val = scalar(v)
                 }
             }
-            END { print val }
+            END {
+                # A quoted key with an escape could be changelog or disable spelled in a way this
+                # does not decode: report the unreadable marker rather than "absent".
+                if (val == "absent" && esc) val = "\\"
+                print val
+            }
         ' "$config")"
         # GoReleaser (v2.20.3, tmpl.Bool) renders the value, trims and lower-cases it, and skips the
-        # changelog step only when the result is "true": "", false, yes and 0 all leave it on. A
-        # template ({{ ... }}) cannot be rendered here, so it is refused.
+        # changelog step only when the result is "true": "", false, yes and 0 all leave it on. This
+        # reads plain values only. A template ({{ ... }}) cannot be rendered here, and an escape,
+        # block scalar, tag or alias is a YAML spelling of true this does not decode, so any value
+        # with a character outside a-z, 0-9, space, dot, underscore and dash is refused, never passed.
         case "${value,,}" in
-            *"{{"*)
+            *[!a-z0-9._\ -]*)
                 echo "::error::changelog.disable in $config is '$value', which cannot be read before the run. Set it to false or remove it: GoReleaser skips the step that reads --release-notes when it is true."
                 rc=1
                 ;;
