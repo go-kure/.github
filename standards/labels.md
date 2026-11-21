@@ -27,7 +27,7 @@ so it bought nothing `/` doesn't already give — dropped 2026-08-27, see go-kur
 | `priority/` | `critical`, `high`, `medium`, `low` | Relative urgency — single-value by convention; valid for repos that use labels instead of a Priority project field (see [project board standard](../docs/project-board-standard.md)) |
 | `effort/` | `low`, `medium`, `high` | Implementation complexity — single-value by convention |
 | `type/` | `bug`, `chore`, `ci`, `design`, `documentation`, `epic`, `feature`, `refactor`, `roadmap`, `security`, `testing`, `upgrade`, `breaking-change` | What kind of issue it is |
-| `area/` | `cli`, `core`, `docs`, `flux`, `helm`, `k8s`, `layout`, `oam`, `distribution` | Subsystem or component the issue touches |
+| `area/` | `cli`, `core`, `docs`, `flux`, `helm`, `k8s`, `layout`, `oam`, `distribution`, `workflow-automation` | Subsystem or component the issue touches |
 | `upstream/` | `kure` | Blocked on an upstream repo |
 | `do/` | `now`, `next` | When a valid finding is fixed — single-value by convention |
 | `scope/` | `launcher`, `downstream` | Whether the change reaches a surface an external consumer already imports |
