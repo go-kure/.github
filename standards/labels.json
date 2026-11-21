@@ -155,6 +155,12 @@
       "repos": ["launcher"]
     },
     {
+      "name": "area/workflow-automation",
+      "color": "#5319E7",
+      "description": "Automation that moves work through review, CI, release and dependency flow",
+      "repos": [".github"]
+    },
+    {
       "name": "scope/launcher",
       "color": "#5319E7",
       "description": "Self-contained; no external consumer contract"
