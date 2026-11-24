@@ -419,10 +419,12 @@ is not proven. Tracker: `go-kure/.github#398`.
 
 A failed `build` check from a cancelled duplicate run does not explain the stall on its own. Every
 bot PR gets its labels after it opens, each label event starts a CI run, and `cancel-in-progress`
-cancels the competing runs. GitHub does not promise which one survives. The `build` job runs with
-`if: always()` and its script exits with an error when a job it needs was cancelled, so a cancelled
-run can leave a failed `build`. 12 PRs that queued without a person carry both a failed and a
-passing `build`.
+cancels the competing runs. GitHub does not promise which one survives. The `build` job used to run
+with `if: always()` and its script exits with an error when a job it needs was cancelled, so a
+cancelled run could leave a failed `build`. In `go-kure/kure` and `go-kure/launcher` the job now
+runs with `if: ${{ !cancelled() }}`: a run cancelled before the gate starts reports `build` as
+cancelled, not failed, while a `build` that already finished keeps its result. 12 PRs that queued
+without a person carry both a failed and a passing `build`.
 
 The one open lead is the run order. In `go-kure/launcher#1561` three runs started within two
 seconds (43440263429, 43440265522 and 43440265819). Concurrency kept the middle run, which
