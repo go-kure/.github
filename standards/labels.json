@@ -3,11 +3,6 @@
   "description": "Standard issue labels for go-kure repos. See labels.md for naming conventions.",
   "labels": [
     {
-      "name": "status/deferred",
-      "color": "#FEF2C0",
-      "description": "Blocked or postponed for later"
-    },
-    {
       "name": "status/blocked",
       "color": "#D93F0B",
       "description": "Blocked by external dependency"
@@ -193,12 +188,22 @@
     {
       "name": "do/now",
       "color": "#E99695",
-      "description": "Fix now: needed for the current release target"
+      "description": "Current target: worked now"
     },
     {
       "name": "do/next",
       "color": "#E99695",
-      "description": "Valid and ticketed; scheduled after the current release target"
+      "description": "Next after the current target; becomes do/now in time"
+    },
+    {
+      "name": "do/later",
+      "color": "#E99695",
+      "description": "Valid, not scheduled; may be promoted to do/next"
+    },
+    {
+      "name": "do/deferred",
+      "color": "#E99695",
+      "description": "Deferred until a maintainer changes it; the issue says why"
     },
     {
       "name": "dependencies",
