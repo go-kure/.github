@@ -9,7 +9,7 @@ yq = "4.54.3"
 lychee = "0.24.2"
 # renovate 44 declares engines.node ^24.11.0 (npm refuses to install it on an
 # older runtime) -- needed only to run scripts/test/renovate-lane-policy-test.mjs.
-node = "24"
+node = "26"
 
 # git-cliff is not under [tools]: mise would install it from its own backend and
 # skip scripts/release/install-git-cliff.sh, which verifies the release signature
